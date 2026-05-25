@@ -15,6 +15,15 @@ export function sanitizeEmailHtml(html) {
 }
 
 /* =========================================================
+   HELPER: Capitalize first letter for display
+========================================================= */
+
+function formatTier(tier) {
+  if (!tier || typeof tier !== "string") return "Standard";
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
+/* =========================================================
    HELPER: GENERATE TICKET PDF
    Branded delegate pass with header, body, QR code, footer
 ========================================================= */
@@ -26,12 +35,14 @@ async function generateTicketPDF({ name, ticketId, tier }) {
         throw new Error("Ticket ID missing when generating QR code");
       }
 
+      const tierDisplay = formatTier(tier);
+
       // Letter size, no auto margins — we control everything manually
       const doc = new PDFDocument({
         size: "LETTER",
         margin: 0,
         info: {
-          Title: `TTFC ${tier} Pass - ${ticketId}`,
+          Title: `TTFC ${tierDisplay} Pass - ${ticketId}`,
           Author: "The Tech Festival Canada",
           Subject: "Official Delegate Pass",
         },
@@ -137,7 +148,7 @@ async function generateTicketPDF({ name, ticketId, tier }) {
         .fillColor(DARK)
         .font("Helvetica-Bold")
         .fontSize(18)
-        .text(tier || "Standard", cardX + 24, y + 40);
+        .text(tierDisplay, cardX + 24, y + 40);
 
       // Right column: Ticket ID
       const rightColX = cardX + cardW / 2 + 10;
@@ -364,6 +375,8 @@ export async function sendTicketEmail({ email, name, ticketId, tier }) {
 
   try {
 
+    const tierDisplay = formatTier(tier);
+
     const pdfBuffer = await generateTicketPDF({
       name,
       ticketId,
@@ -376,7 +389,7 @@ export async function sendTicketEmail({ email, name, ticketId, tier }) {
 
       to: email,
 
-      subject: `Your TTFC ${tier} Pass is confirmed 🎟`,
+      subject: `Your TTFC ${tierDisplay} Pass is confirmed 🎟`,
 
       html: `
 <!DOCTYPE html>
@@ -401,7 +414,7 @@ export async function sendTicketEmail({ email, name, ticketId, tier }) {
         <p style="color:#1a1035;font-size:17px;margin:0 0 18px;">Hi ${name},</p>
 
         <p style="color:#444;font-size:15px;line-height:1.65;margin:0 0 14px;">
-          Thanks for grabbing your <strong>TTFC ${tier} Pass</strong> for The Tech Festival Canada 2026. We're really glad you're coming — it's going to be two big days in Toronto.
+          Thanks for grabbing your <strong>TTFC ${tierDisplay} Pass</strong> for The Tech Festival Canada 2026. We're really glad you're coming — it's going to be two big days in Toronto.
         </p>
 
         <p style="color:#444;font-size:15px;line-height:1.65;margin:0 0 28px;">
@@ -424,7 +437,7 @@ export async function sendTicketEmail({ email, name, ticketId, tier }) {
           <div style="border-top:1px solid #ece4ff;padding-top:18px;">
             <div style="color:#7a3fd1;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;margin:0 0 6px;">Your Pass</div>
             <div style="color:#333;font-size:14px;line-height:1.6;">
-              <strong>Type:</strong> ${tier}<br>
+              <strong>Type:</strong> ${tierDisplay}<br>
               <strong>Ticket ID:</strong> <span style="font-family:'Courier New',Courier,monospace;">${ticketId}</span>
             </div>
           </div>
