@@ -376,30 +376,12 @@ router.get(
   async (req, res) => {
     try {
 
-      // Get attendees from logged-in users
-      const users = await User.find({
-        tickets: { $exists: true, $not: { $size: 0 } },
-      }).select("name email tickets").lean();
+      const attendees = await Attendee.find({})
+        .select("name email ticketId ticketType purchaseDate checkedIn")
+        .sort({ purchaseDate: -1 })
+        .lean();
 
-      const userAttendees = users.flatMap(user => 
-        user.tickets.map(ticket => ({
-          name: user.name,
-          email: user.email,
-          ticketId: ticket.ticketId,
-          ticketType: ticket.type,
-          purchaseDate: ticket.purchaseDate,
-          checkedIn: ticket.checkedIn
-        }))
-      );
-
-      // Get attendees from guest purchases
-      const guestAttendees = await Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn").lean();
-
-      // Combine both and sort by purchase date (newest first)
-      const allAttendees = [...userAttendees, ...guestAttendees]
-        .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate));
-
-      res.json(allAttendees);
+      res.json(attendees);
 
     } catch (err) {
 
