@@ -19,6 +19,7 @@ import subscriptionRoutes from "./routes/subscriptions.js";
 import campaignRoutes from "./routes/campaigns.js";
 import trackingRoutes from "./routes/tracking.js";
 import campaignAutomationRoutes from "./routes/campaignAutomation.js";
+import promosRouter from "./routes/promos.js";
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
+app.use("/api", promosRouter);
 
 /* ==========================================
    HEALTH CHECK

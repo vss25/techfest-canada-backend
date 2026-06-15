@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import Stripe from "stripe";
 import User from "../models/User.js";
 import TicketInventory from "../models/TicketInventory.js";
+import Promo from "../models/Promo.js";
 const router = express.Router();
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -23,7 +24,7 @@ async function getUserFromReq(req) {
 // ================= CREATE CHECKOUT =================
 router.post("/create-checkout", async (req, res) => {
   try {
-    const { tier, type = "ticket", price } = req.body;
+    const { tier, type = "ticket", price, promoCode } = req.body;
     const normalizedTier = tier.toLowerCase();
     const isBooth = type === "booth";
     
@@ -36,7 +37,31 @@ router.post("/create-checkout", async (req, res) => {
       }
       ticketPrice = ticket.price;
     }
+
     const stripe = getStripe();
+
+    // ===== PROMO CODE HANDLING (tickets only) =====
+    let appliedDiscount = 0;
+    let appliedPromo = null;
+
+    if (promoCode && !isBooth) {
+      const code = String(promoCode).trim().toUpperCase();
+      const promo = await Promo.findOne({ code, active: true });
+      if (promo) {
+        appliedDiscount = promo.discount;
+        appliedPromo = promo;
+      }
+    }
+
+    let discountsArg = undefined;
+    if (appliedDiscount > 0) {
+      const coupon = await stripe.coupons.create({
+        percent_off: appliedDiscount,
+        duration: "once",
+        name: `${appliedPromo.code} (${appliedDiscount}% off)`,
+      });
+      discountsArg = [{ coupon: coupon.id }];
+    }
     // check if user is logged in
     let userId = null;
     const authHeader = req.headers.authorization;
@@ -63,8 +88,8 @@ router.post("/create-checkout", async (req, res) => {
       mode: "payment",
       payment_method_types: ["card"],
       customer_creation: "always",
-      automatic_tax: { enabled: true }, // 👈 Stripe Tax - auto calculates HST/GST based on customer address
-      billing_address_collection: "required", // needed so Stripe knows where to tax
+      automatic_tax: { enabled: true },
+      billing_address_collection: "required",
       line_items: [
         {
           price_data: {
@@ -77,6 +102,7 @@ router.post("/create-checkout", async (req, res) => {
           quantity: 1,
         },
       ],
+      discounts: discountsArg,
       success_url: isBooth 
         ? `${process.env.FRONTEND_URL}/exhibit?success=true`
         : `${process.env.FRONTEND_URL}/tickets?success=true`,
@@ -86,9 +112,16 @@ router.post("/create-checkout", async (req, res) => {
       metadata: {
         tier: normalizedTier,
         userId: userId || "guest",
-        type: type
+        type: type,
+        promoCode: appliedPromo ? appliedPromo.code : "",
+        discount: String(appliedDiscount),
       }
     });
+
+    if (appliedPromo) {
+      await Promo.updateOne({ _id: appliedPromo._id }, { $inc: { timesUsed: 1 } });
+    }
+
     res.json({ url: session.url });
   } catch (err) {
     console.error("CHECKOUT ERROR:", err);
