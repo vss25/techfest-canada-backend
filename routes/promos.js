@@ -1,17 +1,33 @@
 import express from "express";
 import Promo from "../models/Promo.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin } from "../middleware/auth.js";
 
 const router = express.Router();
 
+const ALLOWED_TIERS = ["connect", "influence", "power"];
+
+/* ============ PUBLIC: validate code ============ */
 router.post("/promos/validate", async (req, res) => {
   try {
     const code = String(req.body.code || "").trim().toUpperCase();
+    const tier = String(req.body.tier || "").trim().toLowerCase();
     if (!code) return res.status(400).json({ valid: false, error: "Code required" });
 
     const promo = await Promo.findOne({ code });
-    if (!promo) return res.status(404).json({ valid: false, error: "Invalid code" });
-    if (!promo.active) return res.status(400).json({ valid: false, error: "This code is no longer active" });
+
+    // Generic error for everything — keeps codes private
+    const genericInvalid = { valid: false, error: "Invalid code" };
+
+    if (!promo) return res.status(404).json(genericInvalid);
+    if (!promo.active) return res.status(400).json(genericInvalid);
+
+    // Tier scoping: empty tiers array = valid for all passes
+    if (Array.isArray(promo.tiers) && promo.tiers.length > 0) {
+      if (!tier || !promo.tiers.includes(tier)) {
+        // Cart's tier isn't in the allowed list — pretend code doesn't exist
+        return res.status(404).json(genericInvalid);
+      }
+    }
 
     return res.json({ valid: true, code: promo.code, discount: promo.discount });
   } catch (err) {
@@ -20,6 +36,7 @@ router.post("/promos/validate", async (req, res) => {
   }
 });
 
+/* ============ ADMIN: list ============ */
 router.get("/admin/promos", requireAdmin, async (_req, res) => {
   try {
     const promos = await Promo.find().sort({ createdAt: -1 });
@@ -29,6 +46,7 @@ router.get("/admin/promos", requireAdmin, async (_req, res) => {
   }
 });
 
+/* ============ ADMIN: create ============ */
 router.post("/admin/promos", requireAdmin, async (req, res) => {
   try {
     const code = String(req.body.code || "").trim().toUpperCase().replace(/\s+/g, "");
@@ -36,10 +54,18 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
     if (!code) return res.status(400).json({ error: "Code required" });
     if (!discount || discount < 1 || discount > 100) return res.status(400).json({ error: "Discount must be 1-100" });
 
+    // Sanitize tiers — only accept known tier strings
+    let tiers = Array.isArray(req.body.tiers) ? req.body.tiers : [];
+    tiers = tiers
+      .map(t => String(t).trim().toLowerCase())
+      .filter(t => ALLOWED_TIERS.includes(t));
+    // Dedupe
+    tiers = [...new Set(tiers)];
+
     const existing = await Promo.findOne({ code });
     if (existing) return res.status(409).json({ error: "Code already exists" });
 
-    const promo = await Promo.create({ code, discount, active: true });
+    const promo = await Promo.create({ code, discount, tiers, active: true });
     res.json(promo);
   } catch (err) {
     console.error("Promo create error:", err);
@@ -47,11 +73,18 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
   }
 });
 
+/* ============ ADMIN: update ============ */
 router.put("/admin/promos/:id", requireAdmin, async (req, res) => {
   try {
     const update = {};
     if (typeof req.body.active === "boolean") update.active = req.body.active;
     if (typeof req.body.discount === "number") update.discount = req.body.discount;
+    if (Array.isArray(req.body.tiers)) {
+      let tiers = req.body.tiers
+        .map(t => String(t).trim().toLowerCase())
+        .filter(t => ALLOWED_TIERS.includes(t));
+      update.tiers = [...new Set(tiers)];
+    }
     const promo = await Promo.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!promo) return res.status(404).json({ error: "Not found" });
     res.json(promo);
@@ -60,6 +93,7 @@ router.put("/admin/promos/:id", requireAdmin, async (req, res) => {
   }
 });
 
+/* ============ ADMIN: delete ============ */
 router.delete("/admin/promos/:id", requireAdmin, async (req, res) => {
   try {
     const promo = await Promo.findByIdAndDelete(req.params.id);
