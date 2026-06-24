@@ -6,7 +6,9 @@ const router = express.Router();
 
 const ALLOWED_TIERS = ["connect", "influence", "power"];
 
-/* ============ PUBLIC: validate code ============ */
+/* ============ PUBLIC: validate code ============
+   Mounted at /api in server.js → full URL: POST /api/promos/validate
+============================================================ */
 router.post("/promos/validate", async (req, res) => {
   try {
     const code = String(req.body.code || "").trim().toUpperCase();
@@ -24,7 +26,6 @@ router.post("/promos/validate", async (req, res) => {
     // Tier scoping: empty tiers array = valid for all passes
     if (Array.isArray(promo.tiers) && promo.tiers.length > 0) {
       if (!tier || !promo.tiers.includes(tier)) {
-        // Cart's tier isn't in the allowed list — pretend code doesn't exist
         return res.status(404).json(genericInvalid);
       }
     }
@@ -36,7 +37,9 @@ router.post("/promos/validate", async (req, res) => {
   }
 });
 
-/* ============ ADMIN: list ============ */
+/* ============ ADMIN: list ============
+   Full URL: GET /api/admin/promos
+============================================================ */
 router.get("/admin/promos", requireAdmin, async (_req, res) => {
   try {
     const promos = await Promo.find().sort({ createdAt: -1 });
@@ -54,12 +57,10 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
     if (!code) return res.status(400).json({ error: "Code required" });
     if (!discount || discount < 1 || discount > 100) return res.status(400).json({ error: "Discount must be 1-100" });
 
-    // Sanitize tiers — only accept known tier strings
     let tiers = Array.isArray(req.body.tiers) ? req.body.tiers : [];
     tiers = tiers
       .map(t => String(t).trim().toLowerCase())
       .filter(t => ALLOWED_TIERS.includes(t));
-    // Dedupe
     tiers = [...new Set(tiers)];
 
     const existing = await Promo.findOne({ code });
