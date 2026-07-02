@@ -1,10 +1,13 @@
 import express from "express";
 import Nomination from "../models/Nomination.js";
-import { requireAdmin } from "../middleware/auth.js";
-import nodemailer from "nodemailer";
- 
+import { requireAdmin } from "../middleware/adminAuth.js";
+import { Resend } from "resend";
+
 const router = express.Router();
- 
+
+// Resend client — uses your existing RESEND_API_KEY env var
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 /* ═══════════════════════════════════════════════════════
    HELPER — Format nomination for admin email
    ═══════════════════════════════════════════════════════ */
@@ -14,11 +17,11 @@ function formatNominationEmail(n) {
     rising: "Rising Innovator Award",
     crossborder: "Cross-Border Impact Award",
   };
- 
+
   const category = n.categoryType === "matrix"
     ? `The Catalyst Award for ${n.pillar} in ${n.sector}`
     : specialAwardLabels[n.specialAward] || "Special Recognition";
- 
+
   return `
 <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 640px; margin: 0 auto; padding: 32px 24px; color: #0d0520;">
   <div style="background: linear-gradient(135deg, #7a3fd1, #f5a623); padding: 24px; border-radius: 16px 16px 0 0;">
@@ -28,7 +31,7 @@ function formatNominationEmail(n) {
   <div style="background: #f7f5fc; padding: 24px; border-radius: 0 0 16px 16px; border: 1px solid #e8e2f5;">
     <h2 style="margin: 0 0 6px; font-size: 18px; color: #7a3fd1;">${category}</h2>
     <p style="margin: 0 0 24px; color: #666; font-size: 14px;">Submitted ${new Date(n.submittedAt || n.createdAt).toLocaleString("en-CA", { dateStyle: "full", timeStyle: "short" })}</p>
- 
+
     <div style="background: #fff; padding: 18px; border-radius: 10px; margin-bottom: 16px;">
       <p style="margin: 0 0 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #999; font-weight: 700;">Nominee</p>
       <h3 style="margin: 0 0 12px; font-size: 16px;">${n.nomineeName}</h3>
@@ -44,7 +47,7 @@ function formatNominationEmail(n) {
         ${n.nomineeLinkedIn ? `<tr><td style="padding: 3px 0; color: #888;">LinkedIn</td><td><a href="${n.nomineeLinkedIn}" style="color: #7a3fd1;">${n.nomineeLinkedIn}</a></td></tr>` : ""}
       </table>
     </div>
- 
+
     <div style="background: #fff; padding: 18px; border-radius: 10px; margin-bottom: 16px;">
       <p style="margin: 0 0 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #999; font-weight: 700;">Nominator ${n.selfNomination ? "(Self-nomination)" : ""}</p>
       <h3 style="margin: 0 0 12px; font-size: 16px;">${n.nominatorName}</h3>
@@ -56,25 +59,25 @@ function formatNominationEmail(n) {
         ${n.nominatorPhone ? `<tr><td style="padding: 3px 0; color: #888;">Phone</td><td>${n.nominatorPhone}</td></tr>` : ""}
       </table>
     </div>
- 
+
     <div style="background: #fff; padding: 18px; border-radius: 10px;">
       <p style="margin: 0 0 12px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #999; font-weight: 700;">Nomination Statement</p>
- 
+
       <p style="margin: 12px 0 6px; font-weight: 700; font-size: 13px; color: #7a3fd1;">Overview</p>
       <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #333;">${(n.statementOverview || "").replace(/\n/g, "<br>")}</p>
- 
+
       <p style="margin: 20px 0 6px; font-weight: 700; font-size: 13px; color: #7a3fd1;">Innovation &amp; Impact</p>
       <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #333;">${(n.statementImpact || "").replace(/\n/g, "<br>")}</p>
- 
+
       <p style="margin: 20px 0 6px; font-weight: 700; font-size: 13px; color: #7a3fd1;">Key Achievements</p>
       <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #333;">${(n.statementAchievements || "").replace(/\n/g, "<br>")}</p>
- 
+
       ${n.statementEvidence ? `
       <p style="margin: 20px 0 6px; font-weight: 700; font-size: 13px; color: #7a3fd1;">Supporting Evidence</p>
       <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #333;">${(n.statementEvidence || "").replace(/\n/g, "<br>")}</p>
       ` : ""}
     </div>
- 
+
     <p style="margin: 24px 0 0; padding-top: 20px; border-top: 1px solid #e0d8f0; text-align: center; font-size: 12px; color: #999;">
       Signed by <strong>${n.signatureName}</strong> · Nomination ID: <code style="background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 11px;">${n._id}</code>
     </p>
@@ -85,7 +88,7 @@ function formatNominationEmail(n) {
 </div>
   `.trim();
 }
- 
+
 /* ═══════════════════════════════════════════════════════
    PUBLIC — Submit a nomination
    POST /api/nominations
@@ -93,9 +96,8 @@ function formatNominationEmail(n) {
 router.post("/nominations", async (req, res) => {
   try {
     const payload = req.body || {};
- 
-    // Basic validation — Mongoose schema will catch missing required fields too,
-    // but a friendly early return is nicer
+
+    // Basic validation
     if (!payload.categoryType) return res.status(400).json({ error: "Please choose an award category" });
     if (payload.categoryType === "matrix" && (!payload.pillar || !payload.sector)) {
       return res.status(400).json({ error: "Both a pillar and sector are required" });
@@ -106,23 +108,15 @@ router.post("/nominations", async (req, res) => {
     if (!payload.nomineeName || !payload.nomineeEmail || !payload.nominatorName || !payload.nominatorEmail) {
       return res.status(400).json({ error: "Nominee and nominator names + emails are required" });
     }
- 
+
     // Create the nomination
     const nomination = await Nomination.create({
       ...payload,
       submittedAt: payload.submittedAt || new Date(),
     });
- 
-    // Fire admin notification email (non-blocking — don't fail submission if email fails)
+
+    // Fire admin notification email via Resend (non-blocking)
     try {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-        },
-      });
- 
       const specialAwardLabels = {
         lifetime: "Lifetime Achievement",
         rising: "Rising Innovator",
@@ -131,9 +125,9 @@ router.post("/nominations", async (req, res) => {
       const categoryShort = nomination.categoryType === "matrix"
         ? `${nomination.pillar} × ${nomination.sector}`
         : specialAwardLabels[nomination.specialAward] || "Special Recognition";
- 
-      await transporter.sendMail({
-        from: `"TTFC Catalyst Awards" <${process.env.EMAIL_USER}>`,
+
+      await resend.emails.send({
+        from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
         to: "baldeep@thetechfestival.com",
         replyTo: nomination.nominatorEmail,
         subject: `[Catalyst Nomination] ${nomination.nomineeName} — ${categoryShort}`,
@@ -142,7 +136,7 @@ router.post("/nominations", async (req, res) => {
     } catch (emailErr) {
       console.error("Nomination email failed (submission still saved):", emailErr);
     }
- 
+
     res.status(201).json({
       success: true,
       id: nomination._id,
@@ -150,14 +144,13 @@ router.post("/nominations", async (req, res) => {
     });
   } catch (err) {
     console.error("Nomination submit error:", err);
-    // Mongoose validation error
     if (err.name === "ValidationError") {
       return res.status(400).json({ error: "Please check your submission — some fields are missing or invalid." });
     }
     res.status(500).json({ error: "Server error. Please try again." });
   }
 });
- 
+
 /* ═══════════════════════════════════════════════════════
    ADMIN — List all nominations
    GET /api/admin/nominations?status=pending
@@ -175,7 +168,7 @@ router.get("/admin/nominations", requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Failed to load nominations" });
   }
 });
- 
+
 /* ═══════════════════════════════════════════════════════
    ADMIN — Get single nomination
    GET /api/admin/nominations/:id
@@ -190,7 +183,7 @@ router.get("/admin/nominations/:id", requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Failed to load nomination" });
   }
 });
- 
+
 /* ═══════════════════════════════════════════════════════
    ADMIN — Update status / notes
    PUT /api/admin/nominations/:id
@@ -204,7 +197,7 @@ router.put("/admin/nominations/:id", requireAdmin, async (req, res) => {
     if (typeof req.body.adminNotes === "string") {
       update.adminNotes = req.body.adminNotes;
     }
- 
+
     const nomination = await Nomination.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!nomination) return res.status(404).json({ error: "Not found" });
     res.json(nomination);
@@ -213,7 +206,7 @@ router.put("/admin/nominations/:id", requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Update failed" });
   }
 });
- 
+
 /* ═══════════════════════════════════════════════════════
    ADMIN — Delete
    DELETE /api/admin/nominations/:id
@@ -228,5 +221,5 @@ router.delete("/admin/nominations/:id", requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Delete failed" });
   }
 });
- 
+
 export default router;
