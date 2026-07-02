@@ -22,7 +22,7 @@ import nominationsRouter from "./routes/nominations.js"; // 👈 NEW
 
 const app = express();
 
-/* ==========================================
+/* ======== ==================================
    CORS CONFIG (DEV + PROD)
 ========================================== */
 const allowedOrigins = [
