@@ -1,11 +1,9 @@
 // server.js
 import dotenv from "dotenv";
 dotenv.config();
-
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
-
 import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
 import webhookRoutes from "./routes/webhook.js";
@@ -20,13 +18,13 @@ import campaignRoutes from "./routes/campaigns.js";
 import trackingRoutes from "./routes/tracking.js";
 import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
+import nominationsRouter from "./routes/nominations.js"; // 👈 NEW
 
 const app = express();
 
 /* ==========================================
    CORS CONFIG (DEV + PROD)
 ========================================== */
-
 const allowedOrigins = [
    "https://www.thetechfestival.com",
   "https://thetechfestival.com",
@@ -38,24 +36,20 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
     return callback(new Error("CORS not allowed"), false);
-
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
+
 /* ==========================================
    STRIPE WEBHOOK (RAW BODY REQUIRED)
    IMPORTANT: Must preserve exact raw body for Stripe signature
 ========================================== */
-
 app.use(
   "/api/webhook",
   express.raw({ type: "application/json" }),
@@ -65,13 +59,11 @@ app.use(
 /* ==========================================
    JSON PARSER
 ========================================== */
-
 app.use(express.json());
 
 /* ==========================================
    ROUTES
 ========================================== */
-
 app.use("/api/auth", authRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/checkin", checkinRoutes);
@@ -85,11 +77,11 @@ app.use("/api/campaigns", campaignRoutes);
 app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
 app.use("/api", promosRouter);
+app.use("/api", nominationsRouter); // 👈 NEW
 
 /* ==========================================
    HEALTH CHECK
 ========================================== */
-
 app.get("/", (req, res) => {
   res.send("🚀 TechFest API running");
 });
@@ -97,7 +89,6 @@ app.get("/", (req, res) => {
 /* ==========================================
    DATABASE
 ========================================== */
-
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
@@ -106,9 +97,7 @@ mongoose
 /* ==========================================
    SERVER START
 ========================================== */
-
 const PORT = process.env.PORT || 5000;
-
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
