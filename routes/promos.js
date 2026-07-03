@@ -1,6 +1,6 @@
 import express from "express";
 import Promo from "../models/Promo.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requireAdmin } from "../middleware/adminAuth.js";
 
 const router = express.Router();
 
@@ -13,6 +13,7 @@ router.post("/promos/validate", async (req, res) => {
   try {
     const code = String(req.body.code || "").trim().toUpperCase();
     const tier = String(req.body.tier || "").trim().toLowerCase();
+
     if (!code) return res.status(400).json({ valid: false, error: "Code required" });
 
     const promo = await Promo.findOne({ code });
@@ -54,6 +55,7 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
   try {
     const code = String(req.body.code || "").trim().toUpperCase().replace(/\s+/g, "");
     const discount = Number(req.body.discount);
+
     if (!code) return res.status(400).json({ error: "Code required" });
     if (!discount || discount < 1 || discount > 100) return res.status(400).json({ error: "Discount must be 1-100" });
 
@@ -80,12 +82,14 @@ router.put("/admin/promos/:id", requireAdmin, async (req, res) => {
     const update = {};
     if (typeof req.body.active === "boolean") update.active = req.body.active;
     if (typeof req.body.discount === "number") update.discount = req.body.discount;
+
     if (Array.isArray(req.body.tiers)) {
       let tiers = req.body.tiers
         .map(t => String(t).trim().toLowerCase())
         .filter(t => ALLOWED_TIERS.includes(t));
       update.tiers = [...new Set(tiers)];
     }
+
     const promo = await Promo.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!promo) return res.status(404).json({ error: "Not found" });
     res.json(promo);
