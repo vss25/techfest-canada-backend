@@ -192,7 +192,7 @@ router.post("/nominations", async (req, res) => {
     // Send admin notification
     await resend.emails.send({
       from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
-      to: "baldeep@thetechfestival.com",
+      to: ["baldeep@thetechfestival.com", "nicole@thetechfestival.com"],
       replyTo: n.nominatorEmail,
       subject: `[Catalyst Nomination] ${n.nomineeName} — ${categoryShort}`,
       html: buildAdminEmail(n),
