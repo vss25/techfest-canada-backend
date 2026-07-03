@@ -18,11 +18,12 @@ import campaignRoutes from "./routes/campaigns.js";
 import trackingRoutes from "./routes/tracking.js";
 import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
-import nominationsRouter from "./routes/nominations.js"; // 👈 NEW
+import nominationsRouter from "./routes/nominations.js";
+import pavilionRouter from "./routes/pavilion.js"; // 👈 NEW
 
 const app = express();
 
-/* ======== ==================================
+/* ==========================================
    CORS CONFIG (DEV + PROD)
 ========================================== */
 const allowedOrigins = [
@@ -77,7 +78,8 @@ app.use("/api/campaigns", campaignRoutes);
 app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
 app.use("/api", promosRouter);
-app.use("/api", nominationsRouter); // 👈 NEW
+app.use("/api", nominationsRouter);
+app.use("/api", pavilionRouter); // 👈 NEW
 
 /* ==========================================
    HEALTH CHECK
