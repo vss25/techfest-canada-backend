@@ -126,6 +126,10 @@ function buildAdminEmail(n) {
       ${n.delegate1 ? `<p style="margin: 4px 0; font-size: 13px; color: #444;">1. ${safe(n.delegate1)}</p>` : ""}
       ${n.delegate2 ? `<p style="margin: 4px 0; font-size: 13px; color: #444;">2. ${safe(n.delegate2)}</p>` : ""}
       ` : ""}
+            ${n.referralCode ? `
+      <p style="margin: 18px 0 8px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #999; font-weight: 700;">Referral Code</p>
+      <p style="margin: 4px 0; font-size: 13px; color: #444; font-family: monospace; background: #f0eef7; padding: 6px 10px; border-radius: 6px; display: inline-block;">${safe(n.referralCode)}</p>
+      ` : ""}
     </div>
 
     <p style="margin: 24px 0 0; padding-top: 20px; border-top: 1px solid #e0d8f0; text-align: center; font-size: 12px; color: #999;">
@@ -168,6 +172,7 @@ function buildConfirmationEmail(n) {
       <p style="margin: 0; font-size: 13px; color: #666;">
         Domain: <strong style="color: #0d0520;">${safe(n.techDomain)}</strong><br>
         Sector: <strong style="color: #0d0520;">${safe(n.sector)}</strong>
+        ${n.referralCode ? `<br>Referral Code: <strong style="color: #0d0520; font-family: monospace;">${safe(n.referralCode)}</strong>` : ""}
       </p>
     </div>
 
