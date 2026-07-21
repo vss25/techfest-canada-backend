@@ -30,30 +30,70 @@ async function getUserFromReq(req) {
 // Frontend calls: POST /api/payments/create-checkout
 router.post("/create-checkout", async (req, res) => {
   try {
-    const { tier, promoCode } = req.body;
+    const { type, tier, promoCode, metadata } = req.body;
 
+    // ═══════════════════════════════════════════════════════
+    // BRANCH 1: INDIA PAVILION DEPOSIT ($500 CAD, flat)
+    // ═══════════════════════════════════════════════════════
+    if (type === "pavilion-deposit") {
+      const stripe = getStripe();
+
+      const companyName = metadata?.companyName || "Pavilion Applicant";
+      const contactEmail = metadata?.contactEmail;
+      const applicationRef = metadata?.applicationRef || "N/A";
+
+      if (!contactEmail) {
+        return res.status(400).json({ error: "Contact email is required" });
+      }
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        customer_email: contactEmail,
+        line_items: [{
+          price_data: {
+            currency: "cad",
+            product_data: {
+              name: "India Startup Pavilion — Application Deposit",
+              description: `TTFC 2026 · ${companyName} · Ref: ${applicationRef}`,
+            },
+            unit_amount: 50000, // $500.00 CAD in cents
+          },
+          quantity: 1,
+        }],
+        success_url: `${process.env.FRONTEND_URL}/exhibit/india-pavilion/pay?success=true`,
+        cancel_url: `${process.env.FRONTEND_URL}/exhibit/india-pavilion/pay?canceled=true`,
+        metadata: {
+          type: "pavilion-deposit",
+          companyName,
+          contactEmail,
+          applicationRef,
+        },
+      });
+
+      return res.json({ url: session.url });
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // BRANCH 2: TICKET TIER PURCHASE (existing flow)
+    // ═══════════════════════════════════════════════════════
     if (!tier) return res.status(400).json({ error: "Tier required" });
 
     const inventoryItem = await TicketInventory.findOne({ tier });
     if (!inventoryItem) return res.status(404).json({ error: "Tier not found" });
 
     const basePriceCAD = inventoryItem.price;
-
     const stripe = getStripe();
 
     // ===== PROMO CODE HANDLING (with tier check) =====
     let appliedDiscount = 0;
     let appliedPromo = null;
-
     if (promoCode) {
       const code = String(promoCode).trim().toUpperCase();
       const promo = await Promo.findOne({ code, active: true });
-
       if (promo) {
         // Per-tier scoping: empty tiers array = valid for all passes
         const tiersOk = !Array.isArray(promo.tiers) || promo.tiers.length === 0
           || promo.tiers.includes(String(tier).toLowerCase());
-
         if (tiersOk) {
           appliedDiscount = promo.discount;
           appliedPromo = promo;
