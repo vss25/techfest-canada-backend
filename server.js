@@ -19,7 +19,8 @@ import trackingRoutes from "./routes/tracking.js";
 import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
 import nominationsRouter from "./routes/nominations.js";
-import pavilionRouter from "./routes/pavilion.js"; // 👈 NEW
+import pavilionRouter from "./routes/pavilion.js";
+import linkedinRouter from "./routes/linkedin.js"; // 👈 NEW
 
 const app = express();
 
@@ -79,7 +80,8 @@ app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
-app.use("/api", pavilionRouter); // 👈 NEW
+app.use("/api", pavilionRouter);
+app.use("/api", linkedinRouter); // 👈 NEW
 
 /* ==========================================
    HEALTH CHECK
