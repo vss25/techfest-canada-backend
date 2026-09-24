@@ -20,7 +20,8 @@ import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
 import nominationsRouter from "./routes/nominations.js";
 import pavilionRouter from "./routes/pavilion.js";
-import linkedinRouter from "./routes/linkedin.js"; // 👈 NEW
+import linkedinRouter from "./routes/linkedin.js";
+import mediaRouter from "./routes/media.js"; // 👈 NEW — press & media accreditation
 
 const app = express();
 
@@ -78,10 +79,11 @@ app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
+app.use("/api/media", mediaRouter); // 👈 NEW → POST /api/media/apply
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);
-app.use("/api", linkedinRouter); // 👈 NEW
+app.use("/api", linkedinRouter);
 
 /* ==========================================
    HEALTH CHECK
