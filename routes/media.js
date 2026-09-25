@@ -1,6 +1,6 @@
 import express from "express";
 import mongoose from "mongoose";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 const router = express.Router();
 
@@ -8,17 +8,33 @@ const router = express.Router();
    📰 MEDIA ACCREDITATION
 
    Mounted in server.js as:
-       app.use("/api/media", mediaRoutes);
+       app.use("/api/media", mediaRouter);
    → POST /api/media/apply
+
+   Uses Resend, the same mailer as routes/pavilion.js — no new
+   dependency. (An earlier version imported nodemailer, which
+   isn't in package.json, and that crashed the Render deploy.)
 
    Deliberately SELF-CONTAINED: the mongoose schema lives in
    this file rather than models/, so there is no cross-file
    import that has to be deployed in a particular order.
-   (That ordering is what crashed the server when promos.js
-   shipped a minute before Promo.js.)
 ========================================================= */
 
 const RECIPIENT = process.env.MEDIA_INBOX || "sales@thetechfestival.com";
+const FROM = "TTFC 2026 Media <noreply@thetechfestival.com>";
+
+/* Instantiated lazily so a missing RESEND_API_KEY can never throw
+   while Express is still wiring up routes. */
+let resendClient = null;
+function getResend() {
+  if (resendClient) return resendClient;
+  if (!process.env.RESEND_API_KEY) {
+    console.warn("📰 Media form: RESEND_API_KEY missing — submissions will be saved but not emailed.");
+    return null;
+  }
+  resendClient = new Resend(process.env.RESEND_API_KEY);
+  return resendClient;
+}
 
 /* ---------------- model ---------------- */
 const mediaSchema = new mongoose.Schema(
@@ -38,45 +54,6 @@ const mediaSchema = new mongoose.Schema(
 // Guard against "Cannot overwrite model" when the module is re-evaluated
 const MediaApplication =
   mongoose.models.MediaApplication || mongoose.model("MediaApplication", mediaSchema);
-
-/* ---------------- mail transport ----------------
-   Reuses whatever SMTP credentials are already in the Render
-   environment. Checks the common variable names so this works
-   without renaming anything.
-------------------------------------------------- */
-let transporter = null;
-let transportChecked = false;
-
-function getTransport() {
-  if (transportChecked) return transporter;
-  transportChecked = true;
-
-  const user = process.env.SMTP_USER || process.env.EMAIL_USER || process.env.GMAIL_USER;
-  const pass =
-    process.env.SMTP_PASS ||
-    process.env.EMAIL_PASS ||
-    process.env.EMAIL_PASSWORD ||
-    process.env.GMAIL_PASS ||
-    process.env.GMAIL_APP_PASSWORD;
-
-  if (!user || !pass) {
-    console.warn("📰 Media form: no SMTP credentials found — submissions will be saved but not emailed.");
-    return null;
-  }
-
-  if (process.env.SMTP_HOST) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: String(process.env.SMTP_SECURE || "false") === "true",
-      auth: { user, pass },
-    });
-  } else {
-    transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
-  }
-
-  return transporter;
-}
 
 /* ---------------- helpers ---------------- */
 const esc = (s) =>
@@ -112,7 +89,10 @@ function rateLimited(ip) {
   return false;
 }
 
-function buildEmail(doc) {
+const torontoTime = (d) =>
+  new Date(d).toLocaleString("en-CA", { timeZone: "America/Toronto" });
+
+function buildAdminEmail(doc) {
   const areas = [
     ...doc.coverage.filter((c) => c !== "Other"),
     ...(doc.coverageOther ? [`Other: ${doc.coverageOther}`] : []),
@@ -120,31 +100,17 @@ function buildEmail(doc) {
 
   const url = normalizeUrl(doc.website);
 
-  const text = [
-    "New media accreditation request — TTFC 2026",
-    "",
-    `Full Name:     ${doc.fullName}`,
-    `Email:         ${doc.email}`,
-    `Organization:  ${doc.organization}`,
-    `Website/Media: ${doc.website}`,
-    "",
-    "Coverage areas:",
-    ...areas.map((a) => `  • ${a}`),
-    "",
-    `Submitted: ${new Date(doc.createdAt).toLocaleString("en-CA", { timeZone: "America/Toronto" })} (Toronto)`,
-  ].join("\n");
-
   const row = (label, value) => `
     <tr>
       <td style="padding:9px 14px 9px 0;font:600 12px/1.4 Arial,sans-serif;color:#6b6480;white-space:nowrap;vertical-align:top;text-transform:uppercase;letter-spacing:.6px">${esc(label)}</td>
       <td style="padding:9px 0;font:400 15px/1.5 Arial,sans-serif;color:#0d0520">${value}</td>
     </tr>`;
 
-  const html = `
+  return `
   <div style="background:#f5f3fa;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
     <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 2px 14px rgba(13,5,32,.08)">
       <div style="background:linear-gradient(135deg,#7a3fd1,#f5a623);padding:22px 26px">
-        <div style="font:800 11px/1 Arial,sans-serif;letter-spacing:2.4px;text-transform:uppercase;color:rgba(255,255,255,.85)">TTFC 2026 · Press &amp; Media</div>
+        <div style="font:800 11px/1 Arial,sans-serif;letter-spacing:2.4px;text-transform:uppercase;color:rgba(255,255,255,.85)">TTFC 2026 &middot; Press &amp; Media</div>
         <div style="font:800 21px/1.25 Arial,sans-serif;color:#ffffff;margin-top:7px">New Media Accreditation Request</div>
       </div>
       <div style="padding:24px 26px">
@@ -166,35 +132,23 @@ function buildEmail(doc) {
         </div>
 
         <div style="margin-top:22px;font:400 12px/1.5 Arial,sans-serif;color:#8a839c">
-          Submitted ${esc(new Date(doc.createdAt).toLocaleString("en-CA", { timeZone: "America/Toronto" }))} (Toronto) · Reply directly to this email to reach the applicant.
+          Submitted ${esc(torontoTime(doc.createdAt))} (Toronto) &middot; Reply directly to this email to reach the applicant.
         </div>
       </div>
     </div>
   </div>`;
-
-  return { text, html };
 }
 
-function buildAck(doc) {
-  const text = [
-    `Hi ${doc.fullName.split(" ")[0]},`,
-    "",
-    "Thanks for requesting media accreditation for The Tech Festival Canada 2026 (26–27 October, Westin Harbour Castle, Toronto).",
-    "",
-    "Our press team reviews requests on a rolling basis and will be in touch at this address.",
-    "",
-    "— The Tech Festival Canada",
-    "sales@thetechfestival.com",
-  ].join("\n");
-
-  const html = `
+function buildAckEmail(doc) {
+  const first = esc(String(doc.fullName).split(" ")[0]);
+  return `
   <div style="background:#f5f3fa;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
     <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden">
       <div style="background:linear-gradient(135deg,#7a3fd1,#f5a623);padding:20px 26px;font:800 18px/1.3 Arial,sans-serif;color:#fff">
         Request received
       </div>
       <div style="padding:24px 26px;font:400 15px/1.65 Arial,sans-serif;color:#0d0520">
-        <p style="margin:0 0 14px">Hi ${esc(doc.fullName.split(" ")[0])},</p>
+        <p style="margin:0 0 14px">Hi ${first},</p>
         <p style="margin:0 0 14px">Thanks for requesting media accreditation for <strong>The Tech Festival Canada 2026</strong> &mdash; 26&ndash;27 October, Westin Harbour Castle, Toronto.</p>
         <p style="margin:0 0 14px">Our press team reviews requests on a rolling basis and will be in touch at this address.</p>
         <p style="margin:22px 0 0;font-size:13px;color:#6b6480">
@@ -204,8 +158,6 @@ function buildAck(doc) {
       </div>
     </div>
   </div>`;
-
-  return { text, html };
 }
 
 /* =========================================================
@@ -213,14 +165,19 @@ function buildAck(doc) {
 ========================================================= */
 router.post("/apply", async (req, res) => {
   try {
-    const ip = (req.headers["x-forwarded-for"] || req.ip || "unknown").toString().split(",")[0].trim();
+    const ip = (req.headers["x-forwarded-for"] || req.ip || "unknown")
+      .toString()
+      .split(",")[0]
+      .trim();
 
     // Honeypot: only bots fill the off-screen input. Return 200 so
     // they don't learn they were caught.
     if (req.body?._hp) return res.json({ success: true });
 
     if (rateLimited(ip)) {
-      return res.status(429).json({ error: "Too many submissions. Please email sales@thetechfestival.com." });
+      return res
+        .status(429)
+        .json({ error: "Too many submissions. Please email sales@thetechfestival.com." });
     }
 
     const fullName = String(req.body.fullName || "").trim();
@@ -251,48 +208,46 @@ router.post("/apply", async (req, res) => {
       website,
     });
 
-    const tx = getTransport();
-    if (tx) {
-      const from = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER;
-      const { text, html } = buildEmail(doc);
+    const resend = getResend();
 
+    if (resend) {
+      // Notification to the press team
       try {
-        await tx.sendMail({
-          from: `"TTFC 2026 Media" <${from}>`,
-          to: RECIPIENT,
-          replyTo: `"${fullName}" <${email}>`,
+        await resend.emails.send({
+          from: FROM,
+          to: [RECIPIENT],
+          replyTo: [email],
           subject: `Media Accreditation — ${fullName}, ${organization}`,
-          text,
-          html,
+          html: buildAdminEmail(doc),
         });
 
         doc.emailed = true;
         await doc.save();
       } catch (mailErr) {
-        // Saved in Mongo, so this is recoverable — don't fail the user
-        console.error("📰 Media form: notification email failed:", mailErr.message);
+        // Already saved in Mongo, so this is recoverable — don't fail the user
+        console.error("📰 Media form: notification email failed:", mailErr?.message || mailErr);
       }
 
       // Confirmation to the applicant (best effort)
       try {
-        const ack = buildAck(doc);
-        await tx.sendMail({
-          from: `"The Tech Festival Canada" <${from}>`,
-          to: email,
-          replyTo: RECIPIENT,
+        await resend.emails.send({
+          from: FROM,
+          to: [email],
+          replyTo: [RECIPIENT],
           subject: "We received your media accreditation request — TTFC 2026",
-          text: ack.text,
-          html: ack.html,
+          html: buildAckEmail(doc),
         });
       } catch (ackErr) {
-        console.error("📰 Media form: applicant confirmation failed:", ackErr.message);
+        console.error("📰 Media form: applicant confirmation failed:", ackErr?.message || ackErr);
       }
     }
 
     return res.json({ success: true });
   } catch (err) {
     console.error("Media apply error:", err);
-    return res.status(500).json({ error: "Could not submit right now. Please email sales@thetechfestival.com." });
+    return res
+      .status(500)
+      .json({ error: "Could not submit right now. Please email sales@thetechfestival.com." });
   }
 });
 
