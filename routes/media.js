@@ -23,13 +23,16 @@ const router = express.Router();
 /* Who gets the notification. Both addresses are on the same send, so
    one email lands in both inboxes and replies stay on one thread.
    MEDIA_INBOX in env overrides this list — comma-separate for several. */
-const RECIPIENTS = (process.env.MEDIA_INBOX || "sales@thetechfestival.com,nicole@thetechfestival.com")
+const RECIPIENTS = (
+  process.env.MEDIA_INBOX ||
+  "sales@thetechfestival.com,nicole@thetechfestival.com,marcom@thetechfestival.com"
+)
   .split(",")
   .map((a) => a.trim())
   .filter(Boolean);
 
 // Address the applicant's confirmation email replies to
-const REPLY_TO = RECIPIENTS[0];
+const REPLY_TO = "marcom@thetechfestival.com";
 const FROM = "TTFC 2026 Media <noreply@thetechfestival.com>";
 
 /* Instantiated lazily so a missing RESEND_API_KEY can never throw
@@ -162,7 +165,7 @@ function buildAckEmail(doc) {
         <p style="margin:0 0 14px">Our press team reviews requests on a rolling basis and will be in touch at this address.</p>
         <p style="margin:22px 0 0;font-size:13px;color:#6b6480">
           The Tech Festival Canada<br />
-          <a href="mailto:sales@thetechfestival.com" style="color:#7a3fd1;text-decoration:none">sales@thetechfestival.com</a>
+          <a href="mailto:marcom@thetechfestival.com" style="color:#7a3fd1;text-decoration:none">marcom@thetechfestival.com</a>
         </p>
       </div>
     </div>
@@ -186,7 +189,7 @@ router.post("/apply", async (req, res) => {
     if (rateLimited(ip)) {
       return res
         .status(429)
-        .json({ error: "Too many submissions. Please email sales@thetechfestival.com." });
+        .json({ error: "Too many submissions. Please email marcom@thetechfestival.com." });
     }
 
     const fullName = String(req.body.fullName || "").trim();
@@ -256,7 +259,7 @@ router.post("/apply", async (req, res) => {
     console.error("Media apply error:", err);
     return res
       .status(500)
-      .json({ error: "Could not submit right now. Please email sales@thetechfestival.com." });
+      .json({ error: "Could not submit right now. Please email marcom@thetechfestival.com." });
   }
 });
 
