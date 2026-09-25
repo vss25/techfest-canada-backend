@@ -20,7 +20,16 @@ const router = express.Router();
    import that has to be deployed in a particular order.
 ========================================================= */
 
-const RECIPIENT = process.env.MEDIA_INBOX || "sales@thetechfestival.com";
+/* Who gets the notification. Both addresses are on the same send, so
+   one email lands in both inboxes and replies stay on one thread.
+   MEDIA_INBOX in env overrides this list — comma-separate for several. */
+const RECIPIENTS = (process.env.MEDIA_INBOX || "sales@thetechfestival.com,nicole@thetechfestival.com")
+  .split(",")
+  .map((a) => a.trim())
+  .filter(Boolean);
+
+// Address the applicant's confirmation email replies to
+const REPLY_TO = RECIPIENTS[0];
 const FROM = "TTFC 2026 Media <noreply@thetechfestival.com>";
 
 /* Instantiated lazily so a missing RESEND_API_KEY can never throw
@@ -215,7 +224,7 @@ router.post("/apply", async (req, res) => {
       try {
         await resend.emails.send({
           from: FROM,
-          to: [RECIPIENT],
+          to: RECIPIENTS,
           replyTo: [email],
           subject: `Media Accreditation — ${fullName}, ${organization}`,
           html: buildAdminEmail(doc),
@@ -233,7 +242,7 @@ router.post("/apply", async (req, res) => {
         await resend.emails.send({
           from: FROM,
           to: [email],
-          replyTo: [RECIPIENT],
+          replyTo: [REPLY_TO],
           subject: "We received your media accreditation request — TTFC 2026",
           html: buildAckEmail(doc),
         });
