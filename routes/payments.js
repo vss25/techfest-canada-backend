@@ -266,6 +266,21 @@ router.post("/create-checkout", async (req, res) => {
     const attendee = cleanMetadata(metadata);
     const buyerEmail = metadata?.email || metadata?.contactEmail || undefined;
 
+    // ===== META PIXEL: expected charged total for the success_url =====
+    // Stripe applies the coupon first, then HST on the discounted subtotal —
+    // mirroring that order here gives the exact charged total in "manual"
+    // tax mode (the default). The frontend's trackMetaPurchase() reads ?tier=,
+    // ?value= and ?session_id= from the return URL and prefers them over the
+    // browser-saved estimate, so no frontend change is needed.
+    const discountedCents = Math.round(basePriceCAD * 100 * (1 - appliedDiscount / 100));
+    const totalCents =
+      TAX_MODE === "manual"
+        ? discountedCents + Math.round((discountedCents * HST_PERCENT) / 100)
+        : discountedCents; // "automatic"/"none": tax unknown or zero at this point
+    const totalCAD = (totalCents / 100).toFixed(2);
+    const successParams =
+      `success=true&tier=${encodeURIComponent(tier)}&value=${totalCAD}&session_id={CHECKOUT_SESSION_ID}`;
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       ...(buyerEmail ? { customer_email: buyerEmail } : {}),
@@ -286,8 +301,8 @@ router.post("/create-checkout", async (req, res) => {
       discounts: discountsArg,
       ...sessionExtras,
       success_url: isBooth
-        ? `${process.env.FRONTEND_URL}/exhibit?success=true`
-        : `${process.env.FRONTEND_URL}/tickets?success=true`,
+        ? `${process.env.FRONTEND_URL}/exhibit?${successParams}`
+        : `${process.env.FRONTEND_URL}/tickets?${successParams}`,
       cancel_url: isBooth
         ? `${process.env.FRONTEND_URL}/exhibit`
         : `${process.env.FRONTEND_URL}/tickets`,
