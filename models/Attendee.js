@@ -30,6 +30,11 @@ const attendeeSchema = new mongoose.Schema(
     },
     checkedInAt: {
       type: Date
+    },
+    // Set when this guest ticket is linked to an app/website account.
+    claimedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
     }
   },
   {

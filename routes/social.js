@@ -1,6 +1,8 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import Attendee from "../models/Attendee.js";
+import { buildDirectory } from "../services/ticketAccess.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
   SessionRegistration, SessionQuestion, SessionVote,
@@ -70,6 +72,21 @@ router.get("/users", async (req, res) => {
   }
   const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets").limit(60).lean();
   res.json(users.map(userCard));
+});
+
+/* Every ticket holder (app users + guest purchases), one entry per person,
+   their most recent ticket as the pass. Guests not on the app yet can be
+   seen but not messaged. Never returns email. */
+router.get("/attendees", async (req, res) => {
+  const q = String(req.query.q || "").trim().toLowerCase();
+  const [users, guests] = await Promise.all([
+    User.find({ "tickets.0": { $exists: true } })
+      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden").lean(),
+    Attendee.find({ claimedBy: { $exists: false } }).select("name email ticketId ticketType purchaseDate").lean(),
+  ]);
+  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
+  if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
+  res.json(people);
 });
 
 router.get("/users/:id", async (req, res) => {

@@ -42,6 +42,8 @@ router.post("/scan", requireAdmin, async (req, res) => {
       ticket.checkedIn = true;
       ticket.checkedInAt = new Date();
       await user.save();
+      // Keep the admin attendee list in step when a guest ticket was linked to this account.
+      await Attendee.updateOne({ ticketId }, { $set: { checkedIn: true, checkedInAt: ticket.checkedInAt } });
 
       res.json({
         status: "success",
