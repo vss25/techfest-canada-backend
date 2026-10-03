@@ -26,6 +26,8 @@ import profileRouter from "./routes/profile.js";   // attendee profile (website 
 import moderateRouter from "./routes/moderate.js"; // DeepCleer text-moderation proxy (iOS app)
 import intelRouter from "./routes/intel.js";       // Gemini company-intel cards (iOS app home screen)
 import socialRouter from "./routes/social.js";     // feed / connections / messages / sessions (iOS app)
+import communityRouter from "./routes/community.js"; // discussions + groups (iOS app)
+import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS app)
 
 const app = express();
 
@@ -50,7 +52,7 @@ app.use(cors({
     return callback(new Error("CORS not allowed"), false);
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 }));
 
 /* ==========================================
@@ -88,6 +90,8 @@ app.use("/api/profile", profileRouter);   // GET/PATCH /api/profile
 app.use("/api/moderate", moderateRouter); // POST /api/moderate
 app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
+app.use("/api/community", communityRouter); // see routes/community.js
+app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);
