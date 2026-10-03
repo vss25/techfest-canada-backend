@@ -42,6 +42,7 @@ export const CONTENT_KEYS = {
   "ticket.help": "Bought with a different email? Enter the last name and ticket ID from that ticket email.",
   "support.email": "info@thetechfestival.com",
   "privacy.notice": "We record how you use the app (screens, taps, searches and interests) to run the event, match you with people and improve TTFC. Staff can review messages to keep the community safe.",
+  "community.rules": "Be respectful. There is zero tolerance for harassment, hate, sexual or violent content, spam or scams. Anything that breaks these rules is removed and the account can be suspended. Report or block anyone from the … menu.",
   "flag.show_partners": true,
   "flag.show_news": true,
   "flag.allow_posts": true,
