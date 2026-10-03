@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>TTFC Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* TTFC admin console — logo palette on deep ink; sidebar + workspace. */
+:root{
+  --bg:#0d0a1c; --panel:#17122b; --panel2:#211a3d; --line:#2f2652; --ink:#f3eefc; --muted:#a99fc4; --dim:#7d739b;
+  --pink:#ff4fa8; --purple:#a77bff; --orange:#ff9a3c; --good:#4fd389; --bad:#ff6b6b; --warn:#ffc04f;
+  --f-display:"Orbitron","Arial Black",system-ui,sans-serif; --f-body:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--f-body)}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--purple)}
+.login{min-height:100%;display:grid;place-items:center;padding:24px;
+  background:radial-gradient(60% 50% at 90% 0%,rgba(255,79,168,.35),transparent),radial-gradient(60% 60% at 0% 40%,rgba(167,123,255,.3),transparent),var(--bg)}
+.login form{width:min(380px,100%);background:var(--panel);border:1px solid var(--line);border-radius:24px;padding:28px;display:grid;gap:14px}
+.brand{font:800 20px var(--f-display);letter-spacing:.04em}
+.brand small{display:block;font:600 12px var(--f-body);color:var(--muted);letter-spacing:0;margin-top:4px}
+label{display:grid;gap:6px;font-weight:600;font-size:13px;color:var(--muted)}
+input,select,textarea{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--purple)}
+textarea{resize:vertical;min-height:70px}
+.btn{border:0;border-radius:999px;padding:9px 16px;font-weight:700;cursor:pointer;background:var(--panel2);border:1px solid var(--line)}
+.btn.primary{background:linear-gradient(90deg,#8b52e0,#f2559f);border:0;color:#fff}
+.btn.danger{background:rgba(255,107,107,.15);border-color:rgba(255,107,107,.5);color:var(--bad)}
+.btn.small{padding:5px 11px;font-size:12.5px}
+.btn:focus-visible,a:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+.err{color:var(--bad);font-size:13px;min-height:18px}
+
+.app{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:100%}
+nav.side{background:var(--panel);border-right:1px solid var(--line);padding:18px 12px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh}
+nav.side .brand{padding:4px 10px 16px}
+nav.side button{all:unset;cursor:pointer;padding:9px 12px;border-radius:12px;font-weight:600;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+nav.side button[aria-current="page"]{background:var(--panel2);color:var(--ink)}
+nav.side button:hover{color:var(--ink)}
+.badge{font:600 11px var(--f-body);background:var(--pink);color:#fff;border-radius:999px;padding:1px 7px}
+nav.side .me{margin-top:auto;font-size:12.5px;color:var(--dim);padding:10px}
+main{padding:24px clamp(16px,3vw,36px);min-width:0}
+h1{font:800 24px var(--f-display);margin:0 0 4px;letter-spacing:.02em}
+.sub{color:var(--muted);margin:0 0 20px}
+h2{font:700 16px var(--f-body);margin:22px 0 10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px 16px;min-width:0}
+.stat b{display:block;font:800 26px var(--f-display);font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:12.5px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.bars{display:grid;gap:6px}
+.bar{display:grid;grid-template-columns:minmax(0,1fr) 48px;gap:8px;align-items:center;font-size:13px}
+.bar i{display:block;height:6px;border-radius:9px;background:linear-gradient(90deg,#8b52e0,#f2559f);margin-top:3px}
+.bar em{font-style:normal;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.toolbar input{min-width:240px;flex:1}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:16px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;color:var(--dim);font-weight:600;font-size:12px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr.click{cursor:pointer}
+tr.click:hover td{background:rgba(167,123,255,.07)}
+.pill{display:inline-block;font-size:11.5px;font-weight:700;border-radius:999px;padding:1px 8px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
+.pill.pink{color:var(--pink);border-color:rgba(255,79,168,.4)} .pill.good{color:var(--good);border-color:rgba(79,211,137,.4)}
+.pill.bad{color:var(--bad);border-color:rgba(255,107,107,.4)} .pill.warn{color:var(--warn);border-color:rgba(255,192,79,.4)}
+.mono{font-family:var(--f-mono);font-size:12px}
+.muted{color:var(--muted)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 14px}
+.tabs button{all:unset;cursor:pointer;padding:6px 12px;border-radius:999px;border:1px solid var(--line);font-weight:600;font-size:13px;color:var(--muted)}
+.tabs button[aria-pressed="true"]{background:linear-gradient(90deg,#8b52e0,#f2559f);border-color:transparent;color:#fff}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.timeline{display:grid;gap:2px;max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:14px}
+.ev{display:grid;grid-template-columns:120px 110px minmax(0,1fr);gap:10px;padding:7px 12px;font-size:13px;border-bottom:1px solid var(--line)}
+.ev:last-child{border:0}
+.chat{display:grid;gap:8px;max-height:520px;overflow:auto;padding:10px;border:1px solid var(--line);border-radius:14px}
+.msg{max-width:75%;padding:8px 12px;border-radius:16px;background:var(--panel2)}
+.msg.r{justify-self:end;background:rgba(139,82,224,.35)}
+.msg small{display:block;color:var(--dim);font-size:11px}
+.notice{border:1px solid rgba(255,192,79,.4);background:rgba(255,192,79,.08);border-radius:14px;padding:10px 14px;color:var(--warn);font-size:13px;margin-bottom:12px}
+.empty{color:var(--dim);padding:20px;text-align:center}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px 16px;font-weight:600;z-index:9}
+.back{all:unset;cursor:pointer;color:var(--purple);font-weight:600;margin-bottom:10px;display:inline-block}
+@media (max-width:820px){.app{grid-template-columns:1fr} nav.side{position:static;height:auto;flex-direction:row;flex-wrap:wrap} nav.side .me{display:none} .ev{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const API = "/api";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const when = (d) => d ? new Date(d).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
+let token = sessionStorage.getItem("ttfc_console_token") || "";
+let me = null;
+let view = location.hash.slice(1) || "overview";
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}), ...(opts.headers || {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (res.status === 401 || res.status === 403) { if (path !== "/auth/login") { logout(); throw new Error("Signed out"); } }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || ("Request failed (" + res.status + ")"));
+  return data;
+}
+function toast(t) { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2400); }
+function logout() { token = ""; sessionStorage.removeItem("ttfc_console_token"); renderLogin(); }
+
+/* ---------------- Login ---------------- */
+function renderLogin(msg = "") {
+  $("#root").innerHTML = `<div class="login"><form id="lf">
+    <div class="brand">TTFC Console<small>The Tech Festival Canada · staff only</small></div>
+    <label>Email<input id="em" type="email" autocomplete="username" required></label>
+    <label>Password<input id="pw" type="password" autocomplete="current-password" required></label>
+    <div class="err" id="er">${esc(msg)}</div>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p class="muted" style="margin:0;font-size:12px">Use your thetechfestival.com staff account. Every action here is logged.</p>
+  </form></div>`;
+  $("#lf").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/auth/login", { method: "POST", body: { email: $("#em").value.trim().toLowerCase(), password: $("#pw").value } });
+      token = r.token;
+      me = await api("/auth/me");
+      if (me.role !== "admin") { logout(); renderLogin("This account isn't staff. Ask an admin to give you access."); return; }
+      sessionStorage.setItem("ttfc_console_token", token);
+      renderApp();
+    } catch (err) { $("#er").textContent = err.message === "Signed out" ? "Wrong email or password." : err.message; }
+  };
+}
+
+/* ---------------- Shell ---------------- */
+const VIEWS = [
+  ["overview", "Overview"], ["people", "People"], ["activity", "Live activity"], ["moderation", "Moderation"],
+  ["content", "App text & switches"], ["broadcast", "Broadcast"], ["audit", "Audit log"],
+];
+function renderApp() {
+  $("#root").innerHTML = `<div class="app">
+    <nav class="side" aria-label="Sections">
+      <div class="brand">TTFC Console<small>Admin</small></div>
+      ${VIEWS.map(([k, l]) => `<button data-v="${k}" ${view === k ? 'aria-current="page"' : ""}>${l}${k === "moderation" ? '<span class="badge" id="repBadge" hidden></span>' : ""}</button>`).join("")}
+      <div class="me">${esc(me?.name)}<br><a href="#" id="lo">Sign out</a></div>
+    </nav>
+    <main id="main"></main></div>`;
+  document.querySelectorAll("nav.side button").forEach((b) => b.onclick = () => go(b.dataset.v));
+  $("#lo").onclick = (e) => { e.preventDefault(); logout(); };
+  go(view);
+}
+function go(v, arg) {
+  view = v; location.hash = v;
+  document.querySelectorAll("nav.side button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.v === v));
+  const m = $("#main"); m.innerHTML = '<p class="muted">Loading…</p>';
+  ({ overview, people, activity, moderation, content, broadcast, audit, person })[v](m, arg).catch((e) => m.innerHTML = `<p class="err">${esc(e.message)}</p>`);
+}
+const bars = (rows) => rows.length ? `<div class="bars">${rows.map((r) => { const max = rows[0].count || 1; return `<div class="bar"><div>${esc(r.key)}<i style="width:${Math.max(4, r.count / max * 100)}%"></i></div><em>${r.count}</em></div>`; }).join("")}</div>` : '<div class="empty">No data yet</div>';
+
+/* ---------------- Overview ---------------- */
+async function overview(m) {
+  const s = await api("/console/stats");
+  const b = $("#repBadge"); if (b) { b.hidden = !s.openReports; b.textContent = s.openReports; }
+  const tiles = [["Accounts", s.users], ["Ticket holders on the app", s.ticketHolders], ["Guest tickets not on the app", s.guests],
+    ["Active today", s.activeToday], ["Active this week", s.activeWeek], ["Actions today", s.eventsToday],
+    ["Posts", s.posts], ["Direct messages", s.messages], ["Groups", s.groups], ["Discussions", s.discussions], ["Open reports", s.openReports]];
+  m.innerHTML = `<h1>Overview</h1><p class="sub">Everything happening in the TTFC app.</p>
+    <div class="grid">${tiles.map(([l, v]) => `<div class="card stat"><b>${v}</b><span>${l}</span></div>`).join("")}</div>
+    <div class="two" style="margin-top:12px">
+      <div class="card"><h2 style="margin-top:0">Most-viewed screens (7 days)</h2>${bars(s.topScreens)}</div>
+      <div class="card"><h2 style="margin-top:0">Most-pressed buttons (7 days)</h2>${bars(s.topTaps)}</div>
+    </div>`;
+}
+
+/* ---------------- People ---------------- */
+async function people(m) {
+  m.innerHTML = `<h1>People</h1><p class="sub">Every account. Open someone to see and change everything about them.</p>
+    <div class="toolbar"><input id="q" type="search" placeholder="Search name, email, company or ticket ID" aria-label="Search people">
+      <select id="role" aria-label="Filter"><option value="">Everyone</option><option value="admin">Staff</option><option value="banned">Suspended</option></select></div>
+    <div id="list"></div>`;
+  let page = 0;
+  const load = async () => {
+    const q = $("#q").value.trim(); const r = $("#role").value;
+    const params = new URLSearchParams({ page });
+    if (q) params.set("q", q); if (r === "admin") params.set("role", "admin"); if (r === "banned") params.set("banned", "true");
+    const d = await api("/console/users?" + params);
+    $("#list").innerHTML = `<p class="muted">${d.total} people</p><div class="tablewrap"><table><thead><tr><th>Name</th><th>Email</th><th>Company</th><th>Interests</th><th>Tickets</th><th>Last active</th></tr></thead><tbody>
+      ${d.users.map((u) => `<tr class="click" data-id="${u.id}" tabindex="0"><td><b>${esc(u.name)}</b> ${u.role === "admin" ? '<span class="pill pink">Staff</span>' : ""} ${u.banned ? '<span class="pill bad">Suspended</span>' : ""}</td>
+        <td class="mono">${esc(u.email)}</td><td>${esc([u.jobTitle, u.organization].filter(Boolean).join(" · "))}</td>
+        <td>${u.topics.slice(0, 3).map((t) => `<span class="pill">${esc(t)}</span>`).join(" ")}</td><td>${u.tickets}</td><td>${when(u.lastActiveAt)}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">No one matches.</td></tr>'}
+      </tbody></table></div>
+      <div class="row" style="margin-top:10px">${page > 0 ? '<button class="btn small" id="prev">Previous</button>' : ""}${(page + 1) * 50 < d.total ? '<button class="btn small" id="next">Next</button>' : ""}</div>`;
+    document.querySelectorAll("tr.click").forEach((tr) => { tr.onclick = () => go("person", tr.dataset.id); tr.onkeydown = (e) => e.key === "Enter" && tr.onclick(); });
+    $("#prev") && ($("#prev").onclick = () => { page--; load(); });
+    $("#next") && ($("#next").onclick = () => { page++; load(); });
+  };
+  let t; $("#q").oninput = () => { clearTimeout(t); t = setTimeout(() => { page = 0; load(); }, 300); };
+  $("#role").onchange = () => { page = 0; load(); };
+  await load();
+}
+
+async function person(m, id) {
+  const d = await api("/console/users/" + id);
+  const u = d.user;
+  let tab = "profile";
+  const draw = () => {
+    m.innerHTML = `<button class="back" id="bk">← People</button>
+      <h1>${esc(u.name)}</h1><p class="sub">${esc(u.email)} · ${esc([u.jobTitle, u.organization].filter(Boolean).join(" · ") || "No title yet")} · joined ${when(u.createdAt)} · last active ${when(u.lastActiveAt)}</p>
+      <div class="tabs" role="group">${[["profile", "Profile"], ["activity", `Activity (${d.activity.total})`], ["interests", "Interests"], ["messages", `Messages (${d.messageCount})`], ["content", "Posts & comments"], ["network", `Connections (${d.connections.length})`], ["tickets", `Tickets (${(u.tickets || []).length})`]]
+        .map(([k, l]) => `<button data-t="${k}" aria-pressed="${tab === k}">${l}</button>`).join("")}</div><div id="pane"></div>`;
+    $("#bk").onclick = () => go("people");
+    document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => { tab = b.dataset.t; draw(); });
+    ({ profile: paneProfile, activity: paneActivity, interests: paneInterests, messages: paneMessages, content: paneContent, network: paneNetwork, tickets: paneTickets })[tab]($("#pane"));
+  };
+  const paneProfile = (p) => {
+    const f = (k, l, type = "text") => `<label>${l}<input data-k="${k}" type="${type}" value="${esc(u[k] ?? "")}"></label>`;
+    p.innerHTML = `<div class="card"><div class="form">
+      ${f("name", "Name")}${f("email", "Email", "email")}${f("jobTitle", "Job title")}${f("organization", "Company")}${f("linkedinUrl", "LinkedIn")}${f("country", "Country")}${f("fieldOfWork", "Field of work")}
+      <label>Topics (comma separated)<input data-k="topics" value="${esc((u.topics || []).join(", "))}"></label>
+      <label>Role<select data-k="role"><option value="user" ${u.role !== "admin" ? "selected" : ""}>Attendee</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>Staff (admin)</option></select></label>
+      <label>Attendee list<select data-k="directoryHidden"><option value="false" ${!u.directoryHidden ? "selected" : ""}>Shown</option><option value="true" ${u.directoryHidden ? "selected" : ""}>Hidden</option></select></label>
+      <label>Account<select data-k="banned"><option value="false" ${!u.banned ? "selected" : ""}>Active</option><option value="true" ${u.banned ? "selected" : ""}>Suspended</option></select></label>
+      ${f("bannedReason", "Suspension reason")}
+      </div><div class="row" style="margin-top:14px"><button class="btn primary" id="save">Save changes</button><span class="muted" style="flex:1"></span><button class="btn danger" id="del">Delete account</button></div></div>`;
+    $("#save").onclick = async () => {
+      const body = {};
+      p.querySelectorAll("[data-k]").forEach((el) => { body[el.dataset.k] = el.dataset.k === "topics" ? el.value.split(",").map((s) => s.trim()).filter(Boolean) : el.value; });
+      const r = await api("/console/users/" + id, { method: "PATCH", body });
+      toast(r.changed.length ? "Saved: " + r.changed.join(", ") : "Nothing changed");
+      Object.assign(u, body);
+    };
+    $("#del").onclick = async () => {
+      if ($("#del").dataset.armed !== "1") { $("#del").dataset.armed = "1"; $("#del").textContent = "Tap again to delete for good"; return; }
+      await api("/console/users/" + id, { method: "DELETE" }); toast("Account deleted. Paid tickets stay valid."); go("people");
+    };
+  };
+  const paneActivity = (p) => {
+    p.innerHTML = d.events.length ? `<div class="timeline">${d.events.map((e) => `<div class="ev"><span class="muted">${when(e.at)}</span><span><span class="pill ${e.name === "tap" ? "pink" : e.name === "screen_view" ? "" : "warn"}">${esc(e.name.replace("_", " "))}</span></span>
+      <span>${esc(e.screen)}${e.target ? " › <b>" + esc(e.target) + "</b>" : ""} ${Object.keys(e.props || {}).length ? '<span class="mono muted">' + esc(JSON.stringify(e.props)) + "</span>" : ""}</span></div>`).join("")}</div>` : '<div class="empty">No activity recorded yet.</div>';
+  };
+  const paneInterests = (p) => {
+    p.innerHTML = `<div class="two">
+      <div class="card"><h2 style="margin-top:0">Chosen topics</h2>${(u.topics || []).map((t) => `<span class="pill pink">${esc(t)}</span>`).join(" ") || '<span class="muted">None</span>'}
+        <h2>Sessions saved</h2>${d.sessions.map((s) => `<span class="pill">${esc(s)}</span>`).join(" ") || '<span class="muted">None</span>'}
+        <h2>Groups</h2>${d.groups.map((g) => `<span class="pill">${esc(g)}</span>`).join(" ") || '<span class="muted">None</span>'}</div>
+      <div class="card"><h2 style="margin-top:0">What they look at</h2>${bars(d.activity.interests)}</div>
+      <div class="card"><h2 style="margin-top:0">Screens</h2>${bars(d.activity.screens)}</div>
+      <div class="card"><h2 style="margin-top:0">Buttons</h2>${bars(d.activity.taps)}</div>
+      <div class="card"><h2 style="margin-top:0">Searches</h2>${bars(d.activity.searches)}</div></div>`;
+  };
+  const paneMessages = async (p) => {
+    p.innerHTML = `<div class="notice">Private messages. Opening a conversation is recorded in the audit log with your name.</div><div id="th"><p class="muted">Loading…</p></div>`;
+    const threads = await api(`/console/users/${id}/threads`);
+    $("#th").innerHTML = threads.length ? `<div class="tablewrap"><table><thead><tr><th>With</th><th>Last message</th><th>Messages</th><th>When</th></tr></thead><tbody>
+      ${threads.map((t) => `<tr class="click" data-k="${t.threadKey}" tabindex="0"><td><b>${esc(t.otherName)}</b></td><td>${esc(t.last).slice(0, 90)}</td><td>${t.count}</td><td>${when(t.at)}</td></tr>`).join("")}</tbody></table></div><div id="conv" style="margin-top:12px"></div>`
+      : '<div class="empty">No direct messages.</div>';
+    document.querySelectorAll("#th tr.click").forEach((tr) => tr.onclick = async () => {
+      const msgs = await api("/console/threads/" + encodeURIComponent(tr.dataset.k));
+      $("#conv").innerHTML = `<div class="chat">${msgs.map((x) => `<div class="msg ${x.fromId === id ? "r" : ""}"><small>${esc(x.from)} · ${when(x.at)} ${x.status !== "approved" ? "· " + esc(x.status) : ""}</small>${esc(x.body)}</div>`).join("")}</div>`;
+    });
+  };
+  const paneContent = (p) => {
+    const row = (type, x, text) => `<tr><td><span class="pill">${type}</span></td><td>${esc(text)}</td><td><span class="pill ${x.status === "approved" ? "good" : "warn"}">${esc(x.status)}</span></td><td>${when(x.createdAt)}</td>
+      <td class="row"><button class="btn small" data-a="hidden" data-t="${type}" data-id="${x._id}">Hide</button><button class="btn small" data-a="approved" data-t="${type}" data-id="${x._id}">Show</button><button class="btn small danger" data-a="delete" data-t="${type}" data-id="${x._id}">Delete</button></td></tr>`;
+    const rows = [...d.posts.map((x) => row("post", x, x.body)), ...d.comments.map((x) => row("comment", x, x.body)), ...d.discussions.map((x) => row("discussion", x, x.title))];
+    p.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>Type</th><th>Text</th><th>Status</th><th>When</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>` : '<div class="empty">Nothing posted.</div>';
+    wireContentButtons(p, () => person(m, id));
+  };
+  const paneNetwork = (p) => {
+    p.innerHTML = d.connections.length ? `<div class="tablewrap"><table><thead><tr><th>With</th><th>Status</th><th>How</th><th>Since</th></tr></thead><tbody>
+      ${d.connections.map((c) => `<tr class="click" data-id="${c.withId}"><td>${esc(c.with)}</td><td><span class="pill">${esc(c.status)}</span></td><td>${c.kind === "inPerson" ? "Met in person" : "In the app"}</td><td>${when(c.createdAt)}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">No connections.</div>';
+    document.querySelectorAll("#pane tr.click").forEach((tr) => tr.onclick = () => go("person", tr.dataset.id));
+  };
+  const paneTickets = (p) => {
+    const t = u.tickets || [];
+    p.innerHTML = t.length ? `<div class="tablewrap"><table><thead><tr><th>Ticket ID</th><th>Pass</th><th>Bought</th><th>Checked in</th></tr></thead><tbody>
+      ${t.map((x) => `<tr><td class="mono">${esc(x.ticketId)}</td><td>${esc(x.type)}</td><td>${when(x.purchaseDate)}</td><td>${x.checkedIn ? '<span class="pill good">' + when(x.checkedInAt) + "</span>" : '<span class="pill">Not yet</span>'}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">No tickets on this account.</div>';
+  };
+  draw();
+}
+
+function wireContentButtons(scope, reload) {
+  scope.querySelectorAll("button[data-a]").forEach((b) => b.onclick = async () => {
+    const { a, t, id } = b.dataset;
+    if (a === "delete") {
+      if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Confirm"; return; }
+      await api(`/console/content/${t}/${id}`, { method: "DELETE" }); toast("Deleted");
+    } else { await api(`/console/content/${t}/${id}`, { method: "PATCH", body: { status: a } }); toast(a === "hidden" ? "Hidden from the app" : "Visible in the app"); }
+    reload();
+  });
+}
+
+/* ---------------- Live activity ---------------- */
+async function activity(m) {
+  m.innerHTML = `<h1>Live activity</h1><p class="sub">Every screen and button press, newest first. Refreshes every 10 seconds.</p>
+    <div class="toolbar"><select id="nm" aria-label="Kind"><option value="">All actions</option><option value="screen_view">Screen views</option><option value="tap">Taps</option><option value="search">Searches</option><option value="interest">Interests</option><option value="session_registered">Session registrations</option><option value="message_sent">Messages sent</option></select></div><div id="st"></div>`;
+  let timer;
+  const load = async () => {
+    if (view !== "activity") return clearInterval(timer);
+    const nm = $("#nm").value;
+    const ev = await api("/console/events" + (nm ? "?name=" + nm : ""));
+    $("#st").innerHTML = ev.length ? `<div class="timeline" style="max-height:none">${ev.map((e) => `<div class="ev"><span class="muted">${when(e.at)}</span><span>${e.userId ? `<a href="#" data-u="${e.userId}">${esc(e.userName)}</a>` : '<span class="muted">Signed out</span>'}</span>
+      <span><span class="pill">${esc(e.name.replace("_", " "))}</span> ${esc(e.screen)}${e.target ? " › <b>" + esc(e.target) + "</b>" : ""} ${Object.keys(e.props || {}).length ? '<span class="mono muted">' + esc(JSON.stringify(e.props)) + "</span>" : ""}</span></div>`).join("")}</div>` : '<div class="empty">No activity yet. It appears here as soon as people use the app.</div>';
+    document.querySelectorAll("a[data-u]").forEach((a) => a.onclick = (e) => { e.preventDefault(); go("person", a.dataset.u); });
+  };
+  $("#nm").onchange = load;
+  await load(); timer = setInterval(load, 10000);
+}
+
+/* ---------------- Moderation ---------------- */
+async function moderation(m) {
+  let tab = "reports";
+  const types = [["reports", "Reports"], ["post", "Posts"], ["comment", "Comments"], ["discussion", "Discussions"], ["reply", "Replies"], ["group", "Groups"], ["groupMessage", "Group messages"], ["question", "Q&A"]];
+  const draw = async () => {
+    m.innerHTML = `<h1>Moderation</h1><p class="sub">Approve, hide, edit or delete anything people post.</p>
+      <div class="tabs">${types.map(([k, l]) => `<button data-t="${k}" aria-pressed="${tab === k}">${l}</button>`).join("")}</div>
+      <div class="toolbar">${tab !== "reports" ? '<select id="sf" aria-label="Status"><option value="">Any status</option><option value="pending">Waiting for approval</option><option value="held">Held by the filter</option><option value="hidden">Hidden</option><option value="approved">Live</option></select>' : '<select id="sf" aria-label="Status"><option value="open">Open</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option></select>'}</div>
+      <div id="mod"></div>`;
+    document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => { tab = b.dataset.t; draw(); });
+    $("#sf").onchange = load; await load();
+  };
+  const load = async () => {
+    const sf = $("#sf").value;
+    if (tab === "reports") {
+      const rows = await api("/console/reports?status=" + (sf || "open"));
+      $("#mod").innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>Reported</th><th>Content</th><th>Reason</th><th>By</th><th>When</th><th></th></tr></thead><tbody>
+        ${rows.map((r) => `<tr><td><span class="pill warn">${esc(r.targetType)}</span></td><td>${esc(r.preview)}</td><td>${esc(r.reason)}</td><td>${esc(r.reporterName)}</td><td>${when(r.createdAt)}</td>
+          <td class="row">${r.targetType !== "user" && r.targetType !== "message" ? `<button class="btn small" data-a="hidden" data-t="${r.targetType}" data-id="${r.targetId}">Hide it</button>` : ""}
+          ${r.targetType === "user" ? `<button class="btn small" data-open="${r.targetId}">Open person</button>` : ""}
+          <button class="btn small" data-r="${r.id}" data-s="resolved">Resolve</button><button class="btn small" data-r="${r.id}" data-s="dismissed">Dismiss</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">No reports here.</div>';
+      document.querySelectorAll("button[data-r]").forEach((b) => b.onclick = async () => { await api("/console/reports/" + b.dataset.r, { method: "PATCH", body: { status: b.dataset.s } }); toast("Report updated"); load(); });
+      document.querySelectorAll("button[data-open]").forEach((b) => b.onclick = () => go("person", b.dataset.open));
+      wireContentButtons($("#mod"), load);
+      return;
+    }
+    const rows = await api(`/console/content/${tab}` + (sf ? "?status=" + sf : ""));
+    const text = (r) => r.title || r.name || r.body || "";
+    $("#mod").innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>By</th><th>Text</th><th>Status</th><th>When</th><th></th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td>${esc(r.authorName || r.ownerName || "")}</td><td><div contenteditable="true" data-edit="${r.id}" style="outline:none;min-width:200px">${esc(text(r))}</div></td><td><span class="pill ${r.status === "approved" ? "good" : "warn"}">${esc(r.status)}</span></td><td>${when(r.createdAt)}</td>
+        <td class="row"><button class="btn small" data-save="${r.id}">Save text</button><button class="btn small" data-a="approved" data-t="${tab}" data-id="${r.id}">Approve</button><button class="btn small" data-a="hidden" data-t="${tab}" data-id="${r.id}">Hide</button><button class="btn small danger" data-a="delete" data-t="${tab}" data-id="${r.id}">Delete</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">Nothing here.</div>';
+    document.querySelectorAll("button[data-save]").forEach((b) => b.onclick = async () => {
+      const el = document.querySelector(`[data-edit="${b.dataset.save}"]`);
+      await api(`/console/content/${tab}/${b.dataset.save}/text`, { method: "PATCH", body: { text: el.innerText.trim() } }); toast("Text updated in the app");
+    });
+    wireContentButtons($("#mod"), load);
+  };
+  await draw();
+}
+
+/* ---------------- App text & switches ---------------- */
+async function content(m) {
+  const rows = await api("/console/app-content");
+  m.innerHTML = `<h1>App text & switches</h1><p class="sub">Change words in the app and turn features on or off. Phones pick up changes within a minute of opening the app — no App Store update needed.</p>
+    <div class="tablewrap"><table><thead><tr><th style="width:26%">Where</th><th>Text</th><th style="width:180px">Last change</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td><b>${esc(r.key)}</b><br><span class="muted" style="font-size:12px">Default: ${esc(String(r.default)).slice(0, 80) || "(empty)"}</span></td>
+      <td>${typeof r.default === "boolean" ? `<select data-key="${r.key}"><option value="true" ${r.value ? "selected" : ""}>On</option><option value="false" ${!r.value ? "selected" : ""}>Off</option></select>` : `<textarea data-key="${r.key}" rows="2">${esc(r.value)}</textarea>`}</td>
+      <td class="muted">${r.updatedBy ? esc(r.updatedBy) + "<br>" + when(r.updatedAt) : "Default"}</td><td><button class="btn small primary" data-k="${r.key}">Save</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+  document.querySelectorAll("button[data-k]").forEach((b) => b.onclick = async () => {
+    const el = document.querySelector(`[data-key="${b.dataset.k}"]`);
+    await api("/console/app-content/" + encodeURIComponent(b.dataset.k), { method: "PUT", body: { value: el.value } });
+    toast("Saved — live in the app within a minute");
+  });
+}
+
+/* ---------------- Broadcast ---------------- */
+async function broadcast(m) {
+  m.innerHTML = `<h1>Broadcast</h1><p class="sub">Post an official update to everyone. It appears at the top of the Feed and phones show a notification the next time the app checks in.</p>
+    <div class="card" style="max-width:640px"><label>Message<textarea id="bb" rows="5" placeholder="Doors open at 8:00 AM. Registration is in the Harbour Ballroom Foyer."></textarea></label>
+      <label class="row" style="margin-top:10px"><input type="checkbox" id="bn" style="width:auto"> Also show it as the banner at the top of Home</label>
+      <div class="row" style="margin-top:14px"><button class="btn primary" id="send">Send to everyone</button></div></div>`;
+  $("#send").onclick = async () => {
+    const body = $("#bb").value.trim(); if (!body) return toast("Write a message first");
+    if ($("#send").dataset.armed !== "1") { $("#send").dataset.armed = "1"; $("#send").textContent = "Tap again to send to everyone"; return; }
+    await api("/console/broadcast", { method: "POST", body: { body, banner: $("#bn").checked } });
+    toast("Sent"); go("broadcast");
+  };
+}
+
+/* ---------------- Audit ---------------- */
+async function audit(m) {
+  const rows = await api("/console/audit");
+  m.innerHTML = `<h1>Audit log</h1><p class="sub">Every change made here and every time staff opened private messages.</p>
+    <div class="tablewrap"><table><thead><tr><th>When</th><th>Staff</th><th>Action</th><th>On</th><th>Detail</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${when(r.at)}</td><td>${esc(r.adminName)}</td><td><span class="pill ${r.action === "view_messages" ? "warn" : ""}">${esc(r.action.replace(/_/g, " "))}</span></td><td class="mono">${esc(r.targetType)} ${esc(r.targetId)}</td><td>${esc(r.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing yet.</td></tr>'}
+    </tbody></table></div>`;
+}
+
+/* ---------------- Boot ---------------- */
+(async () => {
+  if (!token) return renderLogin();
+  try { me = await api("/auth/me"); if (me.role !== "admin") return logout(); renderApp(); }
+  catch { renderLogin(); }
+})();
+window.onhashchange = () => { const v = location.hash.slice(1); if (me && v && v !== view && VIEWS.some(([k]) => k === v)) go(v); };
+</script>
+</body>
+</html>

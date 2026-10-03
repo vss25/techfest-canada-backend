@@ -27,8 +27,12 @@ import moderateRouter from "./routes/moderate.js"; // DeepCleer text-moderation 
 import intelRouter from "./routes/intel.js";       // Gemini company-intel cards (iOS app home screen)
 import socialRouter from "./routes/social.js";     // feed / connections / messages / sessions (iOS app)
 import communityRouter from "./routes/community.js"; // discussions + groups (iOS app)
-import walletRouter from "./routes/wallet.js";
-import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)       // Apple Wallet passes (iOS app)
+import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS app)
+import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)
+import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
+import consoleRouter from "./routes/console.js";       // admin console API
+import path from "path";
+import { fileURLToPath } from "url";
 
 const app = express();
 
@@ -94,6 +98,10 @@ app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
+app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
+app.use("/api/console", consoleRouter);     // admin console (staff only)
+// The admin console website: https://<backend>/console
+app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);

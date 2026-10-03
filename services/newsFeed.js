@@ -40,12 +40,24 @@ export function dateLabel(seendate, now = new Date()) {
 }
 
 /** Pure: GDELT ArtList JSON → up to 3 de-duplicated updates. */
-export function toUpdates(json, max = 3) {
+/** Words in a company name that a relevant headline must mention
+ *  ("IBM Consulting" → ibm; "JPMorgan Chase & Co." → jpmorgan). */
+export function nameKeys(company) {
+  const words = String(company || "").toLowerCase().replace(/[^a-z0-9& ]/g, " ").split(/\s+/).filter(Boolean);
+  const stop = new Set(["the", "of", "and", "&", "co", "inc", "group", "corporation", "technologies", "international", "canada"]);
+  const keys = words.filter((w) => !stop.has(w) && w.length >= 2);
+  return keys.length ? [keys[0]] : words.slice(0, 1);
+}
+
+export function toUpdates(json, max = 3, company = "") {
   const seen = new Set();
   const out = [];
+  const keys = company ? nameKeys(company) : [];
   for (const a of json?.articles || []) {
     const title = String(a.title || "").replace(/\s+/g, " ").trim();
     if (!title || title.length < 20) continue;
+    // Drop off-topic results (e.g. a philanthropy story under "Dell").
+    if (keys.length && !keys.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(title))) continue;
     const key = title.toLowerCase().slice(0, 60);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -81,5 +93,5 @@ async function fetchOnce(company, timespan) {
   });
   const body = String(res.data || "");
   if (!body.trim().startsWith("{")) throw new Error(`GDELT said: ${body.slice(0, 80)}`);   // rate-limit notice is plain text
-  return toUpdates(JSON.parse(body));
+  return toUpdates(JSON.parse(body), 3, company);
 }

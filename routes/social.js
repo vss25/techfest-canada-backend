@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { buildDirectory } from "../services/ticketAccess.js";
+import { Block } from "../models/Admin.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
   SessionRegistration, SessionQuestion, SessionVote,
@@ -31,7 +32,11 @@ async function requireUser(req, res, next) {
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
     const user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
     if (!user) return res.status(401).json({ error: "Unauthorized" });
+    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact info@thetechfestival.com." });
     req.user = user;
+    // Blocks work both ways: neither side sees the other's posts, comments or messages.
+    const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
+    req.blocked = new Set(rows.map((r) => String(String(r.userId) === String(user._id) ? r.blockedId : r.userId)));
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
@@ -71,7 +76,7 @@ router.get("/users", async (req, res) => {
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
   const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets").limit(60).lean();
-  res.json(users.map(userCard));
+  res.json(users.filter((u) => !req.blocked.has(String(u._id))).map(userCard));
 });
 
 /* Every ticket holder (app users + guest purchases), one entry per person,
@@ -86,7 +91,7 @@ router.get("/attendees", async (req, res) => {
   ]);
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
-  res.json(people);
+  res.json(people.filter((p) => !req.blocked.has(p.id)));
 });
 
 router.get("/users/:id", async (req, res) => {
@@ -103,7 +108,7 @@ router.get("/feed", async (req, res) => {
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
   const posts = await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-  res.json(posts.map((p) => postDTO(p, req.user._id)));
+  res.json(posts.filter((p) => !req.blocked.has(String(p.authorId))).map((p) => postDTO(p, req.user._id)));
 });
 
 router.post("/feed", async (req, res) => {
@@ -143,7 +148,7 @@ router.get("/feed/:id/comments", async (req, res) => {
     postId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }],
   }).sort({ createdAt: 1 }).lean();
-  res.json(comments.map((c) => ({
+  res.json(comments.filter((c) => !req.blocked.has(String(c.authorId))).map((c) => ({
     id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
     authorName: c.authorName, authorTier: c.authorTier || "", body: c.body,
     status: c.status, createdAt: c.createdAt,
@@ -254,7 +259,8 @@ router.get("/messages", async (req, res) => {
     { $sort: { "last.createdAt": -1 } },
     { $limit: 100 },
   ]);
-  const threads = await Promise.all(recent.map(async (t) => {
+  const visible = recent.filter((t) => !req.blocked.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
+  const threads = await Promise.all(visible.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
     const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets").lean();
     return {
@@ -267,6 +273,7 @@ router.get("/messages", async (req, res) => {
 });
 
 router.get("/messages/:userId", async (req, res) => {
+  if (req.blocked.has(String(req.params.userId))) return res.json([]);
   const key = threadKey(req.user._id, req.params.userId);
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { threadKey: key, $or: [{ status: "approved" }, { fromUserId: req.user._id }] };
@@ -284,6 +291,7 @@ router.post("/messages/:userId", async (req, res) => {
   if (!body) return res.status(400).json({ error: "body required" });
   const to = await User.findById(req.params.userId).select("_id");
   if (!to) return res.status(404).json({ error: "User not found" });
+  if (req.blocked.has(String(to._id))) return res.status(403).json({ error: "You can't message this person." });
   const status = await statusFor(body, req.user._id, "message");
   const m = await SocialMessage.create({
     threadKey: threadKey(req.user._id, to._id), fromUserId: req.user._id, toUserId: to._id, body, status,

@@ -37,3 +37,30 @@ test("GDELT query hints disambiguate short names", () => {
   assert.match(queryFor("BDC"), /Business Development Bank of Canada/);
   assert.match(queryFor("NVIDIA"), /"NVIDIA" sourcelang:english/);
 });
+
+import { markTyping, whoIsTyping, stopTyping, isScope } from "../services/typing.js";
+
+test("typing: shows others for 6 s, never the viewer", () => {
+  markTyping("group", "g1", "u1", "Alex", 1000);
+  markTyping("group", "g1", "u2", "Casey", 1000);
+  assert.deepEqual(whoIsTyping("group", "g1", "u1", 2000), ["Casey"]);
+  assert.deepEqual(whoIsTyping("group", "g1", "u1", 8000), []);
+  markTyping("discussion", "d1", "u2", "Casey", 1000);
+  stopTyping("discussion", "d1", "u2");
+  assert.deepEqual(whoIsTyping("discussion", "d1", "u1", 1500), []);
+  assert.ok(isScope("post") && !isScope("dm"));
+});
+
+import { nameKeys } from "../services/newsFeed.js";
+
+test("news: headlines must mention the company", () => {
+  assert.deepEqual(nameKeys("JPMorgan Chase & Co."), ["jpmorgan"]);
+  assert.deepEqual(nameKeys("IBM Consulting"), ["ibm"]);
+  const json = { articles: [
+    { title: "Newly massive higher ed gifts | Inside Philanthropy", url: "https://x", domain: "insidephilanthropy.com", seendate: "20261002T120000Z" },
+    { title: "Dell unveils new AI servers for Canadian banks", url: "https://y", domain: "reuters.com", seendate: "20261002T120000Z" },
+  ] };
+  const u = toUpdates(json, 3, "Dell Technologies");
+  assert.equal(u.length, 1);
+  assert.equal(u[0].url, "https://y");
+});
