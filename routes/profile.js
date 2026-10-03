@@ -13,7 +13,7 @@ import User from "../models/User.js";
 
 const router = express.Router();
 
-const EDITABLE = ["linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics"];
+const EDITABLE = ["linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden"];
 const MAX = { linkedinUrl: 300, fieldOfWork: 120, jobTitle: 120, organization: 160, country: 80 };
 
 /** Pure: pick + sanitise the editable fields from a body. Exported for tests. */
@@ -30,6 +30,7 @@ export function sanitizeProfilePatch(body = {}) {
         .slice(0, 20);
       continue;
     }
+    if (key === "directoryHidden") { if (typeof body.directoryHidden === "boolean") out.directoryHidden = body.directoryHidden; continue; }
     if (typeof body[key] !== "string") continue;
     let v = body[key].trim().slice(0, MAX[key]);
     if (key === "linkedinUrl" && v && !/^https?:\/\//i.test(v)) v = `https://${v.replace(/^\/+/, "")}`;

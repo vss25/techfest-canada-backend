@@ -60,6 +60,7 @@ const userSchema = new mongoose.Schema(
     organization: { type: String, default: "" },
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
+    directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
 
     tickets: [ticketSchema],
 

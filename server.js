@@ -27,7 +27,8 @@ import moderateRouter from "./routes/moderate.js"; // DeepCleer text-moderation 
 import intelRouter from "./routes/intel.js";       // Gemini company-intel cards (iOS app home screen)
 import socialRouter from "./routes/social.js";     // feed / connections / messages / sessions (iOS app)
 import communityRouter from "./routes/community.js"; // discussions + groups (iOS app)
-import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS app)
+import walletRouter from "./routes/wallet.js";
+import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)       // Apple Wallet passes (iOS app)
 
 const app = express();
 
@@ -74,6 +75,7 @@ app.use(express.json());
    ROUTES
 ========================================== */
 app.use("/api/auth", authRoutes);
+app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
 app.use("/api/payments", paymentRoutes);
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
