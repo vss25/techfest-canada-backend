@@ -121,12 +121,26 @@ router.post("/google", async (req, res) => {
   try {
 
     const { credential } = req.body;
+    if (!credential) return res.status(400).json({ error: "credential required" });
 
     const googleRes = await axios.get(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`
     );
 
-    const { email, name } = googleRes.data;
+    const { email, name, aud, email_verified } = googleRes.data;
+
+    // Accept tokens minted for any of our OAuth clients (web + iOS app).
+    // GOOGLE_CLIENT_IDS is a comma-separated list; when unset, behaviour is
+    // unchanged (any valid Google token is accepted — as before).
+    const allowed = (process.env.GOOGLE_CLIENT_IDS || "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    if (allowed.length && !allowed.includes(aud)) {
+      console.error("GOOGLE AUTH: token audience not allowed:", aud);
+      return res.status(401).json({ error: "Google token not issued for this app" });
+    }
+    if (email_verified === "false") {
+      return res.status(401).json({ error: "Google email not verified" });
+    }
 
     let user = await User.findOne({ email });
 

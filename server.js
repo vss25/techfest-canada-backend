@@ -22,6 +22,9 @@ import nominationsRouter from "./routes/nominations.js";
 import pavilionRouter from "./routes/pavilion.js";
 import linkedinRouter from "./routes/linkedin.js";
 import mediaRouter from "./routes/media.js"; // 👈 NEW — press & media accreditation
+import profileRouter from "./routes/profile.js";   // attendee profile (website survey + iOS app)
+import moderateRouter from "./routes/moderate.js"; // DeepCleer text-moderation proxy (iOS app)
+import intelRouter from "./routes/intel.js";       // Gemini company-intel cards (iOS app home screen)
 
 const app = express();
 
@@ -80,6 +83,9 @@ app.use("/api/campaigns", campaignRoutes);
 app.use("/api/track", trackingRoutes);
 app.use("/api/campaigns/automation", campaignAutomationRoutes);
 app.use("/api/media", mediaRouter); // 👈 NEW → POST /api/media/apply
+app.use("/api/profile", profileRouter);   // GET/PATCH /api/profile
+app.use("/api/moderate", moderateRouter); // POST /api/moderate
+app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);

@@ -53,6 +53,14 @@ const userSchema = new mongoose.Schema(
     googleId: String,
     linkedinId: String,
 
+    /* ================= ATTENDEE PROFILE (website survey + iOS app) ================= */
+    linkedinUrl:  { type: String, default: "" },
+    fieldOfWork:  { type: String, default: "" },
+    jobTitle:     { type: String, default: "" },
+    organization: { type: String, default: "" },
+    country:      { type: String, default: "" },
+    topics:       { type: [String], default: [] },
+
     tickets: [ticketSchema],
 
     /* ================= PASSWORD RESET ================= */

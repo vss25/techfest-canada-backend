@@ -1,11 +1,15 @@
 import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
+import { requireAdmin } from "../middleware/adminAuth.js";
 
 const router = express.Router();
 
 // ================= CHECK-IN =================
-router.post("/scan", async (req, res) => {
+// Staff only: the website's admin check-in page and the iOS app's scanner
+// both send an admin JWT. Previously this endpoint was open, so anyone who
+// knew a ticketId could mark it used.
+router.post("/scan", requireAdmin, async (req, res) => {
   try {
     const { ticketId } = req.body;
 
@@ -42,9 +46,10 @@ router.post("/scan", async (req, res) => {
       res.json({
         status: "success",
         name: user.name,
+        ticketId,
         ticketType: ticket.type,
       });
-      
+
       return;
     }
 
@@ -73,6 +78,7 @@ router.post("/scan", async (req, res) => {
     res.json({
       status: "success",
       name: attendee.name,
+      ticketId,
       ticketType: attendee.ticketType,
     });
   } catch (err) {

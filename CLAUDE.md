@@ -27,6 +27,18 @@ API_URL
 LINKEDIN_CLIENT_ID
 LINKEDIN_CLIENT_SECRET
 LINKEDIN_REDIRECT_URI
+
+# Optional — iOS app support
+GOOGLE_CLIENT_IDS       # comma-separated OAuth client IDs allowed at POST /api/auth/google (web + iOS). Unset = accept any Google token (legacy)
+APP_URL_SCHEME          # default "ttfc" — where /api/payments/app-return sends native-app buyers
+DEEPCLEER_ACCESS_KEY    # enables POST /api/moderate (text moderation proxy)
+DEEPCLEER_APP_ID        # default "default"
+DEEPCLEER_EVENT_ID      # default "text"
+DEEPCLEER_ENDPOINT      # default US-East /text/v4
+DEEPCLEER_HOLD_ON_REVIEW # default true — REVIEW results are held, not just REJECT
+GEMINI_API_KEY          # enables GET /api/intel (company-intel cards, refreshed daily)
+GEMINI_MODEL            # default gemini-2.5-flash
+INTEL_TTL_HOURS         # default 24
 ```
 
 ## Architecture
@@ -51,6 +63,9 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/subscriptions` | `routes/subscriptions.js` | Newsletter subscriptions |
 | `/api/agenda` | `routes/agenda.js` | Event agenda |
 | `/api/brochure` | `routes/brochure.js` | Event brochures |
+| `/api/profile` | `routes/profile.js` | GET/PATCH attendee profile (linkedinUrl, fieldOfWork, jobTitle, organization, country, topics) |
+| `/api/moderate` | `routes/moderate.js` | DeepCleer text-moderation proxy used by the iOS app |
+| `/api/intel` | `routes/intel.js` | Gemini-generated company cards (cached in `IntelCard`) for the app's home screen |
 
 ### Key Models (`models/`)
 
@@ -69,6 +84,12 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 - `wrapLinksWithTracking()` injects a 1×1 tracking pixel and rewrites `<a href>` links through `/api/track/click/:id`
 - `sendBatchCampaignEmails()` handles rate-limited batch delivery
 - Bounce events arrive via Resend webhook at `/api/track/bounce`
+
+### iOS app (github.com/gunantsingh-del/techfest-canada-ios)
+
+- Signs in with the same accounts (`/api/auth/login`, `/register`, `/google`), reads `/api/auth/me`, patches `/api/profile`.
+- Checkout: `POST /api/payments/create-checkout { tier, client: "ios" }` with a Bearer token. The buyer's `userId` goes into Stripe metadata so the webhook attaches the ticket to the account; success/cancel return via `/api/payments/app-return`, which opens `ttfc://checkout-complete`.
+- Ticket QR is `TECHFEST:<ticketId>` (same as the website wallet); `/api/checkin/scan` is admin-only.
 
 ### Stripe Integration
 
