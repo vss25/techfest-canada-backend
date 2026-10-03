@@ -136,6 +136,56 @@ function productNameFor(tier) {
   return `TTFC ${titleCase(t)} Pass`;
 }
 
+/* =========================================================
+   📱 NATIVE APP RETURN
+   =========================================================
+   The iOS app opens Stripe Checkout in an in-app browser. Stripe can only
+   redirect to http(s), so for `client: "ios"` we send the buyer to a tiny
+   page on this API that immediately opens the app's URL scheme
+   (ttfc://checkout-complete?...) and shows a "Return to the app" link as
+   a fallback. The app reopens, re-reads /auth/me and finds the new ticket.
+========================================================= */
+const APP_SCHEME = process.env.APP_URL_SCHEME || "ttfc";
+
+function apiBase(req) {
+  if (process.env.API_URL) return String(process.env.API_URL).replace(/\/$/, "");
+  return `${req.protocol}://${req.get("host")}`;
+}
+
+export function appReturnUrls(req, { tier }) {
+  const base = `${apiBase(req)}/api/payments/app-return`;
+  const q = (s) => `status=${s}&tier=${encodeURIComponent(tier)}`;
+  return {
+    success_url: `${base}?${q("success")}&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${base}?${q("cancel")}`,
+  };
+}
+
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+export function appReturnHtml({ status, tier, sessionId }) {
+  const ok = status === "success";
+  const deep = `${APP_SCHEME}://checkout-complete?status=${encodeURIComponent(ok ? "success" : "cancel")}&tier=${encodeURIComponent(tier || "")}${sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""}`;
+  const title = ok ? "Payment received" : "Checkout cancelled";
+  const body = ok
+    ? "Your pass is being issued. Head back to The Tech Festival app — it refreshes automatically."
+    : "No payment was taken. You can go back to the app and try again any time.";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} · TTFC 2026</title>
+<style>body{margin:0;background:#08040F;color:#fff;font-family:-apple-system,system-ui,Helvetica,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px}
+h1{font-size:22px;margin:0 0 10px}p{color:rgba(255,255,255,.75);line-height:1.5;max-width:420px;margin:0 auto 22px}
+a.btn{display:inline-block;background:#7A3FD1;color:#fff;text-decoration:none;padding:14px 22px;font-weight:700;letter-spacing:.5px}</style></head>
+<body><div><h1>${title}</h1><p>${body}</p><a class="btn" href="${escapeHtml(deep)}">Return to the app</a></div>
+<script>setTimeout(function(){window.location.href=${JSON.stringify(deep)};},250);</script></body></html>`;
+}
+
+router.get("/app-return", (req, res) => {
+  const { status = "success", tier = "", session_id: sessionId = "" } = req.query;
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(appReturnHtml({ status: String(status), tier: String(tier), sessionId: String(sessionId) }));
+});
+
 /** Stripe metadata values must be strings and are capped at 500 chars. */
 function cleanMetadata(obj) {
   const out = {};
@@ -153,7 +203,16 @@ function cleanMetadata(obj) {
 // Frontend calls: POST /api/payments/create-checkout
 router.post("/create-checkout", async (req, res) => {
   try {
-    const { type, tier, promoCode, metadata } = req.body;
+    const { type, tier, promoCode, metadata, client } = req.body;
+
+    // Logged-in buyer (website or app): attach the ticket to their account.
+    // The webhook only links a ticket to a User when metadata.userId is set,
+    // so without this every purchase became a guest Attendee record.
+    let buyer = null;
+    if (req.headers.authorization) {
+      try { buyer = await getUserFromReq(req); } catch { buyer = null; }
+    }
+    const isNativeApp = client === "ios" || client === "android";
 
     // ═══════════════════════════════════════════════════════
     // BRANCH 1: INDIA PAVILION DEPOSIT ($500 CAD + 13% HST)
@@ -264,7 +323,7 @@ router.post("/create-checkout", async (req, res) => {
 
     // Attendee details captured on the checkout form (may be absent for booths)
     const attendee = cleanMetadata(metadata);
-    const buyerEmail = metadata?.email || metadata?.contactEmail || undefined;
+    const buyerEmail = buyer?.email || metadata?.email || metadata?.contactEmail || undefined;
 
     // ===== META PIXEL: expected charged total for the success_url =====
     // Stripe applies the coupon first, then HST on the discounted subtotal —
@@ -300,14 +359,20 @@ router.post("/create-checkout", async (req, res) => {
       }],
       discounts: discountsArg,
       ...sessionExtras,
-      success_url: isBooth
-        ? `${process.env.FRONTEND_URL}/exhibit?${successParams}`
-        : `${process.env.FRONTEND_URL}/tickets?${successParams}`,
-      cancel_url: isBooth
-        ? `${process.env.FRONTEND_URL}/exhibit`
-        : `${process.env.FRONTEND_URL}/tickets`,
+      ...(isNativeApp
+        ? appReturnUrls(req, { tier })
+        : {
+            success_url: isBooth
+              ? `${process.env.FRONTEND_URL}/exhibit?${successParams}`
+              : `${process.env.FRONTEND_URL}/tickets?${successParams}`,
+            cancel_url: isBooth
+              ? `${process.env.FRONTEND_URL}/exhibit`
+              : `${process.env.FRONTEND_URL}/tickets`,
+          }),
       metadata: {
         ...attendee,
+        ...(buyer ? { userId: String(buyer._id) } : {}),
+        client: isNativeApp ? client : "web",
         type: isBooth ? "booth" : "ticket",
         tier,
         basePrice: String(basePriceCAD),
