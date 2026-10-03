@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import { trimBody, userCard } from "../services/socialHelpers.js";
+import { Block } from "../models/Admin.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 
 /* =========================================================
@@ -21,9 +22,12 @@ async function requireUser(req, res, next) {
     const h = req.headers.authorization;
     if (!h) return res.status(401).json({ error: "Unauthorized" });
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("name role");
+    const user = await User.findById(decoded.id).select("name role banned");
     if (!user) return res.status(401).json({ error: "Unauthorized" });
+    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact info@thetechfestival.com." });
     req.user = user;
+    const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
+    req.blocked = new Set(rows.map((r) => String(String(r.userId) === String(user._id) ? r.blockedId : r.userId)));
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
@@ -56,7 +60,7 @@ router.get("/discussions", async (req, res) => {
   const list = await Discussion.find({
     $or: [{ status: "approved" }, { authorId: req.user._id }],
   }).sort({ createdAt: -1 }).limit(100).lean();
-  res.json(list.map((d) => discussionDTO(d, me(req))));
+  res.json(list.filter((d) => !req.blocked.has(String(d.authorId))).map((d) => discussionDTO(d, me(req))));
 });
 
 router.post("/discussions", async (req, res) => {
@@ -77,7 +81,7 @@ router.get("/discussions/:id/replies", async (req, res) => {
     discussionId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id }],
   }).sort({ createdAt: 1 }).lean();
-  res.json(replies.map((r) => ({
+  res.json(replies.filter((r) => !req.blocked.has(String(r.authorId))).map((r) => ({
     id: String(r._id), discussionId: String(r.discussionId), parentId: r.parentId ? String(r.parentId) : null,
     authorId: String(r.authorId), authorName: r.authorName, body: r.body, status: r.status,
     mine: String(r.authorId) === me(req), createdAt: r.createdAt,
@@ -191,7 +195,7 @@ router.get("/groups/:id/messages", async (req, res) => {
   const filter = { groupId: g._id, $or: [{ status: "approved" }, { authorId: req.user._id }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
   const msgs = await GroupMessage.find(filter).sort({ createdAt: 1 }).limit(500).lean();
-  res.json(msgs.map((m) => ({
+  res.json(msgs.filter((m) => !req.blocked.has(String(m.authorId))).map((m) => ({
     id: String(m._id), groupId: String(m.groupId), authorId: String(m.authorId), authorName: m.authorName,
     body: m.body, status: m.status, mine: String(m.authorId) === me(req), createdAt: m.createdAt,
   })));
