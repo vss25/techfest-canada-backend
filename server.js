@@ -25,6 +25,7 @@ import mediaRouter from "./routes/media.js"; // 👈 NEW — press & media accre
 import profileRouter from "./routes/profile.js";   // attendee profile (website survey + iOS app)
 import moderateRouter from "./routes/moderate.js"; // DeepCleer text-moderation proxy (iOS app)
 import intelRouter from "./routes/intel.js";       // Gemini company-intel cards (iOS app home screen)
+import socialRouter from "./routes/social.js";     // feed / connections / messages / sessions (iOS app)
 
 const app = express();
 
@@ -86,6 +87,7 @@ app.use("/api/media", mediaRouter); // 👈 NEW → POST /api/media/apply
 app.use("/api/profile", profileRouter);   // GET/PATCH /api/profile
 app.use("/api/moderate", moderateRouter); // POST /api/moderate
 app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
+app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api", promosRouter);
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);
