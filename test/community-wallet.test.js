@@ -50,3 +50,17 @@ test("typing: shows others for 6 s, never the viewer", () => {
   assert.deepEqual(whoIsTyping("discussion", "d1", "u1", 1500), []);
   assert.ok(isScope("post") && !isScope("dm"));
 });
+
+import { nameKeys } from "../services/newsFeed.js";
+
+test("news: headlines must mention the company", () => {
+  assert.deepEqual(nameKeys("JPMorgan Chase & Co."), ["jpmorgan"]);
+  assert.deepEqual(nameKeys("IBM Consulting"), ["ibm"]);
+  const json = { articles: [
+    { title: "Newly massive higher ed gifts | Inside Philanthropy", url: "https://x", domain: "insidephilanthropy.com", seendate: "20261002T120000Z" },
+    { title: "Dell unveils new AI servers for Canadian banks", url: "https://y", domain: "reuters.com", seendate: "20261002T120000Z" },
+  ] };
+  const u = toUpdates(json, 3, "Dell Technologies");
+  assert.equal(u.length, 1);
+  assert.equal(u[0].url, "https://y");
+});
