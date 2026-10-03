@@ -37,3 +37,16 @@ test("GDELT query hints disambiguate short names", () => {
   assert.match(queryFor("BDC"), /Business Development Bank of Canada/);
   assert.match(queryFor("NVIDIA"), /"NVIDIA" sourcelang:english/);
 });
+
+import { markTyping, whoIsTyping, stopTyping, isScope } from "../services/typing.js";
+
+test("typing: shows others for 6 s, never the viewer", () => {
+  markTyping("group", "g1", "u1", "Alex", 1000);
+  markTyping("group", "g1", "u2", "Casey", 1000);
+  assert.deepEqual(whoIsTyping("group", "g1", "u1", 2000), ["Casey"]);
+  assert.deepEqual(whoIsTyping("group", "g1", "u1", 8000), []);
+  markTyping("discussion", "d1", "u2", "Casey", 1000);
+  stopTyping("discussion", "d1", "u2");
+  assert.deepEqual(whoIsTyping("discussion", "d1", "u1", 1500), []);
+  assert.ok(isScope("post") && !isScope("dm"));
+});

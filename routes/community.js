@@ -3,7 +3,8 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
-import { trimBody } from "../services/socialHelpers.js";
+import { trimBody, userCard } from "../services/socialHelpers.js";
+import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 
 /* =========================================================
    /api/community — discussions (threaded replies) and groups
@@ -142,6 +143,37 @@ router.post("/groups/:id/join", async (req, res) => {
   if (i >= 0) g.members.splice(i, 1); else g.members.push(req.user._id);
   await g.save();
   res.json(groupDTO(g, me(req)));
+});
+
+/* Members of a group (public cards: no email). Anyone signed in can see
+   who's in an approved group; the owner also sees a pending one. */
+router.get("/groups/:id/members", async (req, res) => {
+  const g = await CommunityGroup.findById(req.params.id).lean();
+  if (!g || (g.status !== "approved" && String(g.ownerId) !== me(req) && !isAdmin(req.user))) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const users = await User.find({ _id: { $in: g.members || [] } })
+    .select("name jobTitle organization linkedinUrl country topics tickets").lean();
+  const owner = String(g.ownerId);
+  res.json(users
+    .map((u) => ({ ...userCard(u), isOwner: String(u._id) === owner, isMe: String(u._id) === me(req) }))
+    .sort((a, b) => (b.isOwner - a.isOwner) || a.name.localeCompare(b.name)));
+});
+
+/* ================= TYPING ================= */
+
+router.post("/typing", (req, res) => {
+  const { scope, id, typing } = req.body || {};
+  if (!isScope(scope) || !id) return res.status(400).json({ error: "scope and id required" });
+  if (typing === false) stopTyping(scope, String(id), me(req));
+  else markTyping(scope, String(id), me(req), req.user.name);
+  res.json({ ok: true });
+});
+
+router.get("/typing", (req, res) => {
+  const { scope, id } = req.query;
+  if (!isScope(scope) || !id) return res.status(400).json({ error: "scope and id required" });
+  res.json({ typing: whoIsTyping(scope, String(id), me(req)) });
 });
 
 async function requireMember(req, res) {
