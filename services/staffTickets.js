@@ -129,3 +129,15 @@ export function salesSummary(rows, prices = {}, { range = "month", now = new Dat
     recent: live.slice(0, 12).map(({ name, tier, purchaseDate, source }) => ({ name, tier, purchaseDate, source })),
   };
 }
+
+/** What each tier's "sold" counter should be: visible pass tickets per tier,
+    plus paid booth orders (booths have no ticket records). Pure. */
+export function recountSold(rows, boothCounts = {}) {
+  const sold = {};
+  for (const r of rows) {
+    if (r.hidden || !r.tier) continue;
+    sold[r.tier] = (sold[r.tier] || 0) + 1;
+  }
+  for (const [tier, n] of Object.entries(boothCounts)) sold[tier] = (sold[tier] || 0) + n;
+  return sold;
+}

@@ -52,3 +52,10 @@ test("site settings are editable content keys", () => {
   assert.deepEqual(cleanContent("site.ticket_sales_open", "false"), ["site.ticket_sales_open", false]);
   assert.deepEqual(cleanContent("site.announcement", "Early bird ends Friday"), ["site.announcement", "Early bird ends Friday"]);
 });
+
+import { recountSold } from "../services/staffTickets.js";
+
+test("inventory recount: visible tickets per tier plus paid booths", () => {
+  const rows = collectTickets(users, guests);   // t1 influence, t2 apex, t3 connect (hidden), g1+g2 connect
+  assert.deepEqual(recountSold(rows, { "booth-single": 2 }), { apex: 1, connect: 2, influence: 1, "booth-single": 2 });
+});
