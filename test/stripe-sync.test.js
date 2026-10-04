@@ -64,3 +64,26 @@ test("missing ticket is created; booths, upgrades, deposits and unpaid sessions 
   assert.equal(isTicketSession({ ...sess("p", "a@x.com", "x"), metadata: { type: "pavilion-deposit" } }), false);
   assert.equal(isTicketSession({ ...sess("n", "a@x.com", "connect"), payment_status: "unpaid" }), false);
 });
+
+import { promoUsage, rowFromSession } from "../services/stripeSales.js";
+import { isManagement } from "../middleware/adminAuth.js";
+
+test("promo usage counts only paid sessions per code; tickets remember their code", () => {
+  const s = (id, code, sub, disc) => ({ id, created: T, metadata: { type: "ticket", tier: "connect", promoCode: code },
+    amount_subtotal: sub, amount_total: sub - disc, total_details: { amount_discount: disc, amount_tax: 0 } });
+  const u = promoUsage([s("a", "EARLY20", 59900, 11980), s("b", "early20", 59900, 11980), s("c", "", 59900, 0)].map((x) => rowFromSession(x)));
+  assert.equal(u.EARLY20.paidUses, 2);
+  assert.equal(u.EARLY20.discountGiven, 239.6);
+  assert.equal(Object.keys(u).length, 1);
+  const p = planSync([sess("cs_p", "p@x.com", "connect", T, { metadata: { promoCode: "vip10" } })],
+    [att("h1", "p@x.com", "connect", T * 1000 + 3000)], []);
+  assert.equal(p.link[0].promoCode, "VIP10");
+});
+
+test("management vs staff access", () => {
+  assert.equal(isManagement({ role: "admin", email: "gunantsingh@gmail.com" }), true);
+  assert.equal(isManagement({ role: "admin", email: "nicole@thetechfestival.com" }), false);
+  assert.equal(isManagement({ role: "admin", email: "nicole@thetechfestival.com", staffRole: "management" }), true);
+  assert.equal(isManagement({ role: "admin", email: "lubna@thetechfestival.com", staffRole: "staff" }), false);
+  assert.equal(isManagement({ role: "user", email: "x@y.com" }), false);
+});

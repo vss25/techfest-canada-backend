@@ -18,7 +18,7 @@ export function collectTickets(users = [], guests = []) {
         key: `u:${u._id}:${t.ticketId}`, source: "account", ownerId: String(u._id),
         name: u.name || "", email: String(u.email || "").toLowerCase(), ticketId: t.ticketId,
         tier: String(t.type || "").toLowerCase(), purchaseDate: t.purchaseDate || null,
-        checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff,
+        checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff, promoCode: t.promoCode || "",
       });
     }
   }
@@ -28,7 +28,7 @@ export function collectTickets(users = [], guests = []) {
       key: `g:${g.ticketId}`, source: "guest", ownerId: "",
       name: g.name || "", email: String(g.email || "").toLowerCase(), ticketId: g.ticketId,
       tier: String(g.ticketType || "").toLowerCase(), purchaseDate: g.purchaseDate || null,
-      checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff,
+      checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff, promoCode: g.promoCode || "",
     });
   }
   return rows.sort((a, b) => new Date(b.purchaseDate || 0) - new Date(a.purchaseDate || 0));

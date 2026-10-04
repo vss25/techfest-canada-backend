@@ -28,6 +28,10 @@ const ticketSchema = new mongoose.Schema({
   stripeSessionId: {
     type: String
   },
+  // Promo code used at checkout ("" = none).
+  promoCode: {
+    type: String
+  },
   // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
   hiddenByStaff: {
     type: Boolean,
@@ -56,6 +60,13 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       default: "user"
+    },
+
+    // For staff (role "admin"): "management" sees sales/revenue/pricing and manages
+    // staff; "staff" doesn't. Unset = management (accounts made before this existed).
+    staffRole: {
+      type: String,
+      enum: ["management", "staff"]
     },
 
     provider: {
