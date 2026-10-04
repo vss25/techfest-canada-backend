@@ -58,6 +58,14 @@ async function statusFor(text, userId, context) {
 const isAdmin = (u) => u.role === "admin";
 const authorTier = (u) => tierName(bestTierKey(u));
 
+/** authorId → avatarVersion for the people who have a profile photo. */
+async function avatarVersions(ids) {
+  const uniq = [...new Set(ids.map(String))];
+  if (!uniq.length) return new Map();
+  const rows = await User.find({ _id: { $in: uniq }, avatarVersion: { $gt: 0 } }).select("avatarVersion").lean();
+  return new Map(rows.map((u) => [String(u._id), u.avatarVersion]));
+}
+
 /* ================= ME / DIRECTORY ================= */
 
 router.get("/me", (req, res) => {
@@ -75,7 +83,7 @@ router.get("/users", async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
-  const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets").limit(60).lean();
+  const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion").limit(60).lean();
   res.json(users.filter((u) => !req.blocked.has(String(u._id))).map(userCard));
 });
 
@@ -86,7 +94,7 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } })
-      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden").lean(),
+      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion").lean(),
     Attendee.find({ claimedBy: { $exists: false } }).select("name email ticketId ticketType purchaseDate").lean(),
   ]);
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
@@ -95,7 +103,7 @@ router.get("/attendees", async (req, res) => {
 });
 
 router.get("/users/:id", async (req, res) => {
-  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets").lean();
+  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion").lean();
   if (!u) return res.status(404).json({ error: "Not found" });
   res.json(userCard(u));
 });
@@ -107,13 +115,16 @@ router.get("/feed", async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  const posts = await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-  res.json(posts.filter((p) => !req.blocked.has(String(p.authorId))).map((p) => postDTO(p, req.user._id)));
+  const posts = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean())
+    .filter((p) => !req.blocked.has(String(p.authorId)));
+  const avatars = await avatarVersions(posts.map((p) => p.authorId));
+  res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
 });
 
 router.post("/feed", async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
-  if (!body) return res.status(400).json({ error: "body required" });
+  const imageData = cleanImageData(req.body?.imageData, 450_000);
+  if (!body && !imageData) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
   const status = await statusFor([body, linkUrl].join(" "), req.user._id, "feed");
   const post = await SocialPost.create({
@@ -126,10 +137,10 @@ router.post("/feed", async (req, res) => {
     body,
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
     linkUrl,
-    imageData: cleanImageData(req.body?.imageData),
+    imageData,
     status,
   });
-  res.status(201).json(postDTO(post, req.user._id));
+  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]])));
 });
 
 router.post("/feed/:id/like", async (req, res) => {
@@ -177,7 +188,7 @@ router.post("/feed/:id/comments", async (req, res) => {
 
 async function connectionDTO(c, meId) {
   const otherId = String(c.fromUserId) === String(meId) ? c.toUserId : c.fromUserId;
-  const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets").lean();
+  const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion").lean();
   return {
     id: String(c._id),
     user: userCard(other) || { id: String(otherId), name: "Attendee" },
@@ -262,7 +273,7 @@ router.get("/messages", async (req, res) => {
   const visible = recent.filter((t) => !req.blocked.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
   const threads = await Promise.all(visible.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
-    const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets").lean();
+    const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion").lean();
     return {
       user: userCard(other) || { id: String(otherId), name: "Attendee" },
       lastMessage: { body: t.last.body, sentByMe: String(t.last.fromUserId) === String(me), createdAt: t.last.createdAt },

@@ -31,6 +31,9 @@ import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS
 import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)
 import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
 import consoleRouter from "./routes/console.js";       // admin console API
+import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
+import filesRouter from "./routes/files.js";           // post photos + profile photos
+import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -73,7 +76,16 @@ app.use(
 /* ==========================================
    JSON PARSER
 ========================================== */
-app.use(express.json());
+// CMS uploads (speaker photos, logos) need a bigger body than everything else.
+app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
+// Feed photos and profile photos arrive as base64 JSON.
+app.use(express.json({ limit: "1mb" }));
+
+/* ==========================================
+   KILL SWITCH — site + app offline (staff routes keep working)
+========================================== */
+app.get("/api/status", statusHandler);
+app.use(killSwitchMiddleware);
 
 /* ==========================================
    ROUTES
@@ -100,6 +112,7 @@ app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/console", consoleRouter);     // admin console (staff only)
+app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id
 // The admin console website: https://<backend>/console
 app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));
 app.use("/api", promosRouter);

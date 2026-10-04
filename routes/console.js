@@ -11,6 +11,8 @@ import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
+import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
+import bcrypt from "bcryptjs";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -294,6 +296,87 @@ router.post("/broadcast", async (req, res) => {
 
 router.get("/audit", async (req, res) => {
   res.json(await AdminAudit.find({}).sort({ at: -1 }).limit(300).lean());
+});
+
+/* ---------- Staff accounts ----------
+   Staff = role "admin". Passwords are typed by an admin here and stored
+   only as bcrypt hashes; they are never kept in code or logs. */
+const isEmail = (s) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(s || ""));
+export const strongEnough = (pw) => typeof pw === "string" && pw.length >= 8;
+
+router.get("/staff", async (req, res) => {
+  const staff = await User.find({ role: "admin" }).select("name email provider lastActiveAt createdAt password").lean();
+  res.json(staff.map((u) => ({ id: String(u._id), name: u.name, email: u.email, provider: u.provider || "local",
+    hasPassword: !!u.password, lastActiveAt: u.lastActiveAt || null, createdAt: u.createdAt, isMe: String(u._id) === String(req.user._id) })));
+});
+
+router.post("/staff", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const name = trimBody(req.body?.name, 80);
+  const password = req.body?.password;
+  if (!isEmail(email)) return res.status(400).json({ error: "Enter a valid email address" });
+  if (password !== undefined && password !== "" && !strongEnough(password)) {
+    return res.status(400).json({ error: "Password must be at least 8 characters" });
+  }
+  let user = await User.findOne({ email });
+  const created = !user;
+  if (!user) {
+    if (!password) return res.status(400).json({ error: "New staff need a password" });
+    user = new User({ name: name || email.split("@")[0], email, provider: "local" });
+  }
+  user.role = "admin";
+  if (name) user.name = name;
+  if (password) user.password = await bcrypt.hash(password, 10);
+  await user.save();
+  await audit(req, created ? "staff_add" : "staff_promote", "user", user._id, email);
+  res.status(created ? 201 : 200).json({ id: String(user._id), email, name: user.name, created });
+});
+
+router.delete("/staff/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(400).json({ error: "Bad id" });
+  if (String(req.params.id) === String(req.user._id)) return res.status(400).json({ error: "You can't remove your own staff access" });
+  const user = await User.findByIdAndUpdate(req.params.id, { $set: { role: "user" } }, { new: true });
+  if (!user) return res.status(404).json({ error: "Not found" });
+  await audit(req, "staff_remove", "user", user._id, user.email);
+  res.json({ ok: true });
+});
+
+/* Change your own password (also lets Google sign-in staff set one). */
+router.post("/me/password", async (req, res) => {
+  const { current, next } = req.body || {};
+  if (!strongEnough(next)) return res.status(400).json({ error: "New password must be at least 8 characters" });
+  const me = await User.findById(req.user._id);
+  if (me.password && !(await bcrypt.compare(String(current || ""), me.password))) {
+    return res.status(403).json({ error: "Current password is wrong" });
+  }
+  me.password = await bcrypt.hash(next, 10);
+  await me.save();
+  await audit(req, "password_change", "user", me._id);
+  res.json({ ok: true });
+});
+
+/* ---------- Kill switch (website + app offline) ----------
+   Needs the signed-in admin's own password, or KILL_SWITCH_PASSWORD
+   if that is set on the server. */
+router.get("/kill-switch", async (req, res) => {
+  const s = await getKillState();
+  res.json({ enabled: s.enabled, message: s.message || DEFAULT_MESSAGE, by: s.by || "", since: s.since || null });
+});
+
+router.post("/kill-switch", async (req, res) => {
+  const { enabled, password, message } = req.body || {};
+  if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
+  const pw = String(password || "");
+  const me = await User.findById(req.user._id);
+  const okOwn = me.password ? await bcrypt.compare(pw, me.password) : false;
+  const okEnv = !!process.env.KILL_SWITCH_PASSWORD && pw === process.env.KILL_SWITCH_PASSWORD;
+  if (!okOwn && !okEnv) {
+    await audit(req, "kill_switch_denied", "site", "", enabled ? "on" : "off");
+    return res.status(403).json({ error: me.password ? "Wrong password" : "Set a password for your account first (Staff → Change password)" });
+  }
+  const s = await setKillState({ enabled, message: message || DEFAULT_MESSAGE, by: req.user.name || req.user.email });
+  await audit(req, enabled ? "kill_switch_on" : "kill_switch_off", "site", "", s.message);
+  res.json({ enabled: s.enabled, message: s.message, by: s.by, since: s.since });
 });
 
 export default router;

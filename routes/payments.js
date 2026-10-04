@@ -198,6 +198,47 @@ function cleanMetadata(obj) {
   return out;
 }
 
+// ================= PASS UPGRADES =================
+// An upgrade charges only the difference between the two passes' list
+// prices (plus HST) and keeps the same ticketId, so the QR still works.
+
+/** Pure: price difference in CAD, or an error. Exported for tests. */
+export function upgradeQuote(fromPrice, toPrice) {
+  const from = Number(fromPrice) || 0;
+  const to = Number(toPrice) || 0;
+  if (!to) return { error: "That pass isn't on sale yet." };
+  const difference = Math.round((to - from) * 100) / 100;
+  if (difference <= 0) return { error: "You already have this pass or a higher one." };
+  const hst = TAX_MODE === "manual" ? Math.round(difference * HST_PERCENT) / 100 : 0;
+  return { difference, hst, total: Math.round((difference + hst) * 100) / 100 };
+}
+
+async function resolveUpgrade(buyer, ticketId, toTier) {
+  if (!buyer) return { status: 401, error: "Sign in to upgrade your pass." };
+  const ticket = (buyer.tickets || []).find((t) => t.ticketId === String(ticketId || "").trim());
+  if (!ticket) return { status: 404, error: "That ticket isn't on your account." };
+  if (ticket.checkedIn) return { status: 409, error: "This pass has already been used at the door; upgrade at the registration desk." };
+  const [from, to] = await Promise.all([
+    TicketInventory.findOne({ tier: ticket.type }).lean(),
+    TicketInventory.findOne({ tier: toTier }).lean(),
+  ]);
+  if (!to) return { status: 404, error: "Tier not found" };
+  if (to.total > 0 && to.sold >= to.total) return { status: 409, error: "This tier is sold out." };
+  const q = upgradeQuote(from?.price, to.price);
+  if (q.error) return { status: 409, error: q.error };
+  return { ticket, fromTier: ticket.type, toTier, fromPrice: from?.price || 0, toPrice: to.price, ...q };
+}
+
+// GET /api/payments/upgrade-quote?ticketId=…&tier=…
+router.get("/upgrade-quote", async (req, res) => {
+  let buyer = null;
+  try { buyer = await getUserFromReq(req); } catch { buyer = null; }
+  const r = await resolveUpgrade(buyer, req.query.ticketId, String(req.query.tier || ""));
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  const { ticket, ...quote } = r;
+  res.json({ ticketId: ticket.ticketId, hstPercent: TAX_MODE === "manual" ? HST_PERCENT : 0, ...quote });
+});
+
 // ================= CREATE CHECKOUT =================
 // NOTE: server.js mounts this at /api/payments, so the path here is just /create-checkout
 // Frontend calls: POST /api/payments/create-checkout
@@ -267,6 +308,51 @@ router.post("/create-checkout", async (req, res) => {
     // Booths arrive as tier "booth-single", "booth-double", etc.
     // ═══════════════════════════════════════════════════════
     if (!tier) return res.status(400).json({ error: "Tier required" });
+
+    // ----- Upgrade: charge the difference only -----
+    if (req.body?.upgradeFrom) {
+      const up = await resolveUpgrade(buyer, req.body.upgradeFrom, tier);
+      if (up.error) return res.status(up.status).json({ error: up.error });
+      const stripe = getStripe();
+      const { lineItemExtras, sessionExtras } = await buildTaxConfig(stripe);
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        customer_email: buyer.email,
+        line_items: [{
+          price_data: {
+            currency: "cad",
+            product_data: {
+              name: `Upgrade: ${productNameFor(up.fromTier)} → ${productNameFor(tier)}`,
+              description: `Ticket ${up.ticket.ticketId} · you pay the difference`,
+              tax_code: "txcd_10000000",
+            },
+            unit_amount: Math.round(up.difference * 100),
+            tax_behavior: "exclusive",
+          },
+          quantity: 1,
+          ...lineItemExtras,
+        }],
+        ...sessionExtras,
+        ...(isNativeApp
+          ? appReturnUrls(req, { tier })
+          : {
+              success_url: `${process.env.FRONTEND_URL}/tickets?success=true&tier=${encodeURIComponent(tier)}&value=${up.total}&session_id={CHECKOUT_SESSION_ID}`,
+              cancel_url: `${process.env.FRONTEND_URL}/tickets`,
+            }),
+        metadata: {
+          userId: String(buyer._id),
+          client: isNativeApp ? client : "web",
+          type: "upgrade",
+          tier,
+          fromTier: up.fromTier,
+          upgradeFrom: up.ticket.ticketId,
+          basePrice: String(up.difference),
+          taxMode: TAX_MODE,
+          taxPercent: String(HST_PERCENT),
+        },
+      });
+      return res.json({ url: session.url, difference: up.difference, total: up.total });
+    }
 
     const inventoryItem = await TicketInventory.findOne({ tier });
     if (!inventoryItem) return res.status(404).json({ error: "Tier not found" });

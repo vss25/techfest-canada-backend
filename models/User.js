@@ -19,6 +19,10 @@ const ticketSchema = new mongoose.Schema({
   },
   checkedInAt: {
     type: Date
+  },
+  // Set when a pass is upgraded in place (same ticketId, new type).
+  upgradedFrom: {
+    type: String
   }
 });
 
@@ -64,6 +68,9 @@ const userSchema = new mongoose.Schema(
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },
+    appOnboarded: { type: Boolean, default: false },      // finished the app's profile steps once
+    avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
+    avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
 
     tickets: [ticketSchema],
 

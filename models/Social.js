@@ -17,7 +17,7 @@ const socialPostSchema = new Schema({
   authorOrg:   { type: String, default: "" },
   authorTier:  { type: String, default: "" },
   kind:        { type: String, enum: ["member", "speaker", "announcement"], default: "member" },
-  body:        { type: String, required: true, maxlength: 4000 },
+  body:        { type: String, default: "", maxlength: 4000 },   // may be empty on photo posts
   topicTags:   { type: [String], default: [] },
   linkUrl:     { type: String, default: "" },
   /** data:image/jpeg;base64,… — capped at ~350 KB by the route. */
