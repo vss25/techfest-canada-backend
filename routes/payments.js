@@ -223,6 +223,7 @@ async function resolveUpgrade(buyer, ticketId, toTier) {
     TicketInventory.findOne({ tier: toTier }).lean(),
   ]);
   if (!to) return { status: 404, error: "Tier not found" };
+  if (to.archived) return { status: 409, error: "This pass is no longer on sale." };
   if (to.total > 0 && to.sold >= to.total) return { status: 409, error: "This tier is sold out." };
   const q = upgradeQuote(from?.price, to.price);
   if (q.error) return { status: 409, error: q.error };
@@ -356,6 +357,7 @@ router.post("/create-checkout", async (req, res) => {
 
     const inventoryItem = await TicketInventory.findOne({ tier });
     if (!inventoryItem) return res.status(404).json({ error: "Tier not found" });
+    if (inventoryItem.archived) return res.status(409).json({ error: "This pass is no longer on sale." });
 
     const basePriceCAD = inventoryItem.price;
     const isBooth = String(tier).startsWith("booth-");

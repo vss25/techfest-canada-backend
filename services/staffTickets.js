@@ -63,21 +63,11 @@ export function matchRows(rows, q) {
 
 const DAY = 864e5;
 
-/** Real sales from ticket purchase dates (hidden tickets excluded). Revenue uses tier list prices. */
-export function salesSummary(rows, prices = {}, { range = "month", now = new Date() } = {}) {
-  const live = rows.filter((r) => !r.hidden);
-  const price = (t) => Number(prices[t] || 0);
-  const byTier = {};
-  for (const r of live) {
-    byTier[r.tier] = byTier[r.tier] || { tier: r.tier, tickets: 0, revenue: 0, checkedIn: 0 };
-    byTier[r.tier].tickets += 1;
-    byTier[r.tier].revenue += price(r.tier);
-    if (r.checkedIn) byTier[r.tier].checkedIn += 1;
-  }
-
-  // Buckets: day = 24 hourly, week = 7 daily, month = 30 daily, all = weekly since first sale.
+/** Time buckets: day = 24 hourly, week = 7 daily, month = 30 daily, all = weekly since the first date. */
+export function makeBuckets(range, now = new Date(), dates = []) {
   const start = new Date(now);
   let buckets = [];
+  const live = dates.map((d) => ({ purchaseDate: d }));
   if (range === "day") {
     start.setMinutes(0, 0, 0);
     for (let i = 23; i >= 0; i--) {
@@ -100,6 +90,22 @@ export function salesSummary(rows, prices = {}, { range = "month", now = new Dat
       buckets.push({ from, to: new Date(from.getTime() + DAY), name: from.toLocaleDateString("en-CA", { month: "short", day: "numeric", timeZone: "America/Toronto" }) });
     }
   }
+  return buckets;
+}
+
+/** Real sales from ticket purchase dates (hidden tickets excluded). Revenue uses tier list prices. */
+export function salesSummary(rows, prices = {}, { range = "month", now = new Date() } = {}) {
+  const live = rows.filter((r) => !r.hidden);
+  const price = (t) => Number(prices[t] || 0);
+  const byTier = {};
+  for (const r of live) {
+    byTier[r.tier] = byTier[r.tier] || { tier: r.tier, tickets: 0, revenue: 0, checkedIn: 0 };
+    byTier[r.tier].tickets += 1;
+    byTier[r.tier].revenue += price(r.tier);
+    if (r.checkedIn) byTier[r.tier].checkedIn += 1;
+  }
+
+  const buckets = makeBuckets(range, now, live.map((r) => r.purchaseDate));
   const sales = buckets.map((b) => {
     const inB = live.filter((r) => { const d = new Date(r.purchaseDate || 0); return d >= b.from && d < b.to; });
     return { name: b.name, tickets: inB.length, revenue: inB.reduce((s, r) => s + price(r.tier), 0) };

@@ -80,7 +80,8 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
     const email = String(u.email || "").toLowerCase();
     byEmail.set(email || `user:${u._id}`, {
       id: String(u._id),
-      onApp: true,
+      // Only people who have signed into the app can be connected with or messaged.
+      onApp: !!(u.appOnboarded || u.lastActiveAt),
       name: u.name || "",
       jobTitle: u.jobTitle || "",
       organization: u.organization || "",
