@@ -33,6 +33,13 @@ const ticketInventorySchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+
+    // removed from sale: hidden from the website/app and checkout;
+    // tickets already sold for this tier stay valid
+    archived: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

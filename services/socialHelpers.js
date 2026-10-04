@@ -47,6 +47,11 @@ export function decodeDataUrl(s) {
   return { contentType: m[1], buffer: Buffer.from(m[2], "base64") };
 }
 
+/** Has this person actually signed into the iOS app (not just a website account)? */
+export function isOnApp(user) {
+  return !!(user?.appOnboarded || user?.lastActiveAt);
+}
+
 /** Public card for another attendee — never email, never role. */
 export function userCard(user) {
   if (!user) return null;
@@ -60,6 +65,7 @@ export function userCard(user) {
     topics: Array.isArray(user.topics) ? user.topics : [],
     tier: tierName(bestTierKey(user)),
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
+    onApp: isOnApp(user),
   };
 }
 

@@ -30,7 +30,7 @@ test("latestTicket picks the most recent purchase and ignores booths", () => {
 test("buildDirectory merges duplicate buyers, keeps most recent pass, never leaks email", () => {
   const users = [
     { _id: "u1", name: "Gunant Singh Pahwa", email: "g@x.com", jobTitle: "Founder", organization: "AtlasLink",
-      tickets: [{ ticketId: "t1", type: "connect", purchaseDate: "2026-08-01" }] },
+      lastActiveAt: "2026-10-01", tickets: [{ ticketId: "t1", type: "connect", purchaseDate: "2026-08-01" }] },
     { _id: "me", name: "Me", email: "me@x.com", tickets: [{ ticketId: "t9", type: "power", purchaseDate: "2026-08-01" }] },
     { _id: "u2", name: "Hidden", email: "h@x.com", directoryHidden: true, tickets: [{ ticketId: "t8", type: "power" }] },
   ];
@@ -44,7 +44,7 @@ test("buildDirectory merges duplicate buyers, keeps most recent pass, never leak
   const dir = buildDirectory(users, guests, { excludeUserId: "me", excludeEmail: "me@x.com" });
   assert.equal(dir.length, 2);
   const g = dir.find((p) => p.name === "Gunant Singh Pahwa");
-  assert.equal(g.onApp, true);
+  assert.equal(g.onApp, true);   // has signed into the app
   assert.equal(g.tier, "Power Pass");
   assert.equal(g.organization, "AtlasLink");
   const c = dir.find((p) => p.name === "Casey Guest");
@@ -63,4 +63,14 @@ test("limiter blocks after max attempts", () => {
 test("passName", () => {
   assert.equal(passName("influence"), "Influence Pass");
   assert.equal(passName("session"), "Session Pass");
+});
+
+test("website-only accounts are not 'on the app' until they sign into it", () => {
+  const users = [
+    { _id: "w1", name: "Web Only", email: "w@x.com", tickets: [{ ticketId: "t1", type: "connect" }] },
+    { _id: "a1", name: "App User", email: "a@x.com", appOnboarded: true, tickets: [{ ticketId: "t2", type: "connect" }] },
+  ];
+  const dir = buildDirectory(users, []);
+  assert.equal(dir.find((p) => p.name === "Web Only").onApp, false);
+  assert.equal(dir.find((p) => p.name === "App User").onApp, true);
 });

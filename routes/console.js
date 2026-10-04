@@ -15,6 +15,8 @@ import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwi
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, duplicateKeys, matchRows, salesSummary } from "../services/staffTickets.js";
+import { stripeRows, stripeSummary } from "../services/stripeSales.js";
+import Stripe from "stripe";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -445,17 +447,46 @@ router.post("/tickets/hide-duplicates", async (req, res) => {
   res.json({ changed });
 });
 
-/* ---------- Sales analytics (real, from purchase dates) ---------- */
+/* ---------- Sales analytics ----------
+   Revenue comes only from Stripe (what was actually paid, after promo codes,
+   before HST, minus refunds), with booths / pavilion / other payments shown
+   separately. Ticket counts, buyers and check-ins come from the ticket records. */
 router.get("/sales", async (req, res) => {
   const range = ["day", "week", "month", "all"].includes(req.query.range) ? req.query.range : "month";
   const [rows, inventory] = await Promise.all([allTicketRows(), TicketInventory.find().lean()]);
   const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
-  const summary = salesSummary(rows, prices, { range });
-  res.json({
-    ...summary,
-    inventory: inventory.map((t) => ({ tier: t.tier, price: t.price || 0, sold: t.sold || 0, total: t.total || 0 })),
-    note: "Revenue uses each pass's list price; promo-code discounts and HST aren't included.",
-  });
+  const records = salesSummary(rows, prices, { range });
+  const out = {
+    ...records,
+    inventory: inventory.map((t) => ({ tier: t.tier, price: t.price || 0, sold: t.sold || 0, total: t.total || 0, archived: !!t.archived })),
+  };
+  let stripe = null;
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY isn't set on the server");
+    const client = new Stripe(process.env.STRIPE_SECRET_KEY);
+    stripe = stripeSummary(await stripeRows(client, { force: req.query.refresh === "1" }), { range });
+  } catch (err) {
+    out.stripeError = err.message || "Couldn't reach Stripe";
+  }
+  if (stripe) {
+    const checkins = Object.fromEntries(records.byTier.map((t) => [t.tier, t.checkedIn]));
+    out.source = "stripe";
+    out.totals = { ...records.totals, totalRevenue: stripe.ticketRevenue, paidTickets: stripe.paidTickets };
+    out.sales = stripe.sales;
+    out.byTier = stripe.byTier.map((t) => ({ ...t, checkedIn: checkins[t.tier] || 0 }));
+    out.recent = stripe.recent;
+    out.revenueBreakdown = stripe.breakdown;
+    out.note = "Ticket revenue is synced from Stripe: what buyers actually paid after promo codes, before HST, minus refunds. " +
+      "Booths, pavilion deposits and other Stripe payments are listed separately and are not counted as ticket sales. " +
+      "Sponsorships invoiced outside Stripe aren't included. Refreshes every 5 minutes.";
+  } else {
+    out.source = "records";
+    out.totals = { ...records.totals, totalRevenue: null };
+    out.sales = records.sales.map((b) => ({ ...b, revenue: null }));
+    out.byTier = records.byTier.map((t) => ({ ...t, revenue: null }));
+    out.note = "Revenue unavailable: couldn't read Stripe. Ticket counts come from ticket records.";
+  }
+  res.json(out);
 });
 
 export default router;

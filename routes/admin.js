@@ -45,7 +45,15 @@ const TIER_DEFAULTS = {
   "booth-quadruple": { price: 7499, total: 6   },
 };
 
+/* Old passes no longer sold. Archived once (the first time this code runs);
+   staff can restore one from the admin panel and it stays restored. */
+export const RETIRED_TIERS = ["early", "festival", "discover", "vip"];
+
 async function ensureTiers() {
+  await TicketInventory.updateMany(
+    { tier: { $in: RETIRED_TIERS }, archived: { $exists: false } },
+    { $set: { archived: true } }
+  );
   const inventory = await TicketInventory.find();
 
   for (const [tier, d] of Object.entries(TIER_DEFAULTS)) {
@@ -167,7 +175,7 @@ router.post(
 ========================================================= */
 router.get("/inventory/public", async (req, res) => {
   try {
-    res.json(await ensureTiers());
+    res.json((await ensureTiers()).filter((t) => !t.archived));
   } catch (err) {
     console.error("Public inventory error:", err);
     res.status(500).json({ error: "Server error" });
@@ -203,7 +211,7 @@ router.put(
   async (req, res) => {
     try {
       const { tier } = req.params;
-      const { total, price } = req.body;
+      const { total, price, archived } = req.body;
 
       let inventory = await TicketInventory.findOne({ tier });
 
@@ -227,6 +235,10 @@ router.put(
 
       if (typeof price === "number") {
         inventory.price = price;
+      }
+
+      if (typeof archived === "boolean") {
+        inventory.archived = archived;
       }
 
       await inventory.save();
