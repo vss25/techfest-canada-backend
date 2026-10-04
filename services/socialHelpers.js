@@ -64,6 +64,7 @@ export function userCard(user) {
     country: user.country || "",
     topics: Array.isArray(user.topics) ? user.topics : [],
     tier: tierName(bestTierKey(user)),
+    tagline: user.tagline || "",
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
   };

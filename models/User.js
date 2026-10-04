@@ -78,6 +78,14 @@ const userSchema = new mongoose.Schema(
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },
     appOnboarded: { type: Boolean, default: false },      // finished the app's profile steps once
+    // Everything else the app's profile collects (editable from the admin panel too).
+    tagline:      { type: String, default: "" },          // short line under the name
+    salutation:   { type: String, default: "" },
+    gender:       { type: String, default: "" },
+    jobLevel:     { type: String, default: "" },
+    objectives:   { type: [String], default: [] },        // what they want from TTFC
+    availabilitySlots: { type: [String], default: [] },   // when they're free to meet
+    meetingSpot:  { type: String, default: "" },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
 

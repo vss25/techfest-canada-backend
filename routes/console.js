@@ -118,7 +118,9 @@ router.get("/users/:id", async (req, res) => {
   });
 });
 
-const EDITABLE = ["name", "email", "jobTitle", "organization", "linkedinUrl", "country", "fieldOfWork", "topics", "role", "banned", "bannedReason", "directoryHidden"];
+const EDITABLE = ["name", "email", "jobTitle", "organization", "linkedinUrl", "country", "fieldOfWork", "topics", "role", "banned", "bannedReason", "directoryHidden",
+  "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot", "appOnboarded"];
+const EDIT_LISTS = { topics: 20, objectives: 12, availabilitySlots: 40 };
 router.patch("/users/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const u = await User.findById(req.params.id);
@@ -127,8 +129,9 @@ router.patch("/users/:id", async (req, res) => {
   for (const k of EDITABLE) {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
-    if (k === "topics") v = Array.isArray(v) ? v.filter((t) => typeof t === "string").slice(0, 20) : u.topics;
-    else if (k === "banned" || k === "directoryHidden") v = v === true || v === "true";
+    if (EDIT_LISTS[k]) v = Array.isArray(v) ? v.filter((t) => typeof t === "string").map((t) => t.trim().slice(0, 80)).filter(Boolean).slice(0, EDIT_LISTS[k]) : u[k];
+    else if (k === "banned" || k === "directoryHidden" || k === "appOnboarded") v = v === true || v === "true";
+    else if (k === "name" && !String(v).trim()) continue;
     else if (k === "role") v = v === "admin" ? "admin" : "user";
     else if (k === "email") v = String(v).trim().toLowerCase().slice(0, 200);
     else v = String(v).slice(0, 300);

@@ -14,26 +14,30 @@ import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
 
 const router = express.Router();
 
-const EDITABLE = ["linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden", "appOnboarded"];
-const MAX = { linkedinUrl: 300, fieldOfWork: 120, jobTitle: 120, organization: 160, country: 80 };
+const EDITABLE = ["name", "linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden", "appOnboarded",
+  "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot"];
+const MAX = { name: 120, linkedinUrl: 300, fieldOfWork: 120, jobTitle: 120, organization: 160, country: 80,
+  tagline: 140, salutation: 20, gender: 40, jobLevel: 80, meetingSpot: 160 };
+const LISTS = { topics: 20, objectives: 12, availabilitySlots: 40 };
 
 /** Pure: pick + sanitise the editable fields from a body. Exported for tests. */
 export function sanitizeProfilePatch(body = {}) {
   const out = {};
   for (const key of EDITABLE) {
     if (body[key] === undefined) continue;
-    if (key === "topics") {
-      if (!Array.isArray(body.topics)) continue;
-      out.topics = body.topics
+    if (LISTS[key]) {
+      if (!Array.isArray(body[key])) continue;
+      out[key] = body[key]
         .filter((t) => typeof t === "string")
         .map((t) => t.trim().slice(0, 80))
         .filter(Boolean)
-        .slice(0, 20);
+        .slice(0, LISTS[key]);
       continue;
     }
     if (key === "directoryHidden" || key === "appOnboarded") { if (typeof body[key] === "boolean") out[key] = body[key]; continue; }
     if (typeof body[key] !== "string") continue;
     let v = body[key].trim().slice(0, MAX[key]);
+    if (key === "name" && !v) continue;     // never blank a name
     if (key === "linkedinUrl" && v && !/^https?:\/\//i.test(v)) v = `https://${v.replace(/^\/+/, "")}`;
     out[key] = v;
   }
