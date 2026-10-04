@@ -94,7 +94,7 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } })
-      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden").lean(),
+      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion").lean(),
     Attendee.find({ claimedBy: { $exists: false } }).select("name email ticketId ticketType purchaseDate").lean(),
   ]);
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
