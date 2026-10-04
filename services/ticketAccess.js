@@ -89,6 +89,9 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       country: u.country || "",
       topics: Array.isArray(u.topics) ? u.topics : [],
       avatarUrl: u.avatarVersion ? `/api/files/avatar/${u._id}?v=${u.avatarVersion}` : "",
+      tagline: u.tagline || "",
+      availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
+      meetingSpot: u.meetingSpot || "",
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });

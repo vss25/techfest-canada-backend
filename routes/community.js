@@ -157,7 +157,7 @@ router.get("/groups/:id/members", async (req, res) => {
     return res.status(404).json({ error: "Not found" });
   }
   const users = await User.find({ _id: { $in: g.members || [] } })
-    .select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline").lean();
+    .select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean();
   const owner = String(g.ownerId);
   res.json(users
     .map((u) => ({ ...userCard(u), isOwner: String(u._id) === owner, isMe: String(u._id) === me(req) }))
