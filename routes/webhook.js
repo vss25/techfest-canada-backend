@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
+import Promo from "../models/Promo.js";
 import crypto from "crypto";
 
 import { generateTicketPDF } from "../services/pdfTicket.js";
@@ -78,6 +79,11 @@ router.post("/stripe", async (req, res) => {
         }
       }
 
+      // ================= PROMO CODE: count a use only once it's paid =================
+      if (session.metadata.promoCode) {
+        await Promo.updateOne({ code: String(session.metadata.promoCode).toUpperCase() }, { $inc: { timesUsed: 1 } });
+      }
+
       // ================= INVENTORY UPDATE =================
 
       const inventory = await TicketInventory.findOne({ tier });
@@ -140,6 +146,7 @@ router.post("/stripe", async (req, res) => {
               ticketId,
               type: tier,
               stripeSessionId: session.id,
+              promoCode: session.metadata.promoCode || "",
               purchaseDate: new Date()
             });
 
@@ -157,6 +164,7 @@ router.post("/stripe", async (req, res) => {
             ticketId,
             ticketType: tier,
             stripeSessionId: session.id,
+            promoCode: session.metadata.promoCode || "",
             purchaseDate: new Date()
           });
 

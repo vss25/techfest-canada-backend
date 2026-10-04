@@ -471,9 +471,7 @@ router.post("/create-checkout", async (req, res) => {
       },
     });
 
-    if (appliedPromo) {
-      await Promo.updateOne({ _id: appliedPromo._id }, { $inc: { timesUsed: 1 } });
-    }
+    // Promo uses are counted by the webhook once the payment completes.
 
     res.json({ url: session.url });
   } catch (err) {

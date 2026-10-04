@@ -28,6 +28,10 @@ const ticketSchema = new mongoose.Schema({
   stripeSessionId: {
     type: String
   },
+  // Promo code used at checkout ("" = none).
+  promoCode: {
+    type: String
+  },
   // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
   hiddenByStaff: {
     type: Boolean,
@@ -58,6 +62,13 @@ const userSchema = new mongoose.Schema(
       default: "user"
     },
 
+    // For staff (role "admin"): "management" sees sales/revenue/pricing and manages
+    // staff; "staff" doesn't. Unset = management (accounts made before this existed).
+    staffRole: {
+      type: String,
+      enum: ["management", "staff"]
+    },
+
     provider: {
       type: String,
       default: "local"
@@ -78,6 +89,14 @@ const userSchema = new mongoose.Schema(
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },
     appOnboarded: { type: Boolean, default: false },      // finished the app's profile steps once
+    // Everything else the app's profile collects (editable from the admin panel too).
+    tagline:      { type: String, default: "" },          // short line under the name
+    salutation:   { type: String, default: "" },
+    gender:       { type: String, default: "" },
+    jobLevel:     { type: String, default: "" },
+    objectives:   { type: [String], default: [] },        // what they want from TTFC
+    availabilitySlots: { type: [String], default: [] },   // when they're free to meet
+    meetingSpot:  { type: String, default: "" },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
 

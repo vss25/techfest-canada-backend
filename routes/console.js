@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage, SessionRegistration, SessionQuestion,
 } from "../models/Social.js";
@@ -27,6 +27,12 @@ import Stripe from "stripe";
 
 const router = express.Router();
 router.use(requireAdmin);
+
+/* Who am I, and what may I see? (The panel hides sales/money for non-management staff.) */
+router.get("/me", (req, res) => {
+  res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
+             staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user) });
+});
 
 const isId = (s) => mongoose.isValidObjectId(String(s || ""));
 const rx = (q) => new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -118,17 +124,21 @@ router.get("/users/:id", async (req, res) => {
   });
 });
 
-const EDITABLE = ["name", "email", "jobTitle", "organization", "linkedinUrl", "country", "fieldOfWork", "topics", "role", "banned", "bannedReason", "directoryHidden"];
+const EDITABLE = ["name", "email", "jobTitle", "organization", "linkedinUrl", "country", "fieldOfWork", "topics", "role", "banned", "bannedReason", "directoryHidden",
+  "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot", "appOnboarded"];
+const EDIT_LISTS = { topics: 20, objectives: 12, availabilitySlots: 40 };
 router.patch("/users/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const u = await User.findById(req.params.id);
   if (!u) return res.status(404).json({ error: "Not found" });
   const changed = [];
+  if (req.body?.role !== undefined && !isManagement(req.user)) return res.status(403).json({ error: "Only management can change staff access" });
   for (const k of EDITABLE) {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
-    if (k === "topics") v = Array.isArray(v) ? v.filter((t) => typeof t === "string").slice(0, 20) : u.topics;
-    else if (k === "banned" || k === "directoryHidden") v = v === true || v === "true";
+    if (EDIT_LISTS[k]) v = Array.isArray(v) ? v.filter((t) => typeof t === "string").map((t) => t.trim().slice(0, 80)).filter(Boolean).slice(0, EDIT_LISTS[k]) : u[k];
+    else if (k === "banned" || k === "directoryHidden" || k === "appOnboarded") v = v === true || v === "true";
+    else if (k === "name" && !String(v).trim()) continue;
     else if (k === "role") v = v === "admin" ? "admin" : "user";
     else if (k === "email") v = String(v).trim().toLowerCase().slice(0, 200);
     else v = String(v).slice(0, 300);
@@ -308,13 +318,14 @@ router.get("/audit", async (req, res) => {
 const isEmail = (s) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(s || ""));
 export const strongEnough = (pw) => typeof pw === "string" && pw.length >= 8;
 
-router.get("/staff", async (req, res) => {
-  const staff = await User.find({ role: "admin" }).select("name email provider lastActiveAt createdAt password").lean();
+router.get("/staff", requireManagement, async (req, res) => {
+  const staff = await User.find({ role: "admin" }).select("name email role provider lastActiveAt createdAt password staffRole").lean();
   res.json(staff.map((u) => ({ id: String(u._id), name: u.name, email: u.email, provider: u.provider || "local",
+    staffRole: isManagement({ ...u, role: "admin" }) ? "management" : "staff",
     hasPassword: !!u.password, lastActiveAt: u.lastActiveAt || null, createdAt: u.createdAt, isMe: String(u._id) === String(req.user._id) })));
 });
 
-router.post("/staff", async (req, res) => {
+router.post("/staff", requireManagement, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const name = trimBody(req.body?.name, 80);
   const password = req.body?.password;
@@ -330,19 +341,34 @@ router.post("/staff", async (req, res) => {
   }
   user.role = "admin";
   if (name) user.name = name;
+  // New staff default to "staff" (no sales/money) unless management is chosen.
+  if (req.body?.staffRole === "management" || req.body?.staffRole === "staff") user.staffRole = req.body.staffRole;
+  else if (created) user.staffRole = "staff";
   if (password) user.password = await bcrypt.hash(password, 10);
   await user.save();
   await audit(req, created ? "staff_add" : "staff_promote", "user", user._id, email);
   res.status(created ? 201 : 200).json({ id: String(user._id), email, name: user.name, created });
 });
 
-router.delete("/staff/:id", async (req, res) => {
+router.delete("/staff/:id", requireManagement, async (req, res) => {
   if (!isId(req.params.id)) return res.status(400).json({ error: "Bad id" });
   if (String(req.params.id) === String(req.user._id)) return res.status(400).json({ error: "You can't remove your own staff access" });
   const user = await User.findByIdAndUpdate(req.params.id, { $set: { role: "user" } }, { new: true });
   if (!user) return res.status(404).json({ error: "Not found" });
   await audit(req, "staff_remove", "user", user._id, user.email);
   res.json({ ok: true });
+});
+
+/* Management ↔ staff. You can't demote yourself (so there's always someone in charge). */
+router.patch("/staff/:id", requireManagement, async (req, res) => {
+  const role = req.body?.staffRole;
+  if (role !== "management" && role !== "staff") return res.status(400).json({ error: "staffRole must be management or staff" });
+  if (!isId(req.params.id)) return res.status(400).json({ error: "Bad id" });
+  if (String(req.params.id) === String(req.user._id) && role === "staff") return res.status(400).json({ error: "You can't remove your own management access" });
+  const user = await User.findOneAndUpdate({ _id: req.params.id, role: "admin" }, { $set: { staffRole: role } }, { new: true });
+  if (!user) return res.status(404).json({ error: "Not a staff member" });
+  await audit(req, "staff_role", "user", user._id, `${user.email} → ${role}`);
+  res.json({ id: String(user._id), staffRole: role });
 });
 
 /* Change your own password (also lets Google sign-in staff set one). */
@@ -367,7 +393,7 @@ router.get("/kill-switch", async (req, res) => {
   res.json({ enabled: s.enabled, message: s.message || DEFAULT_MESSAGE, by: s.by || "", since: s.since || null });
 });
 
-router.post("/kill-switch", async (req, res) => {
+router.post("/kill-switch", requireManagement, async (req, res) => {
   const { enabled, password, message } = req.body || {};
   if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
   const pw = String(password || "");
@@ -389,7 +415,7 @@ router.post("/kill-switch", async (req, res) => {
 async function allTicketRows() {
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode").lean(),
   ]);
   return collectTickets(users, guests);
 }
@@ -403,6 +429,10 @@ router.get("/tickets", async (req, res) => {
   else if (show === "hidden") rows = rows.filter((r) => r.hidden);
   else if (show === "duplicates") rows = rows.filter((r) => r.duplicate);
   rows = matchRows(rows, req.query.q || "");
+  if (req.query.promo) {
+    const code = String(req.query.promo).toUpperCase();
+    rows = rows.filter((r) => (code === "ANY" ? !!r.promoCode : r.promoCode === code));
+  }
   const page = Math.max(0, Number(req.query.page) || 0), size = 100;
   res.json({ total: rows.length, duplicates: dupes.size, rows: rows.slice(page * size, page * size + size) });
 });
@@ -451,7 +481,7 @@ router.post("/tickets/hide-duplicates", async (req, res) => {
    Revenue comes only from Stripe (what was actually paid, after promo codes,
    before HST, minus refunds), with booths / pavilion / other payments shown
    separately. Ticket counts, buyers and check-ins come from the ticket records. */
-router.get("/sales", async (req, res) => {
+router.get("/sales", requireManagement, async (req, res) => {
   const range = ["day", "week", "month", "all"].includes(req.query.range) ? req.query.range : "month";
   const [rows, inventory] = await Promise.all([allTicketRows(), TicketInventory.find().lean()]);
   const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));

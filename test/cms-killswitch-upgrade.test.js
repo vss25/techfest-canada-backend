@@ -63,3 +63,11 @@ test("profile accepts appOnboarded as a boolean only", () => {
   assert.deepEqual(sanitizeProfilePatch({ appOnboarded: true }), { appOnboarded: true });
   assert.deepEqual(sanitizeProfilePatch({ appOnboarded: "yes" }), {});
 });
+
+test("profile accepts every field the app collects", () => {
+  const p = sanitizeProfilePatch({ name: " Gunant Pahwa ", tagline: "Building TTFC", jobLevel: "Founder", gender: "Male",
+    objectives: ["Find partners", 5, ""], availabilitySlots: ["d1-am"], meetingSpot: "Lobby", salutation: "Mr." });
+  assert.deepEqual(p, { name: "Gunant Pahwa", tagline: "Building TTFC", salutation: "Mr.", gender: "Male", jobLevel: "Founder",
+    objectives: ["Find partners"], availabilitySlots: ["d1-am"], meetingSpot: "Lobby" });
+  assert.deepEqual(sanitizeProfilePatch({ name: "  " }), {});
+});

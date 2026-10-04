@@ -37,6 +37,10 @@ const attendeeSchema = new mongoose.Schema(
       index: true,
       sparse: true
     },
+    // Promo code used at checkout ("" = none).
+    promoCode: {
+      type: String
+    },
     // Set when the Stripe-sync repair found this to be a copy of another ticket.
     syncDuplicate: {
       type: Boolean,

@@ -36,6 +36,8 @@ export function rowFromSession(s, refundedByIntent = new Map()) {
     email: String(s.customer_details?.email || s.customer_email || "").toLowerCase(),
     revenue: Math.max(0, net),
     tax, total, refunded,
+    promoCode: String(s.metadata?.promoCode || "").toUpperCase(),
+    discount: (s.total_details?.amount_discount || 0) / 100,
   };
 }
 
@@ -94,4 +96,18 @@ export function stripeSummary(rows, { range = "month", now = new Date() } = {}) 
     recent: ticketish.sort((a, b) => b.at - a.at).slice(0, 12)
       .map((r) => ({ name: r.name, tier: r.category === "upgrades" ? `upgrade → ${r.tier}` : r.tier, purchaseDate: r.at, amount: r.revenue, source: "stripe" })),
   };
+}
+
+/** Paid uses per promo code (tickets + booths), from Stripe. Pure. */
+export function promoUsage(rows) {
+  const out = {};
+  for (const r of rows) {
+    if (!r.promoCode) continue;
+    const u = (out[r.promoCode] = out[r.promoCode] || { code: r.promoCode, paidUses: 0, revenue: 0, discountGiven: 0, lastUsedAt: null });
+    u.paidUses += 1;
+    u.revenue = Math.round((u.revenue + r.revenue) * 100) / 100;
+    u.discountGiven = Math.round((u.discountGiven + r.discount) * 100) / 100;
+    if (!u.lastUsedAt || r.at > u.lastUsedAt) u.lastUsedAt = r.at;
+  }
+  return out;
 }

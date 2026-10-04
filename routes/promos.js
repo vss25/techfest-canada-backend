@@ -1,6 +1,8 @@
 import express from "express";
 import Promo from "../models/Promo.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireManagementAdmin as requireAdmin } from "../middleware/adminAuth.js";   // promo codes = pricing → management only
+import Stripe from "stripe";
+import { stripeRows, promoUsage } from "../services/stripeSales.js";
 
 const router = express.Router();
 
@@ -72,8 +74,18 @@ router.post("/promos/validate", async (req, res) => {
 ============================================================ */
 router.get("/admin/promos", requireAdmin, async (_req, res) => {
   try {
-    const promos = await Promo.find().sort({ createdAt: -1 });
-    res.json(promos);
+    const promos = await Promo.find().sort({ createdAt: -1 }).lean();
+    // Paid uses come from Stripe (a checkout that was never paid isn't a use).
+    let usage = null, usageError = "";
+    try {
+      if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY isn't set");
+      usage = promoUsage(await stripeRows(new Stripe(process.env.STRIPE_SECRET_KEY)));
+    } catch (e) { usageError = e.message; }
+    res.json(promos.map((p) => {
+      const u = usage?.[String(p.code).toUpperCase()];
+      return { ...p, paidUses: usage ? (u?.paidUses || 0) : null, revenue: u?.revenue || 0,
+               discountGiven: u?.discountGiven || 0, lastUsedAt: u?.lastUsedAt || null, usageError };
+    }));
   } catch (err) {
     res.status(500).json({ error: "Failed to load promos" });
   }

@@ -83,7 +83,7 @@ router.get("/users", async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
-  const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded").limit(60).lean();
+  const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline").limit(60).lean();
   res.json(users.filter((u) => !req.blocked.has(String(u._id))).map(userCard));
 });
 
@@ -103,7 +103,7 @@ router.get("/attendees", async (req, res) => {
 });
 
 router.get("/users/:id", async (req, res) => {
-  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded").lean();
+  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline").lean();
   if (!u) return res.status(404).json({ error: "Not found" });
   res.json(userCard(u));
 });
@@ -188,7 +188,7 @@ router.post("/feed/:id/comments", async (req, res) => {
 
 async function connectionDTO(c, meId) {
   const otherId = String(c.fromUserId) === String(meId) ? c.toUserId : c.fromUserId;
-  const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded").lean();
+  const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline").lean();
   return {
     id: String(c._id),
     user: userCard(other) || { id: String(otherId), name: "Attendee" },
@@ -242,6 +242,15 @@ router.post("/connections/:id/respond", async (req, res) => {
 });
 
 // Badge scan: both parties connected immediately, details exchanged.
+/* Withdraw a request you sent that hasn't been accepted yet. */
+router.post("/connections/:id/withdraw", async (req, res) => {
+  const c = await SocialConnection.findById(req.params.id).catch(() => null);
+  if (!c || String(c.fromUserId) !== String(req.user._id)) return res.status(404).json({ error: "Request not found" });
+  if (c.status !== "pending") return res.status(409).json({ error: "This request was already answered" });
+  await c.deleteOne();
+  res.json({ withdrawn: true, id: String(c._id) });
+});
+
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
@@ -277,7 +286,7 @@ router.get("/messages", async (req, res) => {
   const visible = recent.filter((t) => !req.blocked.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
   const threads = await Promise.all(visible.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
-    const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded").lean();
+    const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline").lean();
     return {
       user: userCard(other) || { id: String(otherId), name: "Attendee" },
       lastMessage: { body: t.last.body, sentByMe: String(t.last.fromUserId) === String(me), createdAt: t.last.createdAt },

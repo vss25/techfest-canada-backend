@@ -8,6 +8,7 @@ import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, salesSummary } from "../services/staffTickets.js";
 import { planSync, applySync, listCompleteSessions } from "../services/stripeSync.js";
+import { requireManagementAdmin } from "../middleware/adminAuth.js";
 import { AppContent } from "../models/Admin.js";
 
 const router = express.Router();
@@ -106,8 +107,7 @@ const adminMiddleware = (req, res, next) => {
 ========================================================= */
 router.get(
   "/analytics",
-  authMiddleware,
-  adminMiddleware,
+  requireManagementAdmin,
   async (req, res) => {
     try {
       const { range = "week" } = req.query;
@@ -115,7 +115,7 @@ router.get(
       const [inventory, users, guests] = await Promise.all([
         TicketInventory.find().lean(),
         User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff").lean(),
+        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode").lean(),
       ]);
       const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
       const summary = salesSummary(collectTickets(users, guests), prices, { range });
@@ -208,8 +208,7 @@ router.get(
 ========================================================= */
 router.put(
   "/inventory/:tier",
-  authMiddleware,
-  adminMiddleware,
+  requireManagementAdmin,
   async (req, res) => {
     try {
       const { tier } = req.params;
@@ -390,7 +389,7 @@ router.post(
 /* One-time repair after deploy: link tickets to their Stripe sessions and
    hide the copies the old sync created. Never creates tickets. */
 export async function repairStripeSyncOnce() {
-  const KEY = "migration.stripe_sync_repair_v1";
+  const KEY = "migration.stripe_sync_repair_v2";   // v2 also backfills promo codes
   try {
     if (!process.env.STRIPE_SECRET_KEY) return;
     if (await AppContent.exists({ key: KEY })) return;
