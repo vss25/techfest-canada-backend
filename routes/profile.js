@@ -1,6 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
 
 /* =========================================================
    ATTENDEE PROFILE — GET / PATCH /api/profile
@@ -13,7 +14,7 @@ import User from "../models/User.js";
 
 const router = express.Router();
 
-const EDITABLE = ["linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden"];
+const EDITABLE = ["linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden", "appOnboarded"];
 const MAX = { linkedinUrl: 300, fieldOfWork: 120, jobTitle: 120, organization: 160, country: 80 };
 
 /** Pure: pick + sanitise the editable fields from a body. Exported for tests. */
@@ -30,7 +31,7 @@ export function sanitizeProfilePatch(body = {}) {
         .slice(0, 20);
       continue;
     }
-    if (key === "directoryHidden") { if (typeof body.directoryHidden === "boolean") out.directoryHidden = body.directoryHidden; continue; }
+    if (key === "directoryHidden" || key === "appOnboarded") { if (typeof body[key] === "boolean") out[key] = body[key]; continue; }
     if (typeof body[key] !== "string") continue;
     let v = body[key].trim().slice(0, MAX[key]);
     if (key === "linkedinUrl" && v && !/^https?:\/\//i.test(v)) v = `https://${v.replace(/^\/+/, "")}`;
@@ -55,7 +56,24 @@ async function requireUser(req, res) {
 
 router.get("/", async (req, res) => {
   const user = await requireUser(req, res);
-  if (user) res.json(user);
+  if (user) res.json({ ...user.toObject(), avatarUrl: avatarPath(user._id, user.avatarVersion) });
+});
+
+/* Profile photo, shown to everyone on every device. Send
+   { avatarData: "data:image/jpeg;base64,…" } (≤150 KB) or "" to remove. */
+router.put("/avatar", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const raw = req.body?.avatarData;
+  if (raw === "" || raw === null) {
+    await User.updateOne({ _id: user._id }, { $set: { avatarData: "", avatarVersion: 0 } });
+    return res.json({ avatarUrl: "" });
+  }
+  const data = cleanImageData(raw, 150_000);
+  if (!data) return res.status(400).json({ error: "Send a JPEG or PNG under 150 KB" });
+  const avatarVersion = Date.now();
+  await User.updateOne({ _id: user._id }, { $set: { avatarData: data, avatarVersion } });
+  res.json({ avatarUrl: avatarPath(user._id, avatarVersion) });
 });
 
 router.patch("/", async (req, res) => {

@@ -85,7 +85,28 @@ router.post("/stripe", async (req, res) => {
 
       // ================= CREATE TICKET (only for tickets, not booths) =================
 
-      if (!isBooth) {
+      if (purchaseType === "upgrade") {
+        // ================= PASS UPGRADE: same ticketId, new type =================
+        const fromTier = session.metadata.fromTier;
+        const ticketId = session.metadata.upgradeFrom;
+        if (fromTier) {
+          await TicketInventory.updateOne({ tier: fromTier, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
+        }
+        const user = userId ? await User.findById(userId) : null;
+        const ticket = user?.tickets?.find((t) => t.ticketId === ticketId);
+        if (ticket) {
+          ticket.upgradedFrom = ticket.type;
+          ticket.type = tier;
+          await user.save();
+          await Attendee.updateMany({ ticketId }, { $set: { ticketType: tier } });
+          console.log("⬆️ Ticket upgraded:", ticketId, fromTier, "→", tier);
+          if (email || user.email) {
+            await sendTicketEmail({ email: email || user.email, name: user.name || name, ticketId, tier });
+          }
+        } else {
+          console.error("❌ Upgrade paid but ticket not found:", ticketId, userId);
+        }
+      } else if (!isBooth) {
         const ticketId = crypto.randomBytes(6).toString("hex");
 
         // If user purchased while logged in → attach ticket to account

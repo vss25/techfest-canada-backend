@@ -30,6 +30,23 @@ export function tierName(key) {
   }
 }
 
+/** Public URL path of a profile photo ("" when none). */
+export function avatarPath(userId, version) {
+  return version ? `/api/files/avatar/${userId}?v=${version}` : "";
+}
+
+/** Public URL path of a post's photo ("" when none). */
+export function postImagePath(post) {
+  return post?.imageData ? `/api/files/post/${post._id}` : "";
+}
+
+/** Splits a data URL into { contentType, buffer } (null when malformed). */
+export function decodeDataUrl(s) {
+  const m = /^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/s.exec(String(s || ""));
+  if (!m) return null;
+  return { contentType: m[1], buffer: Buffer.from(m[2], "base64") };
+}
+
 /** Public card for another attendee — never email, never role. */
 export function userCard(user) {
   if (!user) return null;
@@ -42,11 +59,13 @@ export function userCard(user) {
     country: user.country || "",
     topics: Array.isArray(user.topics) ? user.topics : [],
     tier: tierName(bestTierKey(user)),
+    avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
   };
 }
 
-/** What the app sees for a post. */
-export function postDTO(post, viewerId) {
+/** What the app sees for a post. `avatars` maps authorId → avatarVersion.
+    The photo itself is fetched from imageUrl, so the feed stays small. */
+export function postDTO(post, viewerId, avatars = new Map()) {
   const me = String(viewerId || "");
   return {
     id: String(post._id),
@@ -59,7 +78,9 @@ export function postDTO(post, viewerId) {
     body: post.body,
     topicTags: post.topicTags || [],
     linkUrl: post.linkUrl || "",
-    imageData: post.imageData || "",
+    imageData: "",
+    imageUrl: postImagePath(post),
+    authorAvatarUrl: avatarPath(post.authorId, avatars.get(String(post.authorId))),
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
     likedByMe: (post.likes || []).some((l) => String(l) === me),

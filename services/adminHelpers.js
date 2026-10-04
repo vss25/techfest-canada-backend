@@ -35,7 +35,7 @@ export const CONTENT_KEYS = {
   "home.announcement": "",
   "home.announcement_link": "",
   "home.spotlight_title": "Your spotlight",
-  "home.partners_title": "Event partners",
+  "home.partners_title": "In attendance",
   "feed.empty": "Be the first to post — everyone at TTFC will see it.",
   "network.empty": "Scan someone's badge QR when you meet, or open a speaker profile and tap 'Connect'.",
   "schedule.title": "Schedule",
