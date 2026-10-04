@@ -8,7 +8,7 @@ import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
 import webhookRoutes from "./routes/webhook.js";
 import checkinRoutes from "./routes/checkin.js";
-import adminRoutes from "./routes/admin.js";
+import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
 import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
@@ -132,7 +132,7 @@ app.get("/", (req, res) => {
 ========================================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
+  .then(() => { console.log("✅ MongoDB connected"); repairStripeSyncOnce(); })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 /* ==========================================

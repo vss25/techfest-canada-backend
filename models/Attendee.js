@@ -31,6 +31,17 @@ const attendeeSchema = new mongoose.Schema(
     checkedInAt: {
       type: Date
     },
+    // The Stripe Checkout Session this ticket came from (one session = one ticket).
+    stripeSessionId: {
+      type: String,
+      index: true,
+      sparse: true
+    },
+    // Set when the Stripe-sync repair found this to be a copy of another ticket.
+    syncDuplicate: {
+      type: Boolean,
+      default: false
+    },
     // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
     hiddenByStaff: {
       type: Boolean,

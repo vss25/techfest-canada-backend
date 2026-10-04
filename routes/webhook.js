@@ -58,6 +58,26 @@ router.post("/stripe", async (req, res) => {
         return res.json({ received: true });
       }
 
+      // ================= ONCE PER SESSION =================
+      // Stripe can deliver the same event more than once. One paid session
+      // = one ticket (or one upgrade), and it's counted in inventory once.
+      if (!isBooth && purchaseType !== "upgrade") {
+        const alreadyIssued = await Attendee.exists({ stripeSessionId: session.id })
+          || await User.exists({ "tickets.stripeSessionId": session.id });
+        if (alreadyIssued) {
+          console.log("↩️  Ticket already issued for session", session.id);
+          return res.json({ received: true });
+        }
+      }
+      if (purchaseType === "upgrade") {
+        const owner = userId ? await User.findById(userId).select("tickets").lean() : null;
+        const t = owner?.tickets?.find((x) => x.ticketId === session.metadata.upgradeFrom);
+        if (t && t.type === tier) {
+          console.log("↩️  Upgrade already applied for session", session.id);
+          return res.json({ received: true });
+        }
+      }
+
       // ================= INVENTORY UPDATE =================
 
       const inventory = await TicketInventory.findOne({ tier });
@@ -119,6 +139,7 @@ router.post("/stripe", async (req, res) => {
             user.tickets.push({
               ticketId,
               type: tier,
+              stripeSessionId: session.id,
               purchaseDate: new Date()
             });
 
@@ -135,6 +156,7 @@ router.post("/stripe", async (req, res) => {
             email: email,
             ticketId,
             ticketType: tier,
+            stripeSessionId: session.id,
             purchaseDate: new Date()
           });
 
