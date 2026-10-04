@@ -93,7 +93,7 @@ router.get("/users", async (req, res) => {
 router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
-    User.find({ "tickets.0": { $exists: true } })
+    User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
       .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean(),
     Attendee.find({ claimedBy: { $exists: false } }).select("name email ticketId ticketType purchaseDate").lean(),
   ]);
