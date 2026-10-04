@@ -1,7 +1,7 @@
 import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
-import { cmsFieldsFor, CMS_TYPES, toSanityPatch } from "../services/cmsSchema.js";
+import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc } from "../services/cmsSchema.js";
 
 /* =========================================================
    /api/cms — edit the website's Sanity content (speakers,
@@ -80,12 +80,34 @@ router.post("/upload", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/* One-time import of the agenda that's currently hardcoded on the website.
+   Body: { sessions: [...] } in the website's agenda.js shape. Never overwrites:
+   sessions that already exist in Sanity (same id) are left as they are. */
+router.post("/session/import", async (req, res) => {
+  if (needToken(res)) return;
+  const list = Array.isArray(req.body?.sessions) ? req.body.sessions.slice(0, 300) : [];
+  if (!list.length) return res.status(400).json({ error: "No sessions sent" });
+  const docs = [], errors = [];
+  for (const s of list) {
+    const r = sessionDoc(s);
+    if (r.error) errors.push(`${s.id || s.title}: ${r.error}`); else docs.push(r.doc);
+  }
+  if (!docs.length) return res.status(400).json({ error: "Nothing valid to import", errors });
+  try {
+    await mutate(docs.map((d) => ({ createIfNotExists: d })));
+    await audit(req, "cms_import", "session", "", `${docs.length} sessions`);
+    res.status(201).json({ imported: docs.length, skipped: errors });
+  } catch (err) { fail(res, err); }
+});
+
 router.get("/:type", async (req, res) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   try {
-    const out = await query(`*[_type == $type && !(_id in path("drafts.**"))] | order(coalesce(order, 9999) asc, name asc) {
-      ..., "imageUrl": image.asset->url, "logoUrl": logo.asset->url }`, { type });
+    const order = type === "session" ? "order(day asc, time asc)" : "order(coalesce(order, 9999) asc, name asc)";
+    const out = await query(`*[_type == $type && !(_id in path("drafts.**"))] | ${order} {
+      ..., "imageUrl": image.asset->url, "logoUrl": logo.asset->url,
+      "imageDims": image.asset->metadata.dimensions, "logoDims": logo.asset->metadata.dimensions }`, { type });
     res.json(out.result || []);
   } catch (err) { fail(res, err); }
 });

@@ -7,7 +7,7 @@ import { sanitizeProfilePatch } from "../routes/profile.js";
 import { upgradeQuote } from "../routes/payments.js";
 
 test("CMS types mirror the website schema", () => {
-  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings"]);
+  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings", "session"]);
 });
 
 test("speaker create needs the required fields", () => {
@@ -70,4 +70,32 @@ test("profile accepts every field the app collects", () => {
   assert.deepEqual(p, { name: "Gunant Pahwa", tagline: "Building TTFC", salutation: "Mr.", gender: "Male", jobLevel: "Founder",
     objectives: ["Find partners"], availabilitySlots: ["d1-am"], meetingSpot: "Lobby" });
   assert.deepEqual(sanitizeProfilePatch({ name: "  " }), {});
+});
+
+import { sessionDoc, cleanPerson } from "../services/cmsSchema.js";
+
+test("agenda sessions: import shape, times, people, formats", () => {
+  const { doc } = sessionDoc({ id: "d1-06", day: 1, time: "10:10", endTime: "10:35", title: "Conviction Before Consensus",
+    type: "Fireside Chat", format: "fireside", pillar: "quantum", speakers: [{ name: "Dr. Christian Weedbrook" }, { name: " " }],
+    moderator: { name: "Shawn Abbott" } });
+  assert.equal(doc._id, "session-d1-06");
+  assert.equal(doc.sessionId, "d1-06");
+  assert.equal(doc.speakers.length, 1);
+  assert.ok(doc.speakers[0]._key);
+  assert.deepEqual(doc.moderator, { name: "Shawn Abbott" });
+  assert.match(toSanityPatch("session", { time: "9:5" }, { creating: false }).error, /time like/);
+  assert.equal(toSanityPatch("session", { time: "9:05" }, { creating: false }).set.time, "09:05");
+  assert.equal(toSanityPatch("session", { day: "2" }, { creating: false }).set.day, 2);
+  assert.match(toSanityPatch("session", { format: "jamboree" }, { creating: false }).error, /format/);
+  assert.equal(cleanPerson({ name: "A", tentative: true, org: "" }).tentative, true);
+});
+
+test("photo framing and logo size", () => {
+  const p = toSanityPatch("speaker", { image: { asset: "image-abc123-400x500-jpg", crop: { top: .1, bottom: .2, left: 0, right: .05 }, hotspot: { x: .5, y: .4, width: .6, height: .6 } } }, { creating: false });
+  assert.equal(p.error, null);
+  assert.equal(p.set.image.crop.top, 0.1);
+  assert.equal(p.set.image.hotspot._type, "sanity.imageHotspot");
+  assert.match(toSanityPatch("speaker", { image: { asset: "image-abc123-400x500-jpg", crop: { top: 2, bottom: 0, left: 0, right: 0 } } }, { creating: false }).error, /between 0 and 1/);
+  assert.equal(toSanityPatch("partner", { logoScale: 140 }, { creating: false }).set.logoScale, 140);
+  assert.match(toSanityPatch("partner", { logoScale: 900 }, { creating: false }).error, /between/);
 });
