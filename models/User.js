@@ -23,6 +23,11 @@ const ticketSchema = new mongoose.Schema({
   // Set when a pass is upgraded in place (same ticketId, new type).
   upgradedFrom: {
     type: String
+  },
+  // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
+  hiddenByStaff: {
+    type: Boolean,
+    default: false
   }
 });
 

@@ -47,6 +47,20 @@ export const CONTENT_KEYS = {
   "flag.show_news": true,
   "flag.allow_posts": true,
   "flag.allow_groups": true,
+
+  /* Website (Site settings page in the admin panel). Empty text = use the built-in default. */
+  "site.announcement": "",                 // bar across the top of every page
+  "site.announcement_link": "",
+  "site.ticket_sales_open": true,          // off = buy buttons disabled, message shown
+  "site.ticket_sales_message": "Ticket sales are paused right now. Please check back soon.",
+  "site.nominations_open": true,
+  "site.volunteer_open": true,
+  "site.show_agenda": true,
+  "site.hero_tagline": "",
+  "site.contact_email": "info@thetechfestival.com",
+  "site.linkedin_url": "",
+  "site.instagram_url": "",
+  "site.x_url": "",
 };
 
 /** Validates a content update; returns [key, value] or null. */

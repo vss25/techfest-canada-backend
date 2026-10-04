@@ -13,6 +13,8 @@ import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
+import TicketInventory from "../models/TicketInventory.js";
+import { collectTickets, duplicateKeys, matchRows, salesSummary } from "../services/staffTickets.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -377,6 +379,83 @@ router.post("/kill-switch", async (req, res) => {
   const s = await setKillState({ enabled, message: message || DEFAULT_MESSAGE, by: req.user.name || req.user.email });
   await audit(req, enabled ? "kill_switch_on" : "kill_switch_off", "site", "", s.message);
   res.json({ enabled: s.enabled, message: s.message, by: s.by, since: s.since });
+});
+
+/* ---------- Tickets (staff view) ----------
+   Hiding a ticket only removes it from staff lists and analytics. The
+   owner keeps it: it still shows in their app/website and works at the door. */
+async function allTicketRows() {
+  const [users, guests] = await Promise.all([
+    User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff").lean(),
+  ]);
+  return collectTickets(users, guests);
+}
+
+router.get("/tickets", async (req, res) => {
+  const show = String(req.query.show || "visible");
+  let rows = await allTicketRows();
+  const dupes = new Set(duplicateKeys(rows));
+  rows = rows.map((r) => ({ ...r, duplicate: dupes.has(r.key) }));
+  if (show === "visible") rows = rows.filter((r) => !r.hidden);
+  else if (show === "hidden") rows = rows.filter((r) => r.hidden);
+  else if (show === "duplicates") rows = rows.filter((r) => r.duplicate);
+  rows = matchRows(rows, req.query.q || "");
+  const page = Math.max(0, Number(req.query.page) || 0), size = 100;
+  res.json({ total: rows.length, duplicates: dupes.size, rows: rows.slice(page * size, page * size + size) });
+});
+
+async function setHidden(keys, hidden) {
+  let changed = 0;
+  for (const key of keys.slice(0, 1000)) {
+    const parts = String(key).split(":");
+    if (parts[0] === "u" && parts.length >= 3 && isId(parts[1])) {
+      const r = await User.updateOne({ _id: parts[1], "tickets.ticketId": parts.slice(2).join(":") },
+                                     { $set: { "tickets.$.hiddenByStaff": hidden } });
+      changed += r.modifiedCount || 0;
+    } else if (parts[0] === "g" && parts.length >= 2) {
+      const r = await Attendee.updateOne({ ticketId: parts.slice(1).join(":") }, { $set: { hiddenByStaff: hidden } });
+      changed += r.modifiedCount || 0;
+    }
+  }
+  return changed;
+}
+
+// Body: { keys: ["u:<userId>:<ticketId>" | "g:<ticketId>", …], hidden: true|false }
+router.post("/tickets/hide", async (req, res) => {
+  const keys = Array.isArray(req.body?.keys) ? req.body.keys : [];
+  const hidden = req.body?.hidden !== false;
+  if (!keys.length) return res.status(400).json({ error: "No tickets selected" });
+  const changed = await setHidden(keys, hidden);
+  await audit(req, hidden ? "tickets_hide" : "tickets_unhide", "ticket", "", `${changed} ticket(s): ${keys.slice(0, 20).join(", ")}`);
+  res.json({ changed });
+});
+
+// Hide every duplicate (same email), keeping each person's most recent ticket.
+// Body: { preview: true } returns what would be hidden without changing anything.
+router.post("/tickets/hide-duplicates", async (req, res) => {
+  const rows = await allTicketRows();
+  const keys = duplicateKeys(rows);
+  if (req.body?.preview) {
+    const set = new Set(keys);
+    return res.json({ count: keys.length, rows: rows.filter((r) => set.has(r.key)) });
+  }
+  const changed = await setHidden(keys, true);
+  await audit(req, "tickets_hide_duplicates", "ticket", "", `${changed} duplicate ticket(s)`);
+  res.json({ changed });
+});
+
+/* ---------- Sales analytics (real, from purchase dates) ---------- */
+router.get("/sales", async (req, res) => {
+  const range = ["day", "week", "month", "all"].includes(req.query.range) ? req.query.range : "month";
+  const [rows, inventory] = await Promise.all([allTicketRows(), TicketInventory.find().lean()]);
+  const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
+  const summary = salesSummary(rows, prices, { range });
+  res.json({
+    ...summary,
+    inventory: inventory.map((t) => ({ tier: t.tier, price: t.price || 0, sold: t.sold || 0, total: t.total || 0 })),
+    note: "Revenue uses each pass's list price; promo-code discounts and HST aren't included.",
+  });
 });
 
 export default router;

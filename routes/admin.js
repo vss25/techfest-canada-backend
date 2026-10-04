@@ -6,6 +6,7 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
+import { collectTickets, salesSummary } from "../services/staffTickets.js";
 
 const router = express.Router();
 
@@ -100,69 +101,15 @@ router.get(
   async (req, res) => {
     try {
       const { range = "week" } = req.query;
-
-      const inventory = await TicketInventory.find();
-
-      // Compute overall totals
-      let totalTickets = 0;
-      let totalRevenue = 0;
-
-      for (const tier of inventory) {
-        totalTickets += tier.sold;
-        totalRevenue += tier.sold * (tier.price || 0);
-      }
-
-      // Build time-series sales data shaped by range
-      // so the frontend LineChart has real x-axis labels to plot
-      const now = new Date();
-      const sales = [];
-
-      if (range === "day") {
-        // Last 24 hours in 6 intervals of 4 hours
-        for (let i = 5; i >= 0; i--) {
-          const hour = new Date(now);
-          hour.setHours(now.getHours() - i * 4, 0, 0, 0);
-          const label = hour.toLocaleTimeString("en-US", {
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          });
-          sales.push({
-            name: label,
-            tickets: Math.round(totalTickets / 6),
-            revenue: Math.round(totalRevenue / 6),
-          });
-        }
-      } else if (range === "week") {
-        // Last 7 days
-        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        for (let i = 6; i >= 0; i--) {
-          const d = new Date(now);
-          d.setDate(now.getDate() - i);
-          sales.push({
-            name: days[d.getDay()],
-            tickets: Math.round(totalTickets / 7),
-            revenue: Math.round(totalRevenue / 7),
-          });
-        }
-      } else if (range === "month") {
-        // Last 4 weeks
-        for (let i = 3; i >= 0; i--) {
-          sales.push({
-            name: `Wk ${4 - i}`,
-            tickets: Math.round(totalTickets / 4),
-            revenue: Math.round(totalRevenue / 4),
-          });
-        }
-      }
-
-      res.json({
-        totals: {
-          totalRevenue,
-          totalTickets,
-        },
-        sales,
-      });
+      // Real numbers from ticket purchase dates (was an even split of the totals).
+      const [inventory, users, guests] = await Promise.all([
+        TicketInventory.find().lean(),
+        User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
+        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff").lean(),
+      ]);
+      const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
+      const summary = salesSummary(collectTickets(users, guests), prices, { range });
+      res.json({ totals: summary.totals, sales: summary.sales, byTier: summary.byTier });
     } catch (err) {
       console.error("Analytics error:", err);
       res.status(500).json({ error: "Server error" });
@@ -305,7 +252,7 @@ router.get(
   adminMiddleware,
   async (req, res) => {
     try {
-      const attendees = await Attendee.find({})
+      const attendees = await Attendee.find({ hiddenByStaff: { $ne: true } })
         .select("name email ticketId ticketType purchaseDate checkedIn")
         .sort({ purchaseDate: -1 })
         .lean();

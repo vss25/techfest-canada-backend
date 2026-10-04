@@ -31,6 +31,11 @@ const attendeeSchema = new mongoose.Schema(
     checkedInAt: {
       type: Date
     },
+    // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
+    hiddenByStaff: {
+      type: Boolean,
+      default: false
+    },
     // Set when this guest ticket is linked to an app/website account.
     claimedBy: {
       type: mongoose.Schema.Types.ObjectId,
