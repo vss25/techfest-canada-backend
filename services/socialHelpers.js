@@ -65,6 +65,9 @@ export function userCard(user) {
     topics: Array.isArray(user.topics) ? user.topics : [],
     tier: tierName(bestTierKey(user)),
     tagline: user.tagline || "",
+    // When/where they're happy to meet — they chose to share this.
+    availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
+    meetingSpot: user.meetingSpot || "",
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
   };

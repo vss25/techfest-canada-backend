@@ -74,3 +74,9 @@ test("website-only accounts are not 'on the app' until they sign into it", () =>
   assert.equal(dir.find((p) => p.name === "Web Only").onApp, false);
   assert.equal(dir.find((p) => p.name === "App User").onApp, true);
 });
+
+test("people on the app appear even without a ticket", () => {
+  const dir = buildDirectory([{ _id: "v1", name: "Vishwa", email: "v@x.com", lastActiveAt: "2026-10-03", tickets: [] },
+                              { _id: "n1", name: "No Ticket", email: "n@x.com", tickets: [] }], []);
+  assert.deepEqual(dir.map((p) => [p.name, p.onApp, p.tier]), [["Vishwa", true, ""]]);
+});

@@ -75,13 +75,15 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
   for (const u of users || []) {
     if (excludeUserId && String(u._id) === String(excludeUserId)) continue;
     if (u.directoryHidden) continue;
-    const t = latestTicket(u.tickets);
+    const onApp = !!(u.appOnboarded || u.lastActiveAt);
+    // Ticket holders, plus anyone who's on the app even without a ticket yet.
+    const t = latestTicket(u.tickets) || (onApp ? { type: "", purchaseDate: null } : null);
     if (!t) continue;
     const email = String(u.email || "").toLowerCase();
     byEmail.set(email || `user:${u._id}`, {
       id: String(u._id),
       // Only people who have signed into the app can be connected with or messaged.
-      onApp: !!(u.appOnboarded || u.lastActiveAt),
+      onApp,
       name: u.name || "",
       jobTitle: u.jobTitle || "",
       organization: u.organization || "",
@@ -89,6 +91,9 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       country: u.country || "",
       topics: Array.isArray(u.topics) ? u.topics : [],
       avatarUrl: u.avatarVersion ? `/api/files/avatar/${u._id}?v=${u.avatarVersion}` : "",
+      tagline: u.tagline || "",
+      availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
+      meetingSpot: u.meetingSpot || "",
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
