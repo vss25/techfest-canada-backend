@@ -14,7 +14,7 @@ import { trimBody, threadKey } from "../services/socialHelpers.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
-import { collectTickets, duplicateKeys, matchRows, salesSummary } from "../services/staffTickets.js";
+import { collectTickets, duplicateKeys, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
 import { stripeRows, stripeSummary } from "../services/stripeSales.js";
 import Stripe from "stripe";
 
@@ -517,6 +517,39 @@ router.get("/sales", requireManagement, async (req, res) => {
     out.note = "Revenue unavailable: couldn't read Stripe. Ticket counts come from ticket records.";
   }
   res.json(out);
+});
+
+/* ---------- Inventory recount ----------
+   The "sold" counters drifted (old webhook retries, duplicate imports).
+   Recount from real tickets: visible pass tickets per tier (hidden test /
+   duplicate tickets excluded) + paid booth orders from Stripe.
+   Body { preview: true } shows the changes without saving. */
+router.post("/inventory/recount", requireManagement, async (req, res) => {
+  const [rows, inventory] = await Promise.all([allTicketRows(), TicketInventory.find()]);
+  let booths = {}, boothNote = "";
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY isn't set");
+    for (const r of await stripeRows(new Stripe(process.env.STRIPE_SECRET_KEY))) {
+      if (r.category === "booths" && r.tier) booths[r.tier] = (booths[r.tier] || 0) + 1;
+    }
+  } catch (e) { booths = null; boothNote = `Booths left unchanged: ${e.message}`; }
+  const target = recountSold(rows, booths || {});
+  const changes = [];
+  for (const t of inventory) {
+    const isBooth = t.tier.startsWith("booth-");
+    if (isBooth && booths === null) continue;            // can't verify booths without Stripe
+    const next = target[t.tier] || 0;
+    if (next !== (t.sold || 0)) changes.push({ tier: t.tier, from: t.sold || 0, to: next, archived: !!t.archived });
+  }
+  if (req.body?.preview) return res.json({ changes, boothNote });
+  for (const c of changes) {
+    const doc = inventory.find((t) => t.tier === c.tier);
+    doc.sold = c.to;
+    if ((doc.total || 0) < c.to) doc.total = c.to;       // never leave sold above the allocation
+    await doc.save();
+  }
+  await audit(req, "inventory_recount", "inventory", "", changes.map((c) => `${c.tier} ${c.from}→${c.to}`).join(", ") || "no changes");
+  res.json({ changes, boothNote });
 });
 
 export default router;
