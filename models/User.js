@@ -24,6 +24,10 @@ const ticketSchema = new mongoose.Schema({
   upgradedFrom: {
     type: String
   },
+  // The Stripe Checkout Session this ticket came from (one session = one ticket).
+  stripeSessionId: {
+    type: String
+  },
   // Hidden from staff lists/analytics only (test or duplicate tickets). Still valid for the owner.
   hiddenByStaff: {
     type: Boolean,

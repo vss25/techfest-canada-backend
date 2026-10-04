@@ -7,6 +7,8 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, salesSummary } from "../services/staffTickets.js";
+import { planSync, applySync, listCompleteSessions } from "../services/stripeSync.js";
+import { AppContent } from "../models/Admin.js";
 
 const router = express.Router();
 
@@ -362,90 +364,21 @@ router.post(
   async (req, res) => {
     try {
       const stripe = getStripe();
-
-      const syncedAttendees = [];
-      const skipped = [];
-
-      // Fetch all completed checkout sessions (pagination: 100 at a time)
-      let hasMore = true;
-      let lastSessionId = null;
-
-      while (hasMore) {
-        const params = {
-          limit: 100,
-          status: "complete",
-        };
-
-        if (lastSessionId) {
-          params.starting_after = lastSessionId;
-        }
-
-        const sessions = await stripe.checkout.sessions.list(params);
-
-        for (const session of sessions.data) {
-          // Skip if not a ticket purchase
-          const purchaseType = session.metadata?.type;
-          if (purchaseType === "booth") continue;
-
-          const tier = session.metadata?.tier;
-          if (!tier) continue;
-
-          // Booth purchases are exhibitors, not delegates — no pass to issue
-          if (String(tier).startsWith("booth-")) continue;
-
-          const email = session.customer_details?.email;
-          const name = session.customer_details?.name || "Guest";
-
-          if (!email) {
-            skipped.push({
-              reason: "no_email",
-              sessionId: session.id,
-              tier
-            });
-            continue;
-          }
-
-          // Don't re-import a session we've already turned into an attendee
-          const already = await Attendee.findOne({ stripeSessionId: session.id });
-          if (already) {
-            skipped.push({ reason: "already_imported", sessionId: session.id, tier });
-            continue;
-          }
-
-          const ticketId = crypto.randomBytes(6).toString("hex");
-
-          const attendee = new Attendee({
-            name,
-            email,
-            ticketId,
-            ticketType: tier,
-            purchaseDate: new Date(session.created * 1000),
-            stripeSessionId: session.id,
-          });
-
-          await attendee.save();
-
-          syncedAttendees.push({
-            name,
-            email,
-            ticketId,
-            ticketType: tier,
-            purchaseDate: attendee.purchaseDate
-          });
-
-          console.log("🔄 Synced guest from Stripe:", email, tier);
-        }
-
-        lastSessionId = sessions.data[sessions.data.length - 1]?.id;
-        hasMore = sessions.has_more;
-      }
-
+      const [sessions, attendees, users] = await Promise.all([
+        listCompleteSessions(stripe),
+        Attendee.find({}).lean(),
+        User.find({ "tickets.0": { $exists: true } }).select("email tickets").lean(),
+      ]);
+      // One paid session = one ticket: link existing tickets, hide old copies, create only what's missing.
+      const plan = planSync(sessions, attendees, users);
+      const result = await applySync(plan, { Attendee, User, crypto });
+      console.log("🔄 Stripe sync:", result);
       res.json({
         success: true,
-        synced: syncedAttendees.length,
-        skipped: skipped.length,
-        attendees: syncedAttendees,
-        skippedDetails: skipped.slice(0, 20) // Return first 20 skipped for info
+        synced: result.created,
+        linked: result.linked,
+        duplicatesHidden: result.duplicatesHidden,
+        skipped: sessions.length - result.created,
       });
     } catch (err) {
       console.error("Sync error:", err);
@@ -453,5 +386,25 @@ router.post(
     }
   }
 );
+
+/* One-time repair after deploy: link tickets to their Stripe sessions and
+   hide the copies the old sync created. Never creates tickets. */
+export async function repairStripeSyncOnce() {
+  const KEY = "migration.stripe_sync_repair_v1";
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) return;
+    if (await AppContent.exists({ key: KEY })) return;
+    const [sessions, attendees, users] = await Promise.all([
+      listCompleteSessions(getStripe()),
+      Attendee.find({}).lean(),
+      User.find({ "tickets.0": { $exists: true } }).select("email tickets").lean(),
+    ]);
+    const result = await applySync(planSync(sessions, attendees, users), { Attendee, User, crypto, allowCreate: false });
+    await AppContent.create({ key: KEY, value: { ...result, at: new Date() }, updatedBy: "system" });
+    console.log("🧹 Stripe sync repair:", result);
+  } catch (err) {
+    console.error("Stripe sync repair skipped:", err.message);
+  }
+}
 
 export default router;
