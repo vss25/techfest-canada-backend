@@ -15,6 +15,7 @@ import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwi
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, duplicateKeys, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
+import { DETAIL_COLUMNS } from "../services/attendeeDetails.js";
 import { stripeRows, stripeSummary } from "../services/stripeSales.js";
 import Stripe from "stripe";
 
@@ -415,7 +416,7 @@ router.post("/kill-switch", requireManagement, async (req, res) => {
 async function allTicketRows() {
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode details").lean(),
   ]);
   return collectTickets(users, guests);
 }
@@ -435,6 +436,26 @@ router.get("/tickets", async (req, res) => {
   }
   const page = Math.max(0, Number(req.query.page) || 0), size = 100;
   res.json({ total: rows.length, duplicates: dupes.size, rows: rows.slice(page * size, page * size + size) });
+});
+
+// Spreadsheet of every visible ticket with what the buyer told us at checkout.
+// Management only: it holds phone numbers and other personal details.
+router.get("/tickets/export", requireManagement, async (req, res) => {
+  const rows = (await allTicketRows()).filter((r) => !r.hidden);
+  const cell = (v) => {
+    const s = Array.isArray(v) ? v.join("; ") : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = ["Ticket ID", "Pass", "Name", "Email", "Purchased", "Checked in", "Promo code", "Source",
+    ...DETAIL_COLUMNS.map(([, label]) => label)];
+  const lines = rows.map((r) => [r.ticketId, r.tier, r.name, r.email,
+    r.purchaseDate ? new Date(r.purchaseDate).toISOString().slice(0, 10) : "", r.checkedIn, r.promoCode,
+    r.source === "account" ? "Account" : "Guest checkout",
+    ...DETAIL_COLUMNS.map(([k]) => r.details?.[k])].map(cell).join(","));
+  await audit(req, "tickets_export", "ticket", "", `${rows.length} rows`);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ttfc-attendees-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send("\uFEFF" + [head.map(cell).join(","), ...lines].join("\n"));
 });
 
 async function setHidden(keys, hidden) {

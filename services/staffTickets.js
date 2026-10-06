@@ -19,6 +19,7 @@ export function collectTickets(users = [], guests = []) {
         name: u.name || "", email: String(u.email || "").toLowerCase(), ticketId: t.ticketId,
         tier: String(t.type || "").toLowerCase(), purchaseDate: t.purchaseDate || null,
         checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff, promoCode: t.promoCode || "",
+        details: t.details || null,
       });
     }
   }
@@ -29,6 +30,7 @@ export function collectTickets(users = [], guests = []) {
       name: g.name || "", email: String(g.email || "").toLowerCase(), ticketId: g.ticketId,
       tier: String(g.ticketType || "").toLowerCase(), purchaseDate: g.purchaseDate || null,
       checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff, promoCode: g.promoCode || "",
+      details: g.details || null,
     });
   }
   return rows.sort((a, b) => new Date(b.purchaseDate || 0) - new Date(a.purchaseDate || 0));
@@ -58,7 +60,8 @@ export function duplicateKeys(rows) {
 export function matchRows(rows, q) {
   const needle = fold(q);
   if (!needle) return rows;
-  return rows.filter((r) => fold(r.name).includes(needle) || r.email.includes(String(q).trim().toLowerCase()) || r.ticketId.includes(String(q).trim().toLowerCase()));
+  return rows.filter((r) => fold(r.name).includes(needle) || r.email.includes(String(q).trim().toLowerCase()) || r.ticketId.includes(String(q).trim().toLowerCase())
+    || fold(r.details?.organisation).includes(needle) || fold(r.details?.jobTitle).includes(needle));
 }
 
 const DAY = 864e5;

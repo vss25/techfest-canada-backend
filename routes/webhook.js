@@ -8,6 +8,7 @@ import crypto from "crypto";
 
 import { generateTicketPDF } from "../services/pdfTicket.js";
 import { sendTicketEmail } from "../services/emailService.js";
+import { detailsFromMetadata, displayName } from "../services/attendeeDetails.js";
 import { sendResetPasswordEmail } from "../services/emailService.js";
 
 const router = express.Router();
@@ -50,7 +51,9 @@ router.post("/stripe", async (req, res) => {
       const purchaseType = session.metadata.type || "ticket";
 
       const email = session.customer_details?.email;
-      const name = session.customer_details?.name || "Guest";
+      // The checkout form's answers (job, company, topics…) ride along as metadata
+      const details = detailsFromMetadata(session.metadata);
+      const name = displayName(details, session.customer_details?.name) || "Guest";
 
       const isBooth = purchaseType === "booth";
 
@@ -147,6 +150,7 @@ router.post("/stripe", async (req, res) => {
               type: tier,
               stripeSessionId: session.id,
               promoCode: session.metadata.promoCode || "",
+              ...(details ? { details } : {}),
               purchaseDate: new Date()
             });
 
@@ -165,6 +169,7 @@ router.post("/stripe", async (req, res) => {
             ticketType: tier,
             stripeSessionId: session.id,
             promoCode: session.metadata.promoCode || "",
+            ...(details ? { details } : {}),
             purchaseDate: new Date()
           });
 

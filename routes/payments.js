@@ -192,7 +192,7 @@ function cleanMetadata(obj) {
   if (!obj || typeof obj !== "object") return out;
   for (const [k, v] of Object.entries(obj)) {
     if (v === undefined || v === null || v === "") continue;
-    const value = Array.isArray(v) ? v.join(", ") : String(v);
+    const value = Array.isArray(v) ? v.join("; ") : String(v);
     out[String(k).slice(0, 40)] = value.slice(0, 500);
   }
   return out;
