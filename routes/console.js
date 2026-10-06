@@ -22,6 +22,8 @@ import { buildProfileRequestEmail } from "../services/profileEmail.js";
 import { sendProfileRequestEmail } from "../services/emailService.js";
 import { firstNameFor } from "../services/ticketInfo.js";
 import Stripe from "stripe";
+import AppNotification from "../models/AppNotification.js";
+import { validateNotify, recipientFilter, recipientDTO, groupHistory, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -311,6 +313,45 @@ router.post("/broadcast", async (req, res) => {
   }
   await audit(req, "broadcast", "post", post._id, body.slice(0, 120));
   res.status(201).json({ ok: true, id: String(post._id) });
+});
+
+/* ---------- Personal notifications: staff → one or a few people on the app ----------
+   No push service yet: the apps poll /api/social/notifications, so a person sees
+   it in their in-app inbox and as a phone notification the next time the app
+   checks in. Only people who have signed into the app can be picked. */
+router.get("/notify/recipients", async (req, res) => {
+  const ids = String(req.query.ids || "").split(",").filter(Boolean).slice(0, MAX_RECIPIENTS);
+  const rows = await User.find(recipientFilter(req.query.q, ids))
+    .select("name email organization jobTitle avatarVersion lastActiveAt")
+    .sort({ lastActiveAt: -1, name: 1 }).limit(ids.length ? MAX_RECIPIENTS : 25).lean();
+  res.json({ recipients: rows.map(recipientDTO) });
+});
+
+router.post("/notify", async (req, res) => {
+  const v = validateNotify(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const { userIds, title, body, link } = v.value;
+  const eligible = await User.find(recipientFilter("", userIds)).select("_id name").lean();
+  if (!eligible.length) return res.status(400).json({ error: "None of those people are on the app yet." });
+  const batchId = new mongoose.Types.ObjectId().toString();
+  await AppNotification.insertMany(eligible.map((u) => ({
+    userId: u._id, title, body, link, kind: "personal", batchId, sentBy: req.user._id, sentByName: req.user.name || "",
+  })));
+  const sentIds = new Set(eligible.map((u) => String(u._id)));
+  const skipped = userIds.filter((id) => !sentIds.has(id));
+  const who = eligible.length === 1 ? eligible[0].name : `${eligible.length} people`;
+  await audit(req, "notify_person", "user", [...sentIds].join(",").slice(0, 200), `${who}: ${title}`);
+  res.status(201).json({ ok: true, sent: eligible.length, skipped, batchId });
+});
+
+router.get("/notify/history", async (req, res) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+  const latest = await AppNotification.aggregate([{ $match: { kind: "personal" } },
+    { $group: { _id: "$batchId", at: { $max: "$createdAt" } } }, { $sort: { at: -1 } }, { $limit: limit }]);
+  const rows = await AppNotification.find({ kind: "personal", batchId: { $in: latest.map((b) => b._id) } })
+    .sort({ createdAt: -1 }).lean();
+  const users = await User.find({ _id: { $in: [...new Set(rows.map((r) => String(r.userId)))] } }).select("name").lean();
+  res.json({ sends: groupHistory(rows, new Map(users.map((u) => [String(u._id), u.name])), limit) });
 });
 
 router.get("/audit", async (req, res) => {
