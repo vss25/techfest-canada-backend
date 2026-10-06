@@ -15,7 +15,7 @@ import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwi
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, duplicateKeys, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
-import { DETAIL_COLUMNS } from "../services/attendeeDetails.js";
+import { DETAIL_COLUMNS, cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
 import { stripeRows, stripeSummary } from "../services/stripeSales.js";
 import Stripe from "stripe";
 
@@ -447,15 +447,43 @@ router.get("/tickets/export", requireManagement, async (req, res) => {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const head = ["Ticket ID", "Pass", "Name", "Email", "Purchased", "Checked in", "Promo code", "Source",
-    ...DETAIL_COLUMNS.map(([, label]) => label)];
+    ...DETAIL_COLUMNS.map(([, label]) => label), "Organisation from email"];
   const lines = rows.map((r) => [r.ticketId, r.tier, r.name, r.email,
     r.purchaseDate ? new Date(r.purchaseDate).toISOString().slice(0, 10) : "", r.checkedIn, r.promoCode,
     r.source === "account" ? "Account" : "Guest checkout",
-    ...DETAIL_COLUMNS.map(([k]) => r.details?.[k])].map(cell).join(","));
+    ...DETAIL_COLUMNS.map(([k]) => r.details?.[k]), r.emailOrg].map(cell).join(","));
   await audit(req, "tickets_export", "ticket", "", `${rows.length} rows`);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-attendees-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send("\uFEFF" + [head.map(cell).join(","), ...lines].join("\n"));
+});
+
+// Staff fill in or correct what we know about a ticket holder.
+// Body: { key: "u:<userId>:<ticketId>" | "g:<ticketId>", details: { organisation, jobTitle, phone, linkedin, country, notes }, name? }
+// `name` only applies to guest tickets (account names belong to the person's profile).
+router.patch("/tickets/details", async (req, res) => {
+  const parts = String(req.body?.key || "").split(":");
+  const edit = cleanStaffEdit(req.body?.details);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+  let details;
+  if (parts[0] === "u" && parts.length >= 3 && isId(parts[1])) {
+    const ticketId = parts.slice(2).join(":");
+    const user = await User.findOne({ _id: parts[1], "tickets.ticketId": ticketId }).select("tickets").lean();
+    const t = user?.tickets?.find((x) => x.ticketId === ticketId);
+    if (!t) return res.status(404).json({ error: "Ticket not found" });
+    details = mergeStaffEdit(t.details, edit);
+    await User.updateOne({ _id: parts[1], "tickets.ticketId": ticketId }, { $set: { "tickets.$.details": details } });
+  } else if (parts[0] === "g" && parts.length >= 2) {
+    const ticketId = parts.slice(1).join(":");
+    const a = await Attendee.findOne({ ticketId }).select("details").lean();
+    if (!a) return res.status(404).json({ error: "Ticket not found" });
+    details = mergeStaffEdit(a.details, edit);
+    await Attendee.updateOne({ ticketId }, { $set: { details, ...(name ? { name } : {}) } });
+  } else {
+    return res.status(400).json({ error: "Unknown ticket" });
+  }
+  await audit(req, "ticket_details_edit", "ticket", parts.slice(-1)[0], Object.keys(edit).concat(name ? ["name"] : []).join(", "));
+  res.json({ details, ...(name && parts[0] === "g" ? { name } : {}) });
 });
 
 async function setHidden(keys, hidden) {
