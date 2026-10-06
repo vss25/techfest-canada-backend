@@ -3,53 +3,50 @@ import QRCode from "qrcode";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  EVENT, inclusionsFor, knowBeforeYouGo, displayPassName, isBoothId,
+} from "./ticketInfo.js";
 
 /* ============================================================
-   TTFC 2026 — Delegate pass
-   Built to Baldeep's Design.pdf: landscape boarding-pass with a
-   purple spine, three-band body and a perforated QR stub.
+   TTFC 2026 — delegate pass PDF (attached to the ticket email)
 
-   The page IS the ticket (586 × 258pt) — no A4 letterboxing, so it
-   fills a phone screen at check-in and prints as a real ticket.
-   For an A4 sheet instead, see PAGE below.
+   One US-Letter page: dark brand header, a ticket card with the
+   attendee, pass, ticket ID and a large QR, then what the pass
+   includes, practical tips, the app-coming-soon note and contact
+   details.
 
-   FONTS — drop these into server/fonts/ (Archivo, free on Google
-   Fonts). Any missing file silently falls back to Helvetica, so a
-   bad deploy degrades instead of throwing.
-       Archivo-Regular.ttf  Archivo-Medium.ttf
-       Archivo-SemiBold.ttf Archivo-Bold.ttf
+   QR payload is the bare ticket ID — exactly what the emailed PDF
+   has always carried and what the website door scanner
+   (POST /api/checkin/scan) matches on. Do not change it.
+
+   Fonts live in services/fonts/ (Orbitron for headings, Archivo
+   for text — both SIL OFL, same files the iOS app ships). A
+   missing file falls back to Helvetica so a bad deploy degrades
+   instead of throwing. Override the folder with TTFC_FONT_DIR.
    ============================================================ */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = process.env.TTFC_FONT_DIR || path.join(__dirname, "fonts");
 
-/* ---- palette sampled from Design.pdf ---- */
-const SPINE  = "#5926a7";   // left band
-const PURPLE = "#380473";   // borders, labels, chip text
-const ORANGE = "#f47600";   // eyebrow, chip, TORONTO
-const INK    = "#1c152f";   // names + values
-const STUB   = "#efebff";   // stub background
-const DASH   = "#d0c5f8";   // perforation
-const HAIR   = "#e7e1fa";   // light column dividers
-const GREY   = "#6b6677";   // stub caption
+/* ---- brand palette ---- */
+const DARK    = "#06020f";
+const PURPLE  = "#7a3fd1";
+const PINK    = "#E8458B";
+const GOLD    = "#f5b942";
+const INK     = "#140a26";
+const MUTED   = "#6b6480";
+const LABEL   = "#7a3fd1";
+const HAIR    = "#e9e2f8";
+const PAGE_BG = "#f6f3fc";
+const PANEL   = "#f8f5ff";
 
-/* ---- geometry (pt), scaled 1:1 from the design ---- */
-const PAGE      = { w: 586, h: 258 };
-const SPINE_W   = 53;
-const RULE_1    = 72;      // under header band
-const RULE_2    = 175.5;   // under attendee band
-const PERF_X    = 426;     // perforation
-const VRULE_1   = 205.5;
-const VRULE_2   = 315.5;
-const PAD_L     = 73.5;    // body text left edge
-const BODY_R    = 412;     // body right edge (before perforation)
-const STUB_L    = 444;     // stub text left edge
+const PAGE = { w: 612, h: 792 };
 
 export function resolveAttendeeName(ticket = {}) {
   const clean = (v) => (typeof v === "string" ? v.trim() : "");
 
-  const first = clean(ticket.firstName || ticket.first_name || ticket.givenName);
-  const last  = clean(ticket.lastName  || ticket.last_name  || ticket.familyName);
+  const first = clean(ticket.firstName || ticket.first_name || ticket.givenName || ticket.details?.firstName);
+  const last  = clean(ticket.lastName  || ticket.last_name  || ticket.familyName || ticket.details?.lastName);
   if (first || last) return [first, last].filter(Boolean).join(" ");
 
   const whole = clean(
@@ -72,14 +69,11 @@ export function resolveAttendeeName(ticket = {}) {
   return "Guest";
 }
 
-function splitDate(value) {
-  if (!value) return null;
+function formatDate(value) {
+  if (!value) return "";
   const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return [
-    d.toLocaleDateString("en-CA", { month: "long", day: "numeric" }) + ",",
-    String(d.getFullYear()),
-  ];
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Toronto" });
 }
 
 function registerFont(doc, alias, file, fallback) {
@@ -90,35 +84,59 @@ function registerFont(doc, alias, file, fallback) {
   return fallback;
 }
 
+/**
+ * @param {object} ticket  { ticketId, tier|type, name | firstName+lastName | details, email,
+ *                           purchaseDate, walletUrl }
+ * @returns {Promise<Buffer>}
+ */
 export async function generateTicketPDF(ticket = {}) {
-  const doc = new PDFDocument({ size: [PAGE.w, PAGE.h], margin: 0 });
+  const ticketId = String(ticket.ticketId || ticket.id || "").trim();
+  if (!ticketId) throw new Error("Ticket ID missing when generating the ticket PDF");
+
+  const tier      = ticket.tier || ticket.type || "";
+  const attendee  = resolveAttendeeName(ticket);
+  const passLabel = displayPassName(tier, ticketId);
+  const booth     = isBoothId(ticketId);
+  const purchased = formatDate(ticket.purchaseDate || ticket.createdAt);
+  const walletUrl = booth ? "" : String(ticket.walletUrl || "");
+
+  const doc = new PDFDocument({
+    size: [PAGE.w, PAGE.h],
+    margin: 0,
+    info: {
+      Title: `${EVENT.shortName} ${passLabel} — ${attendee}`,
+      Author: "The Tech Festival Canada",
+      Subject: `${passLabel} · Ticket ${ticketId}`,
+    },
+  });
   const buffers = [];
   doc.on("data", buffers.push.bind(buffers));
+  const done = new Promise((resolve, reject) => {
+    doc.on("end", () => resolve(Buffer.concat(buffers)));
+    doc.on("error", reject);
+  });
 
   const F = {
-    bold   : registerFont(doc, "ar-bold",  "Archivo-Bold.ttf",     "Helvetica-Bold"),
-    semi   : registerFont(doc, "ar-semi",  "Archivo-SemiBold.ttf", "Helvetica-Bold"),
-    medium : registerFont(doc, "ar-med",   "Archivo-Medium.ttf",   "Helvetica"),
-    regular: registerFont(doc, "ar-reg",   "Archivo-Regular.ttf",  "Helvetica"),
+    display: registerFont(doc, "orb-xb",  "Orbitron-ExtraBold.ttf", "Helvetica-Bold"),
+    head   : registerFont(doc, "orb-b",   "Orbitron-Bold.ttf",      "Helvetica-Bold"),
+    bold   : registerFont(doc, "ar-bold", "Archivo-Bold.ttf",       "Helvetica-Bold"),
+    semi   : registerFont(doc, "ar-semi", "Archivo-SemiBold.ttf",   "Helvetica-Bold"),
+    medium : registerFont(doc, "ar-med",  "Archivo-Medium.ttf",     "Helvetica"),
+    regular: registerFont(doc, "ar-reg",  "Archivo-Regular.ttf",    "Helvetica"),
+    mono   : "Courier-Bold",
   };
 
-  const attendee  = resolveAttendeeName(ticket);
-  const ticketId  = String(ticket.ticketId || ticket.id || "—");
-  const passType  = String(ticket.type || ticket.tier || "Delegate")
-                      .replace(/\s*pass$/i, "").toUpperCase();
-  const purchased = splitDate(ticket.purchaseDate || ticket.createdAt);
-
-  const qrData = await QRCode.toDataURL(ticketId, {
-    errorCorrectionLevel: "H", margin: 0, width: 600,
+  const qrPng = await QRCode.toBuffer(ticketId, {
+    errorCorrectionLevel: "H", margin: 0, width: 720,
     color: { dark: INK, light: "#ffffff" },
   });
 
-  /* ---------- text helpers ---------- */
-  const label = (text, x, y, color = PURPLE) =>
-    doc.font(F.bold).fontSize(6.6).fillColor(color)
-       .text(String(text).toUpperCase(), x, y, {
-         characterSpacing: 1.9, lineBreak: false,
-       });
+  /* ---------- helpers ---------- */
+  const one = (text, x, y, font, size, color, opts = {}) =>
+    doc.font(font).fontSize(size).fillColor(color).text(String(text), x, y, { lineBreak: false, ...opts });
+
+  const label = (text, x, y, color = LABEL, opts = {}) =>
+    one(String(text).toUpperCase(), x, y, F.bold, 7, color, { characterSpacing: 1.8, ...opts });
 
   const wrap = (text, font, size, maxWidth) => {
     doc.font(font).fontSize(size);
@@ -133,147 +151,200 @@ export async function generateTicketPDF(ticket = {}) {
     return out;
   };
 
-  const lines = (arr, x, y, font, size, color, leading) => {
-    doc.font(font).fontSize(size).fillColor(color);
-    arr.forEach((ln, i) =>
-      doc.text(ln, x, y + i * leading, { lineBreak: false, characterSpacing: -0.1 })
-    );
+  const check = (x, y) => {
+    doc.circle(x + 5, y + 5, 5.5).fill("#efe6ff");
+    doc.save().lineWidth(1.4).strokeColor(PURPLE).lineCap("round").lineJoin("round")
+       .moveTo(x + 2.4, y + 5.2).lineTo(x + 4.3, y + 7.1).lineTo(x + 7.8, y + 3.2).stroke().restore();
   };
 
-  /* ================= CANVAS ================= */
-  doc.rect(0, 0, PAGE.w, PAGE.h).fill("#ffffff");
-  doc.rect(PERF_X, 0, PAGE.w - PERF_X, PAGE.h).fill(STUB);
-  doc.rect(0, 0, SPINE_W, PAGE.h).fill(SPINE);
+  const dot = (x, y) => doc.circle(x + 2.5, y + 2.5, 2.2).fill(PINK);
 
-  /* ---- rules ---- */
-  doc.lineWidth(1.4).strokeColor(PURPLE);
-  doc.moveTo(SPINE_W, RULE_1).lineTo(PERF_X, RULE_1).stroke();
-  doc.moveTo(SPINE_W, RULE_2).lineTo(PERF_X, RULE_2).stroke();
+  /* ================= PAGE ================= */
+  doc.rect(0, 0, PAGE.w, PAGE.h).fill(PAGE_BG);
 
-  doc.lineWidth(1).strokeColor(HAIR);
-  doc.moveTo(VRULE_1, RULE_2).lineTo(VRULE_1, PAGE.h).stroke();
-  doc.moveTo(VRULE_2, RULE_2).lineTo(VRULE_2, PAGE.h).stroke();
+  /* ================= HEADER ================= */
+  const HEAD_H = 122;
+  doc.rect(0, 0, PAGE.w, HEAD_H).fill(DARK);
+  doc.save();
+  doc.rect(0, 0, PAGE.w, HEAD_H).clip();
+  const glow = doc.radialGradient(520, 10, 0, 520, 10, 230);
+  glow.stop(0, PURPLE, 0.55).stop(1, PURPLE, 0);
+  doc.circle(520, 10, 230).fill(glow);
+  const glow2 = doc.radialGradient(60, 140, 0, 60, 140, 180);
+  glow2.stop(0, PINK, 0.25).stop(1, PINK, 0);
+  doc.circle(60, 140, 180).fill(glow2);
+  doc.restore();
 
-  doc.lineWidth(1).strokeColor(DASH).dash(3, { space: 3 });
-  doc.moveTo(PERF_X, 0).lineTo(PERF_X, PAGE.h).stroke();
+  const bar = doc.linearGradient(0, 0, PAGE.w, 0);
+  bar.stop(0, PURPLE).stop(0.6, PINK).stop(1, GOLD);
+  doc.rect(0, HEAD_H - 4, PAGE.w, 4).fill(bar);
+
+  one("TTFC 2026", 40, 34, F.display, 30, "#ffffff", { characterSpacing: 1.5 });
+  one("THE TECH FESTIVAL CANADA", 41, 76, F.semi, 8.5, "#c9b8f2", { characterSpacing: 2.6 });
+
+  const R = PAGE.w - 40;
+  one(booth ? "EXHIBITOR CONFIRMATION" : "OFFICIAL DELEGATE PASS", 0, 40, F.bold, 8, GOLD,
+      { width: R, align: "right", characterSpacing: 2 });
+  one(EVENT.datesShort, 0, 56, F.head, 13, "#ffffff", { width: R, align: "right", characterSpacing: 1 });
+  one(`${EVENT.venue.replace(/^The /, "")} · Toronto`, 0, 78, F.medium, 9, "#c9b8f2",
+      { width: R, align: "right" });
+
+  /* ================= TICKET CARD ================= */
+  const CX = 32, CY = 146, CW = PAGE.w - 64, CH = 300;
+  const PERF = 368;               // perforation x
+  doc.roundedRect(CX, CY, CW, CH, 16).fill("#ffffff");
+
+  // Stub panel to the right of the perforation + gradient spine on the left edge
+  doc.save();
+  doc.roundedRect(CX, CY, CW, CH, 16).clip();
+  doc.rect(PERF, CY, CX + CW - PERF, CH).fill(PANEL);
+  const spine = doc.linearGradient(0, CY, 0, CY + CH);
+  spine.stop(0, PURPLE).stop(1, PINK);
+  doc.rect(CX, CY, 6, CH).fill(spine);
+  doc.restore();
+  doc.lineWidth(1).strokeColor(HAIR).roundedRect(CX + 0.5, CY + 0.5, CW - 1, CH - 1, 16).stroke();
+
+  doc.lineWidth(1).strokeColor("#d8ccf3").dash(3, { space: 3.5 });
+  doc.moveTo(PERF, CY + 14).lineTo(PERF, CY + CH - 14).stroke();
   doc.undash();
+  doc.circle(PERF, CY, 9).fill(PAGE_BG);
+  doc.circle(PERF, CY + CH, 9).fill(PAGE_BG);
 
-  /* outer border last so nothing paints over it */
-  doc.lineWidth(1.6).strokeColor(PURPLE)
-     .rect(0.8, 0.8, PAGE.w - 1.6, PAGE.h - 1.6).stroke();
+  /* ---- left: attendee ---- */
+  const LX = 60, LW = PERF - LX - 24;
 
-  /* ================= SPINE ================= */
-  const spineCx = SPINE_W / 2;
-
-  doc.save();
-  doc.rotate(-90, { origin: [spineCx, 88] });
-  doc.font(F.bold).fontSize(15.5).fillColor("#ffffff")
-     .text("TTFC 2026", spineCx - 66, 88 - 8, {
-       width: 132, align: "center", characterSpacing: 4.6, lineBreak: false,
-     });
-  doc.restore();
-
-  doc.save();
-  doc.rotate(-90, { origin: [spineCx, 224] });
-  doc.font(F.bold).fontSize(6.6).fillColor(ORANGE)
-     .text("TORONTO", spineCx - 34, 224 - 4, {
-       width: 68, align: "center", characterSpacing: 2.4, lineBreak: false,
-     });
-  doc.restore();
-
-  /* ================= HEADER BAND ================= */
-  doc.font(F.bold).fontSize(7).fillColor(ORANGE)
-     .text("OFFICIAL DELEGATE PASS", PAD_L, 19, {
-       characterSpacing: 1.9, lineBreak: false,
-     });
-
-  doc.font(F.bold).fontSize(16.5).fillColor(INK)
-     .text("The Tech Festival Canada", PAD_L, 36, {
-       characterSpacing: -0.3, lineBreak: false,
-     });
-
-  doc.font(F.bold).fontSize(10.5).fillColor(INK)
-     .text("26 & 27", PAD_L, 21, { width: BODY_R - PAD_L, align: "right", lineBreak: false })
-     .text("October 2026", PAD_L, 36, { width: BODY_R - PAD_L, align: "right", lineBreak: false });
-
-  /* ================= ATTENDEE BAND ================= */
-  label("Attendee", PAD_L, 94);
-
-  const nameMax = 232;
-  let nameSize = 25, nameLines = wrap(attendee, F.bold, nameSize, nameMax);
+  let nameSize = 26, nameLines = wrap(attendee, F.bold, nameSize, LW);
   while (nameLines.length > 2 && nameSize > 15) {
     nameSize -= 2;
-    nameLines = wrap(attendee, F.bold, nameSize, nameMax);
+    nameLines = wrap(attendee, F.bold, nameSize, LW);
   }
   nameLines = nameLines.slice(0, 2);
-  const nameLead = nameSize * 1.16;
-  const nameTop = 108 + (2 - nameLines.length) * (nameLead / 2);
-
-  doc.font(F.bold).fontSize(nameSize).fillColor(INK);
+  const nameLead = nameSize * 1.12;
+  // A one-line name sits a little lower so the block stays balanced in the card
+  const nameTop = CY + 40 + (2 - nameLines.length) * nameLead * 0.6;
+  label("Attendee", LX, nameTop - 14);
   nameLines.forEach((ln, i) =>
-    doc.text(ln, PAD_L, nameTop + i * nameLead, {
-      lineBreak: false, characterSpacing: -0.6, ellipsis: true, width: nameMax,
-    })
-  );
+    one(ln, LX, nameTop + i * nameLead, F.bold, nameSize, INK, { width: LW, ellipsis: true, characterSpacing: -0.3 }));
+  const chipY = nameTop + nameLines.length * nameLead + 12;
 
-  /* pass-type chip */
-  label("Pass type", VRULE_2 + 1, 124);
-  const chipX = VRULE_2 + 1, chipY = 135, chipH = 25;
-  const chipW = Math.max(
-    90,
-    doc.font(F.bold).fontSize(11).widthOfString(passType) + 34
-  );
-  doc.rect(chipX, chipY, chipW, chipH).fill(ORANGE);
-  doc.font(F.bold).fontSize(11).fillColor(PURPLE)
-     .text(passType, chipX, chipY + 7.5, {
-       width: chipW, align: "center", characterSpacing: 0.6, lineBreak: false,
-     });
+  // pass chip
+  doc.font(F.head).fontSize(10.5);
+  const chipText = passLabel.toUpperCase();
+  const chipW = Math.min(LW, doc.widthOfString(chipText, { characterSpacing: 1.4 }) + 30);
+  const chip = doc.linearGradient(LX, 0, LX + chipW, 0);
+  chip.stop(0, PURPLE).stop(1, PINK);
+  doc.roundedRect(LX, chipY, chipW, 26, 13).fill(chip);
+  one(chipText, LX, chipY + 8, F.head, 10.5, "#ffffff", { width: chipW, align: "center", characterSpacing: 1.4 });
 
-  /* ================= FACTS BAND ================= */
-  label("Venue", PAD_L, 194);
-  lines(
-    wrap("The Westin Harbour Castle, Toronto", F.bold, 10, VRULE_1 - PAD_L - 14),
-    PAD_L, 205, F.bold, 10, INK, 12.6
-  );
-
-  label("Dates", VRULE_1 + 16, 194);
-  lines(["26 & 27", "October 2026"], VRULE_1 + 16, 205, F.bold, 10, INK, 12.6);
-
+  // ticket id + purchased
+  const ROW1 = CY + 168;
+  label(booth ? "Booking reference" : "Ticket ID", LX, ROW1);
+  one(ticketId, LX, ROW1 + 13, F.mono, 14, INK, { characterSpacing: 1 });
   if (purchased) {
-    label("Purchased", VRULE_2 + 16, 194);
-    lines(purchased, VRULE_2 + 16, 205, F.bold, 10, INK, 12.6);
+    label("Purchased", LX + 170, ROW1);
+    one(purchased, LX + 170, ROW1 + 13, F.semi, 11, INK);
   }
 
-  /* ================= STUB ================= */
-  label("Ticket ID", STUB_L, 18);
-  doc.font(F.bold).fontSize(11.5).fillColor(INK)
-     .text(ticketId, STUB_L, 29, {
-       width: PAGE.w - STUB_L - 18, characterSpacing: 0.4,
-       lineBreak: false, ellipsis: true,
-     });
+  doc.lineWidth(1).strokeColor(HAIR).moveTo(LX, ROW1 + 40).lineTo(PERF - 24, ROW1 + 40).stroke();
 
-  const qrBox = 100, qrX = 456, qrY = 78, inset = 6.5;
-  doc.lineWidth(1.2).strokeColor(PURPLE)
-     .rect(qrX, qrY, qrBox, qrBox).fillAndStroke("#ffffff", PURPLE);
-  doc.image(qrData, qrX + inset, qrY + inset, {
-    width: qrBox - inset * 2, height: qrBox - inset * 2,
-  });
+  const ROW2 = ROW1 + 54;
+  label("Dates", LX, ROW2);
+  one("Oct 26–27, 2026", LX, ROW2 + 13, F.semi, 11, INK);
+  one("Mon & Tue", LX, ROW2 + 28, F.regular, 9, MUTED);
 
-  lines(
-    [
-      "Present this QR code at event",
-      "check-in. Have this pass ready on",
-      "your phone or printed.",
-    ],
-    STUB_L, 212, F.regular, 7.4, GREY, 10.4
-  );
+  label("Venue", LX + 130, ROW2);
+  one(EVENT.venue, LX + 130, ROW2 + 13, F.semi, 11, INK);
+  one("1 Harbour Square, Toronto, ON", LX + 130, ROW2 + 28, F.regular, 9, MUTED);
+
+  /* ---- right: QR stub ---- */
+  const SX = PERF + 12, SW = CX + CW - SX - 12;
+  const QR = 156;
+  const qrX = SX + (SW - QR) / 2, qrY = CY + 30;
+  doc.roundedRect(qrX - 10, qrY - 10, QR + 20, QR + 20, 12).fill("#ffffff");
+  doc.lineWidth(1).strokeColor("#ddd0f6").roundedRect(qrX - 10, qrY - 10, QR + 20, QR + 20, 12).stroke();
+  doc.image(qrPng, qrX, qrY, { width: QR, height: QR });
+
+  one(booth ? "BOOKING REFERENCE" : "SCAN AT REGISTRATION", SX, qrY + QR + 20, F.bold, 7.5, LABEL,
+      { width: SW, align: "center", characterSpacing: 1.8 });
+  if (!booth) {
+    one("Phone screen or printed — both work", SX, qrY + QR + 33, F.regular, 8.5, MUTED, { width: SW, align: "center" });
+  }
+
+  if (walletUrl) {
+    const bw = 150, bh = 30, bx = SX + (SW - bw) / 2, by = CY + CH - 50;
+    doc.roundedRect(bx, by, bw, bh, 8).fill("#000000");
+    doc.lineWidth(0.75).strokeColor("#a6a6a6").roundedRect(bx, by, bw, bh, 8).stroke();
+    one("Add to", bx, by + 6, F.regular, 6.5, "#ffffff", { width: bw, align: "center" });
+    one("Apple Wallet", bx, by + 14, F.semi, 10, "#ffffff", { width: bw, align: "center" });
+    doc.link(bx, by, bw, bh, walletUrl);
+  } else {
+    one(booth ? ticketId : `Ticket ${ticketId}`, SX, CY + CH - 38, F.mono, 9, MUTED, { width: SW, align: "center" });
+  }
+
+  /* ================= INCLUDES + TIPS ================= */
+  const TOP = CY + CH + 28;
+  const COL_L = 40, COL_LW = 238;
+  const COL_R = 304, COL_RW = PAGE.w - 40 - COL_R;
+
+  one(booth ? "YOUR BOOKING" : "YOUR PASS INCLUDES", COL_L, TOP, F.head, 9.5, INK, { characterSpacing: 1.2 });
+  let ly = TOP + 22;
+  const items = booth
+    ? [passLabel, `Questions about your booth? ${EVENT.supportEmail}`]
+    : inclusionsFor(tier);
+  const lead = items.length > 8 ? 15.5 : 18;
+  for (const it of items) {
+    check(COL_L, ly - 0.5);
+    one(it, COL_L + 17, ly, /lounge|pre-matched|preferential/i.test(it) ? F.semi : F.regular, 9.5, INK,
+        { width: COL_LW - 17, ellipsis: true });
+    ly += lead;
+  }
+
+  one("KNOW BEFORE YOU GO", COL_R, TOP, F.head, 9.5, INK, { characterSpacing: 1.2 });
+  let ry = TOP + 22;
+  for (const tip of knowBeforeYouGo(tier)) {
+    dot(COL_R, ry + 3);
+    const ls = wrap(tip, F.regular, 9, COL_RW - 14);
+    ls.forEach((ln, i) => one(ln, COL_R + 14, ry + i * 12, F.regular, 9, "#3a3350"));
+    ry += ls.length * 12 + 7;
+  }
+
+  /* ================= APP COMING SOON ================= */
+  const AH = 66, AX = 32, AW = PAGE.w - 64;
+  const AY = Math.min(Math.max(ly, ry) + 8, PAGE.h - 46 - 22 - AH);  // keep clear of the footer
+  const app = doc.linearGradient(AX, 0, AX + AW, 0);
+  app.stop(0, DARK).stop(1, "#2b0f5c");
+  doc.roundedRect(AX, AY, AW, AH, 14).fill(app);
+
+  // phone glyph
+  const gx = AX + 20, gy = AY + 14;
+  const tile = doc.linearGradient(gx, gy, gx + 38, gy + 38);
+  tile.stop(0, PURPLE).stop(1, PINK);
+  doc.roundedRect(gx, gy, 38, 38, 10).fill(tile);
+  doc.lineWidth(1.6).strokeColor("#ffffff").roundedRect(gx + 12.5, gy + 7, 13, 24, 3).stroke();
+  doc.circle(gx + 19, gy + 27.5, 1.2).fill("#ffffff");
+
+  one("COMING SOON TO THE APP STORE", gx + 52, AY + 14, F.bold, 7, GOLD, { characterSpacing: 1.8 });
+  one("The TTFC mobile app", gx + 52, AY + 25, F.head, 12, "#ffffff", { characterSpacing: 0.4 });
+  one("Your agenda, your pass, networking and chat — all in one place.", gx + 52, AY + 44, F.regular, 8.8, "#d6cbf3");
+
+  // "Coming soon" outline pill (not a store badge — the app isn't live yet)
+  const pw = 92, px = AX + AW - pw - 18, py = AY + (AH - 24) / 2;
+  doc.lineWidth(1).strokeColor("#8f78c9").roundedRect(px, py, pw, 24, 12).stroke();
+  one("COMING SOON", px, py + 8, F.bold, 7.5, "#ffffff", { width: pw, align: "center", characterSpacing: 1.6 });
+
+  /* ================= FOOTER ================= */
+  const FY = PAGE.h - 46;
+  doc.lineWidth(1).strokeColor("#e2d9f5").moveTo(40, FY - 10).lineTo(PAGE.w - 40, FY - 10).stroke();
+  const footer = `${EVENT.websiteLabel}   ·   ${EVENT.supportEmail}   ·   ${EVENT.phone}`;
+  doc.font(F.semi).fontSize(9);
+  const fx = (PAGE.w - doc.widthOfString(footer)) / 2;
+  one(footer, fx, FY, F.semi, 9, INK);
+  doc.link(fx, FY - 2, doc.font(F.semi).fontSize(9).widthOfString(EVENT.websiteLabel), 13, EVENT.website);
+  one("This pass admits the named attendee only. Keep it handy — you'll need the QR code at registration.",
+      0, FY + 15, F.regular, 7.5, MUTED, { width: PAGE.w, align: "center" });
 
   doc.end();
-
-  return new Promise((resolve, reject) => {
-    doc.on("end", () => resolve(Buffer.concat(buffers)));
-    doc.on("error", reject);
-  });
+  return done;
 }
 
 export default generateTicketPDF;

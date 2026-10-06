@@ -11,7 +11,8 @@ const router = express.Router();
 // knew a ticketId could mark it used.
 router.post("/scan", requireAdmin, async (req, res) => {
   try {
-    const { ticketId } = req.body;
+    // Apple Wallet passes encode "TECHFEST:<ticketId>"; the website scanner sends the raw scan
+    const ticketId = String(req.body?.ticketId || "").trim().replace(/^TECHFEST:/i, "");
 
     if (!ticketId) {
       return res.status(400).json({
