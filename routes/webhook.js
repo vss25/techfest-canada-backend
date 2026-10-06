@@ -6,7 +6,6 @@ import TicketInventory from "../models/TicketInventory.js";
 import Promo from "../models/Promo.js";
 import crypto from "crypto";
 
-import { generateTicketPDF } from "../services/pdfTicket.js";
 import { sendTicketEmail } from "../services/emailService.js";
 import { detailsFromMetadata, displayName } from "../services/attendeeDetails.js";
 import { sendResetPasswordEmail } from "../services/emailService.js";
@@ -130,7 +129,14 @@ router.post("/stripe", async (req, res) => {
           await Attendee.updateMany({ ticketId }, { $set: { ticketType: tier } });
           console.log("⬆️ Ticket upgraded:", ticketId, fromTier, "→", tier);
           if (email || user.email) {
-            await sendTicketEmail({ email: email || user.email, name: user.name || name, ticketId, tier });
+            await sendTicketEmail({
+              email: email || user.email,
+              name: displayName(ticket.details, user.name) || name,
+              firstName: ticket.details?.firstName || details?.firstName,
+              ticketId,
+              tier,
+              purchaseDate: ticket.purchaseDate,
+            });
           }
         } else {
           console.error("❌ Upgrade paid but ticket not found:", ticketId, userId);
@@ -185,6 +191,7 @@ router.post("/stripe", async (req, res) => {
           await sendTicketEmail({
             email,
             name,
+            firstName: details?.firstName,
             ticketId,
             tier
           });
@@ -206,6 +213,7 @@ router.post("/stripe", async (req, res) => {
           await sendTicketEmail({
             email,
             name,
+            firstName: details?.firstName,
             ticketId: "BOOTH-" + tier.toUpperCase(),
             tier: tier
           });
