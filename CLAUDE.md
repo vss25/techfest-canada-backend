@@ -66,6 +66,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/profile` | `routes/profile.js` | GET/PATCH attendee profile (linkedinUrl, fieldOfWork, jobTitle, organization, country, topics) |
 | `/api/moderate` | `routes/moderate.js` | DeepCleer text-moderation proxy used by the iOS app |
 | `/api/intel` | `routes/intel.js` | Gemini-generated company cards (cached in `IntelCard`) for the app's home screen |
+| `/api/complete-profile` | `routes/completeProfile.js` | Public "complete your profile" form API (signed `?t=&s=` link, no login). Staff send links from `/api/console/tickets/profile-request` |
 
 ### Key Models (`models/`)
 

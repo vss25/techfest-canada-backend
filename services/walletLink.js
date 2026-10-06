@@ -24,18 +24,32 @@ export function walletLinkSecret(env = process.env) {
   return String(env.WALLET_LINK_SECRET || env.JWT_SECRET || "");
 }
 
+/** base64url HMAC-SHA256 of "<purpose>:<ticketId>", or "" when no secret is set.
+    Each kind of link has its own purpose prefix, so a signature made for one
+    (say the wallet pass) is never valid for another (the profile form). */
+export function signForPurpose(purpose, ticketId, secret = walletLinkSecret()) {
+  if (!secret || !ticketId || !purpose) return "";
+  return crypto.createHmac("sha256", secret).update(`${purpose}:${ticketId}`).digest("base64url");
+}
+
+/** Constant-time check of a purpose-bound link signature. */
+export function verifyForPurpose(purpose, ticketId, sig, secret = walletLinkSecret()) {
+  if (!secret || !ticketId || typeof sig !== "string" || !sig) return false;
+  const expected = Buffer.from(signForPurpose(purpose, String(ticketId), secret));
+  const given = Buffer.from(sig);
+  return expected.length > 0 && given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+
+const WALLET_PURPOSE = "ttfc-wallet:v1";
+
 /** base64url HMAC-SHA256 of the ticket ID, or "" when no secret is set. */
 export function signTicketId(ticketId, secret = walletLinkSecret()) {
-  if (!secret || !ticketId) return "";
-  return crypto.createHmac("sha256", secret).update(`ttfc-wallet:v1:${ticketId}`).digest("base64url");
+  return signForPurpose(WALLET_PURPOSE, ticketId, secret);
 }
 
 /** Constant-time check of a link signature. */
 export function verifyTicketSig(ticketId, sig, secret = walletLinkSecret()) {
-  if (!secret || !ticketId || typeof sig !== "string" || !sig) return false;
-  const expected = Buffer.from(signTicketId(String(ticketId), secret));
-  const given = Buffer.from(sig);
-  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  return verifyForPurpose(WALLET_PURPOSE, ticketId, sig, secret);
 }
 
 export function apiBaseUrl(env = process.env) {

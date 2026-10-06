@@ -7,6 +7,12 @@ import { orgFromEmail } from "./attendeeDetails.js";
 
 const fold = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+/** When we emailed them the "complete your profile" link, and when they filled it in. */
+const profileDates = (d) => ({
+  profileRequestedAt: d?.profileRequestedAt || null,
+  profileCompletedAt: d?.profileCompletedAt || null,
+});
+
 /** One row per ticket. A guest ticket already linked to an account appears once (as the account's). */
 export function collectTickets(users = [], guests = []) {
   const rows = [];
@@ -20,7 +26,7 @@ export function collectTickets(users = [], guests = []) {
         name: u.name || "", email: String(u.email || "").toLowerCase(), ticketId: t.ticketId,
         tier: String(t.type || "").toLowerCase(), purchaseDate: t.purchaseDate || null,
         checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff, promoCode: t.promoCode || "",
-        details: t.details || null, emailOrg: orgFromEmail(u.email),
+        details: t.details || null, emailOrg: orgFromEmail(u.email), ...profileDates(t.details),
       });
     }
   }
@@ -31,7 +37,7 @@ export function collectTickets(users = [], guests = []) {
       name: g.name || "", email: String(g.email || "").toLowerCase(), ticketId: g.ticketId,
       tier: String(g.ticketType || "").toLowerCase(), purchaseDate: g.purchaseDate || null,
       checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff, promoCode: g.promoCode || "",
-      details: g.details || null, emailOrg: orgFromEmail(g.email),
+      details: g.details || null, emailOrg: orgFromEmail(g.email), ...profileDates(g.details),
     });
   }
   return rows.sort((a, b) => new Date(b.purchaseDate || 0) - new Date(a.purchaseDate || 0));
