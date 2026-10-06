@@ -28,6 +28,10 @@ const ticketSchema = new mongoose.Schema({
   stripeSessionId: {
     type: String
   },
+  // Everything the buyer filled in on the checkout form (job, company, topics…)
+  details: {
+    type: mongoose.Schema.Types.Mixed
+  },
   // Promo code used at checkout ("" = none).
   promoCode: {
     type: String

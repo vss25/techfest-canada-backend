@@ -7,7 +7,7 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, salesSummary } from "../services/staffTickets.js";
-import { planSync, applySync, listCompleteSessions } from "../services/stripeSync.js";
+import { planSync, applySync, listCompleteSessions, planDetailsBackfill, applyDetailsBackfill } from "../services/stripeSync.js";
 import { requireManagementAdmin } from "../middleware/adminAuth.js";
 import { AppContent } from "../models/Admin.js";
 
@@ -371,12 +371,14 @@ router.post(
       // One paid session = one ticket: link existing tickets, hide old copies, create only what's missing.
       const plan = planSync(sessions, attendees, users);
       const result = await applySync(plan, { Attendee, User, crypto });
+      result.detailsFilled = await backfillDetails(sessions);
       console.log("🔄 Stripe sync:", result);
       res.json({
         success: true,
         synced: result.created,
         linked: result.linked,
         duplicatesHidden: result.duplicatesHidden,
+        detailsFilled: result.detailsFilled,
         skipped: sessions.length - result.created,
       });
     } catch (err) {
@@ -385,6 +387,16 @@ router.post(
     }
   }
 );
+
+/* Copy checkout-form details Stripe holds onto tickets that don't have them yet
+   (reads fresh records, so run it after any linking). Returns how many were filled. */
+async function backfillDetails(sessions) {
+  const [attendees, users] = await Promise.all([
+    Attendee.find({ stripeSessionId: { $exists: true, $ne: "" } }).select("name stripeSessionId details").lean(),
+    User.find({ "tickets.stripeSessionId": { $exists: true } }).select("tickets").lean(),
+  ]);
+  return applyDetailsBackfill(planDetailsBackfill(sessions, attendees, users), { Attendee, User });
+}
 
 /* One-time repair after deploy: link tickets to their Stripe sessions and
    hide the copies the old sync created. Never creates tickets. */
@@ -403,6 +415,26 @@ export async function repairStripeSyncOnce() {
     console.log("🧹 Stripe sync repair:", result);
   } catch (err) {
     console.error("Stripe sync repair skipped:", err.message);
+  }
+  await backfillDetailsOnce();
+}
+
+/* One-time after deploy: tickets bought before details were saved get
+   whatever the checkout form sent to Stripe (name, company, job title, country). */
+async function backfillDetailsOnce() {
+  const KEY = "migration.attendee_details_backfill_v1";
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) return;
+    if (await AppContent.exists({ key: KEY })) return;
+    const sessions = await listCompleteSessions(getStripe());
+    await applySync(planSync(sessions, await Attendee.find({}).lean(),
+      await User.find({ "tickets.0": { $exists: true } }).select("email tickets").lean()),
+      { Attendee, User, crypto, allowCreate: false });
+    const filled = await backfillDetails(sessions);
+    await AppContent.create({ key: KEY, value: { filled, at: new Date() }, updatedBy: "system" });
+    console.log("🗂  Attendee details backfilled:", filled);
+  } catch (err) {
+    console.error("Attendee details backfill skipped:", err.message);
   }
 }
 

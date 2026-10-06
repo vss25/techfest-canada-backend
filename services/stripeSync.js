@@ -14,6 +14,8 @@
 const BEFORE = 5 * 60e3;      // webhook can't be earlier than ~the session
 const AFTER = 60 * 60e3;      // …and normally lands within seconds
 
+import { detailsFromMetadata, displayName } from "./attendeeDetails.js";
+
 const lc = (s) => String(s || "").trim().toLowerCase();
 
 /** A paid Checkout Session that should produce a delegate pass. */
@@ -113,8 +115,10 @@ export async function applySync(plan, { Attendee, User, crypto, allowCreate = tr
   }
   if (allowCreate) {
     for (const s of plan.create) {
+      const details = detailsFromMetadata(s.metadata);
       await Attendee.create({
-        name: s.customer_details?.name || "Guest",
+        name: displayName(details, s.customer_details?.name) || "Guest",
+        ...(details ? { details } : {}),
         email: lc(s.customer_details?.email || s.customer_email),
         ticketId: crypto.randomBytes(6).toString("hex"),
         ticketType: lc(s.metadata.tier),
@@ -126,6 +130,46 @@ export async function applySync(plan, { Attendee, User, crypto, allowCreate = tr
     }
   }
   return { created, linked: plan.link.length, duplicatesHidden: plan.hide.length };
+}
+
+/**
+ * Tickets (already linked to their session) that are missing the checkout
+ * form details Stripe still holds. Pure.
+ * @returns {kind, id?, userId?, ticketId?, details, name?}[]
+ */
+export function planDetailsBackfill(sessions, attendees, users) {
+  const bySession = new Map();
+  for (const s of sessions) {
+    if (!isTicketSession(s)) continue;
+    const details = detailsFromMetadata(s.metadata);
+    if (details) bySession.set(s.id, details);
+  }
+  const out = [];
+  for (const a of attendees) {
+    const details = a.stripeSessionId && !a.details && bySession.get(a.stripeSessionId);
+    if (!details) continue;
+    const better = displayName(details);
+    const name = better && (!a.name || a.name === "Guest") ? better : undefined;
+    out.push({ kind: "attendee", id: String(a._id), details, ...(name ? { name } : {}) });
+  }
+  for (const u of users) {
+    for (const t of u.tickets || []) {
+      const details = t.stripeSessionId && !t.details && bySession.get(t.stripeSessionId);
+      if (details) out.push({ kind: "user", userId: String(u._id), ticketId: t.ticketId, details });
+    }
+  }
+  return out;
+}
+
+export async function applyDetailsBackfill(updates, { Attendee, User }) {
+  for (const u of updates) {
+    if (u.kind === "attendee") {
+      await Attendee.updateOne({ _id: u.id }, { $set: { details: u.details, ...(u.name ? { name: u.name } : {}) } });
+    } else {
+      await User.updateOne({ _id: u.userId, "tickets.ticketId": u.ticketId }, { $set: { "tickets.$.details": u.details } });
+    }
+  }
+  return updates.length;
 }
 
 /** Every complete Checkout Session (auto-paginated). */
