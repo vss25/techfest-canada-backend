@@ -1,6 +1,7 @@
 import { Resend } from "resend";
 import { generateTicketPDF } from "./pdfTicket.js";
 import { buildTicketEmail } from "./ticketEmail.js";
+import { buildProfileRequestEmail } from "./profileEmail.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
@@ -102,6 +103,28 @@ export async function sendResetPasswordEmail(email, resetLink) {
      Pass Type ID certificate — the button is left out until it's configured,
      so buyers never get a link that can't work)
 ========================================================= */
+
+/* =========================================================
+   "COMPLETE YOUR PROFILE" EMAIL
+   Layout in services/profileEmail.js (pure, tested). Staff send it
+   from Admin → Tickets (POST /api/console/tickets/profile-request).
+   Throws when Resend refuses it, so the caller can count failures.
+========================================================= */
+
+export async function sendProfileRequestEmail({ email, firstName, tier, link }) {
+  if (!email || !link) throw new Error("Missing email or link");
+  const { subject, html, text } = buildProfileRequestEmail({ firstName, tier, link });
+  const { data, error } = await resend.emails.send({
+    from: "TechFest Canada <tickets@thetechfestival.com>",
+    to: email,
+    reply_to: EVENT.supportEmail,
+    subject,
+    html,
+    text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  return data;
+}
 
 export function ticketEmailLinks(ticketId) {
   if (!ticketId || isBoothId(ticketId)) return { walletUrl: "", qrUrl: "" };

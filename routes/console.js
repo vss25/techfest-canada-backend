@@ -15,8 +15,12 @@ import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwi
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, duplicateKeys, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
-import { DETAIL_COLUMNS } from "../services/attendeeDetails.js";
+import { DETAIL_COLUMNS, cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
 import { stripeRows, stripeSummary } from "../services/stripeSales.js";
+import { planProfileRequests, countReasons, profileLink, profileLinksReady, requestStamp, sendSequentially } from "../services/profileRequest.js";
+import { buildProfileRequestEmail } from "../services/profileEmail.js";
+import { sendProfileRequestEmail } from "../services/emailService.js";
+import { firstNameFor } from "../services/ticketInfo.js";
 import Stripe from "stripe";
 
 /* =========================================================
@@ -447,15 +451,127 @@ router.get("/tickets/export", requireManagement, async (req, res) => {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const head = ["Ticket ID", "Pass", "Name", "Email", "Purchased", "Checked in", "Promo code", "Source",
-    ...DETAIL_COLUMNS.map(([, label]) => label)];
+    ...DETAIL_COLUMNS.map(([, label]) => label), "Organisation from email", "Profile link emailed", "Profile completed by attendee"];
+  const date = (d) => (d ? new Date(d).toISOString().slice(0, 10) : "");
   const lines = rows.map((r) => [r.ticketId, r.tier, r.name, r.email,
-    r.purchaseDate ? new Date(r.purchaseDate).toISOString().slice(0, 10) : "", r.checkedIn, r.promoCode,
+    date(r.purchaseDate), r.checkedIn, r.promoCode,
     r.source === "account" ? "Account" : "Guest checkout",
-    ...DETAIL_COLUMNS.map(([k]) => r.details?.[k])].map(cell).join(","));
+    ...DETAIL_COLUMNS.map(([k]) => r.details?.[k]), r.emailOrg,
+    date(r.profileRequestedAt), date(r.profileCompletedAt)].map(cell).join(","));
   await audit(req, "tickets_export", "ticket", "", `${rows.length} rows`);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-attendees-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send("\uFEFF" + [head.map(cell).join(","), ...lines].join("\n"));
+});
+
+// Staff fill in or correct what we know about a ticket holder.
+// Body: { key: "u:<userId>:<ticketId>" | "g:<ticketId>", details: { organisation, jobTitle, phone, linkedin, country, notes }, name? }
+// `name` only applies to guest tickets (account names belong to the person's profile).
+router.patch("/tickets/details", async (req, res) => {
+  const parts = String(req.body?.key || "").split(":");
+  const edit = cleanStaffEdit(req.body?.details);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+  let details;
+  if (parts[0] === "u" && parts.length >= 3 && isId(parts[1])) {
+    const ticketId = parts.slice(2).join(":");
+    const user = await User.findOne({ _id: parts[1], "tickets.ticketId": ticketId }).select("tickets").lean();
+    const t = user?.tickets?.find((x) => x.ticketId === ticketId);
+    if (!t) return res.status(404).json({ error: "Ticket not found" });
+    details = mergeStaffEdit(t.details, edit);
+    await User.updateOne({ _id: parts[1], "tickets.ticketId": ticketId }, { $set: { "tickets.$.details": details } });
+  } else if (parts[0] === "g" && parts.length >= 2) {
+    const ticketId = parts.slice(1).join(":");
+    const a = await Attendee.findOne({ ticketId }).select("details").lean();
+    if (!a) return res.status(404).json({ error: "Ticket not found" });
+    details = mergeStaffEdit(a.details, edit);
+    await Attendee.updateOne({ ticketId }, { $set: { details, ...(name ? { name } : {}) } });
+  } else {
+    return res.status(400).json({ error: "Unknown ticket" });
+  }
+  await audit(req, "ticket_details_edit", "ticket", parts.slice(-1)[0], Object.keys(edit).concat(name ? ["name"] : []).join(", "));
+  res.json({ details, ...(name && parts[0] === "g" ? { name } : {}) });
+});
+
+/* ---------- "Complete your profile" requests ----------
+   Many tickets were bought before checkout answers were saved. Staff can
+   email those people a personal link to fill the form in themselves
+   (website /complete-profile, public API routes/completeProfile.js).
+   Management only: it emails attendees. Nothing is sent without
+   preview: false, which the panel only does after a confirm click. */
+
+const PROFILE_SEND_MAX = 500;         // per request; the rest go on the next click
+const PROFILE_SEND_GAP_MS = 600;      // Resend allows ~2 emails a second
+
+const firstNameOf = (r) => firstNameFor({ firstName: r.details?.firstName, name: r.name });
+const profileRowOut = (r) => ({
+  key: r.key, name: r.name, email: r.email, ticketId: r.ticketId, tier: r.tier, purchaseDate: r.purchaseDate,
+  source: r.source, profileRequestedAt: r.profileRequestedAt, profileCompletedAt: r.profileCompletedAt,
+  organisation: r.details?.organisation || "", jobTitle: r.details?.jobTitle || "",
+});
+
+/** Where the stamp goes: dotted paths keep anything written to details meanwhile. */
+async function stampProfileRequest(r) {
+  const stamp = requestStamp(r.details);
+  const hasObj = r.details && typeof r.details === "object";
+  const parts = r.key.split(":");
+  if (r.source === "account") {
+    const $set = hasObj
+      ? { "tickets.$.details.profileRequestedAt": stamp.profileRequestedAt, "tickets.$.details.profileRequestCount": stamp.profileRequestCount }
+      : { "tickets.$.details": stamp };
+    await User.updateOne({ _id: parts[1], "tickets.ticketId": r.ticketId }, { $set });
+  } else {
+    const $set = hasObj
+      ? { "details.profileRequestedAt": stamp.profileRequestedAt, "details.profileRequestCount": stamp.profileRequestCount }
+      : { details: stamp };
+    await Attendee.updateOne({ ticketId: r.ticketId }, { $set });
+  }
+}
+
+// Body: { keys?: [...], preview?: true, force?: true (single key only), sampleKey? }
+// preview → { count, rows, skipped: { reason: n }, sample: { to, subject, html, text } }
+// send    → { sent, skipped, failed, remaining, failures: [{ key, name, email, error }] }
+router.post("/tickets/profile-request", requireManagement, async (req, res) => {
+  const keys = Array.isArray(req.body?.keys) ? req.body.keys.filter((k) => typeof k === "string").slice(0, 5000) : [];
+  const force = req.body?.force === true;
+  if (!profileLinksReady()) {
+    return res.status(503).json({ error: "Profile links can't be signed: set WALLET_LINK_SECRET (or JWT_SECRET) on the server." });
+  }
+  const { eligible, skipped } = planProfileRequests(await allTicketRows(), { keys, force });
+
+  if (req.body?.preview) {
+    const sampleRow = eligible.find((r) => r.key === req.body?.sampleKey) || eligible[0];
+    const sample = sampleRow
+      ? { to: sampleRow.email, name: sampleRow.name, ...buildProfileRequestEmail({ firstName: firstNameOf(sampleRow), tier: sampleRow.tier, link: profileLink(sampleRow.ticketId) }) }
+      : null;
+    return res.json({ count: eligible.length, rows: eligible.map(profileRowOut), skipped: countReasons(skipped), sample, maxPerSend: PROFILE_SEND_MAX });
+  }
+
+  const batch = eligible.slice(0, PROFILE_SEND_MAX);
+  const { sent, failed } = await sendSequentially(batch, async (r) => {
+    await sendProfileRequestEmail({ email: r.email, firstName: firstNameOf(r), tier: r.tier, link: profileLink(r.ticketId) });
+    await stampProfileRequest(r).catch((e) => console.error("PROFILE REQUEST STAMP ERROR:", r.key, e?.message));
+  }, { delayMs: PROFILE_SEND_GAP_MS });
+
+  const who = keys.length === 1 ? ` · ${keys[0]}${force ? " (forced)" : ""}` : "";
+  await audit(req, "profile_request_send", "ticket", keys.length === 1 ? keys[0].split(":").slice(-1)[0] : "",
+    `sent ${sent.length}, skipped ${skipped.length}, failed ${failed.length}${who}`);
+  res.json({
+    sent: sent.length, skipped: skipped.length, failed: failed.length,
+    remaining: Math.max(0, eligible.length - batch.length),
+    skippedReasons: countReasons(skipped),
+    failures: failed.map(({ item, error }) => ({ key: item.key, name: item.name, email: item.email, error })),
+  });
+});
+
+// A ticket's personal form link, for staff to send themselves. ?key=u:<userId>:<ticketId> | g:<ticketId>
+router.get("/tickets/profile-link", requireManagement, async (req, res) => {
+  const key = String(req.query.key || "");
+  const row = (await allTicketRows()).find((r) => r.key === key);
+  if (!row) return res.status(404).json({ error: "Ticket not found" });
+  const link = profileLink(row.ticketId);
+  if (!link) return res.status(503).json({ error: "Profile links can't be signed: set WALLET_LINK_SECRET (or JWT_SECRET) on the server." });
+  await audit(req, "profile_link_copy", "ticket", row.ticketId, row.email);
+  res.json({ link });
 });
 
 async function setHidden(keys, hidden) {

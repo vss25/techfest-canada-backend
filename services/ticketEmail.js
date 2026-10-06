@@ -16,14 +16,14 @@ import {
   firstNameFor, googleCalendarUrl, escapeHtml as esc,
 } from "./ticketInfo.js";
 
-const C = {
+export const C = {
   bg: "#f3effa", panel: "#ffffff", dark: "#06020f", card: "#150a2b",
   purple: "#7a3fd1", pink: "#E8458B", gold: "#f5b942",
   ink: "#140a26", text: "#3a3350", muted: "#6b6480", hair: "#ece5f8", soft: "#f7f3ff",
 };
-const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-const DISPLAY = "Orbitron,'Arial Black',Arial,Helvetica,sans-serif";
-const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
+export const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+export const DISPLAY = "Orbitron,'Arial Black',Arial,Helvetica,sans-serif";
+export const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
 const label = (text, color = C.purple) =>
   `<div style="font-family:${SANS};font-size:11px;line-height:14px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:${color};">${esc(text)}</div>`;

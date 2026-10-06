@@ -33,6 +33,7 @@ import appApiRouter from "./routes/appApi.js";         // analytics, app texts, 
 import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
 import filesRouter from "./routes/files.js";           // post photos + profile photos
+import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -113,6 +114,7 @@ app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/console", consoleRouter);     // admin console (staff only)
 app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id
+app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no login)
 // The admin console website: https://<backend>/console
 app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));
 app.use("/api", promosRouter);

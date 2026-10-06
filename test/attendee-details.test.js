@@ -50,3 +50,22 @@ test("staff search matches company and job title", () => {
   assert.equal(matchRows(rows, "scotia").length, 1);
   assert.equal(matchRows(rows, "ciso")[0].name, "Jane");
 });
+
+import { workDomain, orgFromEmail, cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
+
+test("organisation hint from a work email", () => {
+  assert.equal(orgFromEmail("dominic@deepcovecyber.com"), "deepcovecyber.com");
+  assert.equal(orgFromEmail("nik@nbc.ca"), "National Bank of Canada");
+  assert.equal(orgFromEmail("a@uwo.ca"), "Western University");
+  assert.equal(orgFromEmail("b.g@ised-isde.gc.ca"), "Innovation, Science and Economic Development Canada");
+  assert.equal(workDomain("x@mail.sub.example.co.uk"), "example.co.uk");
+  assert.equal(orgFromEmail("noah@gmail.com"), "");
+  assert.equal(orgFromEmail(""), "");
+});
+
+test("staff edits are whitelisted, trimmed, and empty clears", () => {
+  const edit = cleanStaffEdit({ organisation: " Deep Cove Cyber ", jobTitle: "", isAdmin: true, notes: "VIP" });
+  assert.deepEqual(edit, { organisation: "Deep Cove Cyber", jobTitle: "", notes: "VIP" });
+  const merged = mergeStaffEdit({ jobTitle: "CTO", topics: ["AI"] }, edit);
+  assert.deepEqual(merged, { topics: ["AI"], organisation: "Deep Cove Cyber", notes: "VIP", editedByStaff: true });
+});

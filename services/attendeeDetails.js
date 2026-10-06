@@ -48,5 +48,64 @@ export const DETAIL_COLUMNS = [
   ["jobTitle", "Job title"], ["organisation", "Organisation"], ["phone", "Phone"],
   ["country", "Country"], ["linkedin", "LinkedIn"], ["jobLevel", "Job level"],
   ["jobFunction", "Job function"], ["topics", "Topics"], ["objectives", "Objectives"],
-  ["consentUpdates", "Agreed to updates"],
+  ["consentUpdates", "Agreed to updates"], ["notes", "Staff notes"],
 ];
+
+/* ---------- Organisation from a work email ----------
+   Shown to staff as a hint ("from email") when the buyer didn't give a
+   company. Personal mailboxes give no hint. */
+const FREE_MAIL = new Set([
+  "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.co.uk", "live.com", "live.ca", "msn.com",
+  "yahoo.com", "yahoo.ca", "yahoo.co.in", "ymail.com", "icloud.com", "me.com", "mac.com", "aol.com",
+  "proton.me", "protonmail.com", "gmx.com", "mail.com", "zoho.com", "rogers.com", "bell.net", "sympatico.ca", "shaw.ca", "telus.net",
+]);
+const KNOWN_ORGS = {
+  "nbc.ca": "National Bank of Canada", "bnc.ca": "National Bank of Canada",
+  "uwo.ca": "Western University", "brocku.ca": "Brock University", "utoronto.ca": "University of Toronto",
+  "yorku.ca": "York University", "torontomu.ca": "Toronto Metropolitan University", "uwaterloo.ca": "University of Waterloo",
+  "mcmaster.ca": "McMaster University", "queensu.ca": "Queen's University", "uottawa.ca": "University of Ottawa",
+  "ised-isde.gc.ca": "Innovation, Science and Economic Development Canada",
+  "feddevontario.gc.ca": "FedDev Ontario", "international.gc.ca": "Global Affairs Canada", "ontario.ca": "Government of Ontario",
+  "rbc.com": "RBC", "td.com": "TD Bank", "scotiabank.com": "Scotiabank", "bmo.com": "BMO", "cibc.com": "CIBC",
+};
+
+/** "jane@sub.deepcovecyber.com" → "deepcovecyber.com"; "" for personal mailboxes. */
+export function workDomain(email) {
+  const d = String(email || "").trim().toLowerCase().split("@")[1] || "";
+  if (!d || FREE_MAIL.has(d)) return "";
+  const known = Object.keys(KNOWN_ORGS).find((k) => d === k || d.endsWith("." + k));
+  if (known) return known;
+  const parts = d.split(".");
+  // keep two labels, or three for country second-levels like co.uk / gc.ca / on.ca
+  const keep = parts.length > 2 && /^(co|com|gc|on|org|ac|gov|net)$/.test(parts[parts.length - 2]) ? 3 : 2;
+  return parts.slice(-keep).join(".");
+}
+
+/** Best guess at the organisation from a work email: a known name, else the domain. */
+export function orgFromEmail(email) {
+  const domain = workDomain(email);
+  return domain ? (KNOWN_ORGS[domain] || domain) : "";
+}
+
+/* ---------- Staff edits ---------- */
+export const EDITABLE_FIELDS = ["organisation", "jobTitle", "phone", "linkedin", "country", "notes"];
+
+/** Whitelists a staff edit: trimmed strings, "" clears a field. */
+export function cleanStaffEdit(body) {
+  const out = {};
+  for (const k of EDITABLE_FIELDS) {
+    if (body?.[k] === undefined) continue;
+    out[k] = String(body[k] ?? "").trim().slice(0, k === "notes" ? 2000 : 300);
+  }
+  return out;
+}
+
+/** Applies a staff edit on top of stored details (empty values removed). */
+export function mergeStaffEdit(details, edit) {
+  const next = { ...(details || {}) };
+  for (const [k, v] of Object.entries(edit)) {
+    if (v) next[k] = v; else delete next[k];
+  }
+  if (Object.keys(edit).length) next.editedByStaff = true;
+  return next;
+}
