@@ -9,6 +9,8 @@ import {
   SessionRegistration, SessionQuestion, SessionVote,
 } from "../models/Social.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
+import AppNotification from "../models/AppNotification.js";
+import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
 } from "../services/socialHelpers.js";
@@ -402,6 +404,30 @@ router.post("/sessions/:id/polls/:pollId/vote", async (req, res) => {
   const votes = await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean();
   const mine = votes.find((v) => String(v.userId) === String(req.user._id));
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
+});
+
+/* ================= MY NOTIFICATIONS =================
+   Personal notifications staff sent from the admin panel. The apps poll this
+   (on open and in the background) and show new ones as local notifications. */
+
+router.get("/notifications", async (req, res) => {
+  const filter = { userId: req.user._id };
+  const since = parseSince(req.query.since);
+  if (since) filter.createdAt = { $gt: since };
+  const [rows, unread] = await Promise.all([
+    AppNotification.find(filter).sort({ createdAt: -1 }).limit(100).lean(),
+    AppNotification.countDocuments({ userId: req.user._id, readAt: null }),
+  ]);
+  res.json({ notifications: rows.map(notificationDTO), unread });
+});
+
+router.post("/notifications/read", async (req, res) => {
+  const which = parseReadBody(req.body);
+  if (!which) return res.status(400).json({ error: "ids or all required" });
+  const filter = { userId: req.user._id, readAt: null };
+  if (which.ids) filter._id = { $in: which.ids };
+  const r = await AppNotification.updateMany(filter, { $set: { readAt: new Date() } });
+  res.json({ ok: true, updated: r.modifiedCount ?? 0 });
 });
 
 /* ================= STAFF MODERATION ================= */

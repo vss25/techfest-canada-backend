@@ -6,6 +6,7 @@ import {
 } from "../models/Social.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, Block, Report } from "../models/Admin.js";
+import AppNotification from "../models/AppNotification.js";
 
 /* Deletes an account and everything it posted (Apple guideline 5.1.1(v)).
    Paid tickets survive: each one goes back to a guest Attendee record so
@@ -46,6 +47,7 @@ export async function deleteAccount(userId) {
     AppEvent.deleteMany({ userId: id }),
     Block.deleteMany({ $or: [{ userId: id }, { blockedId: id }] }),
     Report.deleteMany({ reporterId: id }),
+    AppNotification.deleteMany({ userId: id }),
   ]);
   await User.deleteOne({ _id: id });
   return true;

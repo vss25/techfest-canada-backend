@@ -66,6 +66,8 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/profile` | `routes/profile.js` | GET/PATCH attendee profile (linkedinUrl, fieldOfWork, jobTitle, organization, country, topics) |
 | `/api/moderate` | `routes/moderate.js` | DeepCleer text-moderation proxy used by the iOS app |
 | `/api/intel` | `routes/intel.js` | Gemini-generated company cards (cached in `IntelCard`) for the app's home screen |
+| `/api/console/notify…` | `routes/console.js` | Staff → personal notifications (`GET recipients?q=`, `POST /notify`, `GET history`). Stored in `AppNotification`; helpers in `services/notifyHelpers.js` |
+| `/api/social/notifications` | `routes/social.js` | App polls its personal notifications (`?since=`), `POST /read { ids \| all }`. No APNs/FCM yet |
 | `/api/complete-profile` | `routes/completeProfile.js` | Public "complete your profile" form API (signed `?t=&s=` link, no login). Staff send links from `/api/console/tickets/profile-request` |
 | `/api/auth/email-link` | `routes/emailLink.js` | "Email me a sign-in link": `POST /email-link {email, client}` always answers `{sent:true}`; emails a link to `${FRONTEND_URL}/app-login?token=` + a 6-digit code (15 min, single use, 5 code tries; hashes only in `SignInRequest`, TTL index). `POST /email-link/verify {token}` or `{email, code}` → `{token, created}` (30-day app JWT; creates the account for guest ticket holders). Pure parts in `services/emailLink.js`, emails in `services/signInEmail.js` |
 
