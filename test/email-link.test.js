@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeEmail, isValidEmail, hashToken, hashCode, cleanCode, newCode, newToken, createSignInSecrets,
-  looksLikeToken, requestState, checkCode, messageFor, signInLink, frontendBase, cleanClient, emailRegex,
+  looksLikeToken, requestState, checkCode, messageFor, codeMessageFor, signInLink, frontendBase, cleanClient, emailRegex,
   sameHash, LINK_TTL_MS, MAX_CODE_ATTEMPTS,
 } from "../services/emailLink.js";
 import { buildSignInEmail, buildNoTicketEmail, SIGN_IN_SUBJECT, NO_TICKET_SUBJECT } from "../services/signInEmail.js";
@@ -118,7 +118,7 @@ test("checkCode accepts the right code and counts wrong ones down to a lock", ()
   const last = checkCode(r, "jane@acme.com", wrong, NOW);
   assert.equal(last.lock, true);
   assert.equal(last.state, "locked");
-  assert.equal(last.error, messageFor("locked"));
+  assert.equal(last.error, codeMessageFor("locked"));
   // Once locked, even the right code is refused.
   assert.equal(checkCode({ ...r, attempts: MAX_CODE_ATTEMPTS }, "jane@acme.com", code, NOW).ok, false);
 });

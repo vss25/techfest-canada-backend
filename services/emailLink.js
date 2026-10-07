@@ -100,7 +100,7 @@ export function sameHash(a, b) {
  */
 export function checkCode(req, email, code, now = Date.now()) {
   const state = requestState(req, now);
-  if (state !== "ok") return { ok: false, state, attempts: req?.attempts || 0, lock: false, error: messageFor(state) };
+  if (state !== "ok") return { ok: false, state, attempts: req?.attempts || 0, lock: false, error: codeMessageFor(state) };
   const clean = cleanCode(code);
   if (clean && sameHash(hashCode(email, clean), req.codeHash)) {
     return { ok: true, state: "ok", attempts: req.attempts || 0, lock: false, error: "" };
@@ -113,7 +113,7 @@ export function checkCode(req, email, code, now = Date.now()) {
     state: lock ? "locked" : "wrong",
     attempts,
     lock,
-    error: lock ? messageFor("locked") : `That code isn't right. ${left} ${left === 1 ? "try" : "tries"} left.`,
+    error: lock ? codeMessageFor("locked") : `That code isn't right. ${left} ${left === 1 ? "try" : "tries"} left.`,
   };
 }
 
@@ -124,6 +124,17 @@ export function messageFor(state) {
     case "expired": return "That sign-in link has expired. Request a new one — it only takes a moment.";
     case "missing":
     default: return "That sign-in link isn't valid any more. Request a new one to sign in.";
+  }
+}
+
+/** Same states, worded for someone who typed the 6-digit code rather than tapped the link. */
+export function codeMessageFor(state) {
+  switch (state) {
+    case "used": return "That code has already been used. Request a new email to sign in again.";
+    case "locked": return "Too many wrong codes. Request a new email and try again.";
+    case "expired": return "That code has expired. Request a new email — it only takes a moment.";
+    case "missing":
+    default: return "That code isn't valid any more. Request a new email to sign in.";
   }
 }
 
