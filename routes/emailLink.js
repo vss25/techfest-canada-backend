@@ -24,6 +24,10 @@ import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 // behind one address, so the per-IP caps are looser than the per-email one.
 const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.ip || "unknown").split(",")[0].trim();
 
+// Staff accounts can reach the admin panel, so they always sign in with their password.
+const STAFF_ONLY_PASSWORD = "Staff accounts sign in with their password.";
+const isStaff = (user) => !!user && String(user.role || "").toLowerCase() === "admin";
+
 const TOO_MANY = "Too many sign-in emails. Please wait 15 minutes and try again.";
 const TOO_MANY_TRIES = "Too many attempts. Please wait 15 minutes and try again.";
 
@@ -85,6 +89,9 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       const { user, guests } = await lookup(email);
       const base = frontendBase();
 
+      // Same answer as always (no account enumeration), but no link for staff.
+      if (isStaff(user)) return res.json({ sent: true });
+
       if (!user && !guests.length) {
         send("no-ticket", { email, ticketsUrl: `${base}/tickets` })
           .catch((err) => console.error("NO-TICKET EMAIL ERROR:", err.message));
@@ -144,6 +151,8 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       );
       if (!claimed) return res.status(400).json({ error: messageFor("used") });
 
+      const { user: existing } = await lookup(claimed.email);
+      if (isStaff(existing)) return res.status(400).json({ error: STAFF_ONLY_PASSWORD });
       const { user, created } = await accountFor(claimed.email);
       if (!user) return res.status(400).json({ error: "We couldn't find a TTFC ticket for this email." });
       res.json({ token: signAppToken(user), created });
