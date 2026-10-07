@@ -170,4 +170,4 @@ router.post("/refresh", async (req, res) => {
 });
 
 export default router;
-export { latestTicket };
+export { latestTicket, sign as signAppToken, ticketFromAttendee, hasTicket };

@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import { generateTicketPDF } from "./pdfTicket.js";
 import { buildTicketEmail } from "./ticketEmail.js";
 import { buildProfileRequestEmail } from "./profileEmail.js";
+import { buildSignInEmail, buildNoTicketEmail } from "./signInEmail.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
@@ -116,6 +117,42 @@ export async function sendProfileRequestEmail({ email, firstName, tier, link }) 
   const { subject, html, text } = buildProfileRequestEmail({ firstName, tier, link });
   const { data, error } = await resend.emails.send({
     from: "TechFest Canada <tickets@thetechfestival.com>",
+    to: email,
+    reply_to: EVENT.supportEmail,
+    subject,
+    html,
+    text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  return data;
+}
+
+/* =========================================================
+   "EMAIL ME A SIGN-IN LINK" EMAILS
+   Layout in services/signInEmail.js (pure, tested). Sent from
+   routes/emailLink.js. Throw when Resend refuses them.
+========================================================= */
+
+export async function sendSignInLinkEmail({ email, link, code, minutes = 15 }) {
+  if (!email || !link || !code) throw new Error("Missing email, link or code");
+  const { subject, html, text } = buildSignInEmail({ link, code, minutes });
+  const { data, error } = await resend.emails.send({
+    from: "TechFest Canada <noreply@thetechfestival.com>",
+    to: email,
+    reply_to: EVENT.supportEmail,
+    subject,
+    html,
+    text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  return data;
+}
+
+export async function sendNoTicketEmail({ email, ticketsUrl }) {
+  if (!email) throw new Error("Missing email");
+  const { subject, html, text } = buildNoTicketEmail({ email, ticketsUrl });
+  const { data, error } = await resend.emails.send({
+    from: "TechFest Canada <noreply@thetechfestival.com>",
     to: email,
     reply_to: EVENT.supportEmail,
     subject,

@@ -29,6 +29,7 @@ import socialRouter from "./routes/social.js";     // feed / connections / messa
 import communityRouter from "./routes/community.js"; // discussions + groups (iOS app)
 import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS app)
 import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)
+import emailLinkRouter from "./routes/emailLink.js";   // "email me a sign-in link" (app + website)
 import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
 import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
@@ -93,6 +94,7 @@ app.use(killSwitchMiddleware);
 ========================================== */
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
+app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
 app.use("/api/payments", paymentRoutes);
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
