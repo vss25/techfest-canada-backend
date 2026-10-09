@@ -7,6 +7,7 @@ import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apns.js";
+import { cleanFcmToken, upsertFcmToken, isConfigured as fcmConfigured } from "../services/fcm.js";
 
 const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batches per IP per minute
 
@@ -18,7 +19,8 @@ const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batche
    POST   /block         block a user;  DELETE /block/:userId unblock
    GET    /blocks        my blocked user ids
    DELETE /account       delete my account (Apple 5.1.1(v))
-   POST   /push-token    register this phone for push { token, env }
+   POST   /push-token    register this phone for push
+                         iOS { token, env } · Android { token, platform: "android" }
    DELETE /push-token    stop pushing to this phone { token } (sign out)
 ========================================================= */
 
@@ -94,9 +96,19 @@ router.get("/blocks", async (req, res) => {
 });
 
 /* Push tokens. `pushing` tells the app whether the server can push right now
-   (APNs key configured); when false the app keeps showing local notifications. */
+   (APNs key / FCM service account configured for that platform); when false
+   the app keeps showing local notifications. */
 router.post("/push-token", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;
+  if (req.body?.platform === "android") {
+    const token = cleanFcmToken(req.body?.token);
+    if (!token) return res.status(400).json({ error: "token required" });
+    await User.updateMany({ _id: { $ne: me._id } }, { $pull: { fcmTokens: { token } } });
+    const u = await User.findById(me._id).select("+fcmTokens");
+    u.fcmTokens = upsertFcmToken(u.fcmTokens || [], token);
+    await u.save();
+    return res.json({ ok: true, pushing: fcmConfigured() });
+  }
   const token = cleanToken(req.body?.token);
   if (!token) return res.status(400).json({ error: "token required" });
   // A phone belongs to one account at a time: drop it from anyone else first.
@@ -109,8 +121,12 @@ router.post("/push-token", async (req, res) => {
 
 router.delete("/push-token", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;
-  const token = cleanToken(req.body?.token);
-  if (token) await User.updateOne({ _id: me._id }, { $pull: { apnsTokens: { token } } });
+  const apnsToken = cleanToken(req.body?.token);
+  const fcmToken = cleanFcmToken(req.body?.token);
+  const pull = {};
+  if (apnsToken) pull.apnsTokens = { token: apnsToken };
+  if (fcmToken) pull.fcmTokens = { token: fcmToken };
+  if (Object.keys(pull).length) await User.updateOne({ _id: me._id }, { $pull: pull });
   res.json({ ok: true });
 });
 

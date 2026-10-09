@@ -5,7 +5,7 @@ import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../mo
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import { trimBody, userCard } from "../services/socialHelpers.js";
 import { Block } from "../models/Admin.js";
-import { pushToUsers } from "../services/apns.js";
+import { pushToUsers } from "../services/push.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 
 /* =========================================================

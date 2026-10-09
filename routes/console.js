@@ -10,7 +10,7 @@ import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../mo
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
-import { pushToUsers, pushToEveryone } from "../services/apns.js";
+import { pushToUsers, pushToEveryone } from "../services/push.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
