@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeEmail, isValidEmail, hashToken, hashCode, cleanCode, newCode, newToken, createSignInSecrets,
   looksLikeToken, requestState, checkCode, messageFor, codeMessageFor, signInLink, frontendBase, cleanClient, emailRegex,
-  sameHash, LINK_TTL_MS, MAX_CODE_ATTEMPTS,
+  sameHash, LINK_TTL_MS, MAX_CODE_ATTEMPTS, linkDecision,
 } from "../services/emailLink.js";
 import { buildSignInEmail, buildNoTicketEmail, SIGN_IN_SUBJECT, NO_TICKET_SUBJECT } from "../services/signInEmail.js";
 import { createEmailLinkRouter } from "../routes/emailLink.js";
@@ -193,6 +193,15 @@ test("no-ticket email names the address, links to tickets and escapes", () => {
 });
 
 /* ---------- router ---------- */
+test("sign-in links only go to emails tied to a ticket", () => {
+  assert.equal(linkDecision(null, 0), "no-ticket");
+  assert.equal(linkDecision({ tickets: [] }, 0), "no-ticket");          // account, no ticket
+  assert.equal(linkDecision({ tickets: [{ ticketId: "T1" }] }, 0), "signin");
+  assert.equal(linkDecision(null, 1), "signin");                         // guest checkout
+  assert.equal(linkDecision({ tickets: [] }, 2), "signin");              // account + guest tickets
+  assert.equal(linkDecision({ role: "Admin", tickets: [{}] }, 1), "staff");
+});
+
 test("the router builds without a Resend key and exposes both routes", () => {
   const router = createEmailLinkRouter({ send: async () => {} });
   const paths = router.stack.map((l) => `${Object.keys(l.route.methods)[0]} ${l.route.path}`);

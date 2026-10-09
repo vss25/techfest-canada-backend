@@ -169,7 +169,7 @@ export function buildNoTicketEmail({ email = "", ticketsUrl = `${EVENT.website}/
   const body = `
 <tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:34px 32px 8px;">
   <h1 class="em-ink em-h1" style="margin:0 0 14px;font-family:${SANS};font-size:26px;line-height:32px;font-weight:800;color:${C.ink};letter-spacing:-0.5px;">We couldn't find a ticket for this email</h1>
-  <p class="em-text" style="margin:0 0 14px;font-family:${SANS};font-size:16px;line-height:25px;color:${C.text};">Someone asked for a TTFC sign-in link for <strong class="em-ink" style="color:${C.ink};">${esc(email)}</strong>, but there's no ticket or account under this address.</p>
+  <p class="em-text" style="margin:0 0 14px;font-family:${SANS};font-size:16px;line-height:25px;color:${C.text};">Someone asked for a TTFC sign-in link for <strong class="em-ink" style="color:${C.ink};">${esc(email)}</strong>, but there's no ticket under this address.</p>
   <p class="em-text" style="margin:0;font-family:${SANS};font-size:16px;line-height:25px;color:${C.text};">If you already have a pass, try the email you used at checkout. It's the one your ticket confirmation was sent to. You can also sign in with your ticket ID and last name.</p>
 </td></tr>
 <tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:26px 32px 8px;" align="center">
@@ -188,7 +188,7 @@ export function buildNoTicketEmail({ email = "", ticketsUrl = `${EVENT.website}/
   const text = [
     "We couldn't find a ticket for this email",
     "",
-    `Someone asked for a TTFC sign-in link for ${email}, but there's no ticket or account under this address.`,
+    `Someone asked for a TTFC sign-in link for ${email}, but there's no ticket under this address.`,
     "",
     "If you already have a pass, try the email you used at checkout. It's the one your ticket confirmation was sent to. You can also sign in with your ticket ID and last name.",
     "",
