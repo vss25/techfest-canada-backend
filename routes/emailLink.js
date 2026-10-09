@@ -5,7 +5,7 @@ import SignInRequest from "../models/SignInRequest.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import {
   normalizeEmail, isValidEmail, createSignInSecrets, hashToken, looksLikeToken, requestState,
-  checkCode, cleanCode, messageFor, signInLink, frontendBase, cleanClient, emailRegex, LINK_TTL_MS,
+  checkCode, cleanCode, messageFor, signInLink, frontendBase, cleanClient, emailRegex, LINK_TTL_MS, MAX_CODE_ATTEMPTS, codeMessageFor,
 } from "../services/emailLink.js";
 import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 
@@ -22,7 +22,9 @@ import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 // Render sits behind a proxy, so req.ip is the proxy; use the client's address
 // the same way routes/completeProfile.js does. Venue Wi-Fi puts many attendees
 // behind one address, so the per-IP caps are looser than the per-email one.
-const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.ip || "unknown").split(",")[0].trim();
+// server.js trusts one proxy hop, so req.ip is the visitor (a client-sent
+// X-Forwarded-For can't be used to dodge the limits).
+const clientIp = (req) => String(req.ip || "unknown");
 
 // Staff accounts can reach the admin panel, so they always sign in with their password.
 const STAFF_ONLY_PASSWORD = "Staff accounts sign in with their password.";
@@ -131,13 +133,28 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
         if (!cleanCode(req.body?.code)) return res.status(400).json({ error: "Enter the 6-digit code from the email." });
         request = (await SignInRequest.findOne({ email, status: "pending" }).sort({ createdAt: -1 }))
           || (await SignInRequest.findOne({ email }).sort({ createdAt: -1 }));
-        const result = checkCode(request, email, req.body.code, now);
+        // Reserve this try atomically before comparing, so a burst of parallel
+        // guesses can't all see "0 attempts" and get more than MAX_CODE_ATTEMPTS.
+        let counted = false;
+        if (request && request.status === "pending") {
+          const reserved = await SignInRequest.findOneAndUpdate(
+            { _id: request._id, status: "pending", attempts: { $lt: MAX_CODE_ATTEMPTS } },
+            { $inc: { attempts: 1 } },
+            { new: true }
+          );
+          if (!reserved) {
+            await SignInRequest.updateOne({ _id: request._id, status: "pending" }, { $set: { status: "locked" } });
+            return res.status(400).json({ error: codeMessageFor("locked") });
+          }
+          request = reserved;
+          counted = true;
+        }
+        // checkCode counts the try itself, so give it the count before this one.
+        const asBefore = counted ? { ...request.toObject(), attempts: request.attempts - 1 } : request;
+        const result = checkCode(asBefore, email, req.body.code, now);
         if (!result.ok) {
-          if (request && (result.state === "wrong" || result.lock) && request.status === "pending") {
-            await SignInRequest.updateOne(
-              { _id: request._id, status: "pending" },
-              { $inc: { attempts: 1 }, ...(result.lock ? { $set: { status: "locked" } } : {}) }
-            );
+          if (request && result.lock && request.status === "pending") {
+            await SignInRequest.updateOne({ _id: request._id, status: "pending" }, { $set: { status: "locked" } });
           }
           return res.status(400).json({ error: result.error });
         }

@@ -2,6 +2,8 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
+import Attendee from "../models/Attendee.js";
+import { withCheckoutProfile, mirrorProfileToTickets, consentPatch } from "../services/onboardingProfile.js";
 
 /* =========================================================
    ATTENDEE PROFILE — GET / PATCH /api/profile
@@ -60,7 +62,9 @@ async function requireUser(req, res) {
 
 router.get("/", async (req, res) => {
   const user = await requireUser(req, res);
-  if (user) res.json({ ...user.toObject(), avatarUrl: avatarPath(user._id, user.avatarVersion) });
+  if (!user) return;
+  const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
+  res.json({ ...withCheckoutProfile(user.toObject(), claimed), avatarUrl: avatarPath(user._id, user.avatarVersion) });
 });
 
 /* Profile photo, shown to everyone on every device. Send
@@ -84,9 +88,17 @@ router.patch("/", async (req, res) => {
   try {
     const user = await requireUser(req, res);
     if (!user) return;
-    const patch = sanitizeProfilePatch(req.body);
+    const patch = { ...sanitizeProfilePatch(req.body), ...consentPatch(req.body, user) };
     if (!Object.keys(patch).length) return res.status(400).json({ error: "No editable fields supplied" });
     Object.assign(user, patch);
+    // Finishing the app's profile steps: copy the answers onto their tickets
+    // (gaps only) so the admin panel's ticket list and export show them.
+    if (user.appOnboarded) {
+      for (const { index, details } of mirrorProfileToTickets(user.toObject())) {
+        user.tickets[index].details = details;
+        user.markModified(`tickets.${index}.details`);
+      }
+    }
     await user.save();
     res.json({ success: true, user });
   } catch (err) {

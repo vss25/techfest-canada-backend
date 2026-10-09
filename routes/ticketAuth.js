@@ -13,6 +13,8 @@ import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter } from ".
 
 const router = express.Router();
 const limiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
+// Per ticket too, so guessing one person's last name can't be spread across addresses.
+const perTicket = makeLimiter({ max: 5, windowMs: 15 * 60 * 1000 });
 const APP_TOKEN_TTL = "30d";
 const NO_MATCH = "That ticket ID and last name don't match a TTFC ticket.";
 
@@ -53,6 +55,8 @@ function ticketFromAttendee(a) {
     purchaseDate: a.purchaseDate || new Date(),
     checkedIn: !!a.checkedIn,
     checkedInAt: a.checkedInAt,
+    // What they told us at checkout comes along, so the app doesn't ask again.
+    ...(a.details ? { details: a.details } : {}),
   };
 }
 
@@ -67,13 +71,20 @@ router.post("/ticket-login", async (req, res) => {
     if (!limiter.hit(key)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
 
     const { lastName, ticketId } = req.body || {};
-    if (!lastName || !ticketId) return res.status(400).json({ error: "Last name and ticket ID are required." });
+    if (typeof lastName !== "string" || typeof ticketId !== "string" || !lastName.trim() || !ticketId.trim()) {
+      return res.status(400).json({ error: "Last name and ticket ID are required." });
+    }
+    if (!perTicket.hit(`t:${ticketId.trim().toUpperCase()}`)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
 
     const found = await findTicket(ticketId);
     if (!found) return res.status(401).json({ error: NO_MATCH });
 
     if (found.kind === "user") {
       if (!lastNameMatches(found.owner.name, lastName)) return res.status(401).json({ error: NO_MATCH });
+      // Staff accounts reach the admin panel: they always sign in with their password.
+      if (String(found.owner.role || "").toLowerCase() === "admin") {
+        return res.status(400).json({ error: "Staff accounts sign in with their password." });
+      }
       limiter.reset(key);
       return res.json({ token: sign(found.owner), created: false });
     }

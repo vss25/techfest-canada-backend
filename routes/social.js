@@ -10,6 +10,7 @@ import {
 } from "../models/Social.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
+import { pushToUsers } from "../services/apns.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
@@ -79,6 +80,7 @@ router.get("/users", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const filter = {
     _id: { $ne: req.user._id },
+    directoryHidden: { $ne: true }, banned: { $ne: true },
     $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } }],
   };
   if (q) {
@@ -97,7 +99,7 @@ router.get("/attendees", async (req, res) => {
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
       .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean(),
-    Attendee.find({ claimedBy: { $exists: false } }).select("name email ticketId ticketType purchaseDate").lean(),
+    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select("name email ticketId ticketType purchaseDate").lean(),
   ]);
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
@@ -105,8 +107,12 @@ router.get("/attendees", async (req, res) => {
 });
 
 router.get("/users/:id", async (req, res) => {
-  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean();
-  if (!u) return res.status(404).json({ error: "Not found" });
+  if (!/^[a-f0-9]{24}$/i.test(String(req.params.id)) || req.blocked.has(String(req.params.id))) return res.status(404).json({ error: "Not found" });
+  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot directoryHidden banned").lean();
+  // Hidden people stay reachable from an existing chat or connection, but can't be looked up cold.
+  const known = u && u.directoryHidden ? await SocialConnection.exists({
+    $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }) : true;
+  if (!u || u.banned || !known) return res.status(404).json({ error: "Not found" });
   res.json(userCard(u));
 });
 
@@ -227,10 +233,14 @@ router.post("/connections/request", async (req, res) => {
     // Mutual interest → accept instead of duplicating
     if (existing.status === "pending" && String(existing.toUserId) === String(req.user._id)) {
       existing.status = "accepted"; existing.respondedAt = new Date(); await existing.save();
+      pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) });
     }
     return res.json(await connectionDTO(existing, req.user._id));
   }
   const c = await SocialConnection.create({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
+  if (!req.blocked.has(toUserId)) {
+    pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
+  }
   res.status(201).json(await connectionDTO(c, req.user._id));
 });
 
@@ -240,6 +250,9 @@ router.post("/connections/:id/respond", async (req, res) => {
   c.status = req.body?.accept ? "accepted" : "declined";
   c.respondedAt = new Date();
   await c.save();
+  if (c.status === "accepted") {
+    pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
+  }
   res.json(await connectionDTO(c, req.user._id));
 });
 
@@ -256,6 +269,7 @@ router.post("/connections/:id/withdraw", async (req, res) => {
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
+  if (req.blocked.has(toUserId)) return res.status(403).json({ error: "You can't connect with this person." });
   const target = await User.findById(toUserId).select("_id");
   if (!target) return res.status(404).json({ error: "User not found" });
   let c = await SocialConnection.findOne({
@@ -280,7 +294,9 @@ router.get("/messages", async (req, res) => {
     { $group: {
       _id: "$threadKey",
       last: { $first: "$$ROOT" },
-      unread: { $sum: { $cond: [{ $and: [{ $eq: ["$toUserId", me] }, { $eq: ["$readAt", null] }] }, 1, 0] } },
+      // New messages have no readAt field at all; in an aggregation a missing
+      // field isn't equal to null, so test with $ifNull (else unread is always 0).
+      unread: { $sum: { $cond: [{ $and: [{ $eq: ["$toUserId", me] }, { $eq: [{ $ifNull: ["$readAt", null] }, null] }] }, 1, 0] } },
     } },
     { $sort: { "last.createdAt": -1 } },
     { $limit: 100 },
@@ -322,6 +338,10 @@ router.post("/messages/:userId", async (req, res) => {
   const m = await SocialMessage.create({
     threadKey: threadKey(req.user._id, to._id), fromUserId: req.user._id, toUserId: to._id, body, status,
   });
+  // Held messages wait for a moderator; only approved ones reach the phone.
+  if (status === "approved") {
+    pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) });
+  }
   res.status(201).json({ id: String(m._id), body: m.body, sentByMe: true, status: m.status, createdAt: m.createdAt });
 });
 

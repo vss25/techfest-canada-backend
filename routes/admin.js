@@ -8,7 +8,7 @@ import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { collectTickets, salesSummary } from "../services/staffTickets.js";
 import { planSync, applySync, listCompleteSessions, planDetailsBackfill, applyDetailsBackfill } from "../services/stripeSync.js";
-import { requireManagementAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagementAdmin } from "../middleware/adminAuth.js";
 import { AppContent } from "../models/Admin.js";
 
 const router = express.Router();
@@ -94,12 +94,9 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-const adminMiddleware = (req, res, next) => {
-  if (req.user?.role !== "admin") {
-    return res.status(403).json({ error: "Admin access required" });
-  }
-  next();
-};
+// Staff-only routes check the database, not the token's "role" claim, so
+// removing someone's staff access takes effect immediately.
+const adminMiddleware = (req, res, next) => requireAdmin(req, res, next);
 
 /* =========================================================
    📊 SALES ANALYTICS DASHBOARD
@@ -133,8 +130,7 @@ router.get(
 ========================================================= */
 router.post(
   "/promote",
-  authMiddleware,
-  adminMiddleware,
+  requireManagementAdmin,   // only management can make someone staff
   async (req, res) => {
     try {
       const { email } = req.body;

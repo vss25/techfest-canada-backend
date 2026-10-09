@@ -55,6 +55,11 @@ const attendeeSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    // Kept out of the app's attendee directory (e.g. the owner deleted their app account).
+    directoryHidden: {
+      type: Boolean,
+      default: false
+    },
     // Set when this guest ticket is linked to an app/website account.
     claimedBy: {
       type: mongoose.Schema.Types.ObjectId,

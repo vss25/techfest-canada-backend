@@ -8,6 +8,7 @@ import crypto from "crypto";
 import Campaign from "../models/Campaign.js";
 import Audience from "../models/Audience.js";
 import EmailTracking from "../models/EmailTracking.js";
+import { requireAdmin } from "../middleware/adminAuth.js";
 import { sendCampaignEmail, wrapLinksWithTracking, generateCampaignFooter, sanitizeEmailHtml, sendBatchCampaignEmails } from "../services/emailService.js";
 
 const router = express.Router();
@@ -29,12 +30,9 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-const adminMiddleware = (req, res, next) => {
-  if (req.user?.role !== "admin") {
-    return res.status(403).json({ error: "Admin access required" });
-  }
-  next();
-};
+// Staff-only routes check the database, not the token's "role" claim, so
+// removing someone's staff access takes effect immediately.
+const adminMiddleware = (req, res, next) => requireAdmin(req, res, next);
 
 const upload = multer({ storage: multer.memoryStorage() });
 
