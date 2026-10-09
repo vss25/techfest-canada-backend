@@ -10,7 +10,7 @@ import {
 } from "../models/Social.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
-import { pushToUsers } from "../services/apns.js";
+import { pushToUsers } from "../services/push.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,

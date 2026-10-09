@@ -110,6 +110,8 @@ const userSchema = new mongoose.Schema(
     termsVersion:    { type: String, default: "" },
     // Apple push tokens for this person's phones (newest last, max 5).
     apnsTokens:   { type: [{ token: String, env: String, updatedAt: Date }], default: [], select: false },
+    // Android (FCM) registration tokens, same rules (newest last, max 5).
+    fcmTokens:    { type: [{ token: String, updatedAt: Date }], default: [], select: false },
 
     tickets: [ticketSchema],
 
