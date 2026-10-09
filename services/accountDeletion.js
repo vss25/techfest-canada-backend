@@ -21,12 +21,14 @@ export async function deleteAccount(userId) {
     const existing = await Attendee.findOne({ ticketId: t.ticketId });
     if (existing) {
       existing.claimedBy = undefined;
+      existing.directoryHidden = true;   // they left the app: don't list them again
       existing.checkedIn = existing.checkedIn || !!t.checkedIn;
       await existing.save();
     } else {
       await Attendee.create({
         name: user.name || "Guest", email: user.email, ticketId: t.ticketId, ticketType: t.type,
         purchaseDate: t.purchaseDate, checkedIn: !!t.checkedIn, checkedInAt: t.checkedInAt,
+        directoryHidden: true,
       });
     }
   }
@@ -44,6 +46,9 @@ export async function deleteAccount(userId) {
     DiscussionReply.deleteMany({ authorId: id }),
     GroupMessage.deleteMany({ authorId: id }),
     CommunityGroup.updateMany({}, { $pull: { members: id } }),
+    CommunityGroup.updateMany({ ownerId: id }, { $set: { ownerName: "Former attendee" } }),
+    SocialPost.updateMany({ likes: id }, { $pull: { likes: id } }),
+    SessionQuestion.updateMany({ upvotes: id }, { $pull: { upvotes: id } }),
     AppEvent.deleteMany({ userId: id }),
     Block.deleteMany({ $or: [{ userId: id }, { blockedId: id }] }),
     Report.deleteMany({ reporterId: id }),

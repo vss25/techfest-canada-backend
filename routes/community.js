@@ -5,6 +5,7 @@ import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../mo
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import { trimBody, userCard } from "../services/socialHelpers.js";
 import { Block } from "../models/Admin.js";
+import { pushToUsers } from "../services/apns.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 
 /* =========================================================
@@ -207,6 +208,13 @@ router.post("/groups/:id/messages", async (req, res) => {
   if (!body) return res.status(400).json({ error: "body required" });
   const status = await statusFor(body, req.user._id, "group-message");
   const m = await GroupMessage.create({ groupId: g._id, authorId: req.user._id, authorName: req.user.name, body, status });
+  if (status === "approved") {
+    // Everyone else in the group, minus anyone who blocked (or was blocked by) the author.
+    const blocks = await Block.find({ $or: [{ userId: req.user._id }, { blockedId: req.user._id }] }).lean();
+    const skip = new Set([me(req), ...blocks.map((b) => String(String(b.userId) === me(req) ? b.blockedId : b.userId))]);
+    const to = (g.members || []).filter((id) => !skip.has(String(id)));
+    pushToUsers(to, { title: g.name, body: `${req.user.name}: ${body}`, link: "ttfc://tab/network", thread: `group.${g._id}`, kind: "gm", id: String(m._id) });
+  }
   res.status(201).json({
     id: String(m._id), groupId: String(g._id), authorId: me(req), authorName: m.authorName,
     body: m.body, status: m.status, mine: true, createdAt: m.createdAt,

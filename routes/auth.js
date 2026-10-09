@@ -6,6 +6,18 @@ import axios from "axios";
 
 import User from "../models/User.js";
 import { sendResetPasswordEmail } from "../services/emailService.js";
+import { makeLimiter } from "../services/ticketAccess.js";
+import Attendee from "../models/Attendee.js";
+import { withCheckoutProfile } from "../services/onboardingProfile.js";
+
+// Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
+const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
+const loginPerIp = makeLimiter({ max: 30, windowMs: 15 * 60 * 1000 });
+const loginPerEmail = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
+const BAD_LOGIN = "Incorrect email or password.";
+// The website's Google client is public (it's in the page source); the env list
+// adds the apps' clients. Tokens minted for any other app are refused.
+const WEB_GOOGLE_CLIENT_ID = "676399067827-8rri9ibgjqonjfs5ov6laul096rj1m7o.apps.googleusercontent.com";
 
 const router = express.Router();
 
@@ -14,7 +26,14 @@ const router = express.Router();
 router.post("/register", async (req, res) => {
   try {
 
-    const { name, email, password, role } = req.body;
+    // Everyone who registers is an attendee. Staff are only ever made from the
+    // admin panel (Staff accounts), never by whatever a request asks for.
+    const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+    const email = cleanEmail(req.body?.email);
+    const password = req.body?.password;
+    if (!name || !email || typeof password !== "string" || password.length < 6) {
+      return res.status(400).json({ error: "Name, email and a password of at least 6 characters are required" });
+    }
 
     const existingUser = await User.findOne({ email });
 
@@ -29,7 +48,7 @@ router.post("/register", async (req, res) => {
       email,
       password: hashedPassword,
       provider: "local",
-      role: role || "user"
+      role: "user"
     });
 
     const token = jwt.sign(
@@ -55,19 +74,24 @@ router.post("/login", async (req, res) => {
 
   try {
 
-    const { email, password } = req.body;
+    const email = cleanEmail(req.body?.email);
+    const password = req.body?.password;
+    if (!email || typeof password !== "string" || !password) {
+      return res.status(400).json({ error: BAD_LOGIN });
+    }
+    // Slow down password guessing (per address and per account).
+    if (!loginPerIp.hit(`ip:${req.ip}`) || !loginPerEmail.hit(`e:${email}`)) {
+      return res.status(429).json({ error: "Too many sign-in attempts. Please wait 15 minutes and try again." });
+    }
 
     const user = await User.findOne({ email });
 
-    if (!user) {
-      return res.status(400).json({ error: "User not found" });
+    // One message for "no account" and "wrong password" so emails can't be probed.
+    const validPassword = !!user?.password && await bcrypt.compare(password, user.password);
+    if (!user || !validPassword) {
+      return res.status(400).json({ error: BAD_LOGIN });
     }
-
-    const validPassword = await bcrypt.compare(password, user.password);
-
-    if (!validPassword) {
-      return res.status(400).json({ error: "Invalid password" });
-    }
+    loginPerEmail.reset(`e:${email}`);
 
     const token = jwt.sign(
       { id: user._id, role: user.role },
@@ -102,9 +126,16 @@ router.get("/me", async (req, res) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select("-password");
+    const user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
 
-    res.json(user);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    // Fill profile gaps from the website checkout answers (incl. guest tickets
+    // they've since claimed) so the apps never ask for them twice.
+    const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
+    res.json(withCheckoutProfile(user.toObject(), claimed));
 
   } catch (err) {
 
@@ -129,20 +160,20 @@ router.post("/google", async (req, res) => {
 
     const { email, name, aud, email_verified } = googleRes.data;
 
-    // Accept tokens minted for any of our OAuth clients (web + iOS app).
-    // GOOGLE_CLIENT_IDS is a comma-separated list; when unset, behaviour is
-    // unchanged (any valid Google token is accepted — as before).
-    const allowed = (process.env.GOOGLE_CLIENT_IDS || "")
-      .split(",").map((s) => s.trim()).filter(Boolean);
-    if (allowed.length && !allowed.includes(aud)) {
+    // Only tokens minted for our own OAuth clients (website + apps). Without
+    // this, a token any other app collected for the person would sign them in.
+    // GOOGLE_CLIENT_IDS (comma-separated) adds the app clients.
+    const allowed = [WEB_GOOGLE_CLIENT_ID, ...(process.env.GOOGLE_CLIENT_IDS || "").split(",")]
+      .map((s) => s.trim()).filter(Boolean);
+    if (!allowed.includes(aud)) {
       console.error("GOOGLE AUTH: token audience not allowed:", aud);
       return res.status(401).json({ error: "Google token not issued for this app" });
     }
-    if (email_verified === "false") {
+    if (email_verified === "false" || email_verified === false || !email) {
       return res.status(401).json({ error: "Google email not verified" });
     }
 
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ email: String(email).toLowerCase() });
 
     if (!user) {
 
@@ -372,9 +403,9 @@ router.post("/forgot-password", async (req, res) => {
 
   try {
 
-    const { email } = req.body;
+    const email = cleanEmail(req.body?.email);
 
-    const user = await User.findOne({ email });
+    const user = email ? await User.findOne({ email }) : null;
 
     if (!user) {
       return res.json({
@@ -393,7 +424,7 @@ router.post("/forgot-password", async (req, res) => {
 
     await sendResetPasswordEmail(user.email, resetLink);
 
-    res.json({ message: "Reset email sent" });
+    res.json({ message: "If that email exists, a reset link has been sent." });
 
   } catch (err) {
 
@@ -442,36 +473,7 @@ router.post("/reset-password/:token", async (req, res) => {
 
 });
 
-/* ================= TEMP: SET USER ROLE (remove after use) ================= */
-router.put("/set-role", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    if (decoded.role !== "admin") {
-      return res.status(403).json({ error: "Admin access required" });
-    }
-
-    const { email, role } = req.body;
-
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    user.role = role;
-    await user.save();
-
-    res.json({ success: true, message: `User ${email} role set to ${role}` });
-  } catch (err) {
-    console.error("Set role error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
+/* (The temporary PUT /set-role route was removed: it let any token that claimed
+   "admin" hand out admin rights. Staff are managed in the admin panel.) */
 
 export default router;

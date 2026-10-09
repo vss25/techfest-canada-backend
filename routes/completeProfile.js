@@ -23,7 +23,8 @@ const readLimiter = makeLimiter({ max: 120, windowMs: 15 * 60 * 1000 });
 const writeLimiter = makeLimiter({ max: 30, windowMs: 15 * 60 * 1000 });
 const NOT_FOUND = "This link isn't valid. It may have been copied incompletely.";
 
-const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.ip || "unknown").split(",")[0].trim();
+// server.js trusts one proxy hop, so req.ip is the visitor's address.
+const clientIp = (req) => String(req.ip || "unknown");
 
 /** The ticket behind a signed link: account tickets first (same as the staff list), then guest checkouts. */
 async function findTicket(ticketId) {

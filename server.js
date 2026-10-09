@@ -40,6 +40,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const app = express();
+// Render terminates TLS in front of us: trust one proxy hop so req.ip is the
+// visitor's address (rate limits per person, not per load balancer).
+app.set("trust proxy", 1);
 
 /* ==========================================
    CORS CONFIG (DEV + PROD)

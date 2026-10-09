@@ -2,6 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import Lead from "../models/Lead.js";
 import { generateLeadsFromApify, transformApifyLead } from "../services/apifyLeads.js";
+import { requireAdmin } from "../middleware/adminAuth.js";
 
 const router = express.Router();
 
@@ -20,26 +21,19 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-const adminMiddleware = async (req, res, next) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Admin access required" });
-    }
-    next();
-  } catch {
-    res.status(403).json({ error: "Access denied" });
-  }
-};
+// The sales CRM is staff-only. Routes check the database, not the token's "role" claim, so
+// removing someone's staff access takes effect immediately.
+const adminMiddleware = (req, res, next) => requireAdmin(req, res, next);
 
 // ================= GET ALL LEADS =================
-router.get("/", authMiddleware, async (req, res) => {
+router.get("/", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { page = 1, limit = 100, status, assignedTo, search } = req.query;
     
     const query = {};
     
     if (status && status !== "all") {
-      query.status = status;
+      query.status = String(status);
     }
     
     if (assignedTo) {
@@ -51,11 +45,9 @@ router.get("/", authMiddleware, async (req, res) => {
     }
     
     if (search) {
-      query.$or = [
-        { leadName: { $regex: search, $options: "i" } },
-        { companyName: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-      ];
+      // Escaped: a search is text, never a pattern (no ReDoS / operator tricks).
+      const rx = new RegExp(String(search).slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [{ leadName: rx }, { companyName: rx }, { email: rx }];
     }
     
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -81,7 +73,7 @@ router.get("/", authMiddleware, async (req, res) => {
 });
 
 // ================= CREATE LEAD =================
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const lead = new Lead(req.body);
     await lead.save();
@@ -93,7 +85,7 @@ router.post("/", authMiddleware, async (req, res) => {
 });
 
 // ================= UPDATE LEAD =================
-router.patch("/:id", authMiddleware, async (req, res) => {
+router.patch("/:id", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const lead = await Lead.findByIdAndUpdate(
       req.params.id,
@@ -125,7 +117,7 @@ router.delete("/:id", authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // ================= BULK IMPORT =================
-router.post("/bulk-import", authMiddleware, async (req, res) => {
+router.post("/bulk-import", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { leads } = req.body;
     
@@ -143,7 +135,7 @@ router.post("/bulk-import", authMiddleware, async (req, res) => {
 });
 
 // ================= BULK UPDATE =================
-router.post("/bulk-update", authMiddleware, async (req, res) => {
+router.post("/bulk-update", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { ids, updates } = req.body;
     

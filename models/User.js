@@ -103,6 +103,13 @@ const userSchema = new mongoose.Schema(
     meetingSpot:  { type: String, default: "" },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
+    // Consent recorded by the apps (server-stamped): 18+ self-confirmation and
+    // the version of the app Terms / Privacy Policy they accepted.
+    ageConfirmedAt:  { type: Date },
+    termsAcceptedAt: { type: Date },
+    termsVersion:    { type: String, default: "" },
+    // Apple push tokens for this person's phones (newest last, max 5).
+    apnsTokens:   { type: [{ token: String, env: String, updatedAt: Date }], default: [], select: false },
 
     tickets: [ticketSchema],
 

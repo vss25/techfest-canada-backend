@@ -10,6 +10,7 @@ import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../mo
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
+import { pushToUsers, pushToEveryone } from "../services/apns.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
@@ -140,6 +141,11 @@ router.patch("/users/:id", async (req, res) => {
   if (!u) return res.status(404).json({ error: "Not found" });
   const changed = [];
   if (req.body?.role !== undefined && !isManagement(req.user)) return res.status(403).json({ error: "Only management can change staff access" });
+  // A staff account's email is its password-reset address: only management may
+  // change it (or anyone's email), so staff can't take over each other's accounts.
+  if (!isManagement(req.user) && (u.role === "admin" || req.body?.email !== undefined)) {
+    return res.status(403).json({ error: "Only management can change staff accounts or email addresses" });
+  }
   for (const k of EDITABLE) {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
@@ -158,6 +164,8 @@ router.patch("/users/:id", async (req, res) => {
 
 router.delete("/users/:id", async (req, res) => {
   if (!isId(req.params.id) || String(req.params.id) === String(req.user._id)) return res.status(400).json({ error: "Can't delete this account" });
+  const target = await User.findById(req.params.id).select("role").lean();
+  if (target?.role === "admin" && !isManagement(req.user)) return res.status(403).json({ error: "Only management can delete staff accounts" });
   const ok = await deleteAccount(req.params.id);
   if (ok) await audit(req, "delete_user", "user", req.params.id);
   res.json({ deleted: ok });
@@ -312,6 +320,8 @@ router.post("/broadcast", async (req, res) => {
     await AppContent.updateOne({ key: "home.announcement" }, { $set: { value: body.slice(0, 280), updatedBy: req.user.name } }, { upsert: true });
   }
   await audit(req, "broadcast", "post", post._id, body.slice(0, 120));
+  // Phones with push get it straight away; the rest see it on their next check-in.
+  pushToEveryone({ title: "TTFC update", body, link: "ttfc://tab/feed", kind: "announcement", id: String(post._id) });
   res.status(201).json({ ok: true, id: String(post._id) });
 });
 
@@ -339,6 +349,7 @@ router.post("/notify", async (req, res) => {
   })));
   const sentIds = new Set(eligible.map((u) => String(u._id)));
   const skipped = userIds.filter((id) => !sentIds.has(id));
+  pushToUsers(eligible.map((u) => u._id), { title, body, link: link || "", kind: "personal", id: batchId });
   const who = eligible.length === 1 ? eligible[0].name : `${eligible.length} people`;
   await audit(req, "notify_person", "user", [...sentIds].join(",").slice(0, 200), `${who}: ${title}`);
   res.status(201).json({ ok: true, sent: eligible.length, skipped, batchId });

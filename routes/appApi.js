@@ -6,6 +6,7 @@ import { cleanEvent, CONTENT_KEYS } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
 import { makeLimiter } from "../services/ticketAccess.js";
+import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apns.js";
 
 const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batches per IP per minute
 
@@ -17,6 +18,8 @@ const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batche
    POST   /block         block a user;  DELETE /block/:userId unblock
    GET    /blocks        my blocked user ids
    DELETE /account       delete my account (Apple 5.1.1(v))
+   POST   /push-token    register this phone for push { token, env }
+   DELETE /push-token    stop pushing to this phone { token } (sign out)
 ========================================================= */
 
 const router = express.Router();
@@ -88,6 +91,27 @@ router.get("/blocks", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;
   const rows = await Block.find({ userId: me._id }).lean();
   res.json(rows.map((r) => String(r.blockedId)));
+});
+
+/* Push tokens. `pushing` tells the app whether the server can push right now
+   (APNs key configured); when false the app keeps showing local notifications. */
+router.post("/push-token", async (req, res) => {
+  const me = await requireUser(req, res); if (!me) return;
+  const token = cleanToken(req.body?.token);
+  if (!token) return res.status(400).json({ error: "token required" });
+  // A phone belongs to one account at a time: drop it from anyone else first.
+  await User.updateMany({ _id: { $ne: me._id } }, { $pull: { apnsTokens: { token } } });
+  const u = await User.findById(me._id).select("+apnsTokens");
+  u.apnsTokens = upsertToken(u.apnsTokens || [], token, cleanEnv(req.body?.env));
+  await u.save();
+  res.json({ ok: true, pushing: isConfigured() });
+});
+
+router.delete("/push-token", async (req, res) => {
+  const me = await requireUser(req, res); if (!me) return;
+  const token = cleanToken(req.body?.token);
+  if (token) await User.updateOne({ _id: me._id }, { $pull: { apnsTokens: { token } } });
+  res.json({ ok: true });
 });
 
 router.delete("/account", async (req, res) => {
