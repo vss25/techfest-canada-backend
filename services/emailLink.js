@@ -157,3 +157,15 @@ export function cleanClient(raw) {
 export function emailRegex(email) {
   return new RegExp(`^${normalizeEmail(email).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 }
+
+/**
+ * Which email a sign-in request gets. Links only go to emails tied to a ticket: an account
+ * holding at least one ticket, or a guest ticket bought with this email. Staff never get one
+ * (they sign in with their password). Everyone else gets the "no ticket" email.
+ * @returns {"staff"|"signin"|"no-ticket"}
+ */
+export function linkDecision(user, guestCount = 0) {
+  if (user && String(user.role || "").toLowerCase() === "admin") return "staff";
+  const owned = Array.isArray(user?.tickets) ? user.tickets.length : 0;
+  return owned > 0 || guestCount > 0 ? "signin" : "no-ticket";
+}

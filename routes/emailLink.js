@@ -6,6 +6,7 @@ import { makeLimiter } from "../services/ticketAccess.js";
 import {
   normalizeEmail, isValidEmail, createSignInSecrets, hashToken, looksLikeToken, requestState,
   checkCode, cleanCode, messageFor, signInLink, frontendBase, cleanClient, emailRegex, LINK_TTL_MS, MAX_CODE_ATTEMPTS, codeMessageFor,
+  linkDecision,
 } from "../services/emailLink.js";
 import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 
@@ -91,10 +92,12 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       const { user, guests } = await lookup(email);
       const base = frontendBase();
 
-      // Same answer as always (no account enumeration), but no link for staff.
-      if (isStaff(user)) return res.json({ sent: true });
+      // Same answer as always (no account enumeration). Links only go to emails tied to a
+      // ticket; staff get nothing, accounts without a ticket get the "no ticket" email.
+      const decision = linkDecision(user, guests.length);
+      if (decision === "staff") return res.json({ sent: true });
 
-      if (!user && !guests.length) {
+      if (decision === "no-ticket") {
         send("no-ticket", { email, ticketsUrl: `${base}/tickets` })
           .catch((err) => console.error("NO-TICKET EMAIL ERROR:", err.message));
         return res.json({ sent: true });
@@ -171,7 +174,8 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       const { user: existing } = await lookup(claimed.email);
       if (isStaff(existing)) return res.status(400).json({ error: STAFF_ONLY_PASSWORD });
       const { user, created } = await accountFor(claimed.email);
-      if (!user) return res.status(400).json({ error: "We couldn't find a TTFC ticket for this email." });
+      // A link sent before the ticket rule doesn't sign a ticketless account in.
+      if (!user || linkDecision(user) !== "signin") return res.status(400).json({ error: "We couldn't find a TTFC ticket for this email." });
       res.json({ token: signAppToken(user), created });
     } catch (err) {
       console.error("EMAIL LINK VERIFY ERROR:", err);
