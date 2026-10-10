@@ -15,7 +15,7 @@
 
 import PavilionApplication from "../models/PavilionApplication.js";
 import PavilionDeposit from "../models/PavilionDeposit.js";
-import { matchDeposit, depositFieldsFor, depositFromStripeRow } from "./pavilionApplications.js";
+import { matchDeposit, depositFieldsFor, depositFromStripeRow, applicationFromDeposit, makeReference } from "./pavilionApplications.js";
 import { stripeRows } from "./stripeSales.js";
 
 /** Save a deposit once per Checkout Session (refund amount kept current). */
@@ -42,7 +42,18 @@ export async function linkDeposits() {
   let linked = 0;
   for (const dep of open) {
     const m = matchDeposit(dep, apps);
-    if (!m) continue;
+    if (!m) {
+      // Paid, but the application was only ever emailed: give it its own row, marked paid.
+      const doc = applicationFromDeposit(dep, makeReference());
+      if (!doc) continue;
+      const app = await PavilionApplication.create(doc);
+      // List it on the day they paid, not today (timestamps would stamp now).
+      if (doc.createdAt) await PavilionApplication.updateOne({ _id: app._id }, { $set: { createdAt: doc.createdAt } }, { timestamps: false });
+      await PavilionDeposit.updateOne({ _id: dep._id }, { $set: { applicationId: app._id, matchedBy: "deposit" } });
+      apps.push(app.toObject());
+      linked += 1;
+      continue;
+    }
     await PavilionDeposit.updateOne({ _id: dep._id }, { $set: { applicationId: m.app._id, matchedBy: m.by } });
     // One application, one deposit shown; a second payment stays listed under the application's deposits.
     if (!m.app.depositStripeId) {
