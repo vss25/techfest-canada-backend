@@ -38,6 +38,9 @@ export const CMS_FIELDS = {
       "corporateEnterprisePartners", "startupEcosystemPartners", "internationalTradeBodies", "other"), required: true },
     logo: { ...img, required: true },
     url, order: num, active: bool, logoScale: scale,
+    // Partners page row (website src/data/partnerMatrix.js): paid partners, 5 tech pillars, 5 applied sectors, ecosystem
+    matrixGroup: oneOf("featured", "ai", "quantum", "cyber", "robotics", "cleantech",
+      "health", "bfsi", "supply", "defence", "energy", "ecosystem"),
   },
   sponsor: LOGO_TYPE,
   sponsorMarquee: LOGO_TYPE,
