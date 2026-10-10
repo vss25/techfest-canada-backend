@@ -120,6 +120,34 @@ export function validateBrochureRequest(body) {
 }
 
 /** Start of the "already emailed" window. */
+/* ---------- Bot sign-ups ----------
+   A form-filling bot (Oct 2026) puts random mixed-case strings in every text
+   field ("sBjcqBNbVdtgTqNpaFfxDebP") next to a real, scraped email address.
+   Emailing those addresses would spam real people, so such rows are saved as
+   spam, never emailed and hidden from the admin list by default. */
+const BOT_FIELDS = ["firstName", "lastName", "company", "jobTitle"];
+export const MIN_FILL_MS = 2500; // nobody types name + email + company this fast
+
+/** "sBjcqBNbVdtg" → true. Real names and brands ("McDonald", "LinkedIn", "YouTubeShorts", "IBM") → false. */
+export function isRandomToken(word) {
+  const w = String(word || "");
+  if (w.length < 10) return false;
+  const lowerToUpper = (w.match(/[a-z][A-Z]/g) || []).length;
+  return lowerToUpper >= 3;
+}
+
+/** Why this submission looks like a bot, or "" when it looks human. */
+export function botReason(v, body = {}) {
+  for (const k of BOT_FIELDS) {
+    if (String(v[k] || "").split(/\s+/).some(isRandomToken)) return `random text in ${k}`;
+  }
+  const elapsed = Number(body.elapsedMs);
+  if (body.elapsedMs !== undefined && body.elapsedMs !== "" && Number.isFinite(elapsed) && elapsed >= 0 && elapsed < MIN_FILL_MS) {
+    return "form filled too fast";
+  }
+  return "";
+}
+
 export function dedupeSince(now = Date.now()) {
   return new Date(now - DEDUPE_WINDOW_MS);
 }
@@ -202,6 +230,7 @@ export function downloadRow(d) {
     page: d.page || "", referrer: d.referrer || "",
     // Saved before emailing existed → "legacy"
     emailStatus: d.emailStatus || "legacy",
+    spam: !!d.spam,
     delivery: d.delivery || "",
     salesNotified: !!d.salesNotified,
     createdAt: d.createdAt,

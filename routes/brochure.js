@@ -3,7 +3,7 @@ import Brochure from "../models/Brochure.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import {
   BROCHURES, validateBrochureRequest, isHoneypotFilled, dedupeSince, websiteBase, brochureUrl,
-  salesInbox, attachMaxBytes, loadAttachment, cleanText,
+  salesInbox, attachMaxBytes, loadAttachment, cleanText, botReason,
 } from "../services/brochureDownloads.js";
 import { sendBrochureEmail, sendBrochureReceiptEmail } from "../services/emailService.js";
 
@@ -79,6 +79,17 @@ router.post("/submit", async (req, res) => {
     const v = check.value;
 
     if (!emailLimiter.hit(v.email)) return res.status(429).json({ success: false, message: TOO_MANY });
+
+    // Bot sign-up: keep the row for review but never email the (usually scraped) address
+    // or notify sales. Same answer as a real submission so the bot doesn't adapt.
+    const bot = botReason(v, body);
+    if (bot) {
+      await Brochure.create({
+        ...v, userAgent: cleanText(req.headers["user-agent"]).slice(0, 300),
+        emailStatus: "blocked", spam: true, spamReason: bot,
+      });
+      return res.status(201).json({ success: true, message: "Saved successfully", emailed: true });
+    }
 
     // Same person, same brochure, emailed in the last 10 minutes → save, don't email again.
     const recent = await Brochure.exists({

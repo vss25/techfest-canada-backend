@@ -28,7 +28,7 @@ import { validateComplimentary, COMP_PROMO } from "../services/complimentary.js"
 import AppNotification from "../models/AppNotification.js";
 import { validateNotify, recipientFilter, recipientDTO, groupHistory, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
 import Brochure from "../models/Brochure.js";
-import { downloadsFilter, downloadRow, downloadsCsv } from "../services/brochureDownloads.js";
+import { downloadsFilter, downloadRow, downloadsCsv, botReason } from "../services/brochureDownloads.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -522,20 +522,39 @@ router.get("/tickets/export", requireManagement, async (req, res) => {
 
 /* ---------- Brochure downloads (website /brochures form) ---------- */
 // Newest first, 50 a page. ?q= searches name, email, company, job title, phone, industry.
+// Bot sign-ups are hidden unless ?spam=1 (then only those are listed).
+
+// Rows saved before the bot check existed get flagged once per server start.
+let spamBackfill = null;
+function backfillSpamFlags() {
+  spamBackfill ||= (async () => {
+    const legacy = await Brochure.find({ spam: { $exists: false } }, { firstName: 1, lastName: 1, company: 1, jobTitle: 1 }).lean();
+    const bots = legacy.map((d) => [d._id, botReason(d)]).filter(([, why]) => why);
+    for (const [id, why] of bots) await Brochure.updateOne({ _id: id }, { $set: { spam: true, spamReason: why } });
+    await Brochure.updateMany({ spam: { $exists: false } }, { $set: { spam: false } });
+  })().catch((err) => { spamBackfill = null; console.error("BROCHURE SPAM BACKFILL ERROR:", err?.message || err); });
+  return spamBackfill;
+}
+
+const spamScope = (req) => (req.query.spam === "1" ? { spam: true } : { spam: { $ne: true } });
+
 router.get("/brochure-downloads", async (req, res) => {
-  const filter = downloadsFilter(req.query.q);
+  await backfillSpamFlags();
+  const filter = { ...downloadsFilter(req.query.q), ...spamScope(req) };
   const page = Math.max(0, Number(req.query.page) || 0), size = 50;
-  const [rows, total, all] = await Promise.all([
+  const [rows, total, all, spam] = await Promise.all([
     Brochure.find(filter).sort({ createdAt: -1 }).skip(page * size).limit(size).lean(),
     Brochure.countDocuments(filter),
-    Brochure.estimatedDocumentCount(),
+    Brochure.countDocuments({ spam: { $ne: true } }),
+    Brochure.countDocuments({ spam: true }),
   ]);
-  res.json({ total, all, page, size, rows: rows.map(downloadRow) });
+  res.json({ total, all, spam, page, size, rows: rows.map(downloadRow) });
 });
 
 // Spreadsheet of every download. Management only, like the attendee list: it holds phone numbers.
 router.get("/brochure-downloads/export", requireManagement, async (req, res) => {
-  const rows = await Brochure.find(downloadsFilter(req.query.q)).sort({ createdAt: -1 }).lean();
+  await backfillSpamFlags();
+  const rows = await Brochure.find({ ...downloadsFilter(req.query.q), ...spamScope(req) }).sort({ createdAt: -1 }).lean();
   await audit(req, "brochure_downloads_export", "brochure", "", `${rows.length} rows`);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-brochure-downloads-${new Date().toISOString().slice(0, 10)}.csv"`);
