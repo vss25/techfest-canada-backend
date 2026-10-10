@@ -93,6 +93,12 @@ router.post("/login", async (req, res) => {
     }
     loginPerEmail.reset(`e:${email}`);
 
+    // The apps' "Staff sign-in" sends staffOnly: attendees sign in there with a link or
+    // their ticket ID, so a password only works for staff accounts.
+    if (req.body?.staffOnly === true && String(user.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ error: "This sign-in is for TTFC staff. Attendees: use a sign-in link or your ticket ID." });
+    }
+
     const token = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
