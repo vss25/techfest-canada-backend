@@ -20,7 +20,12 @@ const ipLimiter = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 });
 const emailLimiter = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
 const TOO_MANY = "Too many applications from here. Please try again later or email sales@thetechfestival.com.";
 
-const safe = (v) => (v || "").toString().replace(/\n/g, "<br>");
+// Escape what applicants type before it goes into email HTML (no injected links or markup), then keep line breaks.
+const safe = (v) => (v || "").toString()
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+  .replace(/\n/g, "<br>");
+// Only http(s) links become clickable; anything else is shown as text.
+const safeHref = (v) => (/^https?:\/\//i.test(String(v || "").trim()) ? safe(String(v).trim()) : "#");
 const yn = (v) => v === "yes" ? "Yes" : v === "no" ? "No" : "—";
 
 /* ═══════════════════════════════════════════════════════
@@ -61,8 +66,8 @@ function buildAdminEmail(n) {
         ${n.yearFounded ? `<tr><td style="padding: 3px 0; color: #888;">Year Founded</td><td>${safe(n.yearFounded)}</td></tr>` : ""}
         ${n.employees ? `<tr><td style="padding: 3px 0; color: #888;">Employees</td><td>${safe(n.employees)}</td></tr>` : ""}
         <tr><td style="padding: 3px 0; color: #888; vertical-align: top;">Registered Office</td><td>${safe(n.registeredOffice)}</td></tr>
-        ${n.website ? `<tr><td style="padding: 3px 0; color: #888;">Website</td><td><a href="${safe(n.website)}" style="color: #7a3fd1;">${safe(n.website)}</a></td></tr>` : ""}
-        ${n.linkedIn ? `<tr><td style="padding: 3px 0; color: #888;">LinkedIn</td><td><a href="${safe(n.linkedIn)}" style="color: #7a3fd1;">${safe(n.linkedIn)}</a></td></tr>` : ""}
+        ${n.website ? `<tr><td style="padding: 3px 0; color: #888;">Website</td><td><a href="${safeHref(n.website)}" style="color: #7a3fd1;">${safe(n.website)}</a></td></tr>` : ""}
+        ${n.linkedIn ? `<tr><td style="padding: 3px 0; color: #888;">LinkedIn</td><td><a href="${safeHref(n.linkedIn)}" style="color: #7a3fd1;">${safe(n.linkedIn)}</a></td></tr>` : ""}
       </table>
     </div>
 
