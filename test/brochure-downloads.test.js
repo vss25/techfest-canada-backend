@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BROCHURES, DEFAULT_BROCHURE, DEDUPE_WINDOW_MS, DEFAULT_ATTACH_MAX_BYTES, SALES_INBOX,
-  validateBrochureRequest, isHoneypotFilled, cleanPage, cleanReferrer, dedupeSince, websiteBase, brochureUrl,
+  validateBrochureRequest, isHoneypotFilled, isRandomToken, botReason, MIN_FILL_MS, cleanPage, cleanReferrer, dedupeSince, websiteBase, brochureUrl,
   salesInbox, attachMaxBytes, shouldAttach, loadAttachment, downloadsFilter, downloadRow, csvCell, downloadsCsv,
 } from "../services/brochureDownloads.js";
 import { buildBrochureEmail, buildBrochureReceiptEmail, BROCHURE_SUBJECT } from "../services/brochureEmail.js";
@@ -272,4 +272,20 @@ test("sales receipt shows a failed brochure email and blank fields", () => {
 test("receipt subject can't carry header-breaking newlines", () => {
   const e = buildBrochureReceiptEmail({ lead: { firstName: "A\r\nBcc: x@y.z", email: "a@b.co" }, brochure });
   assert.doesNotMatch(e.subject, /[\r\n]/);
+});
+
+test("bot sign-ups: random mixed-case text is caught, real names and brands are not", () => {
+  for (const w of ["sBjcqBNbVdtgTqNpaFfxDebP", "XxXAhojHXZmQCaDSuKhDn", "TFHxUdRnhbpsGQWunh", "AaTTIShYYHSCnLsjq"]) assert.ok(isRandomToken(w), w);
+  for (const w of ["McDonaldson", "LinkedInLearning", "YouTubeShorts", "IFINGLOBALGROUP", "SanJenko", "Aspuru-Guzik", "DeVries", "rvf"]) assert.ok(!isRandomToken(w), w);
+  assert.match(botReason({ firstName: "WVELBrevkzkRIOpPLoSXg", lastName: "KVZEjfaHtJSWDUfaRrH", company: "x" }), /firstName/);
+  assert.match(botReason({ firstName: "Ann", lastName: "Lee", company: "YUhpdHxxilJeXSSrOlsygvu" }), /company/);
+  assert.equal(botReason({ firstName: "Fabiana", lastName: "Montoya", company: "Scotiabank", jobTitle: "Director, Innovation" }), "");
+});
+
+test("bot sign-ups: a form filled faster than a person can type is caught; no timing is fine", () => {
+  const v = { firstName: "Ann", lastName: "Lee", company: "Acme" };
+  assert.match(botReason(v, { elapsedMs: 400 }), /too fast/);
+  assert.equal(botReason(v, { elapsedMs: MIN_FILL_MS + 1 }), "");
+  assert.equal(botReason(v, {}), "");
+  assert.equal(botReason(v, { elapsedMs: "nope" }), "");
 });

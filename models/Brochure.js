@@ -19,11 +19,15 @@ const brochureSchema = new mongoose.Schema({
   userAgent: { type: String, default: "" },
 
   // sending → sent | failed; duplicate = already emailed this brochure in the last 10 minutes
-  emailStatus:   { type: String, enum: ["sending", "sent", "failed", "duplicate"] },
+  emailStatus:   { type: String, enum: ["sending", "sent", "failed", "duplicate", "blocked"] },
   delivery:      { type: String, default: "" }, // "attached" | "link"
   emailError:    { type: String, default: "" },
   emailedAt:     { type: Date },
   salesNotified: { type: Boolean, default: false },
+
+  // Bot sign-up (services/brochureDownloads.js botReason): kept for review, never emailed, hidden in the admin list
+  spam:          { type: Boolean },
+  spamReason:    { type: String, default: "" },
 }, { timestamps: true });
 
 brochureSchema.index({ createdAt: -1 });
