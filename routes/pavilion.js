@@ -1,27 +1,31 @@
 import express from "express";
 import { Resend } from "resend";
 import { requireEmailDelivery } from "../services/emailDelivery.js";
+import PavilionApplication from "../models/PavilionApplication.js";
+import { makeLimiter } from "../services/ticketAccess.js";
+import { cleanText } from "../services/brochureDownloads.js";
+import {
+  PROGRAMME_LABELS, BOOTH_LABELS, validatePavilionApplication, pavilionBotReason, makeReference,
+} from "../services/pavilionApplications.js";
+import { linkDeposits } from "../services/pavilionDeposits.js";
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
 const SALES_EMAIL = "sales@thetechfestival.com";
 
-const PROGRAMME_LABELS = {
-  speaking: "Speaking opportunity",
-  mou: "MoU signing ceremony",
-  b2b: "Curated B2B meetings",
-  forum: "India Business Forum participation",
-  investor: "Investor / capital introductions",
-};
+// In memory, reset on restart: only there to blunt bulk spam (server.js trusts
+// one proxy hop, so req.ip is the visitor). Bots over the limit get a quiet
+// "success" and nothing is saved.
+const ipLimiter = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 });
+const emailLimiter = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
+const TOO_MANY = "Too many applications from here. Please try again later or email sales@thetechfestival.com.";
 
-const BOOTH_LABELS = {
-  single: { label: "Single", size: "10' × 10'", pay: 499 },
-  double: { label: "Double", size: "10' × 20'", pay: 999 },
-  triple: { label: "Triple", size: "10' × 30'", pay: 1499 },
-  quadruple: { label: "Quadruple", size: "10' × 40'", pay: 1999 },
-};
-
-const safe = (v) => (v || "").toString().replace(/\n/g, "<br>");
+// Escape what applicants type before it goes into email HTML (no injected links or markup), then keep line breaks.
+const safe = (v) => (v || "").toString()
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+  .replace(/\n/g, "<br>");
+// Only http(s) links become clickable; anything else is shown as text.
+const safeHref = (v) => (/^https?:\/\//i.test(String(v || "").trim()) ? safe(String(v).trim()) : "#");
 const yn = (v) => v === "yes" ? "Yes" : v === "no" ? "No" : "—";
 
 /* ═══════════════════════════════════════════════════════
@@ -44,7 +48,7 @@ function buildAdminEmail(n) {
 
     <h2 style="margin: 0 0 6px; font-size: 20px; color: #7a3fd1;">${safe(n.legalName)}</h2>
     <p style="margin: 0 0 24px; color: #666; font-size: 14px;">
-      Submitted ${new Date().toLocaleString("en-CA", { dateStyle: "full", timeStyle: "short" })}
+      Submitted ${new Date().toLocaleString("en-CA", { dateStyle: "full", timeStyle: "short" })}${n.reference ? ` · Ref <strong>${safe(n.reference)}</strong>` : ""}
     </p>
 
     <div style="background: linear-gradient(135deg, rgba(122,63,209,0.08), rgba(245,166,35,0.08)); padding: 18px; border-radius: 12px; border-left: 4px solid #f5a623; margin-bottom: 20px;">
@@ -62,8 +66,8 @@ function buildAdminEmail(n) {
         ${n.yearFounded ? `<tr><td style="padding: 3px 0; color: #888;">Year Founded</td><td>${safe(n.yearFounded)}</td></tr>` : ""}
         ${n.employees ? `<tr><td style="padding: 3px 0; color: #888;">Employees</td><td>${safe(n.employees)}</td></tr>` : ""}
         <tr><td style="padding: 3px 0; color: #888; vertical-align: top;">Registered Office</td><td>${safe(n.registeredOffice)}</td></tr>
-        ${n.website ? `<tr><td style="padding: 3px 0; color: #888;">Website</td><td><a href="${safe(n.website)}" style="color: #7a3fd1;">${safe(n.website)}</a></td></tr>` : ""}
-        ${n.linkedIn ? `<tr><td style="padding: 3px 0; color: #888;">LinkedIn</td><td><a href="${safe(n.linkedIn)}" style="color: #7a3fd1;">${safe(n.linkedIn)}</a></td></tr>` : ""}
+        ${n.website ? `<tr><td style="padding: 3px 0; color: #888;">Website</td><td><a href="${safeHref(n.website)}" style="color: #7a3fd1;">${safe(n.website)}</a></td></tr>` : ""}
+        ${n.linkedIn ? `<tr><td style="padding: 3px 0; color: #888;">LinkedIn</td><td><a href="${safeHref(n.linkedIn)}" style="color: #7a3fd1;">${safe(n.linkedIn)}</a></td></tr>` : ""}
       </table>
     </div>
 
@@ -165,6 +169,7 @@ function buildConfirmationEmail(n) {
         Domain: <strong style="color: #0d0520;">${safe(n.techDomain)}</strong><br>
         Sector: <strong style="color: #0d0520;">${safe(n.sector)}</strong>
       </p>
+      ${n.reference ? `<p style="margin: 12px 0 0; font-size: 13px; color: #666;">Application reference: <strong style="color: #0d0520;">${safe(n.reference)}</strong><br>Please quote it when you pay your application deposit.</p>` : ""}
     </div>
 
     <h3 style="margin: 28px 0 12px; font-size: 15px; color: #0d0520; font-weight: 700;">What happens next</h3>
@@ -282,31 +287,67 @@ function buildPaymentAdminEmail(p) {
 
 /* ═══════════════════════════════════════════════════════
    POST /api/pavilion — Submit application
+   Saved first (PavilionApplication), then emailed to sales@ and the
+   applicant. A failed save still emails; a failed email still answers
+   "received" because the application is saved. Only when both fail does
+   the applicant see an error. Bots (honeypot `_hp`, random text, instant
+   fill) are saved as spam, never emailed, and get the same answer.
+   Staff list: Admin → India Pavilion (routes/console.js).
    ═══════════════════════════════════════════════════════ */
 router.post("/pavilion", async (req, res) => {
   try {
-    const n = req.body || {};
+    const body = req.body || {};
+    const check = validatePavilionApplication(body);
+    const bot = check.ok ? pavilionBotReason(check.value, body) : "";
+    const ipOk = ipLimiter.hit(String(req.ip || "unknown"));
 
-    if (!n.legalName || !n.repEmail || !n.repName) {
-      return res.status(400).json({ error: "Company name, contact name and email are required" });
+    if (!check.ok) {
+      if (!ipOk) return res.status(429).json({ error: TOO_MANY });
+      return res.status(400).json({ error: check.error, field: check.field });
     }
-    if (!n.boothTier || !BOOTH_LABELS[n.boothTier]) {
-      return res.status(400).json({ error: "Please select a valid booth tier" });
+    const v = check.value;
+    const emailOk = emailLimiter.hit(v.repEmail);
+    if (!ipOk || !emailOk) {
+      if (bot) return res.status(201).json({ success: true, message: "Application received. Thank you!" });
+      return res.status(429).json({ error: TOO_MANY });
     }
-    if (n.isIndian !== "yes") {
-      return res.status(400).json({ error: "This pavilion is only open to Indian-incorporated companies" });
+
+    const reference = makeReference();
+    let doc = null;
+    try {
+      doc = await PavilionApplication.create({
+        ...v, raw: check.raw, reference,
+        userAgent: cleanText(req.headers["user-agent"]).slice(0, 300),
+        emailStatus: bot ? "blocked" : "sending",
+        spam: !!bot, spamReason: bot,
+      });
+    } catch (saveErr) {
+      // Still email it below, so the application reaches sales@ either way.
+      console.error("PAVILION SAVE ERROR (emailing anyway):", saveErr?.message || saveErr);
     }
+
+    // Bot: never email the (usually scraped) address or sales@. Same answer, so it doesn't adapt.
+    if (bot) return res.status(201).json({ success: true, message: "Application received. Thank you!" });
+
+    const n = { ...v, reference: doc ? reference : "" };
+    let salesNotified = false, confirmationSent = false, emailError = "";
 
     // Send to sales team
-    requireEmailDelivery(await resend.emails.send({
-      from: "TTFC India Pavilion <noreply@thetechfestival.com>",
-      to: SALES_EMAIL,
-      replyTo: n.repEmail,
-      subject: `India Pavilion Application — ${n.legalName}`,
-      html: buildAdminEmail(n),
-    }), "Pavilion application notification");
+    try {
+      requireEmailDelivery(await resend.emails.send({
+        from: "TTFC India Pavilion <noreply@thetechfestival.com>",
+        to: SALES_EMAIL,
+        replyTo: n.repEmail,
+        subject: `India Pavilion Application — ${n.legalName}`,
+        html: buildAdminEmail(n),
+      }), "Pavilion application notification");
+      salesNotified = true;
+    } catch (salesErr) {
+      emailError = String(salesErr?.message || salesErr).slice(0, 300);
+      console.error("Pavilion sales email failed:", emailError);
+    }
 
-    // Send confirmation to applicant (non-blocking)
+    // Send confirmation to applicant
     try {
       requireEmailDelivery(await resend.emails.send({
         from: "TTFC India Pavilion <noreply@thetechfestival.com>",
@@ -315,17 +356,33 @@ router.post("/pavilion", async (req, res) => {
         subject: `India Pavilion Application Received — ${n.legalName}`,
         html: buildConfirmationEmail(n),
       }), "Pavilion application confirmation");
+      confirmationSent = true;
     } catch (confirmErr) {
-      console.error("Pavilion confirmation email failed (admin email still sent):", confirmErr);
+      if (!emailError) emailError = String(confirmErr?.message || confirmErr).slice(0, 300);
+      console.error("Pavilion confirmation email failed:", confirmErr?.message || confirmErr);
+    }
+
+    // Neither saved nor emailed to sales@: the only case where it would be lost.
+    if (!doc && !salesNotified) {
+      return res.status(500).json({ error: "Server error. Please try again, or email your application to sales@thetechfestival.com." });
+    }
+
+    if (doc) {
+      await PavilionApplication.updateOne({ _id: doc._id }, {
+        $set: { emailStatus: salesNotified ? "sent" : "failed", salesNotified, confirmationSent, emailError },
+      }).catch((err) => console.error("PAVILION EMAIL STATUS SAVE ERROR:", err?.message || err));
+      // A deposit may have been paid before applying.
+      linkDeposits().catch((err) => console.error("PAVILION DEPOSIT LINK ERROR:", err?.message || err));
     }
 
     res.status(201).json({
       success: true,
       message: "Application received. Thank you!",
+      ...(doc ? { reference } : {}),
     });
   } catch (err) {
     console.error("Pavilion submit error:", err);
-    res.status(500).json({ error: "Server error. Please try again." });
+    if (!res.headersSent) res.status(500).json({ error: "Server error. Please try again." });
   }
 });
 
