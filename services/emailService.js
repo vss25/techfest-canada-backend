@@ -468,14 +468,32 @@ export async function sendUnsubscribeConfirmationEmail(email) {
    Used by both campaigns.js and campaignAutomation.js
 ======================================================== */
 
+/**
+ * The sender line under marketing emails. Canada's anti-spam law (CASL) and CAN-SPAM need
+ * the sender's postal address there: set MAIL_POSTAL_ADDRESS on Render, e.g.
+ * "AtlasLink Markets Inc., 123 Example St, Suite 100, Toronto, ON M5V 1A1, Canada".
+ */
+export function campaignSenderLine(env = process.env) {
+  const address = String(env.MAIL_POSTAL_ADDRESS || "").trim();
+  if (!address) return "The Tech Festival Canada • Toronto, Ontario";
+  const esc = address.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return `The Tech Festival Canada • ${esc}`;
+}
+
+let warnedNoAddress = false;
+
 export function generateCampaignFooter(baseUrl, campaignId, email) {
+  if (!process.env.MAIL_POSTAL_ADDRESS && !warnedNoAddress) {
+    warnedNoAddress = true;
+    console.warn("MAIL_POSTAL_ADDRESS is not set: campaign emails need the sender's postal address (CASL / CAN-SPAM).");
+  }
   const unsubscribeUrl = `${baseUrl}/api/track/unsubscribe/${campaignId}/${encodeURIComponent(email)}`;
   const viewBrowserUrl = `${baseUrl}/api/track/view/${campaignId}/${encodeURIComponent(email)}`;
 
   return `
     <div style="background:#1a1035;padding:20px;text-align:center;margin-top:20px;border-radius:0 0 12px 12px;">
       <p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0;">
-        The Tech Festival Canada • Toronto, Ontario
+        ${campaignSenderLine()}
       </p>
       <p style="color:rgba(255,255,255,0.4);font-size:11px;margin:10px 0 0;">
         <a href="${unsubscribeUrl}" style="color:rgba(255,255,255,0.5);text-decoration:none;">Unsubscribe</a> | 
