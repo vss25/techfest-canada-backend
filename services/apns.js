@@ -5,7 +5,7 @@
      APNS_KEY        contents of the AuthKey_XXXX.p8 file (newlines may be "\n")
      APNS_KEY_ID     the key's 10-character ID
      APNS_TEAM_ID    the team ID (Membership page)
-     APNS_BUNDLE_ID  com.atlaslinkmarkets.ttfc (default)
+     APNS_BUNDLE_ID  com.atlaslinkmarkets.ttfc.ios (default; the App Store app's bundle ID)
 
    Until they're set, isConfigured() is false and every send is a no-op: the
    apps keep polling and show local notifications instead. Sends never throw
@@ -21,7 +21,7 @@ const env = () => ({
   key: String(process.env.APNS_KEY || "").replace(/\\n/g, "\n").trim(),
   keyId: String(process.env.APNS_KEY_ID || "").trim(),
   teamId: String(process.env.APNS_TEAM_ID || "").trim(),
-  bundleId: String(process.env.APNS_BUNDLE_ID || "com.atlaslinkmarkets.ttfc").trim(),
+  bundleId: String(process.env.APNS_BUNDLE_ID || "com.atlaslinkmarkets.ttfc.ios").trim(),
 });
 
 export function isConfigured() {

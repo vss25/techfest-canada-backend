@@ -23,6 +23,8 @@ import { buildProfileRequestEmail } from "../services/profileEmail.js";
 import { sendProfileRequestEmail } from "../services/emailService.js";
 import { firstNameFor } from "../services/ticketInfo.js";
 import Stripe from "stripe";
+import crypto from "crypto";
+import { validateComplimentary, COMP_PROMO } from "../services/complimentary.js";
 import AppNotification from "../models/AppNotification.js";
 import { validateNotify, recipientFilter, recipientDTO, groupHistory, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
 
@@ -641,6 +643,21 @@ async function setHidden(keys, hidden) {
   }
   return changed;
 }
+
+// Complimentary pass (speakers, guests, App Review). Management only.
+// Body: { name: "First Last", email, tier }. The holder signs in to the apps with the
+// last name + ticket ID, or with a sign-in link to this email.
+router.post("/tickets/complimentary", requireManagement, async (req, res) => {
+  const check = validateComplimentary(req.body);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+  const { name, email, tier } = check.value;
+  const attendee = await Attendee.create({
+    name, email, ticketType: tier, promoCode: COMP_PROMO,
+    ticketId: crypto.randomBytes(6).toString("hex"),
+  });
+  await audit(req, "ticket_complimentary", "ticket", attendee.ticketId, `${tier} pass for ${email}`);
+  res.status(201).json({ ticketId: attendee.ticketId, name, email, tier, lastName: name.split(" ").slice(-1)[0] });
+});
 
 // Body: { keys: ["u:<userId>:<ticketId>" | "g:<ticketId>", …], hidden: true|false }
 router.post("/tickets/hide", async (req, res) => {
