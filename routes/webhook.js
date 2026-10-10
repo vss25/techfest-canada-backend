@@ -9,6 +9,8 @@ import crypto from "crypto";
 import { sendTicketEmail } from "../services/emailService.js";
 import { detailsFromMetadata, displayName } from "../services/attendeeDetails.js";
 import { sendResetPasswordEmail } from "../services/emailService.js";
+import { depositFromSession } from "../services/pavilionApplications.js";
+import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
 
 const router = express.Router();
 
@@ -44,6 +46,19 @@ router.post("/stripe", async (req, res) => {
     try {
 
       const session = event.data.object;
+
+      // India Pavilion $500 deposit: no ticket or booth. Record it and mark the
+      // matching application as paid (services/pavilionDeposits.js). If this
+      // fails, Admin → India Pavilion reads it back from Stripe anyway.
+      if (session.metadata?.type === "pavilion-deposit") {
+        const dep = depositFromSession(session);
+        if (dep) {
+          await recordDeposit(dep, "webhook");
+          await linkDeposits();
+          console.log("✅ Pavilion deposit recorded:", session.id);
+        }
+        return res.json({ received: true });
+      }
 
       const tier = session.metadata.tier;
       const userId = session.metadata.userId;

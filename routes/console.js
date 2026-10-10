@@ -29,6 +29,12 @@ import AppNotification from "../models/AppNotification.js";
 import { validateNotify, recipientFilter, recipientDTO, groupHistory, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
 import Brochure from "../models/Brochure.js";
 import { downloadsFilter, downloadRow, downloadsCsv, botReason } from "../services/brochureDownloads.js";
+import PavilionApplication from "../models/PavilionApplication.js";
+import PavilionDeposit from "../models/PavilionDeposit.js";
+import {
+  STATUSES, applicationsFilter, applicationRow, applicationDetail, depositRow, cleanPatch, applicationsCsv,
+} from "../services/pavilionApplications.js";
+import { linkDeposits, syncDepositsFromStripe } from "../services/pavilionDeposits.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -559,6 +565,88 @@ router.get("/brochure-downloads/export", requireManagement, async (req, res) => 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-brochure-downloads-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(downloadsCsv(rows));
+});
+
+/* ---------- India Pavilion applications (website /exhibit/india-pavilion) ----------
+   Saved by routes/pavilion.js. Deposits come from the Stripe webhook and from
+   the revenue page's Stripe read (which also brings in deposits paid before
+   applications were saved); see services/pavilionDeposits.js.
+   Newest first, 50 a page. ?q= searches company, contact, email, phone,
+   reference, CIN/DPIIT. ?status= new|contacted|accepted|declined.
+   Bot applications are hidden unless ?spam=1 (then only those are listed). */
+
+// Read deposits from Stripe, but never hold the list up for more than a few seconds.
+async function syncPavilionDeposits(req) {
+  if (!process.env.STRIPE_SECRET_KEY) return "STRIPE_SECRET_KEY isn't set on the server, so deposits are only recorded as they're paid";
+  const sync = syncDepositsFromStripe(new Stripe(process.env.STRIPE_SECRET_KEY), { force: req.query.refresh === "1" }).then(() => "");
+  const slow = new Promise((resolve) => setTimeout(() => resolve("slow"), 8000));
+  try {
+    const r = await Promise.race([sync, slow]);
+    if (r === "slow") sync.catch((err) => console.error("PAVILION STRIPE SYNC ERROR:", err?.message || err));
+    return r === "slow" ? "Stripe is slow to answer; deposits will update on the next refresh" : "";
+  } catch (err) {
+    return `Couldn't read deposits from Stripe: ${err?.message || err}`;
+  }
+}
+
+const pavilionSpamScope = (req) => (req.query.spam === "1" ? { spam: true } : { spam: { $ne: true } });
+
+router.get("/pavilion-applications", async (req, res) => {
+  const stripeError = await syncPavilionDeposits(req);
+  await linkDeposits().catch((err) => console.error("PAVILION DEPOSIT LINK ERROR:", err?.message || err));
+  const filter = { ...applicationsFilter(req.query.q, req.query.status), ...pavilionSpamScope(req) };
+  const page = Math.max(0, Number(req.query.page) || 0), size = 50;
+  const [rows, total, all, spam, byStatus, unmatched, deposits] = await Promise.all([
+    PavilionApplication.find(filter).sort({ createdAt: -1 }).skip(page * size).limit(size).lean(),
+    PavilionApplication.countDocuments(filter),
+    PavilionApplication.countDocuments({ spam: { $ne: true } }),
+    PavilionApplication.countDocuments({ spam: true }),
+    PavilionApplication.aggregate([{ $match: { spam: { $ne: true } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+    PavilionDeposit.find({ applicationId: null }).sort({ paidAt: -1 }).lean(),
+    PavilionDeposit.countDocuments(),
+  ]);
+  const counts = Object.fromEntries(STATUSES.map((st) => [st, 0]));
+  for (const g of byStatus) counts[g._id || "new"] = (counts[g._id || "new"] || 0) + g.n;
+  res.json({
+    total, all, spam, page, size, counts, rows: rows.map(applicationRow),
+    unmatchedDeposits: unmatched.map(depositRow), depositsPaid: deposits, stripeError,
+  });
+});
+
+// Spreadsheet of every application matching the search. Management only: it holds phone numbers and company financials.
+router.get("/pavilion-applications/export", requireManagement, async (req, res) => {
+  const rows = await PavilionApplication.find({ ...applicationsFilter(req.query.q, req.query.status), ...pavilionSpamScope(req) }).sort({ createdAt: -1 }).lean();
+  await audit(req, "pavilion_applications_export", "pavilion", "", `${rows.length} rows`);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ttfc-india-pavilion-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(applicationsCsv(rows));
+});
+
+router.get("/pavilion-applications/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Application not found" });
+  const a = await PavilionApplication.findById(req.params.id).lean();
+  if (!a) return res.status(404).json({ error: "Application not found" });
+  const deposits = await PavilionDeposit.find({ applicationId: a._id }).sort({ paidAt: -1 }).lean();
+  res.json({ application: applicationDetail(a), deposits: deposits.map(depositRow) });
+});
+
+// Staff (not only management) move an application along and keep notes. Body { status?, notes? }.
+router.patch("/pavilion-applications/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Application not found" });
+  const patch = cleanPatch(req.body);
+  if (!patch.ok) return res.status(400).json({ error: patch.error });
+  const before = await PavilionApplication.findById(req.params.id, { status: 1, legalName: 1 }).lean();
+  if (!before) return res.status(404).json({ error: "Application not found" });
+  const set = { ...patch.set, lastEditedBy: req.user.name || req.user.email || "", lastEditedAt: new Date() };
+  if (set.status && set.status !== (before.status || "new")) set.statusChangedAt = new Date();
+  const a = await PavilionApplication.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
+  const what = [
+    patch.set.status && patch.set.status !== (before.status || "new") ? `status ${before.status || "new"} → ${patch.set.status}` : "",
+    patch.set.notes !== undefined ? "notes" : "",
+  ].filter(Boolean).join(", ") || "no change";
+  await audit(req, "pavilion_application_edit", "pavilion", a._id, `${before.legalName}: ${what}`);
+  const deposits = await PavilionDeposit.find({ applicationId: a._id }).sort({ paidAt: -1 }).lean();
+  res.json({ application: applicationDetail(a), deposits: deposits.map(depositRow) });
 });
 
 // Staff fill in or correct what we know about a ticket holder.

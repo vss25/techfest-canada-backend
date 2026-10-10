@@ -38,6 +38,16 @@ export function rowFromSession(s, refundedByIntent = new Map()) {
     tax, total, refunded,
     promoCode: String(s.metadata?.promoCode || "").toUpperCase(),
     discount: (s.total_details?.amount_discount || 0) / 100,
+    currency: String(s.currency || "cad").toUpperCase(),
+    paymentIntent: typeof s.payment_intent === "string" ? s.payment_intent : "",
+    // What the India Pavilion deposit page sent, so the deposit can be matched to its application
+    ...(s.metadata?.type === "pavilion-deposit" ? {
+      meta: {
+        companyName: String(s.metadata.companyName || ""),
+        contactEmail: String(s.metadata.contactEmail || "").toLowerCase(),
+        applicationRef: String(s.metadata.applicationRef || ""),
+      },
+    } : {}),
   };
 }
 
