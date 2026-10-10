@@ -39,6 +39,11 @@ DEEPCLEER_HOLD_ON_REVIEW # default true — REVIEW results are held, not just RE
 GEMINI_API_KEY          # enables GET /api/intel (company-intel cards, refreshed daily)
 GEMINI_MODEL            # default gemini-2.5-flash
 INTEL_TTL_HOURS         # default 24
+
+# Optional — brochure downloads
+BROCHURE_SALES_INBOX    # default sales@thetechfestival.com (comma-separate for several)
+BROCHURE_ATTACH_MAX_MB  # default 7; the PDF is attached only at or under this size, else link only (0 = always link)
+BROCHURE_BASE_URL       # default https://www.thetechfestival.com — where the PDF is linked/fetched from
 ```
 
 ## Architecture
@@ -62,7 +67,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/kyc` | `routes/kyc.js` | Exhibitor/sponsor KYC forms |
 | `/api/subscriptions` | `routes/subscriptions.js` | Newsletter subscriptions |
 | `/api/agenda` | `routes/agenda.js` | Event agenda |
-| `/api/brochure` | `routes/brochure.js` | Event brochures |
+| `/api/brochure` | `routes/brochure.js` | `POST /submit`: saves a brochure download (`Brochure` model), answers at once, then emails the person the PDF link (attached only if small, see `BROCHURE_ATTACH_MAX_MB`) and a receipt to sales@. Honeypot `_hp`, per-IP/per-email limits, no re-send of the same brochure within 10 min. Staff list: `GET /api/console/brochure-downloads` (+ `/export` CSV, management). Pure parts in `services/brochureDownloads.js`, emails in `services/brochureEmail.js` |
 | `/api/profile` | `routes/profile.js` | GET/PATCH attendee profile (linkedinUrl, fieldOfWork, jobTitle, organization, country, topics) |
 | `/api/moderate` | `routes/moderate.js` | DeepCleer text-moderation proxy used by the iOS app |
 | `/api/intel` | `routes/intel.js` | Gemini-generated company cards (cached in `IntelCard`) for the app's home screen |
