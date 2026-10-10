@@ -3,6 +3,8 @@ import { generateTicketPDF } from "./pdfTicket.js";
 import { buildTicketEmail } from "./ticketEmail.js";
 import { buildProfileRequestEmail } from "./profileEmail.js";
 import { buildSignInEmail, buildNoTicketEmail } from "./signInEmail.js";
+import { buildBrochureEmail, buildBrochureReceiptEmail } from "./brochureEmail.js";
+import { SALES_INBOX } from "./brochureDownloads.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
@@ -155,6 +157,45 @@ export async function sendNoTicketEmail({ email, ticketsUrl }) {
     from: "TechFest Canada <noreply@thetechfestival.com>",
     to: email,
     reply_to: EVENT.supportEmail,
+    subject,
+    html,
+    text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  return data;
+}
+
+/* =========================================================
+   BROCHURE EMAILS (website /brochures form)
+   Layout in services/brochureEmail.js (pure, tested). Sent from
+   routes/brochure.js after the visitor already has the PDF, so they
+   never hold up the download. Throw when Resend refuses them.
+   `attachment` is { filename, content } or null (link only).
+========================================================= */
+
+export async function sendBrochureEmail({ email, firstName, brochure, link, attachment = null }) {
+  if (!email || !brochure || !link) throw new Error("Missing email, brochure or link");
+  const { subject, html, text } = buildBrochureEmail({ firstName, brochure, link, attached: !!attachment });
+  const { data, error } = await resend.emails.send({
+    from: "TechFest Canada <noreply@thetechfestival.com>",
+    to: email,
+    reply_to: SALES_INBOX,
+    subject,
+    html,
+    text,
+    ...(attachment ? { attachments: [attachment] } : {}),
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  return data;
+}
+
+export async function sendBrochureReceiptEmail({ to = [SALES_INBOX], lead, brochure, delivery }) {
+  if (!lead?.email) throw new Error("Missing lead");
+  const { subject, html, text } = buildBrochureReceiptEmail({ lead, brochure, delivery });
+  const { data, error } = await resend.emails.send({
+    from: "TechFest Canada <noreply@thetechfestival.com>",
+    to,
+    reply_to: lead.email,
     subject,
     html,
     text,
