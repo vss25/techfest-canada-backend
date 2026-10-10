@@ -33,6 +33,12 @@ test("new logos default to active", () => {
   assert.equal(p.set.active, true);
 });
 
+test("partners take a Partners-page group, and only known ones", () => {
+  assert.equal(toSanityPatch("partner", { matrixGroup: "quantum" }, { creating: false }).set.matrixGroup, "quantum");
+  assert.ok(toSanityPatch("partner", { matrixGroup: "nope" }, { creating: false }).error);
+  assert.deepEqual(toSanityPatch("partner", { matrixGroup: "" }, { creating: false }).unset, ["matrixGroup"]);
+});
+
 test("kill switch keeps staff, sign-in and webhooks working", () => {
   for (const ok of ["/api/status", "/api/console/kill-switch", "/api/cms/speaker", "/api/admin/attendees",
                     "/api/webhook", "/api/auth/login", "/api/auth/me", "/api/checkin/scan"]) assert.ok(allowedWhileOff(ok), ok);
