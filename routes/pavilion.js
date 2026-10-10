@@ -6,6 +6,7 @@ import { makeLimiter } from "../services/ticketAccess.js";
 import { cleanText } from "../services/brochureDownloads.js";
 import {
   PROGRAMME_LABELS, BOOTH_LABELS, validatePavilionApplication, pavilionBotReason, makeReference,
+  depositOnlyMatch,
 } from "../services/pavilionApplications.js";
 import { linkDeposits } from "../services/pavilionDeposits.js";
 
@@ -312,10 +313,18 @@ router.post("/pavilion", async (req, res) => {
       return res.status(429).json({ error: TOO_MANY });
     }
 
-    const reference = makeReference();
+    let reference = makeReference();
     let doc = null;
     try {
-      doc = await PavilionApplication.create({
+      // A company that already paid (row created from its deposit) applying now: fill that row in.
+      const prior = bot ? null : depositOnlyMatch(v, await PavilionApplication.find({ fromDeposit: true, formReceivedAt: null }).lean());
+      if (prior) {
+        reference = prior.reference || reference;
+        doc = await PavilionApplication.findByIdAndUpdate(prior._id, { $set: {
+          ...v, raw: check.raw, reference, formReceivedAt: new Date(),
+          userAgent: cleanText(req.headers["user-agent"]).slice(0, 300), emailStatus: "sending",
+        } }, { new: true });
+      } else doc = await PavilionApplication.create({
         ...v, raw: check.raw, reference,
         userAgent: cleanText(req.headers["user-agent"]).slice(0, 300),
         emailStatus: bot ? "blocked" : "sending",

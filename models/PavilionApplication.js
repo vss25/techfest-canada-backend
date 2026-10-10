@@ -70,7 +70,11 @@ const pavilionApplicationSchema = new mongoose.Schema({
   depositCurrency: str,
   depositPaidAt: Date,
   depositStripeId: str,    // Checkout Session id
-  depositMatchedBy: str,   // reference | email | company
+  depositMatchedBy: str,   // reference | email | company | deposit
+  // Created from a paid Stripe deposit because the application itself was only ever emailed
+  // (before Oct 2026). Filled in by the form if that company applies again.
+  fromDeposit: Boolean,
+  formReceivedAt: Date,
 
   // Bot (honeypot / random text / instant fill): kept for review, never emailed, hidden in the admin list
   spam: { type: Boolean, default: false },

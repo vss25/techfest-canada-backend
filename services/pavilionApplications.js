@@ -284,6 +284,36 @@ export function matchDeposit(dep, apps = []) {
   return null;
 }
 
+export const FROM_DEPOSIT_NOTE = "Created from the paid Stripe deposit. The full application form was only emailed to sales@ (applications weren't saved before October 2026).";
+
+/** An application row for a paid deposit that matches no application (pre-Oct 2026 applicants). */
+export function applicationFromDeposit(dep, reference) {
+  if (!dep) return null;
+  const company = dep.companyName === DEPOSIT_PLACEHOLDER_COMPANY ? "" : cleanText(dep.companyName);
+  const email = cleanText(dep.contactEmail || dep.email).toLowerCase();
+  if (!company && !email) return null;
+  return {
+    reference,
+    legalName: company || email,
+    repName: cleanText(dep.name) || "Not on file",
+    repEmail: email || "not-on-file@thetechfestival.com",
+    status: "accepted",
+    notes: FROM_DEPOSIT_NOTE,
+    fromDeposit: true,
+    createdAt: dep.paidAt || new Date(),
+    ...depositFieldsFor(dep, "deposit"),
+  };
+}
+
+/** A deposit-only application the incoming form belongs to (same email or company), so it fills that row in. */
+export function depositOnlyMatch(v, apps = []) {
+  const email = cleanText(v?.repEmail).toLowerCase();
+  const names = [v?.legalName, v?.tradingName].map((n) => (n ? normalizeCompany(n) : "")).filter(Boolean);
+  return apps.find((a) => a.fromDeposit && !a.formReceivedAt && (
+    (email && cleanText(a.repEmail).toLowerCase() === email) || (a.legalName && names.includes(normalizeCompany(a.legalName)))
+  )) || null;
+}
+
 /** What gets $set on an application once its deposit is known. */
 export function depositFieldsFor(dep, by) {
   return {
@@ -368,6 +398,7 @@ export function applicationRow(a) {
     spam: !!a.spam,
     spamReason: a.spamReason || "",
     emailStatus: a.emailStatus || "",
+    fromDeposit: !!a.fromDeposit && !a.formReceivedAt,
   };
 }
 

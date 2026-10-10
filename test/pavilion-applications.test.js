@@ -4,6 +4,7 @@ import {
   SECTIONS, FIELDS, STATUSES, BOOTH_LABELS, validatePavilionApplication, extraFields, cleanLong, pavilionBotReason,
   makeReference, normalizeCompany, depositFromSession, depositFromStripeRow, matchDeposit, depositFieldsFor, depositStatus,
   applicationsFilter, cleanPatch, applicationRow, applicationDetail, depositRow, applicationsCsv, isHoneypotFilled,
+  applicationFromDeposit, depositOnlyMatch, FROM_DEPOSIT_NOTE,
 } from "../services/pavilionApplications.js";
 import { rowFromSession } from "../services/stripeSales.js";
 
@@ -295,4 +296,31 @@ test("CSV: BOM, header, every field, formula-escaped", () => {
   assert.match(body, /Paid,500,/);
   assert.match(body, /"12 MG Road\nBengaluru 560001"/);
   assert.match(body, /"\{""referralCode"":""INDIA25""\}"/);
+});
+
+test("a paid deposit with no application becomes its own paid, accepted row", () => {
+  const dep = { stripeSessionId: "cs_1", companyName: "Acme Robotics Pvt Ltd", contactEmail: "Ops@Acme.in", name: "Asha Rao",
+    amount: 500, tax: 65, total: 565, currency: "CAD", paidAt: new Date("2026-08-17T10:00:00Z") };
+  const a = applicationFromDeposit(dep, "IP-TEST01");
+  assert.equal(a.legalName, "Acme Robotics Pvt Ltd");
+  assert.equal(a.repEmail, "ops@acme.in");
+  assert.equal(a.repName, "Asha Rao");
+  assert.equal(a.status, "accepted");
+  assert.equal(a.fromDeposit, true);
+  assert.equal(a.depositPaid, true);
+  assert.equal(a.depositAmount, 500);
+  assert.equal(a.depositMatchedBy, "deposit");
+  assert.equal(a.notes, FROM_DEPOSIT_NOTE);
+  assert.deepEqual(a.createdAt, dep.paidAt);
+  assert.equal(applicationFromDeposit({ companyName: "Pavilion Applicant" }, "IP-X"), null);
+  assert.equal(applicationFromDeposit({ email: "x@y.in" }, "IP-X").legalName, "x@y.in");
+});
+
+test("a later application fills in the deposit-only row for the same email or company", () => {
+  const rows = [{ _id: 1, fromDeposit: true, legalName: "Acme Robotics Pvt Ltd", repEmail: "ops@acme.in" },
+                { _id: 2, fromDeposit: true, formReceivedAt: new Date(), legalName: "Done Co", repEmail: "a@done.co" }];
+  assert.equal(depositOnlyMatch({ repEmail: "OPS@acme.in", legalName: "Other" }, rows)._id, 1);
+  assert.equal(depositOnlyMatch({ repEmail: "new@x.in", legalName: "Acme Robotics Private Limited" }, rows)?._id, 1);
+  assert.equal(depositOnlyMatch({ repEmail: "a@done.co", legalName: "Done Co" }, rows), null);
+  assert.equal(depositOnlyMatch({ repEmail: "z@z.in", legalName: "Zed" }, rows), null);
 });
