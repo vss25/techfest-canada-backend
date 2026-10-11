@@ -35,6 +35,11 @@ import {
   STATUSES, applicationsFilter, applicationRow, applicationDetail, depositRow, cleanPatch, applicationsCsv,
 } from "../services/pavilionApplications.js";
 import { linkDeposits, syncDepositsFromStripe } from "../services/pavilionDeposits.js";
+import FormSubmission from "../models/FormSubmission.js";
+import {
+  FORM_KEYS, STATUSES as FORM_STATUSES, submissionsFilter, submissionRow, submissionDetail, cleanSubmissionPatch,
+  submissionsCsv, planImport, importKey,
+} from "../services/formSubmissions.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -647,6 +652,94 @@ router.patch("/pavilion-applications/:id", async (req, res) => {
   await audit(req, "pavilion_application_edit", "pavilion", a._id, `${before.legalName}: ${what}`);
   const deposits = await PavilionDeposit.find({ applicationId: a._id }).sort({ paidAt: -1 }).lean();
   res.json({ application: applicationDetail(a), deposits: deposits.map(depositRow) });
+});
+
+/* ---------- Website form submissions (volunteer, speaker, booth, sponsor, partnership, enquiry) ----------
+   Saved by routes/forms.js (they went through EmailJS before Oct 2026).
+   Newest first, 50 a page. ?form= one form, ?status=, ?q= searches name,
+   email, phone, company, job title and message. Bots are hidden unless
+   ?spam=1 (then only those are listed). `counts` is per form, without bots. */
+const formSpamScope = (req) => (req.query.spam === "1" ? { spam: true } : { spam: { $ne: true } });
+const formQuery = (req) => ({ ...submissionsFilter(req.query), ...formSpamScope(req) });
+
+router.get("/form-submissions", async (req, res) => {
+  const filter = formQuery(req);
+  const page = Math.max(0, Number(req.query.page) || 0), size = 50;
+  // Tabs count every form under the same search/status/spam view, so switching tabs doesn't surprise.
+  const { form: _f, ...acrossForms } = filter;
+  const [rows, total, all, spam, byForm, byStatus] = await Promise.all([
+    FormSubmission.find(filter).sort({ createdAt: -1 }).skip(page * size).limit(size).lean(),
+    FormSubmission.countDocuments(filter),
+    FormSubmission.countDocuments({ spam: { $ne: true } }),
+    FormSubmission.countDocuments({ spam: true }),
+    FormSubmission.aggregate([{ $match: acrossForms }, { $group: { _id: "$form", n: { $sum: 1 } } }]),
+    FormSubmission.aggregate([{ $match: { ...(filter.form ? { form: filter.form } : {}), spam: { $ne: true } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+  ]);
+  const counts = Object.fromEntries(FORM_KEYS.map((k) => [k, 0]));
+  for (const g of byForm) if (g._id in counts) counts[g._id] = g.n;
+  const statusCounts = Object.fromEntries(FORM_STATUSES.map((k) => [k, 0]));
+  for (const g of byStatus) statusCounts[g._id || "new"] = (statusCounts[g._id || "new"] || 0) + g.n;
+  res.json({ total, all, spam, page, size, counts, statusCounts, rows: rows.map(submissionRow) });
+});
+
+// Spreadsheet of every submission matching the view. Management only: it holds phone numbers.
+router.get("/form-submissions/export", requireManagement, async (req, res) => {
+  const rows = await FormSubmission.find(formQuery(req)).sort({ createdAt: -1 }).lean();
+  await audit(req, "form_submissions_export", "form", String(req.query.form || ""), `${rows.length} rows`);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ttfc-form-submissions-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(submissionsCsv(rows));
+});
+
+/* Load submissions recovered from EmailJS's history. Management only, audited, never emailed.
+   Body { rows: [{ form, name, email, phone, company, message, fields, receivedAt }] }
+   (firstName / lastName / jobTitle also accepted). Saved with source "recovered" and
+   createdAt = receivedAt. Same form + email + receivedAt as an existing row → skipped. */
+router.post("/form-submissions/import", requireManagement, async (req, res) => {
+  const first = planImport(req.body);
+  if (!first.ok) return res.status(400).json({ error: first.error });
+  // Look up only the rows that could clash, then plan again against them.
+  const existing = first.docs.length ? await FormSubmission.find(
+    { $or: first.docs.map((d) => ({ form: d.form, email: d.email, createdAt: d.createdAt })) },
+    { form: 1, email: 1, createdAt: 1 },
+  ).lean() : [];
+  const plan = planImport(req.body, new Set(existing.map(importKey)));
+  const by = req.user.name || req.user.email || "";
+  const saved = [];
+  for (const d of plan.docs) saved.push(await FormSubmission.create({ ...d, updatedBy: by }));
+  await audit(req, "form_submissions_import", "form", "", `${saved.length} imported, ${plan.skipped.length} skipped`);
+  res.status(201).json({
+    imported: saved.length,
+    skipped: plan.skipped,
+    duplicates: plan.skipped.filter((s) => s.reason === "duplicate").length,
+    rows: saved.map((d) => submissionRow(d.toObject())),
+  });
+});
+
+router.get("/form-submissions/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Submission not found" });
+  const s = await FormSubmission.findById(req.params.id).lean();
+  if (!s) return res.status(404).json({ error: "Submission not found" });
+  res.json({ submission: submissionDetail(s) });
+});
+
+// Staff (not only management) move a submission along and keep notes. Body { status?, notes? }.
+router.patch("/form-submissions/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Submission not found" });
+  const patch = cleanSubmissionPatch(req.body);
+  if (!patch.ok) return res.status(400).json({ error: patch.error });
+  const before = await FormSubmission.findById(req.params.id, { status: 1, name: 1, form: 1 }).lean();
+  if (!before) return res.status(404).json({ error: "Submission not found" });
+  const set = { ...patch.set, updatedBy: req.user.name || req.user.email || "" };
+  const statusChanged = set.status && set.status !== (before.status || "new");
+  if (statusChanged) set.statusChangedAt = new Date();
+  const s = await FormSubmission.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
+  const what = [
+    statusChanged ? `status ${before.status || "new"} → ${set.status}` : "",
+    patch.set.notes !== undefined ? "notes" : "",
+  ].filter(Boolean).join(", ") || "no change";
+  await audit(req, "form_submission_edit", "form", s._id, `${before.form} · ${before.name || "no name"}: ${what}`);
+  res.json({ submission: submissionDetail(s) });
 });
 
 // Staff fill in or correct what we know about a ticket holder.

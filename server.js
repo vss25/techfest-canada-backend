@@ -12,6 +12,7 @@ import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
 import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
+import formsRoutes from "./routes/forms.js";
 import agendaRoutes from "./routes/agenda.js";
 import subscriptionRoutes from "./routes/subscriptions.js";
 import campaignRoutes from "./routes/campaigns.js";
@@ -104,6 +105,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/leads", leadsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
+app.use("/api/forms", formsRoutes);         // POST /:form (volunteer, speaker, exhibit, sponsor, partnership, inquiry)
 app.use("/api/agenda", agendaRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/campaigns", campaignRoutes);
