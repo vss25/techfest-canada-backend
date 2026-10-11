@@ -47,6 +47,20 @@ export const RSVP_OPTIONS = [
     description: "Keynotes, panels and the expo floor." },
   { key: "day2", kind: "day", day: "day2", label: "Day 2 conference (Tue 27 Oct)", tiers: EVERYONE,
     description: "Keynotes, panels and the expo floor." },
+  // What every pass includes on the day (Tickets page: conference days, expo floor, networking breaks).
+  // Asked like the rest, so the headcounts say who will actually be in the room.
+  { key: "sessions_d1", kind: "experience", day: "day1", label: "Keynotes, panels & sessions", tiers: EVERYONE,
+    description: "The main stage and the breakout sessions." },
+  { key: "sessions_d2", kind: "experience", day: "day2", label: "Keynotes, panels & sessions", tiers: EVERYONE,
+    description: "The main stage and the breakout sessions." },
+  { key: "expo_d1", kind: "experience", day: "day1", label: "Expo floor", tiers: EVERYONE,
+    description: "Exhibitors, product demos and partner stands." },
+  { key: "expo_d2", kind: "experience", day: "day2", label: "Expo floor", tiers: EVERYONE,
+    description: "Exhibitors, product demos and partner stands." },
+  { key: "breaks_d1", kind: "experience", day: "day1", label: "Networking breaks & coffee", tiers: EVERYONE,
+    description: "Coffee and conversation between sessions." },
+  { key: "breaks_d2", kind: "experience", day: "day2", label: "Networking breaks & coffee", tiers: EVERYONE,
+    description: "Coffee and conversation between sessions." },
   { key: "lunch_d1", kind: "experience", day: "day1", label: "Networking Luncheon", tiers: INFLUENCE_UP,
     description: "Seated lunch with fellow delegates." },
   { key: "lunch_d2", kind: "experience", day: "day2", label: "Networking Luncheon", tiers: INFLUENCE_UP,
@@ -226,6 +240,25 @@ export function fullNameMatches(candidate, first, last) {
         if (words.slice(j).join("") === l) return true;
       }
     }
+  }
+  return false;
+}
+
+/**
+ * Is `last` the last name of `candidate` (a full name, or { firstName, lastName })? The same
+ * folding as fullNameMatches: "Christopher Golden" and "Dr. Chris A. Golden" both have the last
+ * name "Golden"; a one-word name has no last name to match.
+ */
+export function lastNameIs(candidate, last) {
+  const l = foldName(nameWords(last).join(""));
+  if (l.length < 2) return false;
+  if (candidate && typeof candidate === "object") {
+    const cl = foldName(nameWords(candidate.lastName).join(""));
+    if (cl && cl === l) return true;
+    return lastNameIs([candidate.firstName, candidate.lastName].filter(Boolean).join(" "), last);
+  }
+  for (const words of nameVariants(candidate)) {
+    for (let j = 1; j < words.length; j++) if (words.slice(j).join("") === l) return true;
   }
   return false;
 }
@@ -523,6 +556,12 @@ export function summarizeRsvps(docs = []) {
   return { total, counts, verifiedCounts, dietary, dietaryNotes, tiers, unverified, duplicates };
 }
 
+/** GET /api/console/rsvps. `catalog` is the options payload, so the staff page has the
+    labels even while the kill switch has GET /api/rsvp/options (the public site) switched off. */
+export function rsvpListPayload({ total = 0, page = 0, size = 50, everyone = [], rows = [] } = {}) {
+  return { total, page, size, summary: summarizeRsvps(everyone), rows: rows.map(rsvpRow), catalog: rsvpOptionsPayload() };
+}
+
 /** A row of the admin table. */
 export function rsvpRow(d) {
   return {
@@ -539,6 +578,7 @@ export function rsvpRow(d) {
     dietaryOther: d.dietaryOther || "",
     hasAccessibility: !!d.accessibility,
     duplicateOf: d.duplicateOf ? String(d.duplicateOf) : "", // possible duplicate: not in the headcounts until staff decide
+    separated: !!d.separatedAt, // staff kept it as a person of their own: never flagged again
     submissions: d.submissions || 1,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -562,6 +602,8 @@ export function rsvpDetail(d) {
     fillMs: d.fillMs ?? null,
     spam: !!d.spam,
     spamReason: d.spamReason || "",
+    separatedAt: d.separatedAt || null,
+    separatedBy: d.separatedBy || "",
     optionLabels: (d.options || []).map(optionLabel),
     dietaryLabels: (d.dietary || []).map((k) => DIETARY_LABEL[k] || k),
   };
@@ -592,20 +634,60 @@ export function rsvpsCsv(docs) {
   return "﻿" + [CSV_HEAD.map(csvCell).join(","), ...lines].join("\n");
 }
 
+const isVerifiedRow = (r) => !!(r?.ticketVerified || r?.tierVerified);
+const msOf = (t) => {
+  const n = t ? new Date(t).getTime() : 0;
+  return Number.isFinite(n) ? n : 0;
+};
+/** The row whose answers are the latest: last changed, then last created; a tie keeps `fallback`'s. */
+function newerRow(a, b, fallback) {
+  const byUpdate = msOf(a.updatedAt || a.createdAt) - msOf(b.updatedAt || b.createdAt);
+  if (byUpdate) return byUpdate > 0 ? a : b;
+  const byCreate = msOf(a.createdAt) - msOf(b.createdAt);
+  if (byCreate) return byCreate > 0 ? a : b;
+  return fallback;
+}
+
 /**
- * Staff merge a possible duplicate into the RSVP it duplicates: its answers (days,
- * experiences, dietary, accessibility, email) replace the earlier ones, while the earlier
- * row keeps its pass and verification. Experiences that pass doesn't include are dropped.
- * @returns {{ set: object, dropped: string[] }}  `set` for the kept row
+ * Staff merge a possible duplicate (`dup`) with the RSVP it may duplicate (`keep`): one person.
+ *  - The row that stays listed (`survivor`): the ticket-verified one, with its key and verified
+ *    pass; when neither (or both) is verified, `keep`. The other (`retired`) is kept for the record.
+ *  - The answers (days, experiences, dietary, accessibility) are the NEWER row's (updatedAt, then
+ *    createdAt; a tie keeps the survivor's), so a merge never rolls back a later change.
+ *    The email is the newer one's, or the older one's when the newer RSVP left it out.
+ *  - The pass: the verified row's; with no verified row, the newer row's (it is their latest answer).
+ *    Experiences that pass doesn't include on those days are dropped and reported.
+ *  - The browser that sent the newer answers keeps its edit token.
+ * @returns {{ survivor: object, retired: object, newer: object, set: object, inc: object, dropped: string[] }}
+ *          `set` / `inc` for the survivor
  */
 export function planRsvpMerge(keep, dup) {
-  const days = DAY_KEYS.filter((k) => (dup.days || []).includes(k));
-  const allowed = new Set(allowedExperiences(keep.tier, days));
-  const options = EXPERIENCE_KEYS.filter((k) => (dup.options || []).includes(k) && allowed.has(k));
+  const survivor = isVerifiedRow(dup) && !isVerifiedRow(keep) ? dup : keep;
+  const retired = survivor === keep ? dup : keep;
+  const newer = newerRow(dup, keep, survivor);
+  const older = newer === dup ? keep : dup;
+  const passRow = isVerifiedRow(survivor) ? survivor : newer;
+
+  const days = DAY_KEYS.filter((k) => (newer.days || []).includes(k));
+  const allowed = new Set(allowedExperiences(passRow.tier, days));
+  const options = EXPERIENCE_KEYS.filter((k) => (newer.options || []).includes(k) && allowed.has(k));
   const set = {
-    days, options, dietary: [...(dup.dietary || [])], dietaryOther: dup.dietaryOther || "",
-    accessibility: dup.accessibility || "",
+    days, options, dietary: [...(newer.dietary || [])], dietaryOther: newer.dietaryOther || "",
+    accessibility: newer.accessibility || "",
+    email: newer.email || older.email || "",
   };
-  if (dup.email) set.email = dup.email;
-  return { set, dropped: (dup.options || []).filter((k) => !options.includes(k)) };
+  if (passRow !== survivor) {
+    // Neither row is verified: the newer one's pass, as it was worked out when it was saved.
+    Object.assign(set, {
+      kind: passRow.kind || "none", tier: passRow.tier || "", tierVerified: false,
+      chosenTier: passRow.chosenTier || "", detectedTier: passRow.detectedTier || "", matchedSpeaker: passRow.matchedSpeaker || "",
+      ticketId: passRow.ticketId || survivor.ticketId || "", ticketVerified: false,
+    });
+  }
+  if (survivor === dup) set.duplicateOf = ""; // the verified row is the RSVP now
+  if (newer === retired && retired.editTokenHash) set.editTokenHash = retired.editTokenHash;
+  return {
+    survivor, retired, newer, set, inc: { submissions: retired.submissions || 1 },
+    dropped: (newer.options || []).filter((k) => !options.includes(k)),
+  };
 }

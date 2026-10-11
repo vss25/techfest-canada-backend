@@ -63,6 +63,9 @@ const handlers = makeRsvpHandlers({
     findByNameKey: (nameKey) => (nameKey
       ? Rsvp.find({ nameKey, ...LIVE_RSVPS }).select("+editTokenHash").sort({ createdAt: 1 }).limit(50).lean()
       : Promise.resolve([])),
+    findByEditToken: (hash) => (hash
+      ? Rsvp.findOne({ editTokenHash: hash, ...LIVE_RSVPS }).select("+editTokenHash").lean()
+      : Promise.resolve(null)),
     insert: (doc) => Rsvp.create(doc),
     update: (id, set) => Rsvp.findByIdAndUpdate(id, { $set: set, $inc: { submissions: 1 } }, { new: true }).lean(),
     mark: (id, set) => Rsvp.updateOne({ _id: id }, { $set: set }),

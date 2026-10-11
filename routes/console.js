@@ -41,7 +41,8 @@ import {
   submissionsCsv, planImport, importKey,
 } from "../services/formSubmissions.js";
 import Rsvp from "../models/Rsvp.js";
-import { rsvpsFilter, rsvpRow, rsvpDetail, rsvpsCsv, summarizeRsvps, planRsvpMerge, LIVE_RSVPS } from "../services/rsvp.js";
+import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "../services/rsvp.js";
+import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -752,7 +753,8 @@ router.patch("/form-submissions/:id", async (req, res) => {
    experience, dietary need and pass, so catering numbers are there at a glance
    (`verifiedCounts`: verified passes only). Bots are never listed or counted;
    possible duplicates (`duplicateOf`) are listed but not counted until staff
-   resolve them (POST /rsvps/:id/resolve). */
+   resolve them (POST /rsvps/:id/resolve). `catalog` is GET /api/rsvp/options,
+   so this page keeps its labels while the kill switch has the public API off. */
 router.get("/rsvps", async (req, res) => {
   const filter = rsvpsFilter(req.query);
   const page = Math.max(0, Number(req.query.page) || 0), size = 50;
@@ -761,7 +763,7 @@ router.get("/rsvps", async (req, res) => {
     Rsvp.countDocuments(filter),
     Rsvp.find(LIVE_RSVPS, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1, duplicateOf: 1 }).lean(),
   ]);
-  res.json({ total, page, size, summary: summarizeRsvps(everyone), rows: rows.map(rsvpRow) });
+  res.json(rsvpListPayload({ total, page, size, everyone, rows }));
 });
 
 // Spreadsheet of every RSVP in this view. Management only: it holds emails and accessibility notes.
@@ -781,30 +783,21 @@ router.get("/rsvps/:id", async (req, res) => {
 });
 
 // A possible duplicate (a second RSVP for a name, not proven to be the same person). Body { action }:
-//   "merge"    the same person changing their RSVP: its answers replace the earlier row's (which keeps
-//              its pass and verification); this row is kept but no longer listed or counted.
-//   "separate" a different person with the same name: counted as an RSVP of its own.
+//   "merge"    the same person: one row stays listed, the ticket-verified one (its key and pass) or else the
+//              RSVP this duplicates, with the NEWER of the two sets of answers; the other is kept for the record.
+//   "separate" a different person with the same name: counted on its own, never flagged again.
+// Logic and tests: services/rsvpHandler.js resolveRsvpDuplicate, services/rsvp.js planRsvpMerge.
+const rsvpResolveStore = {
+  findLive: (id) => (isId(id) ? Rsvp.findOne({ _id: id, ...LIVE_RSVPS }).select("+editTokenHash").lean() : Promise.resolve(null)),
+  update: (id, set, inc) => Rsvp.findByIdAndUpdate(id, { $set: set, ...(inc ? { $inc: inc } : {}) }, { new: true }).lean(),
+  repoint: (fromId, toId) => Rsvp.updateMany({ duplicateOf: fromId, ...LIVE_RSVPS }, { $set: { duplicateOf: toId } }),
+};
 router.post("/rsvps/:id/resolve", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
-  const action = String(req.body?.action || "");
-  if (!["merge", "separate"].includes(action)) return res.status(400).json({ error: "action must be merge or separate" });
-  const dup = await Rsvp.findOne({ _id: req.params.id, ...LIVE_RSVPS }).lean();
-  if (!dup) return res.status(404).json({ error: "RSVP not found" });
-  if (!dup.duplicateOf) return res.status(409).json({ error: "This RSVP isn't marked as a possible duplicate" });
-  if (action === "separate") {
-    const r = await Rsvp.findByIdAndUpdate(dup._id, { $set: { duplicateOf: "" } }, { new: true }).lean();
-    await audit(req, "rsvp_separate", "rsvp", dup._id, `${dup.name}: kept as a separate person`);
-    return res.json({ rsvp: rsvpDetail(r) });
-  }
-  const keep = isId(dup.duplicateOf) ? await Rsvp.findOne({ _id: dup.duplicateOf, ...LIVE_RSVPS }).lean() : null;
-  if (!keep) return res.status(409).json({ error: "The RSVP this duplicates is gone. Keep this one as separate instead." });
-  const plan = planRsvpMerge(keep, dup);
-  const kept = await Rsvp.findByIdAndUpdate(keep._id, { $set: plan.set, $inc: { submissions: 1 } }, { new: true }).lean();
-  // Frees the key; the row itself stays for the record.
-  await Rsvp.updateOne({ _id: dup._id }, { $set: { mergedInto: String(keep._id), key: `merged:${dup._id}` } });
-  await audit(req, "rsvp_merge", "rsvp", keep._id,
-    `${dup.name} → ${keep.name}${plan.dropped.length ? `; not in their pass: ${plan.dropped.join(", ")}` : ""}`);
-  res.json({ rsvp: rsvpDetail(kept), dropped: plan.dropped });
+  const r = await resolveRsvpDuplicate(rsvpResolveStore, req.params.id, String(req.body?.action || ""), { name: req.user?.name });
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  await audit(req, r.audit.action, "rsvp", r.audit.targetId, r.audit.detail);
+  res.json({ rsvp: rsvpDetail(r.row), dropped: r.dropped });
 });
 
 // Staff fill in or correct what we know about a ticket holder.
