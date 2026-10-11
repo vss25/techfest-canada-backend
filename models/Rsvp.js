@@ -6,7 +6,8 @@ import mongoose from "mongoose";
    the same verified ticket, or the row's edit token (services/rsvpHandler.js).
    Without proof a second RSVP for the name gets its own row ("dup:…") marked
    `duplicateOf`, out of the headcounts until staff merge it (`mergedInto`)
-   or keep it as a separate person. Bots are kept in rows of their own
+   or keep it as a separate person (`separatedAt`: never flagged again).
+   Bots are kept in rows of their own
    (spam: true) and left out of the admin list and headcounts.
    Option keys: services/rsvp.js RSVP_OPTIONS. */
 const str = { type: String, default: "" };
@@ -16,7 +17,7 @@ const rsvpSchema = new mongoose.Schema({
 
   // Who
   firstName: str, lastName: str, name: str,
-  nameKey: str,        // "jose nunez" ("" when someone else's name was typed over a verified ticket)
+  nameKey: str,        // "jose nunez" ("" when another name was typed over a verified ticket; kept on later saves)
   email: str,          // optional, for a confirmation
   ticketId: str,       // as given (normalised); see ticketVerified
   ticketVerified: { type: Boolean, default: false },
@@ -31,7 +32,7 @@ const rsvpSchema = new mongoose.Schema({
 
   // What they're coming to
   days: { type: [String], default: [] },     // day1, day2
-  options: { type: [String], default: [] },  // lunch_d1, cxo_d2, gala, awards, meetings, lounge…
+  options: { type: [String], default: [] },  // sessions_d1, expo_d2, breaks_d1, lunch_d1, cxo_d2, gala, awards, meetings, lounge…
   dietary: { type: [String], default: [] },
   dietaryOther: str,
   accessibility: str,
@@ -48,10 +49,14 @@ const rsvpSchema = new mongoose.Schema({
   editTokenHash: { type: String, default: "", select: false }, // sha256 of the browser's edit token
   duplicateOf: str,    // _id of the RSVP this may duplicate (not counted until staff decide)
   mergedInto: str,     // staff merged this row into that _id (kept, never listed)
+  separatedFrom: str,  // staff kept this row as a person of their own, apart from that _id…
+  separatedAt: Date,   // …then: a later save by the namesake never flags it as a duplicate again
+  separatedBy: str,    // staff name
 }, { timestamps: true });
 
 rsvpSchema.index({ key: 1 }, { unique: true, partialFilterExpression: { spam: false } });
 rsvpSchema.index({ nameKey: 1 });
+rsvpSchema.index({ editTokenHash: 1 });
 rsvpSchema.index({ createdAt: -1 });
 rsvpSchema.index({ updatedAt: -1 });
 

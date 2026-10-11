@@ -9,8 +9,10 @@
      1. Ticket ID + last name → that ticket's pass, verified. The ticket is
         found and the name checked exactly as the app's ticket sign-in does,
         and every try comes out of the same per-ticket budget (ticketGuesses).
-     2. First AND last name on the public speaker list → speaker (everything),
-        unless a verified ticket belongs to someone with another name.
+     2. First AND last name on the public speaker list → speaker (everything).
+        The typed name is matched, not the ticket's: "Chris Golden" on the list
+        is a speaker even when his ticket says "Christopher Golden". With a
+        verified ticket, the typed last name must be its holder's too.
      3. First AND last name of exactly one ticket holder → their pass, unverified.
      4. Otherwise nothing.
    Only the kind of match and the pass ever leave the server: never an email,
@@ -21,15 +23,17 @@
    token its browser was given (`editToken` in the answer, sent back with a
    later RSVP). Without proof, an RSVP for a name that already has one is kept
    in a row of its own marked `duplicateOf`, left out of the headcounts until
-   staff merge it or keep it as a separate person (routes/console.js). The
-   answer looks the same either way, so it never says whether someone has RSVP'd.
+   staff merge it or keep it as a separate person (resolveRsvpDuplicate, from
+   routes/console.js). The answer looks the same either way, so it never says
+   whether someone has RSVP'd.
 ========================================================= */
 
 import { makeLimiter, ticketGuesses, ticketGuessKey } from "./ticketAccess.js";
 import { cleanText, isHoneypotFilled, botReason } from "./brochureDownloads.js";
 import {
-  cleanLookup, foldName, personNameKey, matchSpeaker, matchHolder, tierFromTicketType, fullNameMatches,
-  validateRsvp, resolvePass, checkOptions, rsvpKeys, rsvpOptionsPayload, newEditToken, hashEditToken, TIER_LABELS,
+  cleanLookup, foldName, personNameKey, matchSpeaker, matchHolder, tierFromTicketType, fullNameMatches, lastNameIs,
+  validateRsvp, resolvePass, checkOptions, rsvpKeys, rsvpOptionsPayload, newEditToken, hashEditToken, planRsvpMerge,
+  optionLabel, TIER_LABELS,
 } from "./rsvp.js";
 
 export const FALLBACK_EMAIL = "enquire@thetechfestival.com";
@@ -72,12 +76,22 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers }) {
     if (canCheckTicket(q)) {
       const t = await verifyTicket(q.ticketId, q.lastName);
       // The ticket check needs only the last name; `holderMatch` says the first name is the holder's too.
-      if (t) ticket = { ticketId: t.ticketId, type: t.type, holderMatch: (t.names || []).some((n) => fullNameMatches(n, q.firstName, q.lastName)) };
+      if (t) {
+        const names = t.names || [];
+        ticket = {
+          ticketId: t.ticketId, type: t.type,
+          holderMatch: names.some((n) => fullNameMatches(n, q.firstName, q.lastName)),
+          // The typed last name is the holder's (the ticket check passed on the account or purchase name).
+          holderLastMatch: !names.length || names.some((n) => lastNameIs(n, q.lastName)),
+        };
+      }
     }
     const both = hasFirstAndLast(q);
 
-    // Someone else's name typed over a verified ticket: the ticket's pass, not the speaker's.
-    const speaker = both && (!ticket || ticket.holderMatch) ? matchSpeaker(await getSpeakers(), q.firstName, q.lastName) : "";
+    // The typed name, on its own: a speaker's ticket can carry another form of their first name
+    // ("Christopher" for "Chris"). Over a verified ticket the typed last name must be the holder's.
+    // A speaker is never verified by this (resolvePass), so a name gains nothing a ticket could prove.
+    const speaker = both && (!ticket || ticket.holderLastMatch) ? matchSpeaker(await getSpeakers(), q.firstName, q.lastName) : "";
     // `verified` here means the server settles the pass (the page locks it). The speaker list
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
     if (speaker) return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket };
@@ -105,16 +119,9 @@ const isDuplicateKey = (err) => err?.code === 11000 || /E11000/.test(String(err?
  * @param {object} deps
  * @param {(q: object) => Promise<object>} deps.lookup       makeLookup() result
  * @param {object} deps.store
- * @param {(keys: string[]) => Promise<object|null>} deps.store.findByKeys   first non-bot RSVP holding one of the keys (in key order)
- * @param {(doc: object) => Promise<object>} deps.store.insert
- * @param {(id: any, set: object) => Promise<object>} deps.store.update      also bumps `submissions`
- */
-/**
- * @param {object} deps
- * @param {(q: object) => Promise<object>} deps.lookup       makeLookup() result
- * @param {object} deps.store
  * @param {(key: string) => Promise<object|null>} deps.store.findByKey          the non-bot RSVP with this key
  * @param {(nameKey: string) => Promise<object[]>} deps.store.findByNameKey   listed (non-bot, not merged) RSVPs with this nameKey
+ * @param {(hash: string) => Promise<object|null>} deps.store.findByEditToken  the listed RSVP with this edit token hash
  * @param {(doc: object) => Promise<object>} deps.store.insert
  * @param {(id: any, set: object) => Promise<object>} deps.store.update      also bumps `submissions`
  * @param {(id: any, set: object) => Promise<any>} deps.store.mark          sets fields only (flags a possible duplicate)
@@ -122,6 +129,7 @@ const isDuplicateKey = (err) => err?.code === 11000 || /E11000/.test(String(err?
  */
 export function makeRsvpHandlers({
   lookup, store, log = console,
+  requireTicket = true, // every RSVP needs a ticket ID that matches the last name (client decision, Oct 2026)
   lookupIpLimiter = makeLimiter({ max: 40, windowMs: 15 * 60 * 1000 }),
   lookupNameLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }), // per address + name
   ticketGuessLimiter = ticketGuesses,
@@ -195,6 +203,9 @@ export function makeRsvpHandlers({
 
       // Work the pass out again here: the browser's answer is never trusted.
       const found = await lookup({ firstName: v.firstName, lastName: v.lastName, ticketId: v.ticketId });
+      // A ticket ID that matches the last name is required for every RSVP (speakers included).
+      if (requireTicket && !v.ticketId) return res.status(400).json({ success: false, message: "Please enter your ticket ID.", field: "ticketId" });
+      if (requireTicket && !found.ticket) return res.status(400).json({ success: false, message: "That ticket ID doesn't match your last name.", field: "ticketId" });
       const pass = resolvePass(found, v.tier);
       if (!pass.ok) return res.status(400).json({ success: false, message: pass.error, field: pass.field });
       const opts = checkOptions(pass.tier, v.days, v.options);
@@ -219,11 +230,12 @@ export function makeRsvpHandlers({
       const sentHash = hashEditToken(sentToken);
 
       // A verified ticket holder's RSVP replaces an earlier name-only one for their name in the
-      // headcounts (most likely them, before they had their ticket ID); staff can undo it.
+      // headcounts (most likely them, before they had their ticket ID); staff can undo it, and
+      // a row staff kept as a separate person (separatedAt) is never flagged again.
       const supersedeNameRow = async (saved) => {
         if (!keys.ticket || !keys.name || !saved) return;
         for (const r of await store.findByNameKey(keys.name)) {
-          if (r.key === `n:${keys.name}` && !r.duplicateOf && String(r._id) !== String(saved._id)) {
+          if (r.key === `n:${keys.name}` && !r.duplicateOf && !r.separatedAt && String(r._id) !== String(saved._id)) {
             await store.mark(r._id, { duplicateOf: String(saved._id) });
           }
         }
@@ -233,6 +245,9 @@ export function makeRsvpHandlers({
         // A later RSVP without an email or ticket ID keeps the ones given before.
         if (!set.email && row.email) delete set.email;
         if (!set.ticketId && row.ticketId) { delete set.ticketId; delete set.ticketVerified; }
+        // The owner (proven by the ticket or the token) typed a name that isn't the ticket holder's,
+        // such as "Chris" on Christopher's ticket: the row keeps the name it is known by.
+        if (!set.nameKey && row.nameKey) delete set.nameKey;
         const keepToken = !!sentHash && row.editTokenHash === sentHash;
         const token = keepToken ? sentToken : newEditToken();
         if (!keepToken) set.editTokenHash = hashEditToken(token);
@@ -253,11 +268,15 @@ export function makeRsvpHandlers({
         const byTicket = keys.ticket ? await store.findByKey(keys.ticket) : null;
         if (byTicket) return update(byTicket, { ...doc }, pass);
 
-        // 2. An RSVP this browser saved before (its edit token).
+        // 2. An RSVP this browser saved before (its edit token), for the name it was saved under or
+        //    is known by: a token never moves an RSVP to somebody else's name (a shared computer).
+        //    A token for an RSVP under another verified ticket doesn't change that one either.
         const sameName = keys.name ? await store.findByNameKey(keys.name) : [];
-        const own = sentHash
-          ? sameName.find((r) => r.editTokenHash === sentHash && (!keys.ticket || !String(r.key).startsWith("t:")))
-          : null;
+        const tokenRow = sentHash ? await store.findByEditToken(sentHash) : null;
+        const own = tokenRow && tokenRow.editTokenHash === sentHash
+          && (tokenRow.nameKey === typedNameKey || personNameKey(tokenRow.firstName, tokenRow.lastName) === typedNameKey)
+          && (!keys.ticket || !String(tokenRow.key).startsWith("t:"))
+          ? tokenRow : null;
         if (own) {
           const set = { ...doc };
           if (!keys.ticket && (own.ticketVerified || own.tierVerified)) {
@@ -316,4 +335,50 @@ export function makeRsvpHandlers({
   }
 
   return { lookup: lookupHandler, submit: submitHandler, options: optionsHandler };
+}
+
+/**
+ * Staff resolve a possible duplicate (POST /api/console/rsvps/:id/resolve, routes/console.js).
+ *   "merge"    the same person: planRsvpMerge picks the row that stays listed (the ticket-verified one,
+ *              else the RSVP it duplicates) and gives it the NEWER answers and the verified pass; the
+ *              other row is kept for the record (mergedInto, its key freed) and no longer listed.
+ *   "separate" a different person with the same name: counted on its own, and it stays that way
+ *              (separatedAt / separatedBy: a later save by the namesake's ticket never flags it again).
+ * @param {object} store
+ * @param {(id: string) => Promise<object|null>} store.findLive         listed (non-bot, not merged) row by id, with editTokenHash
+ * @param {(id: any, set: object, inc?: object) => Promise<object>} store.update   returns the updated row
+ * @param {(fromId: string, toId: string) => Promise<any>} store.repoint  rows flagged as duplicates of fromId now point at toId
+ * @returns {Promise<{ status: number, error: string } | { row: object, dropped: string[], audit: { action: string, targetId: string, detail: string } }>}
+ */
+export async function resolveRsvpDuplicate(store, id, action, staff = {}, now = () => new Date()) {
+  if (!["merge", "separate"].includes(action)) return { status: 400, error: "action must be merge or separate" };
+  const dup = await store.findLive(id);
+  if (!dup) return { status: 404, error: "RSVP not found" };
+  if (!dup.duplicateOf) return { status: 409, error: "This RSVP isn't marked as a possible duplicate" };
+  const nameOf = (r) => r.name || [r.firstName, r.lastName].filter(Boolean).join(" ") || "no name";
+
+  if (action === "separate") {
+    const row = await store.update(dup._id, {
+      duplicateOf: "", separatedFrom: String(dup.duplicateOf), separatedAt: now(), separatedBy: cleanText(staff.name).slice(0, 120),
+    });
+    return { row, dropped: [], audit: { action: "rsvp_separate", targetId: String(dup._id), detail: `${nameOf(dup)}: kept as a separate person` } };
+  }
+
+  const keep = await store.findLive(dup.duplicateOf);
+  if (!keep) return { status: 409, error: "The RSVP this duplicates is gone. Keep this one as separate instead." };
+  const plan = planRsvpMerge(keep, dup);
+  const { survivor, retired } = plan;
+  // The survivor first: if retiring the other row fails, both are still listed and nothing is lost.
+  const row = await store.update(survivor._id, plan.set, plan.inc);
+  await store.update(retired._id, { mergedInto: String(survivor._id), key: `merged:${retired._id}` });
+  await store.repoint(String(retired._id), String(survivor._id));
+  const dropped = plan.dropped.map(optionLabel);
+  return {
+    row, dropped: plan.dropped,
+    audit: {
+      action: "rsvp_merge", targetId: String(survivor._id),
+      detail: `${nameOf(retired)} → ${nameOf(survivor)}; newer answers kept (from ${plan.newer === dup ? "the possible duplicate" : "the RSVP it duplicated"})`
+        + `${dropped.length ? `; not in their pass: ${dropped.join(", ")}` : ""}`,
+    },
+  };
 }
