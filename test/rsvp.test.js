@@ -354,6 +354,7 @@ test("lookup endpoint: honeypot, one-name requests, rate limits and no personal 
   let calls = 0;
   const counting = async (q) => { calls += 1; return lookup(q); };
   const h = makeRsvpHandlers({
+    requireTicket: false,
     lookup: counting, store: {}, log: { error() {} },
     lookupIpLimiter: makeLimiter({ max: 6, windowMs: 60_000 }),
     lookupNameLimiter: makeLimiter({ max: 2, windowMs: 60_000 }),
@@ -498,7 +499,7 @@ function memoryStore() {
 function submitter(opts = {}) {
   const world = makeWorld();
   const store = memoryStore();
-  const h = makeRsvpHandlers({ lookup: world.lookup, store, log: { error() {} }, ticketGuessLimiter: makeGuessLimiter({ max: 5, windowMs: 60_000 }), ...opts });
+  const h = makeRsvpHandlers({ requireTicket: false, lookup: world.lookup, store, log: { error() {} }, ticketGuessLimiter: makeGuessLimiter({ max: 5, windowMs: 60_000 }), ...opts });
   const run = async (body, ip = "5.5.5.5") => { const res = fakeRes(); await h.submit({ body, ip, headers: { "user-agent": "Test" } }, res); return res; };
   return { run, store, verifyCalls: world.verifyCalls, h };
 }
@@ -821,7 +822,7 @@ test("submit: ticket ID + last name guesses share the per-ticket budget with loo
 
 test("submit: a save error is a friendly 500", async () => {
   const { lookup } = makeWorld();
-  const h = makeRsvpHandlers({ lookup, log: { error() {} }, store: { findByKey: async () => null, findByNameKey: async () => [], insert: async () => { throw new Error("db down"); } } });
+  const h = makeRsvpHandlers({ requireTicket: false, lookup, log: { error() {} }, store: { findByKey: async () => null, findByNameKey: async () => [], insert: async () => { throw new Error("db down"); } } });
   const res = fakeRes();
   await h.submit({ body: { ...GOOD, tier: "connect", options: [] }, ip: "1.1.1.1", headers: {} }, res);
   assert.equal(res.statusCode, 500);
@@ -1092,4 +1093,18 @@ test("rows, detail and the CSV (formula-escaped, one column per option)", () => 
 
 test("PASS_TIERS are what people can pick", () => {
   assert.deepEqual(PASS_TIERS, ["connect", "influence", "power", "apex"]);
+});
+
+test("submit: a ticket ID matching the last name is required (live setting)", async () => {
+  const { run, store } = submitter({ requireTicket: true });
+  const noId = await run({ ...GOOD, ticketId: "", tier: "connect", options: [] });
+  assert.equal(noId.statusCode, 400);
+  assert.equal(noId.body.field, "ticketId");
+  const wrong = await run({ ...GOOD, ticketId: "zzz999zzz", tier: "connect", options: [] });
+  assert.equal(wrong.statusCode, 400);
+  assert.equal(wrong.body.field, "ticketId");
+  assert.equal(store.rows.length, 0);
+  const ok = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] });
+  assert.equal(ok.statusCode, 201);
+  assert.equal(store.rows.length, 1);
 });

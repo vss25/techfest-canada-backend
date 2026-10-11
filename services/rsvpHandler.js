@@ -129,6 +129,7 @@ const isDuplicateKey = (err) => err?.code === 11000 || /E11000/.test(String(err?
  */
 export function makeRsvpHandlers({
   lookup, store, log = console,
+  requireTicket = true, // every RSVP needs a ticket ID that matches the last name (client decision, Oct 2026)
   lookupIpLimiter = makeLimiter({ max: 40, windowMs: 15 * 60 * 1000 }),
   lookupNameLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }), // per address + name
   ticketGuessLimiter = ticketGuesses,
@@ -202,6 +203,9 @@ export function makeRsvpHandlers({
 
       // Work the pass out again here: the browser's answer is never trusted.
       const found = await lookup({ firstName: v.firstName, lastName: v.lastName, ticketId: v.ticketId });
+      // A ticket ID that matches the last name is required for every RSVP (speakers included).
+      if (requireTicket && !v.ticketId) return res.status(400).json({ success: false, message: "Please enter your ticket ID.", field: "ticketId" });
+      if (requireTicket && !found.ticket) return res.status(400).json({ success: false, message: "That ticket ID doesn't match your last name.", field: "ticketId" });
       const pass = resolvePass(found, v.tier);
       if (!pass.ok) return res.status(400).json({ success: false, message: pass.error, field: pass.field });
       const opts = checkOptions(pass.tier, v.days, v.options);
