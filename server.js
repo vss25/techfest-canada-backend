@@ -13,6 +13,7 @@ import leadsRoutes from "./routes/leads.js";
 import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
 import formsRoutes from "./routes/forms.js";
+import rsvpRoutes from "./routes/rsvp.js";           // TTFC 2026 RSVPs (website /rsvp, unlinked)
 import agendaRoutes from "./routes/agenda.js";
 import subscriptionRoutes from "./routes/subscriptions.js";
 import campaignRoutes from "./routes/campaigns.js";
@@ -106,6 +107,7 @@ app.use("/api/leads", leadsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
 app.use("/api/forms", formsRoutes);         // POST /:form (volunteer, speaker, exhibit, sponsor, partnership, inquiry)
+app.use("/api/rsvp", rsvpRoutes);           // GET /options, POST /lookup, POST /
 app.use("/api/agenda", agendaRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/campaigns", campaignRoutes);

@@ -160,3 +160,37 @@ export function makeLimiter({ max = 8, windowMs = 15 * 60 * 1000 } = {}) {
     reset(key) { hits.delete(key); },
   };
 }
+
+/**
+ * Last-name guesses per ticket ID. A ticket ID + last name is the app's sign-in,
+ * so every endpoint that checks the pair (ticket sign-in, RSVP lookup, RSVP
+ * submit) draws on the one shared budget below: `max` different last names per
+ * ticket per window, from any address. Trying the same last name again tells
+ * nothing new, so it doesn't count twice (the RSVP page re-checks as people type).
+ */
+export function makeGuessLimiter({ max = 5, windowMs = 15 * 60 * 1000 } = {}) {
+  const tries = new Map(); // ticket key → Map(folded last name → first tried at)
+  return {
+    hit(key, guess) {
+      const now = Date.now();
+      const seen = tries.get(key) || new Map();
+      for (const [g, t] of seen) if (now - t >= windowMs) seen.delete(g);
+      const g = fold(guess);
+      let ok = true;
+      if (!seen.has(g)) {
+        if (seen.size >= max) ok = false;
+        else seen.set(g, now);
+      }
+      if (seen.size) tries.set(key, seen);
+      else tries.delete(key);
+      return ok;
+    },
+    reset(key) { tries.delete(key); },
+  };
+}
+
+/** The guess-limiter key for a ticket ID, however it was typed ("TECHFEST:AB12…", "ab12…"). */
+export const ticketGuessKey = (id) => `t:${normalizeTicketId(id)}`;
+
+/** Shared by routes/ticketAuth.js and the RSVP handlers (services/rsvpHandler.js). */
+export const ticketGuesses = makeGuessLimiter({ max: 5, windowMs: 15 * 60 * 1000 });
