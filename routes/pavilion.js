@@ -346,7 +346,7 @@ router.post("/pavilion", async (req, res) => {
       requireEmailDelivery(await resend.emails.send({
         from: "TTFC India Pavilion <noreply@thetechfestival.com>",
         to: SALES_EMAIL,
-        replyTo: n.repEmail,
+        reply_to: n.repEmail,
         subject: `India Pavilion Application — ${n.legalName}`,
         html: buildAdminEmail(n),
       }), "Pavilion application notification");
@@ -361,7 +361,7 @@ router.post("/pavilion", async (req, res) => {
       requireEmailDelivery(await resend.emails.send({
         from: "TTFC India Pavilion <noreply@thetechfestival.com>",
         to: n.repEmail,
-        replyTo: SALES_EMAIL,
+        reply_to: SALES_EMAIL,
         subject: `India Pavilion Application Received — ${n.legalName}`,
         html: buildConfirmationEmail(n),
       }), "Pavilion application confirmation");
@@ -415,7 +415,7 @@ router.post("/pavilion/payment-confirmation", async (req, res) => {
     requireEmailDelivery(await resend.emails.send({
       from: "TTFC India Pavilion <noreply@thetechfestival.com>",
       to: SALES_EMAIL,
-      replyTo: p.contactEmail,
+      reply_to: p.contactEmail,
       subject: `[Pavilion Deposit] $500 received — ${p.companyName}`,
       html: buildPaymentAdminEmail(p),
     }), "Pavilion payment notification");
@@ -425,7 +425,7 @@ router.post("/pavilion/payment-confirmation", async (req, res) => {
       requireEmailDelivery(await resend.emails.send({
         from: "TTFC India Pavilion <noreply@thetechfestival.com>",
         to: p.contactEmail,
-        replyTo: SALES_EMAIL,
+        reply_to: SALES_EMAIL,
         subject: `Payment Confirmed — India Pavilion Deposit`,
         html: buildPaymentReceiptEmail(p),
       }), "Pavilion payment receipt");

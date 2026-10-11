@@ -193,7 +193,7 @@ router.post("/nominations", async (req, res) => {
     await resend.emails.send({
       from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
       to: ["baldeep@thetechfestival.com", "nicole@thetechfestival.com"],
-      replyTo: n.nominatorEmail,
+      reply_to: n.nominatorEmail,
       subject: `[Catalyst Nomination] ${n.nomineeName} — ${categoryShort}`,
       html: buildAdminEmail(n),
     });
@@ -203,7 +203,7 @@ router.post("/nominations", async (req, res) => {
       await resend.emails.send({
         from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
         to: n.nominatorEmail,
-        replyTo: "enquire@thetechfestival.com",
+        reply_to: "enquire@thetechfestival.com",
         subject: `Your nomination for ${n.nomineeName} has been received`,
         html: buildConfirmationEmail(n),
       });
