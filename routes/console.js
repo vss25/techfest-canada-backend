@@ -40,6 +40,8 @@ import {
   FORM_KEYS, STATUSES as FORM_STATUSES, submissionsFilter, submissionRow, submissionDetail, cleanSubmissionPatch,
   submissionsCsv, planImport, importKey,
 } from "../services/formSubmissions.js";
+import Rsvp from "../models/Rsvp.js";
+import { rsvpsFilter, rsvpRow, rsvpDetail, rsvpsCsv, summarizeRsvps } from "../services/rsvp.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -740,6 +742,39 @@ router.patch("/form-submissions/:id", async (req, res) => {
   ].filter(Boolean).join(", ") || "no change";
   await audit(req, "form_submission_edit", "form", s._id, `${before.form} · ${before.name || "no name"}: ${what}`);
   res.json({ submission: submissionDetail(s) });
+});
+
+/* ---------- TTFC 2026 RSVPs (website /rsvp, unlinked) ----------
+   Saved by routes/rsvp.js, one row per person. Newest change first, 50 a page.
+   ?q= name, email or ticket ID; ?tier= connect|influence|power|apex|speaker;
+   ?option= day1|day2|lunch_d1|…|lounge; ?verified=0|1. `summary` counts every
+   RSVP (not just this view) per day, experience, dietary need and pass, so
+   catering numbers are there at a glance. Bots are never listed or counted. */
+router.get("/rsvps", async (req, res) => {
+  const filter = rsvpsFilter(req.query);
+  const page = Math.max(0, Number(req.query.page) || 0), size = 50;
+  const [rows, total, everyone] = await Promise.all([
+    Rsvp.find(filter).sort({ updatedAt: -1 }).skip(page * size).limit(size).lean(),
+    Rsvp.countDocuments(filter),
+    Rsvp.find({ spam: { $ne: true } }, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1 }).lean(),
+  ]);
+  res.json({ total, page, size, summary: summarizeRsvps(everyone), rows: rows.map(rsvpRow) });
+});
+
+// Spreadsheet of every RSVP in this view. Management only: it holds emails and accessibility notes.
+router.get("/rsvps/export", requireManagement, async (req, res) => {
+  const rows = await Rsvp.find(rsvpsFilter(req.query)).sort({ updatedAt: -1 }).lean();
+  await audit(req, "rsvps_export", "rsvp", "", `${rows.length} rows`);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ttfc-rsvps-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(rsvpsCsv(rows));
+});
+
+router.get("/rsvps/:id", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
+  const r = await Rsvp.findById(req.params.id).lean();
+  if (!r) return res.status(404).json({ error: "RSVP not found" });
+  res.json({ rsvp: rsvpDetail(r) });
 });
 
 // Staff fill in or correct what we know about a ticket holder.
