@@ -204,6 +204,29 @@ export async function sendBrochureReceiptEmail({ to = [SALES_INBOX], lead, broch
   return data;
 }
 
+/* =========================================================
+   WEBSITE FORM SUBMISSION -> FORMS_INBOX
+   Volunteer / speaker / booth / sponsor / partnership / general
+   enquiries (routes/forms.js). Layout in services/formSubmissions.js
+   buildFormEmail (pure, tested; every value escaped). Reply-to is
+   the person who filled in the form. Throws when Resend refuses it.
+========================================================= */
+
+export async function sendFormSubmissionEmail({ to, subject, html, text, replyTo = "" }) {
+  if (!to?.length || !subject || !html) throw new Error("Missing recipient, subject or body");
+  const { data, error } = await resend.emails.send({
+    from: "TTFC Website <noreply@thetechfestival.com>",
+    to,
+    ...(replyTo ? { reply_to: replyTo } : {}),
+    subject,
+    html,
+    text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  if (!data?.id) throw new Error("Resend did not accept the email");
+  return data;
+}
+
 export function ticketEmailLinks(ticketId) {
   if (!ticketId || isBoothId(ticketId)) return { walletUrl: "", qrUrl: "" };
   return {

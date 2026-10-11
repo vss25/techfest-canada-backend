@@ -9,7 +9,7 @@ npm start        # production (node server.js)
 npm run dev      # development with hot reload (nodemon server.js)
 ```
 
-No build, test, or lint scripts are configured.
+`npm test` runs the unit tests in `test/` (node:test, no database or network). No build or lint scripts.
 
 ## Environment Variables
 
@@ -44,6 +44,9 @@ INTEL_TTL_HOURS         # default 24
 BROCHURE_SALES_INBOX    # default sales@thetechfestival.com (comma-separate for several)
 BROCHURE_ATTACH_MAX_MB  # default 7; the PDF is attached only at or under this size, else link only (0 = always link)
 BROCHURE_BASE_URL       # default https://www.thetechfestival.com — where the PDF is linked/fetched from
+
+# Optional — website forms (volunteer, speaker, booth, sponsor, partnership, enquiry)
+FORMS_INBOX             # default baldeep@thetechfestival.com (comma-separate for several)
 ```
 
 ## Architecture
@@ -69,6 +72,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/agenda` | `routes/agenda.js` | Event agenda |
 | `/api/brochure` | `routes/brochure.js` | `POST /submit`: saves a brochure download (`Brochure` model), answers at once, then emails the person the PDF link (attached only if small, see `BROCHURE_ATTACH_MAX_MB`) and a receipt to sales@. Honeypot `_hp`, per-IP/per-email limits, no re-send of the same brochure within 10 min. Staff list: `GET /api/console/brochure-downloads` (+ `/export` CSV, management). Pure parts in `services/brochureDownloads.js`, emails in `services/brochureEmail.js` |
 | `/api` (pavilion) | `routes/pavilion.js` | `POST /pavilion`: India Startup Pavilion application. Saved first (`PavilionApplication`, every form field + unknown extras in `raw`, gets a reference like `IP-7K3QXM`), then emailed to sales@ and the applicant; a failed save still emails, a failed email still answers 201. Bots (honeypot `_hp`, `botReason` random text / instant fill) are saved as spam and never emailed. $500 deposits (Stripe Checkout `metadata.type: "pavilion-deposit"`) are recorded in `PavilionDeposit` by the webhook and from the revenue page's Stripe read, and linked to the application by reference, email, then company (`services/pavilionDeposits.js`). Staff: `GET/PATCH /api/console/pavilion-applications[/:id]` (+ `/export` CSV, management). Pure parts in `services/pavilionApplications.js` |
+| `/api/forms` | `routes/forms.js` | `POST /:form` (form = `volunteer` / `speaker` / `exhibit` / `sponsor` / `partnership` / `inquiry`): the website forms that used EmailJS until Oct 2026. Saved first (`FormSubmission`: name/first/last, email, phone, company, job title, message, every other field in `fields`), answered 201, then emailed in the background to `FORMS_INBOX` with reply-to the visitor. Every value is HTML-escaped; only http(s) links are clickable. Bots (honeypot `_hp`, `botReason`) are saved as spam and never emailed. A failed save still emails; 500 only if both fail. Staff: `GET/PATCH /api/console/form-submissions[/:id]`, `/export` CSV and `POST /import` (rows recovered from EmailJS, `source: "recovered"`, never emailed), both management. Pure parts in `services/formSubmissions.js`, handler in `services/formSubmitHandler.js` |
 | `/api/profile` | `routes/profile.js` | GET/PATCH attendee profile (linkedinUrl, fieldOfWork, jobTitle, organization, country, topics) |
 | `/api/moderate` | `routes/moderate.js` | DeepCleer text-moderation proxy used by the iOS app |
 | `/api/intel` | `routes/intel.js` | Gemini-generated company cards (cached in `IntelCard`) for the app's home screen |
