@@ -228,7 +228,7 @@ router.post("/apply", async (req, res) => {
         await resend.emails.send({
           from: FROM,
           to: RECIPIENTS,
-          replyTo: [email],
+          reply_to: [email],
           subject: `Media Accreditation — ${fullName}, ${organization}`,
           html: buildAdminEmail(doc),
         });
@@ -245,7 +245,7 @@ router.post("/apply", async (req, res) => {
         await resend.emails.send({
           from: FROM,
           to: [email],
-          replyTo: [REPLY_TO],
+          reply_to: [REPLY_TO],
           subject: "We received your media accreditation request — TTFC 2026",
           html: buildAckEmail(doc),
         });

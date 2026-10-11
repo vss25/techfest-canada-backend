@@ -67,7 +67,7 @@ router.post("/linkedin-lead", async (req, res) => {
     await resend.emails.send({
       from: "TTFC Leads <noreply@thetechfestival.com>",
       to: "sales@thetechfestival.com",
-      replyTo: lead.email,
+      reply_to: lead.email,
       subject: `[LinkedIn Lead] ${lead.fullName} — ${lead.email}`,
       html: buildLeadEmail(lead),
     });
