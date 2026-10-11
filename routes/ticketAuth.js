@@ -60,6 +60,19 @@ function ticketFromAttendee(a) {
   };
 }
 
+/** Last name check for a ticket held by an account: the account's current name, the name
+    given at checkout (ticket details), or the name on the original purchase (Attendee). */
+async function ticketNameMatches(found, lastName) {
+  if (lastNameMatches(found.owner.name, lastName)) return true;
+  const d = found.ticket?.details || {};
+  if (d.lastName && lastNameMatches(d.lastName, lastName)) return true;
+  if (d.firstName || d.lastName) {
+    if (lastNameMatches([d.firstName, d.lastName].filter(Boolean).join(" "), lastName)) return true;
+  }
+  const original = await Attendee.findOne({ ticketId: found.ticketId }).select("name").lean();
+  return !!original && lastNameMatches(original.name, lastName);
+}
+
 function hasTicket(user, ticketId) {
   return (user.tickets || []).some((t) => t.ticketId === ticketId);
 }
@@ -80,7 +93,8 @@ router.post("/ticket-login", async (req, res) => {
     if (!found) return res.status(401).json({ error: NO_MATCH });
 
     if (found.kind === "user") {
-      if (!lastNameMatches(found.owner.name, lastName)) return res.status(401).json({ error: NO_MATCH });
+      // The name on the ticket itself also counts, so changing your profile name can't lock you out.
+      if (!(await ticketNameMatches(found, lastName))) return res.status(401).json({ error: NO_MATCH });
       // Staff accounts reach the admin panel: they always sign in with their password.
       if (String(found.owner.role || "").toLowerCase() === "admin") {
         return res.status(400).json({ error: "Staff accounts sign in with their password." });
