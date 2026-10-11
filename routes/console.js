@@ -41,7 +41,7 @@ import {
   submissionsCsv, planImport, importKey,
 } from "../services/formSubmissions.js";
 import Rsvp from "../models/Rsvp.js";
-import { rsvpsFilter, rsvpRow, rsvpDetail, rsvpsCsv, summarizeRsvps } from "../services/rsvp.js";
+import { rsvpsFilter, rsvpRow, rsvpDetail, rsvpsCsv, summarizeRsvps, planRsvpMerge, LIVE_RSVPS } from "../services/rsvp.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -747,16 +747,19 @@ router.patch("/form-submissions/:id", async (req, res) => {
 /* ---------- TTFC 2026 RSVPs (website /rsvp, unlinked) ----------
    Saved by routes/rsvp.js, one row per person. Newest change first, 50 a page.
    ?q= name, email or ticket ID; ?tier= connect|influence|power|apex|speaker;
-   ?option= day1|day2|lunch_d1|…|lounge; ?verified=0|1. `summary` counts every
-   RSVP (not just this view) per day, experience, dietary need and pass, so
-   catering numbers are there at a glance. Bots are never listed or counted. */
+   ?option= day1|day2|lunch_d1|…|lounge; ?verified=0|1; ?review=1 possible
+   duplicates. `summary` counts every RSVP (not just this view) per day,
+   experience, dietary need and pass, so catering numbers are there at a glance
+   (`verifiedCounts`: verified passes only). Bots are never listed or counted;
+   possible duplicates (`duplicateOf`) are listed but not counted until staff
+   resolve them (POST /rsvps/:id/resolve). */
 router.get("/rsvps", async (req, res) => {
   const filter = rsvpsFilter(req.query);
   const page = Math.max(0, Number(req.query.page) || 0), size = 50;
   const [rows, total, everyone] = await Promise.all([
     Rsvp.find(filter).sort({ updatedAt: -1 }).skip(page * size).limit(size).lean(),
     Rsvp.countDocuments(filter),
-    Rsvp.find({ spam: { $ne: true } }, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1 }).lean(),
+    Rsvp.find(LIVE_RSVPS, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1, duplicateOf: 1 }).lean(),
   ]);
   res.json({ total, page, size, summary: summarizeRsvps(everyone), rows: rows.map(rsvpRow) });
 });
@@ -775,6 +778,33 @@ router.get("/rsvps/:id", async (req, res) => {
   const r = await Rsvp.findById(req.params.id).lean();
   if (!r) return res.status(404).json({ error: "RSVP not found" });
   res.json({ rsvp: rsvpDetail(r) });
+});
+
+// A possible duplicate (a second RSVP for a name, not proven to be the same person). Body { action }:
+//   "merge"    the same person changing their RSVP: its answers replace the earlier row's (which keeps
+//              its pass and verification); this row is kept but no longer listed or counted.
+//   "separate" a different person with the same name: counted as an RSVP of its own.
+router.post("/rsvps/:id/resolve", async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
+  const action = String(req.body?.action || "");
+  if (!["merge", "separate"].includes(action)) return res.status(400).json({ error: "action must be merge or separate" });
+  const dup = await Rsvp.findOne({ _id: req.params.id, ...LIVE_RSVPS }).lean();
+  if (!dup) return res.status(404).json({ error: "RSVP not found" });
+  if (!dup.duplicateOf) return res.status(409).json({ error: "This RSVP isn't marked as a possible duplicate" });
+  if (action === "separate") {
+    const r = await Rsvp.findByIdAndUpdate(dup._id, { $set: { duplicateOf: "" } }, { new: true }).lean();
+    await audit(req, "rsvp_separate", "rsvp", dup._id, `${dup.name}: kept as a separate person`);
+    return res.json({ rsvp: rsvpDetail(r) });
+  }
+  const keep = isId(dup.duplicateOf) ? await Rsvp.findOne({ _id: dup.duplicateOf, ...LIVE_RSVPS }).lean() : null;
+  if (!keep) return res.status(409).json({ error: "The RSVP this duplicates is gone. Keep this one as separate instead." });
+  const plan = planRsvpMerge(keep, dup);
+  const kept = await Rsvp.findByIdAndUpdate(keep._id, { $set: plan.set, $inc: { submissions: 1 } }, { new: true }).lean();
+  // Frees the key; the row itself stays for the record.
+  await Rsvp.updateOne({ _id: dup._id }, { $set: { mergedInto: String(keep._id), key: `merged:${dup._id}` } });
+  await audit(req, "rsvp_merge", "rsvp", keep._id,
+    `${dup.name} → ${keep.name}${plan.dropped.length ? `; not in their pass: ${plan.dropped.join(", ")}` : ""}`);
+  res.json({ rsvp: rsvpDetail(kept), dropped: plan.dropped });
 });
 
 // Staff fill in or correct what we know about a ticket holder.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeTicketId, lastNameMatches, latestTicket, buildDirectory, makeLimiter, passName } from "../services/ticketAccess.js";
+import { normalizeTicketId, lastNameMatches, latestTicket, buildDirectory, makeLimiter, passName, makeGuessLimiter, ticketGuessKey, ticketGuesses } from "../services/ticketAccess.js";
 
 test("normalizeTicketId strips the QR prefix, spaces and case", () => {
   assert.equal(normalizeTicketId(" TECHFEST:A1B2 C3D4E5F6 "), "a1b2c3d4e5f6");
@@ -58,6 +58,18 @@ test("limiter blocks after max attempts", () => {
   const l = makeLimiter({ max: 2, windowMs: 1000 });
   assert.ok(l.hit("k")); assert.ok(l.hit("k")); assert.ok(!l.hit("k"));
   l.reset("k"); assert.ok(l.hit("k"));
+});
+
+test("guess limiter: different last names per ticket; the same one again is free", () => {
+  const g = makeGuessLimiter({ max: 2, windowMs: 1000 });
+  assert.ok(g.hit("t:a", "Doe")); assert.ok(g.hit("t:a", "Smith"));
+  assert.ok(g.hit("t:a", " doe ")); // tried already
+  assert.ok(!g.hit("t:a", "Brown"));
+  assert.ok(g.hit("t:b", "Brown")); // another ticket
+  g.reset("t:a"); assert.ok(g.hit("t:a", "Brown"));
+  // Ticket sign-in and the RSVP page share one budget and one key per ticket, however it's typed.
+  assert.equal(ticketGuessKey(" TECHFEST:AB12 CD34 "), ticketGuessKey("ab12cd34"));
+  assert.equal(typeof ticketGuesses.hit, "function");
 });
 
 test("passName", () => {

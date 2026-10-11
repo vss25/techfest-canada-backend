@@ -2,7 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter } from "../services/ticketAccess.js";
+import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
 
 /* =========================================================
    Mounted at /api/auth alongside routes/auth.js (website auth):
@@ -13,8 +13,9 @@ import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter } from ".
 
 const router = express.Router();
 const limiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
-// Per ticket too, so guessing one person's last name can't be spread across addresses.
-const perTicket = makeLimiter({ max: 5, windowMs: 15 * 60 * 1000 });
+// Per ticket too (`ticketGuesses`, 5 last names per 15 min), so guessing one person's last name
+// can't be spread across addresses. The website RSVP (routes/rsvp.js) checks the same pair and
+// draws on the same budget.
 const APP_TOKEN_TTL = "30d";
 const NO_MATCH = "That ticket ID and last name don't match a TTFC ticket.";
 
@@ -87,7 +88,7 @@ router.post("/ticket-login", async (req, res) => {
     if (typeof lastName !== "string" || typeof ticketId !== "string" || !lastName.trim() || !ticketId.trim()) {
       return res.status(400).json({ error: "Last name and ticket ID are required." });
     }
-    if (!perTicket.hit(`t:${ticketId.trim().toUpperCase()}`)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
+    if (!ticketGuesses.hit(ticketGuessKey(ticketId), lastName)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
 
     const found = await findTicket(ticketId);
     if (!found) return res.status(401).json({ error: NO_MATCH });

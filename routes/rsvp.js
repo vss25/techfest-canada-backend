@@ -4,7 +4,7 @@ import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
 import { lastNameMatches } from "../services/ticketAccess.js";
 import { findTicket, ticketNameMatches } from "./ticketAuth.js";
-import { buildHolderIndex, makeSpeakerCache } from "../services/rsvp.js";
+import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS } from "../services/rsvp.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
 
 /* =========================================================
@@ -13,7 +13,9 @@ import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js
    POST /api/rsvp/lookup    { firstName, lastName, ticketId?, _hp }
                             → { kind: ticket|speaker|none, tier?, verified, displayName?, ticketMatched? }
    POST /api/rsvp           { firstName, lastName, email?, ticketId?, tier, days, options,
-                              dietary, dietaryOther, accessibility?, page?, _hp, elapsedMs }
+                              dietary, dietaryOther, accessibility?, page?, editToken?, _hp, elapsedMs }
+                            → { success, updated, editToken, kind, tier, tierLabel, tierVerified }
+                            Keep `editToken` and send it back to change the RSVP later.
    ---------------------------------------------------------
    The website page (/rsvp) has no links to it. No email is sent.
    Staff: Admin → Leads → RSVPs (routes/console.js /rsvps).
@@ -22,16 +24,20 @@ import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js
 
 const router = express.Router();
 
-/** Ticket ID + last name, checked exactly as the app's ticket sign-in does (routes/ticketAuth.js). */
+/** Ticket ID + last name, checked exactly as the app's ticket sign-in does (routes/ticketAuth.js).
+    `names`: who the ticket is for, so the lookup can check the first name too (never sent out). */
 async function verifyTicket(ticketId, lastName) {
   const found = await findTicket(ticketId);
   if (!found) return null;
   if (found.kind === "user") {
-    return (await ticketNameMatches(found, lastName)) ? { ticketId: found.ticketId, type: found.ticket.type } : null;
+    if (!(await ticketNameMatches(found, lastName))) return null;
+    const original = await Attendee.findOne({ ticketId: found.ticketId }).select("name details.firstName details.lastName").lean();
+    const names = [...ticketPersonNames(found.owner.name, found.ticket.details), ...(original ? ticketPersonNames(original.name, original.details) : [])];
+    return { ticketId: found.ticketId, type: found.ticket.type, names };
   }
   const a = found.attendee;
   const ok = lastNameMatches(a.name, lastName) || (a.details?.lastName && lastNameMatches(a.details.lastName, lastName));
-  return ok ? { ticketId: a.ticketId, type: a.ticketType } : null;
+  return ok ? { ticketId: a.ticketId, type: a.ticketType, names: ticketPersonNames(a.name, a.details) } : null;
 }
 
 // Names only (and passes), reloaded at most every 2 minutes.
@@ -52,16 +58,14 @@ const lookup = makeLookup({ verifyTicket, getHolders, getSpeakers: () => speaker
 const handlers = makeRsvpHandlers({
   lookup,
   store: {
-    async findByKeys(keys) {
-      const rows = await Rsvp.find({ key: { $in: keys }, spam: false }).lean();
-      for (const k of keys) {
-        const hit = rows.find((r) => r.key === k);
-        if (hit) return hit;
-      }
-      return null;
-    },
+    // The edit token's hash is never read anywhere else (select: false in the model).
+    findByKey: (key) => Rsvp.findOne({ key, spam: false }).select("+editTokenHash").lean(),
+    findByNameKey: (nameKey) => (nameKey
+      ? Rsvp.find({ nameKey, ...LIVE_RSVPS }).select("+editTokenHash").sort({ createdAt: 1 }).limit(50).lean()
+      : Promise.resolve([])),
     insert: (doc) => Rsvp.create(doc),
     update: (id, set) => Rsvp.findByIdAndUpdate(id, { $set: set, $inc: { submissions: 1 } }, { new: true }).lean(),
+    mark: (id, set) => Rsvp.updateOne({ _id: id }, { $set: set }),
   },
 });
 

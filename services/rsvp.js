@@ -10,11 +10,13 @@
    Also here, all pure so they can be unit-tested (test/rsvp.test.js):
    ticket type → pass mapping, name matching (accents, honorifics,
    middle names, nicknames), the speaker list cache, validation,
-   the "one RSVP per person" key, and the admin rows, totals and CSV.
+   the "one RSVP per person" keys and edit tokens, and the admin rows,
+   totals, CSV and duplicate merge.
    The request handlers are in services/rsvpHandler.js; routes/rsvp.js
    and routes/console.js wire them to the database.
 ========================================================= */
 
+import { createHash, randomBytes } from "node:crypto";
 import { cleanText, cleanPage, csvCell } from "./brochureDownloads.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
@@ -53,10 +55,9 @@ export const RSVP_OPTIONS = [
     description: "Invitation-only breakfast for senior leaders." },
   { key: "cxo_d2", kind: "experience", day: "day2", label: "CxO Breakfast", tiers: POWER_UP,
     description: "Invitation-only breakfast for senior leaders." },
-  // TODO: confirm which evening the Gala falls on, then set `day` ("day1" or "day2")
-  // so it is only offered to people coming that day. Until then it shows for either day.
-  { key: "gala", kind: "experience", day: null, label: "Gala Dinner & Networking Reception", tiers: POWER_UP,
-    description: "Dinner and drinks with speakers, partners and delegates." },
+  // Day 2 evening, as on the website agenda (src/data/agenda.js "d2-21", 27 Oct 17:20-19:15).
+  { key: "gala", kind: "experience", day: "day2", label: "Gala Dinner & Networking Reception (Day 2 evening)", tiers: POWER_UP,
+    description: "Dinner and drinks with speakers, partners and delegates on the evening of Day 2." },
   { key: "awards", kind: "experience", day: "day1", label: "Catalyst Awards Night (Day 1 evening)", tiers: POWER_UP,
     description: "The Catalyst Awards ceremony on the evening of Day 1." },
   { key: "meetings", kind: "experience", day: null, label: "2 pre-matched business meetings", tiers: APEX_UP,
@@ -177,16 +178,24 @@ export function nameWords(s) {
   return words;
 }
 
-/** A name as written plus its nickname forms: Kulbir "Colin" Singh Dhillon → [kulbir singh dhillon], [colin singh dhillon]. */
+/**
+ * A name as written plus its nickname forms: Kulbir "Colin" Singh Dhillon → [kulbir singh dhillon],
+ * [colin singh dhillon]; Heling (Alex) Pu → [heling pu], [alex pu].
+ */
 export function nameVariants(full) {
   const raw = String(full || "");
-  // Double quotes only: single ones are apostrophes (O'Brien, D’Souza).
-  const quoted = [...raw.matchAll(/["“”]([^"“”]{2,})["“”]/g)].map((m) => m[1]);
+  // Double quotes or brackets; single quotes are apostrophes (O'Brien, D’Souza).
+  const nicks = [
+    ...[...raw.matchAll(/["“”]([^"“”]{2,})["“”]/g)].map((m) => m[1]),
+    ...[...raw.matchAll(/\(([^()]{2,})\)/g)].map((m) => m[1]),
+  ];
   const plain = raw.replace(/["“”][^"“”]{2,}["“”]/g, " ");
   const words = nameWords(plain);
   const out = words.length ? [words] : [];
-  for (const nick of quoted) {
+  for (const nick of nicks) {
     const n = nameWords(nick);
+    // "(PhD)", "(Dr)" and the like are not names.
+    if (n.length === 1 && (HONORIFICS.has(n[0]) || SUFFIXES.has(n[0]))) continue;
     if (n.length && words.length > 1) out.push([...n, ...words.slice(1)]);
   }
   return out;
@@ -273,29 +282,37 @@ export function matchSpeaker(speakers, first, last) {
 }
 
 /* ---------- Ticket holders (for name-only lookups) ----------
-   One entry per ticket: who owns it, its pass and every name it is known by
-   (the account name, the name given at checkout, the guest purchase name). */
+   One entry per ticket: who owns it, its pass and the names of the person it is
+   for (the name given at checkout; without one, the account or purchase name). */
 const isBooth = (id) => /^BOOTH-/i.test(String(id || ""));
 const TIER_RANK = { connect: 1, influence: 2, power: 3, apex: 4 };
+
+/**
+ * Who a ticket is for. The account or purchase name can be the buyer's (someone who
+ * bought a pass for a colleague), so the name given at checkout wins when there is one.
+ */
+export function ticketPersonNames(accountName, details) {
+  const d = details || {};
+  if (d.firstName || d.lastName) return [{ firstName: d.firstName || "", lastName: d.lastName || "" }];
+  return accountName ? [accountName] : [];
+}
 
 export function buildHolderIndex(users = [], guests = []) {
   const byTicket = new Map();
   for (const u of users) {
     for (const t of u.tickets || []) {
       if (!t?.ticketId || isBooth(t.ticketId) || t.hiddenByStaff) continue;
-      const d = t.details || {};
       byTicket.set(normalizeTicketId(t.ticketId), {
         owner: `u:${u._id}`,
         tier: tierFromTicketType(t.type),
-        names: [u.name, (d.firstName || d.lastName) ? { firstName: d.firstName, lastName: d.lastName } : null].filter(Boolean),
+        names: ticketPersonNames(u.name, t.details),
       });
     }
   }
   for (const g of guests) {
     if (!g?.ticketId || isBooth(g.ticketId) || g.hiddenByStaff || g.syncDuplicate) continue;
     const id = normalizeTicketId(g.ticketId);
-    const d = g.details || {};
-    const names = [g.name, (d.firstName || d.lastName) ? { firstName: d.firstName, lastName: d.lastName } : null].filter(Boolean);
+    const names = ticketPersonNames(g.name, g.details);
     const held = byTicket.get(id);
     if (held) { held.names.push(...names); continue; } // claimed: same ticket, original names count too
     byTicket.set(id, {
@@ -396,36 +413,58 @@ export function validateRsvp(body) {
 /**
  * The pass an RSVP is saved with. A verified ticket wins, then a speaker; otherwise
  * what the person chose (one of the four passes) is kept, marked unverified.
- * @param {{kind: string, tier?: string, verified: boolean}} found  the server-side lookup
+ * Speakers are found by name on the public speaker list, so a speaker RSVP is never
+ * "verified": staff confirm it (`detectedTier` notes the pass of a verified ticket).
+ * Without a ticket, nobody can claim more than the one ticket holder with their name has.
+ * @param {{kind: string, tier?: string, verified: boolean, ticket?: object}} found  the server-side lookup
  */
 export function resolvePass(found, chosenTier) {
-  if (found?.kind === "speaker") return { ok: true, tier: "speaker", tierVerified: true, kind: "speaker" };
+  if (found?.kind === "speaker") {
+    return { ok: true, tier: "speaker", tierVerified: false, kind: "speaker", detectedTier: found.ticket ? tierFromTicketType(found.ticket.type) : "" };
+  }
   if (found?.kind === "ticket" && found.verified) return { ok: true, tier: found.tier, tierVerified: true, kind: "ticket" };
   if (!PASS_TIERS.includes(chosenTier)) return { ok: false, field: "tier", error: "Choose your pass" };
-  return {
-    ok: true, tier: chosenTier, tierVerified: false, kind: found?.kind === "ticket" ? "ticket" : "none",
-    detectedTier: found?.kind === "ticket" ? found.tier : "",
-  };
+  const detected = found?.kind === "ticket" && TIER_RANK[found.tier] ? found.tier : "";
+  if (detected && TIER_RANK[chosenTier] > TIER_RANK[detected]) {
+    return { ok: false, field: "ticketId", error: `Add your ticket ID so we can confirm your ${TIER_LABELS[chosenTier]}.` };
+  }
+  return { ok: true, tier: chosenTier, tierVerified: false, kind: detected ? "ticket" : "none", detectedTier: detected };
 }
 
 /**
- * Keys for the one RSVP per person, most specific first: a verified ticket ID,
- * then the folded full name. A re-submission updates whichever exists.
+ * The keys of the one RSVP per person. `ticket`: "t:<id>" for a verified ticket.
+ * `name`: the folded full name, only when it is the ticket holder's own name (or there is
+ * no verified ticket): someone signing in with their own ticket under another person's
+ * name must not reach that person's RSVP.
  */
-export function rsvpKeys({ ticketId = "", ticketVerified = false, firstName, lastName }) {
-  const keys = [];
-  if (ticketId && ticketVerified) keys.push(`t:${normalizeTicketId(ticketId)}`);
-  const n = personNameKey(firstName, lastName);
-  if (n) keys.push(`n:${n}`);
-  return keys;
+export function rsvpKeys({ ticketId = "", ticketVerified = false, holderMatch = false, firstName, lastName }) {
+  const ticket = ticketId && ticketVerified ? `t:${normalizeTicketId(ticketId)}` : "";
+  const name = !ticket || holderMatch ? personNameKey(firstName, lastName) : "";
+  return { ticket, name };
+}
+
+/* ---------- Edit tokens ----------
+   A name is not a secret, so a name alone never changes an RSVP. The first save
+   hands the browser a random token (only its hash is kept); sending it back with a
+   later RSVP, or the verified ticket the RSVP was saved under, proves it is theirs. */
+export const newEditToken = () => randomBytes(24).toString("base64url");
+
+/** sha256 of a well-formed token, else "". */
+export function hashEditToken(token) {
+  const t = typeof token === "string" ? token.trim() : "";
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(t)) return "";
+  return createHash("sha256").update(t).digest("hex");
 }
 
 /* ---------- Admin console ---------- */
 const escRx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 
-/** ?q= name, email or ticket ID; ?tier=; ?option= (a day or an experience); ?verified=0|1 */
-export function rsvpsFilter({ q, tier, option, verified } = {}) {
-  const filter = { spam: { $ne: true } };
+/** Rows that are listed: not bots, not merged into another RSVP by staff. */
+export const LIVE_RSVPS = Object.freeze({ spam: { $ne: true }, mergedInto: { $in: ["", null] } });
+
+/** ?q= name, email or ticket ID; ?tier=; ?option= (a day or an experience); ?verified=0|1; ?review=1 possible duplicates */
+export function rsvpsFilter({ q, tier, option, verified, review } = {}) {
+  const filter = { ...LIVE_RSVPS };
   const t = cleanText(tier).toLowerCase();
   if (TIERS.includes(t)) filter.tier = t;
   const o = cleanText(option);
@@ -433,6 +472,7 @@ export function rsvpsFilter({ q, tier, option, verified } = {}) {
   else if (EXPERIENCE_KEYS.includes(o)) filter.options = o;
   if (verified === "1") filter.tierVerified = true;
   if (verified === "0") filter.tierVerified = { $ne: true };
+  if (review === "1") filter.duplicateOf = { $nin: ["", null] };
   const s = cleanText(q).slice(0, 100);
   if (s) {
     const rx = escRx(s);
@@ -446,19 +486,33 @@ export function rsvpsFilter({ q, tier, option, verified } = {}) {
 
 const nameOf = (d) => d.name || [d.firstName, d.lastName].filter(Boolean).join(" ");
 
-/** Headcounts for catering, over every (non-bot) RSVP. */
+const isDuplicate = (d) => !!d.duplicateOf;
+
+/**
+ * Headcounts for catering, over every (non-bot) RSVP. Possible duplicates (a second RSVP
+ * for a name that already has one, not proven to be the same person) wait for staff and
+ * are left out. `verifiedCounts` is the same per day/experience, from verified passes only.
+ */
 export function summarizeRsvps(docs = []) {
-  const counts = Object.fromEntries(OPTION_KEYS.map((k) => [k, 0]));
+  const zero = () => Object.fromEntries(OPTION_KEYS.map((k) => [k, 0]));
+  const counts = zero();
+  const verifiedCounts = zero();
   const dietary = Object.fromEntries(DIETARY_KEYS.map((k) => [k, 0]));
   const tiers = Object.fromEntries(TIERS.map((k) => [k, { total: 0, verified: 0 }]));
-  let unverified = 0;
+  let unverified = 0, duplicates = 0, total = 0;
   const dietaryNotes = []; // "Other" needs, spelled out for catering
   for (const d of docs) {
+    if (d.spam || d.mergedInto) continue;
+    if (isDuplicate(d)) { duplicates += 1; continue; }
+    total += 1;
     if ((d.dietary || []).includes("other") && d.dietaryOther && dietaryNotes.length < 200) {
       dietaryNotes.push({ name: nameOf(d), note: d.dietaryOther });
     }
-    for (const k of d.days || []) if (k in counts) counts[k] += 1;
-    for (const k of d.options || []) if (k in counts) counts[k] += 1;
+    for (const k of [...(d.days || []), ...(d.options || [])]) {
+      if (!(k in counts)) continue;
+      counts[k] += 1;
+      if (d.tierVerified) verifiedCounts[k] += 1;
+    }
     for (const k of d.dietary || []) if (k in dietary) dietary[k] += 1;
     if (tiers[d.tier]) {
       tiers[d.tier].total += 1;
@@ -466,7 +520,7 @@ export function summarizeRsvps(docs = []) {
     }
     if (!d.tierVerified) unverified += 1;
   }
-  return { total: docs.length, counts, dietary, dietaryNotes, tiers, unverified };
+  return { total, counts, verifiedCounts, dietary, dietaryNotes, tiers, unverified, duplicates };
 }
 
 /** A row of the admin table. */
@@ -484,6 +538,7 @@ export function rsvpRow(d) {
     dietary: d.dietary || [],
     dietaryOther: d.dietaryOther || "",
     hasAccessibility: !!d.accessibility,
+    duplicateOf: d.duplicateOf ? String(d.duplicateOf) : "", // possible duplicate: not in the headcounts until staff decide
     submissions: d.submissions || 1,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -500,6 +555,7 @@ export function rsvpDetail(d) {
     ticketVerified: !!d.ticketVerified,
     chosenTier: d.chosenTier || "",
     detectedTier: d.detectedTier || "",
+    matchedSpeaker: d.matchedSpeaker || "",
     accessibility: d.accessibility || "",
     page: d.page || "",
     userAgent: d.userAgent || "",
@@ -517,6 +573,7 @@ const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 1
 export const CSV_HEAD = [
   "Updated (UTC)", "First name", "Last name", "Email", "Pass", "Pass verified", "Matched as", "Ticket ID",
   ...OPTION_KEYS.map(optionLabel), "Dietary", "Dietary (other)", "Accessibility", "Times submitted", "First RSVP (UTC)",
+  "In headcounts",
 ];
 
 /** Spreadsheet for management: one Yes column per day/experience so catering can sum them. */
@@ -529,7 +586,26 @@ export function rsvpsCsv(docs) {
       ...OPTION_KEYS.map((k) => (picked.has(k) ? "Yes" : "")),
       (d.dietary || []).map((k) => DIETARY_LABEL[k] || k).join("; "), d.dietaryOther, d.accessibility,
       d.submissions || 1, stamp(d.createdAt),
+      isDuplicate(d) ? "No: possible duplicate" : "Yes",
     ].map(csvCell).join(",");
   });
   return "﻿" + [CSV_HEAD.map(csvCell).join(","), ...lines].join("\n");
+}
+
+/**
+ * Staff merge a possible duplicate into the RSVP it duplicates: its answers (days,
+ * experiences, dietary, accessibility, email) replace the earlier ones, while the earlier
+ * row keeps its pass and verification. Experiences that pass doesn't include are dropped.
+ * @returns {{ set: object, dropped: string[] }}  `set` for the kept row
+ */
+export function planRsvpMerge(keep, dup) {
+  const days = DAY_KEYS.filter((k) => (dup.days || []).includes(k));
+  const allowed = new Set(allowedExperiences(keep.tier, days));
+  const options = EXPERIENCE_KEYS.filter((k) => (dup.options || []).includes(k) && allowed.has(k));
+  const set = {
+    days, options, dietary: [...(dup.dietary || [])], dietaryOther: dup.dietaryOther || "",
+    accessibility: dup.accessibility || "",
+  };
+  if (dup.email) set.email = dup.email;
+  return { set, dropped: (dup.options || []).filter((k) => !options.includes(k)) };
 }
