@@ -190,8 +190,8 @@ test("the speaker email: personal, complete and on brand", () => {
     "Dear Jane,", "We're delighted to have you speaking at TTFC&nbsp;2026.", "We look forward to welcoming you to Toronto",
     "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
     "October 26–27, 2026", "The Westin Harbour Castle", "A1B2C3D4E5F6", `src="cid:${QR_CID}"`, `src="cid:${LOGO_CID}"`,
-    `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP now",
-    `mailto:${CONTACT_EMAIL}`, "All-access", "CxO breakfasts &amp; luncheons", "The Gala Dinner",
+    `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP Now",
+    `mailto:${CONTACT_EMAIL}`, "All-Access", "CxO Breakfasts &amp; Luncheons", "The Gala Dinner",
     "Catalyst Awards Night", "The VIP Lounge", "#06020f", "#7a3fd1", "#e8458b", "#f5a623",
   ]) assert.ok(e.html.includes(s), s);
   assert.ok(!/data:image/.test(e.html), "no data: URIs in a sent email");

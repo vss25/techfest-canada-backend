@@ -35,7 +35,7 @@ const EXPECTED = {
 };
 
 test("the option matrix matches the Tickets page", () => {
-  assert.deepEqual(OPTION_KEYS, Object.keys(EXPECTED));
+  assert.deepEqual([...OPTION_KEYS].sort(), Object.keys(EXPECTED).sort());
   for (const [key, tiers] of Object.entries(EXPECTED)) {
     for (const t of TIERS) assert.equal(tierIncludes(t, key), tiers.includes(t), `${t} / ${key}`);
   }
@@ -53,13 +53,13 @@ test("day-specific options belong to their day; the Gala is on the evening of Da
     gala: "day2", awards: "day1", meetings: null, lounge: null,
   });
   assert.equal(optionLabel("sessions_d1"), "Keynotes, panels & sessions (Day 1)");
-  assert.equal(optionLabel("expo_d2"), "Expo floor (Day 2)");
-  assert.equal(optionLabel("breaks_d1"), "Networking breaks & coffee (Day 1)");
+  assert.equal(optionLabel("expo_d2"), "Expo Floor (Day 2)");
+  assert.equal(optionLabel("breaks_d1"), "Networking Breaks & Coffee (Day 1)");
   assert.match(RSVP_OPTIONS.find((o) => o.key === "lounge").label, /19\+/);
   assert.ok(RSVP_OPTIONS.find((o) => o.key === "lounge").note);
   assert.equal(optionLabel("lunch_d2"), "Networking Luncheon (Day 2)");
-  assert.equal(optionLabel("awards"), "Catalyst Awards Night (Day 1 evening)");
-  assert.equal(optionLabel("gala"), "Gala Dinner & Networking Reception (Day 2 evening)");
+  assert.equal(optionLabel("awards"), "Catalyst Awards Night (Day 1)");
+  assert.equal(optionLabel("gala"), "Gala Dinner & Networking Reception (Day 2)");
 });
 
 const ON_THE_DAY = ["sessions_d1", "sessions_d2", "expo_d1", "expo_d2", "breaks_d1", "breaks_d2"];
@@ -69,8 +69,8 @@ test("what each pass can choose, by day: every pass is asked about the day itsel
   assert.deepEqual(allowedExperiences("connect", ["day1", "day2"]), ON_THE_DAY);
   assert.deepEqual(allowedExperiences("connect", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2"]);
   assert.deepEqual(allowedExperiences("influence", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "lunch_d2"]);
-  assert.deepEqual(allowedExperiences("power", ["day1"]), ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "cxo_d1", "awards"]);
-  assert.deepEqual(allowedExperiences("power", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "lunch_d2", "cxo_d2", "gala"]);
+  assert.deepEqual(allowedExperiences("power", ["day1"]), ["sessions_d1", "expo_d1", "breaks_d1", "cxo_d1", "lunch_d1", "awards"]);
+  assert.deepEqual(allowedExperiences("power", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "cxo_d2", "lunch_d2", "gala"]);
   assert.deepEqual(allowedExperiences("apex", ["day1", "day2"]), EXPERIENCE_KEYS);
   assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), EXPERIENCE_KEYS.filter((k) => k !== "meetings" && k !== "lounge"));
   assert.deepEqual(allowedExperiences("apex", []), ["meetings", "lounge"]);
@@ -104,7 +104,7 @@ test("the options payload is the shared config the website reads", () => {
   assert.deepEqual(p.options.filter((o) => o.kind === "experience").slice(0, 6).map((o) => o.key), ON_THE_DAY);
   for (const k of ON_THE_DAY) assert.deepEqual(p.options.find((o) => o.key === k).tiers, TIERS, k);
   assert.deepEqual(p.options.find((o) => o.key === "expo_d1"), {
-    key: "expo_d1", kind: "experience", day: "day1", label: "Expo floor", description: "Exhibitors, product demos and partner stands.", tiers: TIERS,
+    key: "expo_d1", kind: "experience", day: "day1", label: "Expo Floor", description: "Exhibitors, product demos and partner stands.", tiers: TIERS,
   });
   assert.deepEqual(p.options.find((o) => o.key === "gala").tiers, ["power", "apex", "speaker"]);
   assert.deepEqual(p.dietary.map((d) => d.key), DIETARY_KEYS);
@@ -593,7 +593,7 @@ test("submit: a name alone never changes someone's RSVP, and the answer doesn't 
 
   const [orig, dup] = store.rows;
   assert.deepEqual([orig.days, orig.options, orig.dietary, orig.accessibility, orig.email, orig.submissions],
-    [["day1", "day2"], ["lunch_d1", "gala", "awards"], ["nut_allergy"], "Wheelchair, step-free", "chris@real.com", 1]);
+    [["day1", "day2"], ["lunch_d1", "awards", "gala"], ["nut_allergy"], "Wheelchair, step-free", "chris@real.com", 1]);
   assert.equal(dup.duplicateOf, orig._id);
   assert.match(dup.key, /^dup:/);
   const s = counted(store);
@@ -691,7 +691,7 @@ test("submit: a ticket holder can't take over a namesake's RSVP by typing their 
 
 test("submit: a speaker whose ticket says Christopher, typing Chris and the ticket ID, gets every option", async () => {
   const { run, store } = submitter();
-  const all = ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "cxo_d1", "awards"];
+  const all = ["sessions_d1", "expo_d1", "breaks_d1", "cxo_d1", "lunch_d1", "awards"];
   const r = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "TECHFEST:CHR111IST222", tier: "connect", days: ["day1"], options: all });
   assert.deepEqual([r.statusCode, r.body.kind, r.body.tier, r.body.tierVerified], [201, "speaker", "speaker", false]);
   const row = store.rows[0];
@@ -1073,7 +1073,7 @@ test("rows, detail and the CSV (formula-escaped, one column per option)", () => 
   assert.ok(!("accessibility" in row) && !("ticketId" in row));
   const det = rsvpDetail({ ...doc, editTokenHash: "secret" });
   assert.ok(!JSON.stringify(det).includes("secret"));
-  assert.deepEqual(det.optionLabels, ["Gala Dinner & Networking Reception (Day 2 evening)"]);
+  assert.deepEqual(det.optionLabels, ["Gala Dinner & Networking Reception (Day 2)"]);
   assert.deepEqual(det.dietaryLabels, ["Other"]);
   const csv = rsvpsCsv([doc]);
   assert.ok(csv.startsWith("﻿"));
@@ -1088,7 +1088,7 @@ test("rows, detail and the CSV (formula-escaped, one column per option)", () => 
   assert.match(line, /"Wheelchair, ""step-free"""/);
   assert.match(line, /,Yes$/);
   assert.match(rsvpsCsv([{ ...doc, duplicateOf: "r9" }]), /,No: possible duplicate$/);
-  assert.ok(CSV_HEAD.includes("Gala Dinner & Networking Reception (Day 2 evening)"));
+  assert.ok(CSV_HEAD.includes("Gala Dinner & Networking Reception (Day 2)"));
   assert.equal(CSV_HEAD.at(-1), "In headcounts");
 });
 

@@ -42,10 +42,10 @@ const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
 /** What a Speaker Pass includes (email + plain text). */
 export const SPEAKER_INCLUDES = [
-  ["All-access, both days", "Every keynote, stage and the expo floor"],
-  ["CxO breakfasts & luncheons", "Every one, on both days"],
-  ["The Gala Dinner", "Dinner and networking reception"],
-  ["Catalyst Awards Night", "Celebrating Canada's frontier tech"],
+  ["All-Access, Both Days", "Every keynote, stage and the expo floor"],
+  ["CxO Breakfasts & Luncheons", "Every one, on both days"],
+  ["The Gala Dinner", "Dinner and networking reception on Day 2"],
+  ["Catalyst Awards Night", "Celebrating Canada's frontier tech on Day 1"],
   ["The VIP Lounge", "A quiet space to prepare and connect"],
 ];
 
@@ -176,7 +176,7 @@ function passCard({ name, title, company, id, qrSrc, logoSrc }) {
               ${detail("Dates", esc(EVENT.dates))}
               ${detail("Venue", `${esc(EVENT.venue)}<br><span style="font-weight:400;color:${C.muted};">${esc(EVENT.city.replace(", Ontario", ""))}</span>`)}
               ${detail("Ticket ID", esc(id), `font-family:${MONO};font-size:17px;letter-spacing:2px;color:${C.white};`)}
-              ${detail("Access", "All access")}
+              ${detail("Access", "All Access")}
             </table>
           </td>
           <td class="stack qr" valign="top" align="right" width="170" style="width:170px;">
@@ -218,7 +218,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
   const co = String(company || "").replace(/\s+/g, " ").trim();
 
   const subject = `${first}, your Speaker Pass for TTFC 2026`;
-  const preheader = `We're delighted to have you speaking at TTFC 2026. Your all-access pass, ticket ID and personal RSVP link are inside.`;
+  const preheader = `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`;
 
   const includes = SPEAKER_INCLUDES.map(([head, sub]) => `
               <tr>
@@ -268,7 +268,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
             <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">We're delighted to have you speaking at TTFC&nbsp;2026.</div>
             <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0;">
               The conversations that shape Canada's frontier tech happen because people like you take the stage.
-              We look forward to welcoming you to Toronto on ${esc(EVENT.dates)}, and the whole festival is open to you.
+              We look forward to welcoming you to Toronto on ${esc(EVENT.dates)}.
               Your personal Speaker Pass is below.
             </div>
           </td>
@@ -297,7 +297,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
           <td class="pad" style="padding:36px 44px 4px;">
             ${sectionTitle("Save your seat")}
             <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 20px;">${esc(RSVP_REASON)}</div>
-            ${button(rsvpLink, "RSVP now")}
+            ${button(rsvpLink, "RSVP Now")}
             <div style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin:12px 0 0;">Your link opens the RSVP page with your details already filled in.</div>
           </td>
         </tr>
@@ -343,14 +343,14 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
     "",
     "We're delighted to have you speaking at TTFC 2026.",
     "",
-    `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}, and the whole festival is open to you. Your personal Speaker Pass is below.`,
+    `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below.`,
     "",
     `YOUR ${SPEAKER_PASS_LABEL.toUpperCase()}`,
     `  ${fullName}${role ? `\n  ${role}` : ""}`,
     `  Dates:     ${EVENT.dates}`,
     `  Venue:     ${EVENT.venue}, ${EVENT.address}`,
     `  Ticket ID: ${id}`,
-    "  Access:    All access",
+    "  Access:    All Access",
     "  Your check-in QR code is in the HTML version of this email.",
     "",
     "YOUR PASS INCLUDES",
