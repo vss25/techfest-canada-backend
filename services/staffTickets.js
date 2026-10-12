@@ -45,11 +45,12 @@ export function collectTickets(users = [], guests = []) {
 
 export const personKey = (r) => r.email || `name:${fold(r.name)}`;
 
-/** Visible tickets that repeat a person (same email): every one except their most recent. */
+/** Visible tickets that repeat a person (same email): every one except their most recent.
+    A Speaker Pass is never a duplicate of a ticket the speaker bought (or the other way round). */
 export function duplicateKeys(rows) {
   const byPerson = new Map();
   for (const r of rows) {
-    if (r.hidden) continue;
+    if (r.hidden || r.tier === "speaker") continue;
     const k = personKey(r);
     if (!byPerson.has(k)) byPerson.set(k, []);
     byPerson.get(k).push(r);
@@ -104,8 +105,10 @@ export function makeBuckets(range, now = new Date(), dates = []) {
   return buckets;
 }
 
-/** Real sales from ticket purchase dates (hidden tickets excluded). Revenue uses tier list prices. */
-export function salesSummary(rows, prices = {}, { range = "month", now = new Date() } = {}) {
+/** Real sales from ticket purchase dates (hidden tickets excluded). Revenue uses tier list prices.
+    Speaker Passes are never sold, so they aren't sales. */
+export function salesSummary(allRows, prices = {}, { range = "month", now = new Date() } = {}) {
+  const rows = allRows.filter((r) => r.tier !== "speaker");
   const live = rows.filter((r) => !r.hidden);
   const price = (t) => Number(prices[t] || 0);
   const byTier = {};

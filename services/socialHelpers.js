@@ -6,7 +6,7 @@ export function threadKey(a, b) {
   return `${x}:${y}`;
 }
 
-const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5 };
+const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5, speaker: 6 };
 
 /** Highest ticket tier key a user holds ("" when none). */
 export function bestTierKey(user) {
@@ -26,6 +26,7 @@ export function tierName(key) {
     case "influence": return "Influence Pass";
     case "power": return "Power Pass";
     case "apex": case "vip": return "Apex Pass";
+    case "speaker": return "Speaker Pass";
     default: return "";
   }
 }

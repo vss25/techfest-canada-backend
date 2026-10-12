@@ -55,6 +55,7 @@ export function latestTicket(tickets) {
 const TIER_NAMES = {
   discover: "Discover Pass", connect: "Connect Pass", influence: "Influence Pass",
   power: "Power Pass", apex: "Apex Pass", vip: "Apex Pass", session: "Session Pass",
+  speaker: "Speaker Pass",
 };
 export function passName(type) {
   const k = String(type || "").toLowerCase();

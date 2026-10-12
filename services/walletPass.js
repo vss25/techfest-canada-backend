@@ -31,7 +31,7 @@ export function isConfigured() {
     .every((k) => Boolean(process.env[k]));
 }
 
-const TIER_NAMES = { discover: "Discover Pass", connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", vip: "Apex Pass" };
+const TIER_NAMES = { discover: "Discover Pass", connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", vip: "Apex Pass", speaker: "Speaker Pass" };
 export const tierLabel = (key) => TIER_NAMES[String(key || "").toLowerCase()] || `${String(key || "Delegate")} Pass`;
 
 /** Pure: the pass.json-level props + fields. Exported for tests. */

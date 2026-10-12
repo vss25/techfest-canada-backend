@@ -8,6 +8,7 @@ import { SALES_INBOX } from "./brochureDownloads.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
+import { speakerPassEmailFor, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -221,6 +222,31 @@ export async function sendFormSubmissionEmail({ to, subject, html, text, replyTo
     subject,
     html,
     text,
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  if (!data?.id) throw new Error("Resend did not accept the email");
+  return data;
+}
+
+/* =========================================================
+   SPEAKER PASS
+   Layout in services/speakerPassEmail.js (pure, tested; every value
+   escaped). The QR code and logo go as inline CID attachments
+   (Gmail blocks data: images). Staff send it from Admin -> Speaker
+   passes (routes/console.js). Throws when Resend refuses it.
+========================================================= */
+
+export async function sendSpeakerPassEmail({ to, pass }) {
+  if (!to || !pass?.ticketId) throw new Error("Missing email or ticket");
+  const { subject, html, text, attachments } = await speakerPassEmailFor(pass, { inline: false });
+  const { data, error } = await resend.emails.send({
+    from: SPEAKER_PASS_FROM,
+    to,
+    reply_to: SPEAKER_PASS_REPLY_TO,
+    subject,
+    html,
+    text,
+    attachments,
   });
   if (error) throw new Error(error.message || "Resend refused the email");
   if (!data?.id) throw new Error("Resend did not accept the email");
