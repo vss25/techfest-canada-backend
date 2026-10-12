@@ -74,9 +74,10 @@ export const RSVP_OPTIONS = [
     description: "Dinner and drinks with speakers, partners and delegates on the evening of Day 2." },
   { key: "awards", kind: "experience", day: "day1", label: "Catalyst Awards Night (Day 1 evening)", tiers: POWER_UP,
     description: "The Catalyst Awards ceremony on the evening of Day 1." },
-  { key: "meetings", kind: "experience", day: null, label: "2 pre-matched business meetings", tiers: APEX_UP,
+  // Apex only: speakers don't get pre-matched meetings or the Scotch lounge (client decision, Oct 2026).
+  { key: "meetings", kind: "experience", day: null, label: "2 pre-matched business meetings", tiers: ["apex"],
     description: "Two meetings we line up for you in advance, matched to your objectives." },
-  { key: "lounge", kind: "experience", day: null, label: "Private Scotch & Cocktail Lounge (19+)", tiers: APEX_UP,
+  { key: "lounge", kind: "experience", day: null, label: "Private Scotch & Cocktail Lounge (19+)", tiers: ["apex"],
     description: "A quiet room for conversations over Scotch and cocktails.", note: "19+ only. Bring photo ID." },
 ];
 export const OPTION_KEYS = RSVP_OPTIONS.map((o) => o.key);

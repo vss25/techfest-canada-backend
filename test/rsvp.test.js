@@ -30,8 +30,8 @@ const EXPECTED = {
   cxo_d2: ["power", "apex", "speaker"],
   gala: ["power", "apex", "speaker"],
   awards: ["power", "apex", "speaker"],
-  meetings: ["apex", "speaker"],
-  lounge: ["apex", "speaker"],
+  meetings: ["apex"],
+  lounge: ["apex"],
 };
 
 test("the option matrix matches the Tickets page", () => {
@@ -72,7 +72,7 @@ test("what each pass can choose, by day: every pass is asked about the day itsel
   assert.deepEqual(allowedExperiences("power", ["day1"]), ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "cxo_d1", "awards"]);
   assert.deepEqual(allowedExperiences("power", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "lunch_d2", "cxo_d2", "gala"]);
   assert.deepEqual(allowedExperiences("apex", ["day1", "day2"]), EXPERIENCE_KEYS);
-  assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), EXPERIENCE_KEYS);
+  assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), EXPERIENCE_KEYS.filter((k) => k !== "meetings" && k !== "lounge"));
   assert.deepEqual(allowedExperiences("apex", []), ["meetings", "lounge"]);
   assert.deepEqual(allowedExperiences("bogus", ["day1"]), []);
 });
@@ -527,7 +527,7 @@ test("submit: the server's pass wins and options are checked against it", async 
   assert.equal(store.rows[0].editTokenHash, hashEditToken(r2.body.editToken));
 
   // Speakers get everything, whatever they picked, but a name on the public list is no proof.
-  const r3 = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", tier: "connect", options: ["lounge", "meetings", "awards"] });
+  const r3 = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", tier: "connect", options: ["cxo_d1", "cxo_d2", "awards"] });
   assert.deepEqual([r3.statusCode, r3.body.tier, r3.body.tierVerified, r3.body.kind], [201, "speaker", false, "speaker"]);
   assert.equal(store.rows[1].matchedSpeaker, "Dr. Chris Golden");
 
@@ -548,11 +548,11 @@ test("submit: the server's pass wins and options are checked against it", async 
 test("submit: a speaker's verified ticket is noted, but the speaker match stays unverified", async () => {
   const { run, store } = submitter();
   // A Connect holder whose name is also on the speaker list ("Michael J. Chen").
-  const r = await run({ ...GOOD, firstName: "Michael", lastName: "Chen", ticketId: "eee555fff666", tier: "connect", days: ["day1"], options: ["lounge", "meetings"] });
+  const r = await run({ ...GOOD, firstName: "Michael", lastName: "Chen", ticketId: "eee555fff666", tier: "connect", days: ["day1"], options: ["cxo_d1", "awards"] });
   assert.deepEqual([r.statusCode, r.body.tier, r.body.tierVerified, r.body.kind], [201, "speaker", false, "speaker"]);
   const row = store.rows[0];
   assert.deepEqual([row.key, row.ticketVerified, row.detectedTier, row.matchedSpeaker], ["t:eee555fff666", true, "connect", "Michael J. Chen"]);
-  assert.equal(summarizeRsvps(store.rows).verifiedCounts.lounge, 0); // not in the verified headcounts
+  assert.equal(summarizeRsvps(store.rows).verifiedCounts.awards, 0); // not in the verified headcounts
   assert.deepEqual(rsvpsFilter({ verified: "1" }).tierVerified, true);
 });
 
@@ -667,17 +667,17 @@ test("submit: a ticket-verified RSVP stands in for an earlier name-only one, wit
 
 test("submit: a ticket holder can't take over a namesake's RSVP by typing their first name", async () => {
   const { run, store } = submitter();
-  await run({ ...GOOD, firstName: "Chris", lastName: "Golden", email: "chris@real.com", tier: "", days: ["day1", "day2"], options: ["gala", "lounge"] });
+  await run({ ...GOOD, firstName: "Chris", lastName: "Golden", email: "chris@real.com", tier: "", days: ["day1", "day2"], options: ["gala", "cxo_d1"] });
   // Bob Golden's own Connect ticket, with Chris's first name typed: a speaker by the name typed (as with
   // no ticket at all), unverified for staff to confirm, in a row of its own.
-  const first = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "ccc333ddd444", tier: "connect", days: ["day1", "day2"], options: ["lounge"] }, "8.8.8.8");
+  const first = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "ccc333ddd444", tier: "connect", days: ["day1", "day2"], options: ["cxo_d2"] }, "8.8.8.8");
   assert.deepEqual([first.statusCode, first.body.kind, first.body.tierVerified, first.body.updated], [201, "speaker", false, false]);
   const again = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "ccc333ddd444", tier: "connect", days: ["day1"], options: [] }, "8.8.8.8");
   assert.deepEqual([again.statusCode, again.body.updated], [201, true]); // his own ticket's row
   const [chris, bob] = store.rows;
   assert.equal(store.rows.length, 2);
   assert.deepEqual([chris.key, chris.email, chris.tier, chris.options, chris.days, chris.duplicateOf || "", chris.submissions],
-    ["n:chris golden", "chris@real.com", "speaker", ["gala", "lounge"], ["day1", "day2"], "", 1]);
+    ["n:chris golden", "chris@real.com", "speaker", ["cxo_d1", "gala"], ["day1", "day2"], "", 1]);
   assert.deepEqual([bob.key, bob.nameKey, bob.detectedTier, bob.tierVerified], ["t:ccc333ddd444", "", "connect", false]);
   // ...and it doesn't shadow Chris's name either.
   assert.equal(counted(store).total, 2);
@@ -691,7 +691,7 @@ test("submit: a ticket holder can't take over a namesake's RSVP by typing their 
 
 test("submit: a speaker whose ticket says Christopher, typing Chris and the ticket ID, gets every option", async () => {
   const { run, store } = submitter();
-  const all = ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "cxo_d1", "awards", "meetings", "lounge"];
+  const all = ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "cxo_d1", "awards"];
   const r = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "TECHFEST:CHR111IST222", tier: "connect", days: ["day1"], options: all });
   assert.deepEqual([r.statusCode, r.body.kind, r.body.tier, r.body.tierVerified], [201, "speaker", "speaker", false]);
   const row = store.rows[0];
@@ -745,10 +745,10 @@ test("submit: a speaker's name-only RSVP, later proven by a ticket in another fo
   const [row] = store.rows;
   assert.deepEqual([row.key, row.nameKey], ["n:chris golden", "chris golden"]);
   // His ticket says Christopher: the token proves the RSVP is his, the ticket now keys it.
-  const proven = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "chr111ist222", tier: "", days: ["day1"], options: ["awards", "lounge"], editToken: first.body.editToken });
+  const proven = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "chr111ist222", tier: "", days: ["day1"], options: ["awards", "cxo_d1"], editToken: first.body.editToken });
   assert.deepEqual([proven.body.updated, proven.body.tier, proven.body.tierVerified], [true, "speaker", false]);
   assert.equal(store.rows.length, 1);
-  assert.deepEqual([row.key, row.nameKey, row.ticketVerified, row.options], ["t:chr111ist222", "chris golden", true, ["awards", "lounge"]]);
+  assert.deepEqual([row.key, row.nameKey, row.ticketVerified, row.options], ["t:chr111ist222", "chris golden", true, ["cxo_d1", "awards"]]);
   // Then from the same browser without the ticket ID: still that row (a token saved under the ticket works too).
   const again = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", tier: "", days: ["day2"], options: ["gala"], editToken: proven.body.editToken });
   assert.deepEqual([again.body.updated, store.rows.length, row.days, row.key], [true, 1, ["day2"], "t:chr111ist222"]);
@@ -1138,4 +1138,11 @@ test("submit: each saved RSVP is passed to notify; a failing email never blocks 
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(sent.length, 1);
   assert.equal(sent[0][1], false);
+});
+
+test("speakers can't RSVP for the pre-matched meetings or the Scotch lounge (Apex only)", () => {
+  const r = checkOptions("speaker", ["day1"], ["meetings", "lounge", "awards"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.invalid, ["meetings", "lounge"]);
+  assert.ok(checkOptions("apex", ["day1"], ["meetings", "lounge"]).ok);
 });
