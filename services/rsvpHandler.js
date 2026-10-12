@@ -69,7 +69,7 @@ const canCheckTicket = (q) => !!q.ticketId && foldName(q.lastName).length >= 2;
  * @param {() => Promise<Array>} deps.getHolders    buildHolderIndex() output
  * @param {() => Promise<string[]>} deps.getSpeakers public speaker names
  */
-export function makeLookup({ verifyTicket, getHolders, getSpeakers }) {
+export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromName = false }) {
   /** Internal result: also carries the verified ticket (never sent to the browser). */
   return async function lookup(q) {
     let ticket = null;
@@ -96,7 +96,8 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers }) {
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
     if (speaker) return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket };
     if (ticket) return { kind: "ticket", tier: tierFromTicketType(ticket.type), verified: true, displayName: q.firstName, ticket };
-    if (both) {
+    // Off on the live site: a pass is only ever shown from a verified ticket ID, never guessed from a name.
+    if (both && guessFromName) {
       const holder = matchHolder(await getHolders(), q.firstName, q.lastName);
       if (holder) return { kind: "ticket", tier: holder.tier, verified: false, displayName: q.firstName, ticket: null };
     }
