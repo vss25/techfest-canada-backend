@@ -1,0 +1,257 @@
+/* =========================================================
+   RSVP reminder: ticket holders who haven't RSVP'd yet
+   ---------------------------------------------------------
+   Admin → Marketing → RSVP reminders (routes/rsvpReminders.js).
+   Who: the same people as the "I'm attending" email (one per email,
+   services/attendingCampaign.js planRecipients), minus everyone
+   whose tickets all have an RSVP. A ticket counts as RSVP'd when an
+   RSVP has its ticket ID, or (RSVPs from before ticket IDs were
+   required) the holder's full name.
+   The email has a personal RSVP button per ticket still open:
+     https://www.thetechfestival.com/rsvp#t=<ticket>&fn=…&ln=…
+   (the fragment never reaches a server; the page fills the form).
+   It can go more than once: "Send to all" skips anyone reminded in
+   the last REMINDER_COOLDOWN_MS, so a double click never doubles up.
+========================================================= */
+
+import { Resend } from "resend";
+import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
+import { greetingName } from "./attendingCampaign.js";
+import { C, CONTACT_EMAIL, FROM, LOGO_CID, SANS, SERIF, button, eyebrow, logoPng, stripe } from "./attendingEmail.js";
+import { normalizeTicketId } from "./ticketAccess.js";
+import { personNameKey } from "./rsvp.js";
+import { RSVP_URL, displayTicketId } from "./speakerPassEmail.js";
+
+export const REMINDER_CAMPAIGN = "rsvp-reminder-2026";
+export const REMINDER_COOLDOWN_MS = 20 * 60 * 60 * 1000;
+
+/** Tickets that already have an RSVP: by ticket ID, and by full name for RSVPs without one. */
+export function rsvpIndex(rsvps = []) {
+  const ids = new Set();
+  const names = new Set();
+  for (const r of rsvps) {
+    if (!r || r.spam) continue;
+    const id = normalizeTicketId(r.ticketId);
+    if (id) ids.add(id);
+    const k = personNameKey(r.firstName, r.lastName);
+    if (k.includes(" ")) names.add(k);
+  }
+  return { ids, names };
+}
+
+export function hasRsvp(index, t) {
+  const id = normalizeTicketId(t?.ticketId);
+  if (id && index.ids.has(id)) return true;
+  const k = personNameKey(t?.firstName, t?.lastName);
+  return k.includes(" ") && index.names.has(k);
+}
+
+/**
+ * @param {Array} recipients  planRecipients() rows (with `tickets`)
+ * @param {Array} rsvps       Rsvp docs (ticketId, firstName, lastName, spam)
+ * @returns {{ rows: Array, rsvpd: number }} rows = people with at least one ticket still to RSVP
+ *   (`tickets` = only those); rsvpd = people whose tickets are all done.
+ */
+export function planReminders(recipients = [], rsvps = []) {
+  const index = rsvpIndex(rsvps);
+  const rows = [];
+  let rsvpd = 0;
+  for (const r of recipients) {
+    const open = (r.tickets || []).filter((t) => t?.ticketId && !hasRsvp(index, t));
+    if (!open.length) { rsvpd++; continue; }
+    rows.push({ ...r, tickets: open });
+  }
+  return { rows, rsvpd };
+}
+
+/**
+ * Each row with its reminder history: status "never" | "reminded" | "failed" | "sending",
+ * `reminders` (how many went out), `sentAt` (the last one) and `due` (Send to all includes it).
+ */
+export function withReminderStatus(rows = [], sends = [], { now = Date.now(), cooldownMs = REMINDER_COOLDOWN_MS } = {}) {
+  const byEmail = new Map(sends.map((s) => [String(s.email || "").toLowerCase(), s]));
+  return rows.map((r) => {
+    const s = byEmail.get(r.email);
+    const sentAt = s?.sentAt || null;
+    const status = s?.status === "failed" ? "failed" : s?.status === "sending" ? "sending" : sentAt ? "reminded" : "never";
+    const due = status === "never" || status === "failed"
+      || (status === "reminded" && now - new Date(sentAt).getTime() >= cooldownMs);
+    return { ...r, status, sentAt, reminders: Number(s?.sends) || 0, error: status === "failed" ? String(s?.error || "") : "", due };
+  });
+}
+
+export function reminderCounts(rows = [], rsvpd = 0) {
+  return {
+    holders: rows.length + rsvpd,
+    rsvpd,
+    notRsvpd: rows.length,
+    due: rows.filter((r) => r.due).length,
+    reminded: rows.filter((r) => r.reminders > 0).length,
+  };
+}
+
+/** Their personal RSVP link (details in the fragment, read and cleared by the page). */
+export function rsvpLink({ ticketId, firstName = "", lastName = "" } = {}) {
+  const enc = encodeURIComponent;
+  const parts = [`t=${enc(displayTicketId(ticketId))}`];
+  if (firstName) parts.push(`fn=${enc(firstName)}`);
+  if (lastName) parts.push(`ln=${enc(lastName)}`);
+  return `${RSVP_URL}#${parts.join("&")}`;
+}
+
+/** A made-up recipient for previews and test sends. */
+export const SAMPLE_REMINDER = Object.freeze({
+  email: "", firstName: "Jane", lastName: "Doe", name: "Jane Doe",
+  tickets: [{ ticketId: "A1B2C3D4E5F6", firstName: "Jane", lastName: "Doe", tier: "power" }],
+});
+
+/**
+ * @param {object} p
+ * @param {string} [p.firstName]
+ * @param {string} [p.lastName]
+ * @param {Array}  p.tickets   [{ ticketId, firstName, lastName }] still to RSVP
+ * @param {string} [p.logoSrc] "cid:…" or a data: URI ("" = text wordmark)
+ * @returns {{ subject, preheader, html, text, links }}
+ */
+export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets = [], logoSrc = "" } = {}) {
+  const first = greetingName({ firstName, lastName });
+  const subject = first ? `${first}, a quick reminder to RSVP for TTFC 2026` : "A quick reminder to RSVP for TTFC 2026";
+  const preheader = "Tell us which breakfasts, luncheons and evening events you're coming to. It takes about a minute.";
+  const links = tickets.map((t) => {
+    const holder = [t.firstName, t.lastName].filter(Boolean).join(" ");
+    return { url: rsvpLink(t), label: tickets.length > 1 && holder ? `RSVP for ${holder}` : "RSVP Now" };
+  });
+  const many = links.length > 1;
+  const intro = `TTFC 2026 is on ${EVENT.dates} at ${EVENT.venue} in Toronto, and we still need your RSVP. `
+    + "It lets us save your seat at the breakfasts, luncheons and evening events your pass includes, and plan catering.";
+  const how = many
+    ? "Each ticket needs its own RSVP. The ticket ID and name are already filled in, so each one takes about a minute."
+    : "Your ticket ID and name are already filled in, so it takes about a minute.";
+
+  const html = `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>${esc(subject)}</title>
+<style>
+  body { margin:0; padding:0; background:${C.bg}; }
+  a { color:${C.white}; }
+  @media only screen and (max-width:620px) {
+    .wrap { width:100% !important; }
+    .pad { padding-left:22px !important; padding-right:22px !important; }
+    .hero { font-size:30px !important; line-height:36px !important; }
+    .btn a { padding:17px 26px !important; font-size:16px !important; }
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:${C.bg};opacity:0;">${esc(preheader)}&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.bg}" style="background:${C.bg};">
+  <tr>
+    <td align="center" style="padding:0;">
+      <table role="presentation" class="wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;">
+        <tr><td>${stripe(4)}</td></tr>
+        <tr>
+          <td class="pad" style="padding:36px 44px 8px;background-image:radial-gradient(ellipse at 85% 0%,rgba(122,63,209,0.38) 0%,rgba(6,2,15,0) 60%);">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td valign="middle">${logoSrc
+                  ? `<img src="${esc(logoSrc)}" width="96" height="55" alt="The Tech Festival Canada" style="display:block;width:96px;height:auto;border:0;outline:none;">`
+                  : `<span style="font-family:${SANS};font-size:13px;font-weight:800;letter-spacing:2.6px;color:${C.white};">TTFC 2026</span>`}</td>
+                <td valign="middle" align="right">${eyebrow(`${EVENT.datesShort} · Toronto`, C.orange)}</td>
+              </tr>
+            </table>
+            <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:30px 0 6px;">${first ? `Hi ${esc(first)},` : "Hello,"}</div>
+            <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 16px;">Have you RSVP'd yet?</div>
+            <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0;">${esc(intro)}</div>
+            <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:14px 0 0;">${esc(how)}</div>
+          </td>
+        </tr>
+        ${links.map((l, i) => `<tr>
+          <td class="pad" align="center" style="padding:${i ? 14 : 30}px 44px 0;">
+            ${button(l.url, l.label)}
+          </td>
+        </tr>`).join("")}
+        <tr>
+          <td class="pad" align="center" style="padding:14px 44px 0;font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};">
+            Already RSVP'd? Thank you, you can ignore this email.${many ? " Forward a button to the person it's for if they'd rather do it themselves." : ""}
+          </td>
+        </tr>
+        <tr>
+          <td class="pad" style="padding:32px 44px 36px;">
+            <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};">Questions? Just reply to this email.</div>
+            <div style="font-family:${SERIF};font-size:17px;line-height:26px;font-style:italic;color:${C.text};margin-top:18px;">See you in Toronto,</div>
+            <div style="font-family:${SANS};font-size:15px;line-height:22px;font-weight:700;color:${C.white};margin-top:4px;">The Tech Festival Canada team</div>
+          </td>
+        </tr>
+        <tr><td>${stripe(2)}</td></tr>
+        <tr>
+          <td class="pad" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
+            ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
+            ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
+            <span style="color:#5f527f;">You're getting this because you have a pass for TTFC 2026 and we don't have your RSVP yet.</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>`;
+
+  const text = [
+    first ? `Hi ${first},` : "Hello,",
+    "",
+    "Have you RSVP'd yet?",
+    "",
+    intro,
+    "",
+    how,
+    "",
+    ...links.flatMap((l) => [`${l.label}:`, l.url, ""]),
+    `Already RSVP'd? Thank you, you can ignore this email.${many ? " Forward a link to the person it's for if they'd rather do it themselves." : ""}`,
+    "",
+    "Questions? Just reply to this email.",
+    "",
+    "See you in Toronto,",
+    "The Tech Festival Canada team",
+    "",
+    `${EVENT.name} · ${EVENT.dates}`,
+    `${EVENT.venue}, ${EVENT.address}`,
+  ].join("\n");
+
+  return { subject, preheader, html, text, links: links.map((l) => l.url) };
+}
+
+/** Subject/html/text for a row; `inline: true` puts the logo in as a data: URI (admin preview). */
+export function reminderEmailFor(row, { inline = true } = {}) {
+  const logoSrc = inline ? `data:image/png;base64,${logoPng().toString("base64")}` : `cid:${LOGO_CID}`;
+  return buildRsvpReminderEmail({ firstName: row?.firstName || "", lastName: row?.lastName || "", tickets: row?.tickets || [], logoSrc });
+}
+
+let resendClient = null;
+const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
+
+/** Sends one reminder through Resend (logo inline, reply-to enquire@). Throws when Resend refuses it. */
+export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = resend() }) {
+  if (!to) throw new Error("Missing email");
+  if (!row?.tickets?.length) throw new Error("No ticket to RSVP for");
+  const { subject, html, text } = reminderEmailFor(row, { inline: false });
+  const { data, error } = await client.emails.send({
+    from: FROM,
+    to,
+    reply_to: CONTACT_EMAIL,
+    subject: `${subjectPrefix}${subject}`,
+    html,
+    text,
+    attachments: [{ filename: "ttfc-2026.png", content: logoPng().toString("base64"), content_type: "image/png", content_id: LOGO_CID }],
+    tags: [{ name: "campaign", value: REMINDER_CAMPAIGN }],
+  });
+  if (error) throw new Error(error.message || "Resend refused the email");
+  if (!data?.id) throw new Error("Resend did not accept the email");
+  return data;
+}

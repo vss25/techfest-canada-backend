@@ -116,7 +116,7 @@ export function planRecipients({ users = [], guests = [], optedOut = [] } = {}) 
     if (!e) { skipped.invalidEmail++; return; }
     if (banned) { skipped.banned++; return; }
     if (out.has(e)) { skipped.unsubscribed++; return; }
-    candidates.push({ email: e, name, details, profile, tier: String(tier || "").toLowerCase(), purchaseDate, source });
+    candidates.push({ email: e, name, details, profile, tier: String(tier || "").toLowerCase(), ticketId, purchaseDate, source });
   };
 
   for (const u of users) {
@@ -138,15 +138,18 @@ export function planRecipients({ users = [], guests = [], optedOut = [] } = {}) 
   }
 
   // One per email: the newest ticket's details, gaps filled from their other tickets.
+  // `tickets` keeps every ticket on that email (for the RSVP reminder's links).
   candidates.sort((a, b) => new Date(b.purchaseDate || 0) - new Date(a.purchaseDate || 0));
   const byEmail = new Map();
   for (const c of candidates) {
     const p = personFrom(c);
+    const ticket = { ticketId: c.ticketId, firstName: p.firstName, lastName: p.lastName, tier: c.tier };
     const have = byEmail.get(c.email);
     if (!have) {
-      byEmail.set(c.email, { email: c.email, ...p, tiers: [c.tier].filter(Boolean), sources: [c.source] });
+      byEmail.set(c.email, { email: c.email, ...p, tiers: [c.tier].filter(Boolean), sources: [c.source], tickets: [ticket] });
       continue;
     }
+    have.tickets.push(ticket);
     skipped.duplicate++;
     for (const k of ["title", "company"]) if (!have[k] && p[k]) have[k] = p[k];
     if (!have.firstName && !have.lastName && (p.firstName || p.lastName)) { have.firstName = p.firstName; have.lastName = p.lastName; }
