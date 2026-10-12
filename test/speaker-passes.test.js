@@ -247,7 +247,7 @@ test("the QR is TECHFEST:<ticketId>, sent as an inline CID image", async () => {
 
 /* ---------- Tier everywhere else ---------- */
 
-test('tierFromTicketType("speaker") is "speaker": the RSVP page offers every option', () => {
+test('tierFromTicketType("speaker") is "speaker": the RSVP page offers every option except meetings and the lounge', () => {
   assert.equal(tierFromTicketType("speaker"), "speaker");
   assert.equal(tierFromTicketType("Speaker Pass"), "speaker");
   assert.equal(TIER_LABELS.speaker, "Speaker");
@@ -256,7 +256,7 @@ test('tierFromTicketType("speaker") is "speaker": the RSVP page offers every opt
   // Name on the speaker list + a verified Speaker Pass ticket: proven.
   assert.deepEqual(resolvePass({ kind: "speaker", tier: "speaker", verified: true, ticket: { type: "speaker" } }, ""),
     { ok: true, tier: "speaker", tierVerified: true, kind: "speaker", detectedTier: "speaker" });
-  assert.ok(checkOptions("speaker", DAY_KEYS, OPTION_KEYS).ok);
+  assert.ok(checkOptions("speaker", DAY_KEYS, OPTION_KEYS.filter((k) => k !== "meetings" && k !== "lounge")).ok);
 });
 
 test("speaker passes are not sales and never duplicates of a bought ticket", () => {
