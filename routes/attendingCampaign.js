@@ -20,7 +20,9 @@ import { attendingEmailFor, sendAttendingEmail } from "../services/attendingEmai
    GET  /preview-sample      → { to: "", subject, html, text, link } (Jane Doe, made up)
    GET  /recipients          → { counts, skipped, recipients: [{ email, name, title, company,
                                  tiers, sources, status, sentAt, error }], job }
-   POST /send-test { to }    → { sent: true, to } (the sample, subject "[Test] …"; not recorded)
+   POST /send-test { to, as? } → { sent: true, to, as } (subject "[Test] …"; not recorded).
+                               `as` = a recipient's email: personalise it with their name, title
+                               and company. Without it, the Jane Doe sample.
    POST /send-all { confirm: "SEND" }
                              → 202 { started: true, toSend, alreadySent, unconfirmed }
                                Runs in the background; poll /recipients (job + counts).
@@ -81,15 +83,22 @@ router.get("/recipients", async (req, res) => {
 router.post("/send-test", requireManagement, async (req, res) => {
   const to = usableEmail(req.body?.to);
   if (!to) return res.status(400).json({ error: "Enter a valid email address." });
+  let recipient = SAMPLE_RECIPIENT;
+  const as = req.body?.as ? usableEmail(req.body.as) : "";
+  if (req.body?.as) {
+    const found = as && (await currentRecipients()).rows.find((r) => r.email === as);
+    if (!found) return res.status(404).json({ error: "That email isn't on the recipient list." });
+    recipient = found;
+  }
   if (!testPerAdmin.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of test emails. Try again in an hour." });
   try {
-    await sendAttendingEmail({ to, recipient: SAMPLE_RECIPIENT, subjectPrefix: "[Test] " });
+    await sendAttendingEmail({ to, recipient, subjectPrefix: "[Test] " });
   } catch (err) {
     await audit(req, "attending_campaign_test_failed", `${to}: ${err?.message || err}`);
     return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
   }
-  await audit(req, "attending_campaign_test", to);
-  res.json({ sent: true, to });
+  await audit(req, "attending_campaign_test", as ? `${to} (as ${as})` : to);
+  res.json({ sent: true, to, as });
 });
 
 /** Claims one recipient for this run. False = already sent (or being sent) by another run. */
