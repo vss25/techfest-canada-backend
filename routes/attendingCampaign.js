@@ -23,6 +23,8 @@ import { attendingEmailFor, sendAttendingEmail } from "../services/attendingEmai
    POST /send-test { to, as? } → { sent: true, to, as } (subject "[Test] …"; not recorded).
                                `as` = a recipient's email: personalise it with their name, title
                                and company. Without it, the Jane Doe sample.
+   POST /send-one { email, again? } → { sent: true, email, sentAt } (one person; recorded like
+                               the send to everyone. Already emailed → 409 unless again: true)
    POST /send-all { confirm: "SEND" }
                              → 202 { started: true, toSend, alreadySent, unconfirmed }
                                Runs in the background; poll /recipients (job + counts).
@@ -132,6 +134,43 @@ async function sendOne(r, by) {
     throw err;
   }
 }
+
+router.post("/send-one", requireManagement, async (req, res) => {
+  const email = usableEmail(req.body?.email);
+  if (!email) return res.status(400).json({ error: "Enter a valid email address." });
+  if (job.running) return res.status(409).json({ error: "A send to everyone is running. Try again when it finishes." });
+  const { rows } = await currentRecipients();
+  const r = rows.find((x) => x.email === email);
+  if (!r) return res.status(404).json({ error: "That email isn't on the recipient list." });
+  const again = req.body?.again === true;
+  if ((r.status === "sent" || r.status === "sending") && !again) {
+    return res.status(409).json({
+      code: "already_sent",
+      error: r.status === "sent" ? "They've had it already." : "A send to them wasn't confirmed. Check Resend before sending again.",
+    });
+  }
+  const by = String(req.user.email || req.user._id);
+  const now = new Date();
+  if (again) {
+    await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email },
+      { $set: { status: "sending", lastTriedAt: now, sentBy: by }, $inc: { attempts: 1 } });
+  } else if (!(await claim(r, by))) {
+    return res.status(409).json({ code: "already_sent", error: "Someone else is sending to them right now, or they've had it." });
+  }
+  try {
+    const data = await sendAttendingEmail({ to: r.email, recipient: r });
+    const sentAt = new Date();
+    await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email },
+      { $set: { status: "sent", sentAt, resendId: data.id || "", error: "" } });
+    await audit(req, again ? "attending_campaign_send_one_again" : "attending_campaign_send_one", r.email);
+    return res.json({ sent: true, email: r.email, sentAt });
+  } catch (err) {
+    const msg = String(err?.message || err || "Send failed").slice(0, 300);
+    await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email }, { $set: { status: "failed", error: msg } }).catch(() => {});
+    await audit(req, "attending_campaign_send_one_failed", `${r.email}: ${msg}`);
+    return res.status(502).json({ error: `Couldn't send: ${msg}` });
+  }
+});
 
 router.post("/send-all", requireManagement, async (req, res) => {
   if (req.body?.confirm !== "SEND") return res.status(400).json({ error: "Type SEND to confirm." });

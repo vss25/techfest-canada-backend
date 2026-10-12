@@ -32,13 +32,13 @@ export const PREVIEW_CID = "ttfc-attending-preview";
 export const CONTACT_EMAIL = "enquire@thetechfestival.com";
 export const FROM = "The Tech Festival Canada <noreply@thetechfestival.com>";
 
-const C = {
+export const C = {
   bg: "#06020f", card: "#120827", cardEdge: "#2b1a4f", panel: "#0d0620",
   purple: "#7a3fd1", magenta: "#e8458b", orange: "#f5a623",
   white: "#ffffff", text: "#ddd5ef", muted: "#a596c7", dim: "#7d6fa0", hair: "#251845",
 };
-const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-const SERIF = "Georgia,'Times New Roman',Times,serif";
+export const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+export const SERIF = "Georgia,'Times New Roman',Times,serif";
 
 /* ---------- images ---------- */
 
@@ -71,7 +71,7 @@ export function attendingAttachments() {
 
 /* ---------- pieces ---------- */
 
-const stripe = (height = 4) => `
+export const stripe = (height = 4) => `
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
   <tr>
     <td width="40%" height="${height}" bgcolor="${C.purple}" style="background:${C.purple};font-size:0;line-height:0;height:${height}px;">&nbsp;</td>
@@ -80,10 +80,10 @@ const stripe = (height = 4) => `
   </tr>
 </table>`;
 
-const eyebrow = (text, color = C.muted) =>
+export const eyebrow = (text, color = C.muted) =>
   `<div style="font-family:${SANS};font-size:10px;line-height:14px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:${color};">${esc(text)}</div>`;
 
-function button(href, label) {
+export function button(href, label) {
   return `
 <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:separate;margin:0 auto;">
   <tr>
@@ -204,11 +204,11 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                   ${step(1, C.purple, "Add your photo", "Use your LinkedIn photo, pick one from your phone, or keep your initials.")}
                   ${step(2, C.magenta, "Check your details", detailsLine)}
-                  ${step(3, C.orange, "Post it", "On your phone it goes straight to the LinkedIn app. On a computer, the image downloads and LinkedIn opens with your post ready.")}
+                  ${step(3, C.orange, "Post it", "On your phone it goes straight to the LinkedIn app. On a computer, LinkedIn asks you to allow it once, then your post goes up with the image attached.")}
                 </table>
               </td></tr>
             </table>
-            <div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};margin:14px 2px 0;">Your photo stays on your device. Nothing is uploaded or stored.</div>
+            <div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};margin:14px 2px 0;">Your photo stays on your device. Only the finished image is shared, when you post it.</div>
           </td>
         </tr>
 
@@ -249,9 +249,9 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
     "HOW IT WORKS",
     "  1. Add your photo: use your LinkedIn photo, pick one from your phone, or keep your initials.",
     `  2. Check your details: ${detailsLine}`,
-    "  3. Post it: on your phone it goes straight to the LinkedIn app. On a computer, the image downloads and LinkedIn opens with your post ready.",
+    "  3. Post it: on your phone it goes straight to the LinkedIn app. On a computer, LinkedIn asks you to allow it once, then your post goes up with the image attached.",
     "",
-    "Your photo stays on your device. Nothing is uploaded or stored.",
+    "Your photo stays on your device. Only the finished image is shared, when you post it.",
     "",
     "Thank you for helping us spread the word. Questions? Just reply to this email.",
     "",

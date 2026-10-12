@@ -17,6 +17,7 @@ const campaignSendSchema = new mongoose.Schema(
     resendId: { type: String, default: "" },
     error: { type: String, default: "" },
     attempts: { type: Number, default: 0 },
+    sends: { type: Number, default: 0 }, // successful sends (an RSVP reminder can go more than once)
     sentAt: { type: Date },
     lastTriedAt: { type: Date },
     sentBy: { type: String, default: "" },
