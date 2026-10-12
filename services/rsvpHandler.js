@@ -130,6 +130,7 @@ const isDuplicateKey = (err) => err?.code === 11000 || /E11000/.test(String(err?
  */
 export function makeRsvpHandlers({
   lookup, store, log = console,
+  notify = null, // (row, { updated }) => Promise: email the team; failures are logged, never block the RSVP
   requireTicket = true, // every RSVP needs a ticket ID that matches the last name (client decision, Oct 2026)
   lookupIpLimiter = makeLimiter({ max: 40, windowMs: 15 * 60 * 1000 }),
   lookupNameLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }), // per address + name
@@ -319,6 +320,9 @@ export function makeRsvpHandlers({
 
       // No row id, and `updated` only for the person who proved the RSVP is theirs.
       const { final } = result;
+      if (notify && final && !final.duplicateOf) {
+        Promise.resolve().then(() => notify(final, { updated: !!result.updated })).catch((err) => log.error?.("RSVP EMAIL ERROR:", err?.message || err));
+      }
       return res.status(201).json({
         ...OK, updated: result.updated, editToken: result.token,
         kind: final.kind, tier: final.tier, tierLabel: TIER_LABELS[final.tier], tierVerified: !!final.tierVerified,

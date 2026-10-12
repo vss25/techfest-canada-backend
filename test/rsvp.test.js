@@ -7,6 +7,7 @@ import {
   validateRsvp, resolvePass, rsvpKeys, rsvpsFilter, summarizeRsvps, rsvpRow, rsvpDetail, rsvpsCsv, CSV_HEAD, optionLabel,
   nameVariants, ticketPersonNames, newEditToken, hashEditToken, planRsvpMerge, lastNameIs, rsvpListPayload,
 } from "../services/rsvp.js";
+import { buildRsvpEmail } from "../services/rsvp.js";
 import { makeLookup, makeRsvpHandlers, publicLookup, cached, TOO_MANY, resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import { makeLimiter, makeGuessLimiter } from "../services/ticketAccess.js";
 
@@ -1117,4 +1118,24 @@ test("lookup: the live setting never guesses a pass from a name alone", async ()
   });
   const r = await lookup({ firstName: "Jane", lastName: "Doe", ticketId: "" });
   assert.equal(r.kind, "none");
+});
+
+test("team email: lists pass, days, special events and dietary, all escaped", () => {
+  const e = buildRsvpEmail({ firstName: "Ann<b>", lastName: "Lee", tier: "apex", ticketId: "ABC123", days: ["day1", "day2"],
+    options: ["gala", "lunch_d1"], dietary: ["vegan", "other"], dietaryOther: "no <script>", accessibility: "" });
+  assert.match(e.subject, /^\[RSVP\] Ann<b> Lee · Apex Pass$/);
+  assert.ok(!e.html.includes("<script>") && !e.html.includes("Ann<b>"));
+  assert.match(e.html, /Gala Dinner/);
+  assert.match(e.text, /Vegan, Other: no <script>/);
+  assert.match(buildRsvpEmail({ firstName: "A", lastName: "B", tier: "connect" }, { updated: true }).subject, /^\[RSVP updated\]/);
+});
+
+test("submit: each saved RSVP is passed to notify; a failing email never blocks the RSVP", async () => {
+  const sent = [];
+  const { run } = submitter({ requireTicket: true, notify: async (row, o) => { sent.push([row.firstName, o.updated]); throw new Error("mail down"); } });
+  const ok = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] });
+  assert.equal(ok.statusCode, 201);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][1], false);
 });

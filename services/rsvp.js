@@ -691,3 +691,39 @@ export function planRsvpMerge(keep, dup) {
     dropped: (newer.options || []).filter((k) => !options.includes(k)),
   };
 }
+
+/* ---------- Email to the team (enquire@) for each RSVP ---------- */
+const escHtml = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/** Subject, HTML and text for the team's copy of one RSVP. Every value is escaped. Pure. */
+export function buildRsvpEmail(r, { updated = false } = {}) {
+  const name = [r.firstName, r.lastName].filter(Boolean).join(" ") || "Someone";
+  const dayLabel = Object.fromEntries(DAYS.map((d) => [d.key, d.label]));
+  const days = (r.days || []).map((d) => dayLabel[d] || d).join(", ") || "None";
+  const optLabel = (k) => {
+    const o = OPTION_BY_KEY[k];
+    if (!o) return k;
+    return o.day ? `${o.label} (${dayLabel[o.day] || o.day})` : o.label;
+  };
+  const events = (r.options || []).filter((k) => OPTION_BY_KEY[k]?.kind === "experience").map(optLabel);
+  const dietMap = Object.fromEntries(DIETARY.map((d) => [d.key, d.label]));
+  const diet = (r.dietary || []).map((k) => (k === "other" && r.dietaryOther ? `Other: ${r.dietaryOther}` : dietMap[k] || k));
+  const rows = [
+    ["Name", name],
+    ["Pass", TIER_LABELS[r.tier] || r.tier || ""],
+    ["Ticket ID", r.ticketId || ""],
+    ["Days", days],
+    ["Special events", events.length ? events.join("\n") : "None"],
+    ["Dietary", diet.length ? diet.join(", ") : "None"],
+    ["Accessibility", r.accessibility || "None"],
+  ];
+  const subject = `${updated ? "[RSVP updated]" : "[RSVP]"} ${name} · ${TIER_LABELS[r.tier] || r.tier || "Pass"}`.replace(/[\r\n]+/g, " ");
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:620px">
+<h2 style="margin:0 0 12px;color:#0d0520">${updated ? "RSVP updated" : "New RSVP"}: ${escHtml(name)}</h2>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%">
+${rows.map(([k, v]) => `<tr><td style="padding:8px 12px;border-bottom:1px solid #ece6f7;font-weight:600;color:#5b4b7a;width:150px;vertical-align:top">${escHtml(k)}</td><td style="padding:8px 12px;border-bottom:1px solid #ece6f7;color:#0d0520">${escHtml(v).replace(/\n/g, "<br>")}</td></tr>`).join("\n")}
+</table>
+<p style="color:#777;font-size:12px;margin-top:14px">All RSVPs: Admin panel → Leads → RSVPs.</p></div>`;
+  const text = `${updated ? "RSVP updated" : "New RSVP"}: ${name}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nAll RSVPs: Admin panel → Leads → RSVPs.`;
+  return { subject, html, text };
+}
