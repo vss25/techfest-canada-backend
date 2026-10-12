@@ -4,6 +4,7 @@ import Stripe from "stripe";
 import User from "../models/User.js";
 import TicketInventory from "../models/TicketInventory.js";
 import Promo from "../models/Promo.js";
+import { HOLD_MINUTES, LIMIT_REACHED, isFull, lockPromo, promoUsageNow } from "../services/promoLimits.js";
 
 const router = express.Router();
 
@@ -244,6 +245,7 @@ router.get("/upgrade-quote", async (req, res) => {
 // NOTE: server.js mounts this at /api/payments, so the path here is just /create-checkout
 // Frontend calls: POST /api/payments/create-checkout
 router.post("/create-checkout", async (req, res) => {
+  let releasePromo = () => {};   // see the usage-limit check below
   try {
     const { type, tier, promoCode, metadata, client } = req.body;
 
@@ -395,6 +397,21 @@ router.post("/create-checkout", async (req, res) => {
       // If invalid/wrong-tier, silently ignore — frontend already showed an error to user.
     }
 
+    // ===== PROMO USAGE LIMIT =====
+    // Paid uses + checkouts in progress must stay under maxUses
+    // (services/promoLimits.js). Checkouts for the same capped code are
+    // created one at a time, so the last place can't be taken twice.
+    if (appliedPromo?.maxUses) {
+      releasePromo = await lockPromo(appliedPromo.code);
+      let usage;
+      try { usage = await promoUsageNow(stripe, appliedPromo.code); }
+      catch (e) {
+        console.error("Promo usage check failed:", e.message);
+        return res.status(503).json({ error: "We couldn't check this code right now. Please try again in a minute." });
+      }
+      if (isFull(usage.total, appliedPromo.maxUses)) return res.status(409).json({ error: LIMIT_REACHED });
+    }
+
     // ===== STRIPE: use a coupon for percent-off =====
     let discountsArg = undefined;
     if (appliedDiscount > 0) {
@@ -446,6 +463,9 @@ router.post("/create-checkout", async (req, res) => {
         ...lineItemExtras,
       }],
       discounts: discountsArg,
+      // A capped code holds a place while the buyer pays; expire it soon so
+      // an abandoned checkout gives the place back.
+      ...(appliedPromo?.maxUses ? { expires_at: Math.floor(Date.now() / 1000) + HOLD_MINUTES * 60 } : {}),
       ...sessionExtras,
       ...(isNativeApp
         ? appReturnUrls(req, { tier })
@@ -477,6 +497,8 @@ router.post("/create-checkout", async (req, res) => {
   } catch (err) {
     console.error("Checkout error:", err);
     res.status(500).json({ error: err.message || "Checkout failed" });
+  } finally {
+    releasePromo();
   }
 });
 

@@ -64,6 +64,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 | `/api/webhook` | `routes/webhook.js` | Stripe webhook; ticket PDF + QR code generation |
 | `/api/checkin` | `routes/checkin.js` | QR code scan check-in |
 | `/api/admin` | `routes/admin.js` | Sales analytics, inventory management |
+| `/api` (promos) | `routes/promos.js` | `POST /promos/validate` (public), `GET/POST/PUT/DELETE /admin/promos` (management). "Used" = **paid uses**: complete + paid Stripe Checkout Sessions with the code in `metadata.promoCode` (`promoUsage` in `services/stripeSales.js`, cached 5 min); `Promo.timesUsed` is not used. Optional `maxUses` (null = unlimited): validate and `create-checkout` refuse a code whose paid uses + checkouts in progress reach it ("This code has reached its limit."); capped checkouts expire after 31 min and are created one at a time per code (in-process lock). See `services/promoLimits.js` |
 | `/api/campaigns` | `routes/campaigns.js` | Email campaign CRUD, launch, batch send (~32 KB) |
 | `/api/campaigns/automation` | `routes/campaignAutomation.js` | Automation template scheduling (~22 KB) |
 | `/api/track` | `routes/tracking.js` | Email open pixel + click redirect + bounce webhook |
