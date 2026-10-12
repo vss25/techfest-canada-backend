@@ -23,7 +23,11 @@ const promoSchema = new mongoose.Schema({
   tiers: { type: [String], default: [], enum: PROMO_TIERS },
 
   active: { type: Boolean, default: true },
-  timesUsed: { type: Number, default: 0 },
+  timesUsed: { type: Number, default: 0 },   // webhook counter; the admin list and the limit use Stripe paid uses instead
+
+  // Usage limit: the code stops working once its paid uses reach this.
+  // null = unlimited. See services/promoLimits.js.
+  maxUses: { type: Number, min: 1, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 
