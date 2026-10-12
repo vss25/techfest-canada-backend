@@ -37,6 +37,8 @@ import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
 import filesRouter from "./routes/files.js";           // post photos + profile photos
 import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
+import attendingRouter, { attendingLinkedinCallback } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
+import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -97,6 +99,8 @@ app.use(killSwitchMiddleware);
 /* ==========================================
    ROUTES
 ========================================== */
+// "I'm attending" LinkedIn photo: its callbacks (state "ttfc-att.…") share the registered redirect URI; others fall through.
+app.get("/api/auth/linkedin/callback", attendingLinkedinCallback);
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
@@ -121,6 +125,8 @@ app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
+app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
+app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
 app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id
 app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no login)
