@@ -37,7 +37,7 @@ import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
 import filesRouter from "./routes/files.js";           // post photos + profile photos
 import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
-import attendingRouter, { attendingLinkedinCallback } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
+import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
 import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
@@ -87,6 +87,8 @@ app.use(
 ========================================== */
 // CMS uploads (speaker photos, logos) need a bigger body than everything else.
 app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
+// "I'm attending" Post to LinkedIn: the finished image arrives as a base64 PNG.
+app.post("/api/attending/post", express.json({ limit: "9mb" }), attendingPostDraft);
 // Feed photos and profile photos arrive as base64 JSON.
 app.use(express.json({ limit: "1mb" }));
 
