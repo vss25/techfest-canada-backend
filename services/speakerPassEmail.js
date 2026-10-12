@@ -1,10 +1,10 @@
 /* =========================================================
    Speaker Pass email — HTML + plain text
    ---------------------------------------------------------
-   A personal thank-you with the speaker's pass: name, title,
+   A personal welcome with the speaker's pass: name, title,
    company, dates, venue, ticket ID and the check-in QR code
-   (TECHFEST:<ticketId>), what the pass includes and the three
-   next steps (RSVP, app sign-in, QR at registration).
+   (TECHFEST:<ticketId>), what the pass includes and a personal
+   RSVP link that opens the RSVP page already filled in.
 
    Pure builder (buildSpeakerPassEmail) so it can be tested and
    previewed. Images are passed in as `src` strings:
@@ -20,7 +20,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import QRCode from "qrcode";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
-import { speakerFirstName, speakerLastName, SPEAKER_PASS_LABEL } from "./speakerPasses.js";
+import { speakerFirstName, rsvpNameParts, SPEAKER_PASS_LABEL } from "./speakerPasses.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -46,13 +46,26 @@ export const SPEAKER_INCLUDES = [
   ["CxO breakfasts & luncheons", "Every one, on both days"],
   ["The Gala Dinner", "Dinner and networking reception"],
   ["Catalyst Awards Night", "Celebrating Canada's frontier tech"],
-  ["The Speaker Lounge", "A quiet space to prepare and connect"],
-  ["Pre-matched meetings", "One-to-one meetings arranged for you"],
+  ["The VIP Lounge", "A quiet space to prepare and connect"],
 ];
+
+/** Why speakers should RSVP (shown above the button and in the plain text). */
+export const RSVP_REASON = "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.";
 
 export const qrPayload = (ticketId) => `TECHFEST:${String(ticketId || "").trim()}`;
 /** Shown to people: upper case reads better and sign-in ignores case. */
 export const displayTicketId = (ticketId) => String(ticketId || "").trim().toUpperCase();
+
+/**
+ * The speaker's personal RSVP link. The details go in the URL fragment (#…), which
+ * browsers never send to the server, so the ticket ID stays out of server logs,
+ * analytics and Referer headers. The RSVP page reads it, then clears it.
+ */
+export function personalRsvpUrl(name, ticketId) {
+  const { first, last } = rsvpNameParts(name);
+  const enc = encodeURIComponent;
+  return `${RSVP_URL}#t=${enc(displayTicketId(ticketId))}&fn=${enc(first)}&ln=${enc(last)}`;
+}
 
 /** PNG of the check-in QR (TECHFEST:<ticketId>), dark on white. */
 export function speakerQrPng(ticketId) {
@@ -199,13 +212,13 @@ function passCard({ name, title, company, id, qrSrc, logoSrc }) {
 export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "" } = {}) {
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
-  const last = speakerLastName(fullName);
   const id = displayTicketId(ticketId);
+  const rsvpLink = personalRsvpUrl(fullName, id);
   const t = String(title || "").replace(/\s+/g, " ").trim();
   const co = String(company || "").replace(/\s+/g, " ").trim();
 
   const subject = `${first}, your Speaker Pass for TTFC 2026`;
-  const preheader = `Thank you for speaking at TTFC 2026. Your all-access pass, ticket ID and next steps are inside.`;
+  const preheader = `We're delighted to have you speaking at TTFC 2026. Your all-access pass, ticket ID and personal RSVP link are inside.`;
 
   const includes = SPEAKER_INCLUDES.map(([head, sub]) => `
               <tr>
@@ -215,21 +228,6 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
                   <div style="font-size:13px;line-height:19px;color:${C.muted};">${esc(sub)}</div>
                 </td>
               </tr>`).join("");
-
-  const step = (n, color, head, body) => `
-              <tr>
-                <td valign="top" width="46" style="padding:0 0 22px;">
-                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;"><tr>
-                    <td align="center" valign="middle" width="32" height="32" style="width:32px;height:32px;border-radius:16px;border:1px solid ${color};font-family:${SANS};font-size:14px;font-weight:800;color:${color};">${n}</td>
-                  </tr></table>
-                </td>
-                <td valign="top" style="padding:4px 0 22px;font-family:${SANS};">
-                  <div style="font-size:16px;line-height:22px;font-weight:700;color:${C.white};">${head}</div>
-                  <div style="font-size:14px;line-height:22px;color:${C.text};margin-top:4px;">${body}</div>
-                </td>
-              </tr>`;
-
-  const kbd = (v) => `<span style="font-family:${MONO};font-size:13px;letter-spacing:1px;color:${C.white};background:#1d1138;border:1px solid #33215c;border-radius:6px;padding:2px 7px;white-space:nowrap;">${esc(v)}</span>`;
 
   const html = `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
@@ -267,10 +265,10 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
           <td class="pad" style="padding:44px 44px 8px;background-image:radial-gradient(ellipse at 85% 0%,rgba(122,63,209,0.35) 0%,rgba(6,2,15,0) 60%);">
             ${eyebrow("The Tech Festival Canada 2026", C.muted)}
             <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:26px 0 6px;">Dear ${esc(first)},</div>
-            <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">Thank you for speaking at TTFC&nbsp;2026.</div>
+            <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">We're delighted to have you speaking at TTFC&nbsp;2026.</div>
             <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0;">
-              The conversations that shape Canada's frontier tech happen because people like you agree to take the stage.
-              We're grateful to have you with us in Toronto on ${esc(EVENT.dates)}, and we've made sure the whole festival is open to you.
+              The conversations that shape Canada's frontier tech happen because people like you take the stage.
+              We look forward to welcoming you to Toronto on ${esc(EVENT.dates)}, and the whole festival is open to you.
               Your personal Speaker Pass is below.
             </div>
           </td>
@@ -294,19 +292,13 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
 
         <tr><td class="pad" style="padding:6px 44px 0;"><div style="border-top:1px solid ${C.hair};font-size:0;line-height:0;height:1px;">&nbsp;</div></td></tr>
 
-        <!-- Next steps -->
+        <!-- RSVP -->
         <tr>
           <td class="pad" style="padding:36px 44px 4px;">
-            ${sectionTitle("Three quick steps")}
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-              ${step(1, C.purple, "RSVP for the sessions and dinners",
-                `Go to <a href="${esc(RSVP_URL)}" target="_blank" style="color:${C.white};font-weight:600;">thetechfestival.com/rsvp</a> and enter your last name${last ? ` ${kbd(last)}` : ""} and ticket ID ${kbd(id)}. Every option is open to you.`)}
-              ${step(2, C.magenta, "Sign in to the TTFC app",
-                `Choose <span style="color:${C.white};font-weight:600;">Sign in with ticket ID</span> and use the same ticket ID and last name. Your pass, the agenda and your meetings will be waiting.`)}
-              ${step(3, C.orange, "Show your QR code at registration",
-                `Bring this email or a screenshot of your pass. ${esc(EVENT.doors)}`)}
-            </table>
-            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0;"><tr><td>${button(RSVP_URL, "RSVP now")}</td></tr></table>
+            ${sectionTitle("Save your seat")}
+            <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 20px;">${esc(RSVP_REASON)}</div>
+            ${button(rsvpLink, "RSVP now")}
+            <div style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin:12px 0 0;">Your link opens the RSVP page with your details already filled in.</div>
           </td>
         </tr>
 
@@ -335,7 +327,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
           <td class="pad" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
             ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
             ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
-            <span style="color:#5f527f;">This pass is personal to you. Please keep your ticket ID to yourself.</span>
+            <span style="color:#5f527f;">This pass and your RSVP link are personal to you. Please keep your ticket ID to yourself.</span>
           </td>
         </tr>
       </table>
@@ -349,9 +341,9 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
   const text = [
     `Dear ${first},`,
     "",
-    "Thank you for speaking at TTFC 2026.",
+    "We're delighted to have you speaking at TTFC 2026.",
     "",
-    `The conversations that shape Canada's frontier tech happen because people like you agree to take the stage. We're grateful to have you with us in Toronto on ${EVENT.dates}, and we've made sure the whole festival is open to you. Your personal Speaker Pass is below.`,
+    `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}, and the whole festival is open to you. Your personal Speaker Pass is below.`,
     "",
     `YOUR ${SPEAKER_PASS_LABEL.toUpperCase()}`,
     `  ${fullName}${role ? `\n  ${role}` : ""}`,
@@ -364,10 +356,10 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
     "YOUR PASS INCLUDES",
     ...SPEAKER_INCLUDES.map(([head, sub]) => `  - ${head}: ${sub}`),
     "",
-    "THREE QUICK STEPS",
-    `  1. RSVP at ${RSVP_URL} with your last name${last ? ` (${last})` : ""} and ticket ID ${id}. Every option is open to you.`,
-    "  2. Sign in to the TTFC app with \"Sign in with ticket ID\", using the same ticket ID and last name.",
-    `  3. Show your QR code at registration. ${EVENT.doors}`,
+    "SAVE YOUR SEAT",
+    `  ${RSVP_REASON}`,
+    `  Your personal RSVP link (your details are already filled in):`,
+    `  ${rsvpLink}`,
     "",
     `Questions, travel or session details? Reply to this email or write to ${CONTACT_EMAIL}.`,
     "",
@@ -376,7 +368,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
     "",
     `${EVENT.name} · ${EVENT.dates}`,
     `${EVENT.venue}, ${EVENT.address}`,
-    "This pass is personal to you. Please keep your ticket ID to yourself.",
+    "This pass and your RSVP link are personal to you. Please keep your ticket ID to yourself.",
   ].join("\n");
 
   return { subject, preheader, html, text };

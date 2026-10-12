@@ -4,12 +4,14 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import {
   parseSpeakerDocs, isExcludedSpeaker, planSpeakerPasses, syncSpeakerPasses, speakerPassDoc, validateSpeakerEmail,
-  passStatus, speakerPassRow, speakerPassCounts, readyToSend, speakerFirstName, speakerLastName, SAMPLE_SPEAKER,
+  passStatus, speakerPassRow, speakerPassCounts, readyToSend, speakerFirstName, speakerLastName, rsvpNameParts, SAMPLE_SPEAKER,
   SPEAKER_PASS_QUERY,
 } from "../services/speakerPasses.js";
 import {
-  buildSpeakerPassEmail, speakerPassAttachments, speakerPassEmailFor, qrPayload, QR_CID, LOGO_CID, RSVP_URL, CONTACT_EMAIL,
+  buildSpeakerPassEmail, speakerPassAttachments, speakerPassEmailFor, qrPayload, personalRsvpUrl, QR_CID, LOGO_CID, RSVP_URL,
+  RSVP_REASON, CONTACT_EMAIL,
 } from "../services/speakerPassEmail.js";
+import { escapeHtml } from "../services/ticketInfo.js";
 import { tierFromTicketType, resolvePass, checkOptions, DAY_KEYS, OPTION_KEYS, TIER_LABELS } from "../services/rsvp.js";
 import { passName } from "../services/ticketAccess.js";
 import { collectTickets, duplicateKeys, salesSummary } from "../services/staffTickets.js";
@@ -154,21 +156,58 @@ test("first and last names for the greeting and sign-in", () => {
   assert.equal(speakerLastName("Heling (Alex) Pu"), "Pu");
 });
 
+test("RSVP link names: last word is the last name, the rest (no honorifics) the first", () => {
+  assert.deepEqual(rsvpNameParts("Jane Doe"), { first: "Jane", last: "Doe" });
+  assert.deepEqual(rsvpNameParts("Dr. Rulan S. Parekh"), { first: "Rulan S.", last: "Parekh" });
+  assert.deepEqual(rsvpNameParts("  Hon.  Evan Solomon "), { first: "Evan", last: "Solomon" });
+  assert.deepEqual(rsvpNameParts("Hon. Dr. Mary Anne de Vries, PhD"), { first: "Mary Anne de", last: "Vries" });
+  assert.deepEqual(rsvpNameParts("Heling (Alex) Pu"), { first: "Heling", last: "Pu" });
+  assert.deepEqual(rsvpNameParts('Kulbir "Colin" Singh Dhillon'), { first: "Kulbir Singh", last: "Dhillon" });
+  assert.deepEqual(rsvpNameParts("Dr. Smith"), { first: "", last: "Smith" });
+  assert.deepEqual(rsvpNameParts(""), { first: "", last: "" });
+});
+
+test("the personal RSVP link carries ticket and names in the URL fragment, encoded", () => {
+  assert.equal(personalRsvpUrl("Jane Doe", "a1b2c3d4e5f6"), "https://www.thetechfestival.com/rsvp#t=A1B2C3D4E5F6&fn=Jane&ln=Doe");
+  assert.equal(personalRsvpUrl("Dr. Rulan S. Parekh", " 5ea4e2c0ffee "),
+    "https://www.thetechfestival.com/rsvp#t=5EA4E2C0FFEE&fn=Rulan%20S.&ln=Parekh");
+  const u = new URL(personalRsvpUrl("Zoë A&B O'Brien-Núñez", "x&y=z#w"));
+  assert.equal(u.origin + u.pathname, RSVP_URL);
+  assert.equal(u.search, "", "nothing in the query string");
+  const h = new URLSearchParams(u.hash.slice(1));
+  assert.deepEqual([...h.keys()], ["t", "fn", "ln"]);
+  assert.equal(h.get("t"), "X&Y=Z#W");
+  assert.equal(h.get("fn"), "Zoë A&B");
+  assert.equal(h.get("ln"), "O'Brien-Núñez");
+});
+
 test("the speaker email: personal, complete and on brand", () => {
   const e = buildSpeakerPassEmail({ ...SAMPLE_SPEAKER, ticketId: "a1b2c3d4e5f6", qrSrc: `cid:${QR_CID}`, logoSrc: `cid:${LOGO_CID}` });
   assert.equal(e.subject, "Jane, your Speaker Pass for TTFC 2026");
+  const link = `${RSVP_URL}#t=A1B2C3D4E5F6&fn=Jane&ln=Doe`;
+  assert.match(e.preheader, /^We're delighted to have you speaking at TTFC 2026\./);
   for (const s of [
-    "Dear Jane,", "Thank you for speaking at TTFC&nbsp;2026.", "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
+    "Dear Jane,", "We're delighted to have you speaking at TTFC&nbsp;2026.", "We look forward to welcoming you to Toronto",
+    "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
     "October 26–27, 2026", "The Westin Harbour Castle", "A1B2C3D4E5F6", `src="cid:${QR_CID}"`, `src="cid:${LOGO_CID}"`,
-    `href="${RSVP_URL}"`, `mailto:${CONTACT_EMAIL}`, "All-access", "CxO breakfasts &amp; luncheons", "The Gala Dinner",
-    "Catalyst Awards Night", "The Speaker Lounge", "Pre-matched meetings", "Sign in to the TTFC app", "Show your QR code at registration",
-    "#06020f", "#7a3fd1", "#e8458b", "#f5a623",
+    `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP now",
+    `mailto:${CONTACT_EMAIL}`, "All-access", "CxO breakfasts &amp; luncheons", "The Gala Dinner",
+    "Catalyst Awards Night", "The VIP Lounge", "#06020f", "#7a3fd1", "#e8458b", "#f5a623",
   ]) assert.ok(e.html.includes(s), s);
   assert.ok(!/data:image/.test(e.html), "no data: URIs in a sent email");
-  for (const s of ["Dear Jane,", "Thank you for speaking at TTFC 2026.", "Ticket ID: A1B2C3D4E5F6", RSVP_URL, "last name (Doe)",
-    "Sign in to the TTFC app", "Show your QR code at registration", CONTACT_EMAIL, "Gala Dinner", "Speaker Lounge"]) {
+  for (const s of ["Dear Jane,", "We're delighted to have you speaking at TTFC 2026.", "Ticket ID: A1B2C3D4E5F6", link,
+    RSVP_REASON, CONTACT_EMAIL, "Gala Dinner", "VIP Lounge"]) {
     assert.ok(e.text.includes(s), s);
   }
+  // Forward-looking, and the removed pieces are gone from both versions.
+  for (const body of [e.html, e.text, e.preheader]) {
+    for (const gone of [/thank you for speaking/i, /Speaker Lounge/, /Pre-matched meetings/, /Three quick steps/i,
+      /Sign in to the TTFC app/, /Show your QR code at registration/, /we've made sure/i, /agree to take the stage/]) {
+      assert.ok(!gone.test(body), String(gone));
+    }
+  }
+  assert.ok(!e.html.includes(`href="${RSVP_URL}"`), "the button opens the personal link");
+  assert.ok(!e.html.includes(`${RSVP_URL}?`) && !e.text.includes(`${RSVP_URL}?`), "never a query string");
 });
 
 test("every value in the speaker email is HTML-escaped", () => {
@@ -185,6 +224,11 @@ test("every value in the speaker email is HTML-escaped", () => {
   assert.ok(e.html.includes("O&#39;Brien"));
   assert.ok(e.html.includes("&quot;Acme&quot; &amp; &lt;b&gt;Co&lt;/b&gt;"));
   assert.ok(!/[\r\n]/.test(e.subject));
+  // The RSVP href is URL-encoded, then HTML-escaped: nothing breaks out of the attribute.
+  const href = /href="([^"]*thetechfestival\.com\/rsvp#[^"]*)"/.exec(e.html)?.[1];
+  assert.ok(href, "personal RSVP href present");
+  assert.ok(!/[<>"'\s]/.test(href), href);
+  assert.ok(!/"[^"]*<svg/.test(e.html));
 });
 
 test("the QR is TECHFEST:<ticketId>, sent as an inline CID image", async () => {
