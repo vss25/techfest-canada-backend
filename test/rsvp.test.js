@@ -289,7 +289,7 @@ const TICKETS = { // ticketId → { lastNames, type, names (who it is for) }
 };
 function makeWorld() {
   const verifyCalls = [];
-  const lookup = makeLookup({
+  const lookup = makeLookup({ guessFromName: true,
     verifyTicket: async (id, last) => {
       verifyCalls.push(id);
       const t = TICKETS[id];
@@ -1107,4 +1107,14 @@ test("submit: a ticket ID matching the last name is required (live setting)", as
   const ok = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] });
   assert.equal(ok.statusCode, 201);
   assert.equal(store.rows.length, 1);
+});
+
+test("lookup: the live setting never guesses a pass from a name alone", async () => {
+  const lookup = makeLookup({
+    verifyTicket: async () => null,
+    getHolders: async () => [{ names: ["Jane Doe"], tier: "power" }],
+    getSpeakers: async () => [],
+  });
+  const r = await lookup({ firstName: "Jane", lastName: "Doe", ticketId: "" });
+  assert.equal(r.kind, "none");
 });
