@@ -203,6 +203,23 @@ export function speakerLastName(name) {
   return words.length > 1 ? words[words.length - 1] : words[0] || "";
 }
 
+/**
+ * First and last name for the personal RSVP link: the last word is the last name, the
+ * rest the first name, with honorifics, nicknames and post-nominals dropped
+ * ("Dr. Rulan S. Parekh" → Rulan S. / Parekh, "Heling (Alex) Pu" → Heling / Pu).
+ */
+export function rsvpNameParts(name) {
+  const words = clean(name)
+    .replace(/["“”][^"“”]*["“”]/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .split(",")[0]
+    .split(" ")
+    .filter(Boolean);
+  const last = words.pop() || "";
+  while (words.length && HONORIFIC.test(words[0])) words.shift();
+  return { first: words.join(" "), last };
+}
+
 /** The sample used by the "Preview email" button (never a real person). */
 export const SAMPLE_SPEAKER = Object.freeze({
   name: "Jane Doe", title: "Chief AI Officer", company: "Example Corp", ticketId: "A1B2C3D4E5F6",
