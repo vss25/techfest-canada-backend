@@ -200,17 +200,24 @@ export function sendCounts(rows = []) {
 /* ---------- LinkedIn sign-in for the photo ---------- */
 
 export const LI_STATE_PREFIX = "ttfc-att.";
+export const LI_POST_STATE_PREFIX = "ttfc-att.p";
 export const LI_COOKIE = "ttfc_att_li";
 export const LI_SCOPE = "openid profile";
+export const LI_POST_SCOPE = "openid profile w_member_social";
 
 export const linkedinConfigured = (env = process.env) =>
   !!(env.LINKEDIN_CLIENT_ID && env.LINKEDIN_CLIENT_SECRET && env.LINKEDIN_REDIRECT_URI);
 
 export const newLinkedinState = () => `${LI_STATE_PREFIX}${crypto.randomBytes(16).toString("hex")}`;
+export const newLinkedinPostState = () => `${LI_POST_STATE_PREFIX}${crypto.randomBytes(16).toString("hex")}`;
 export const isAttendingState = (s) => typeof s === "string" && s.startsWith(LI_STATE_PREFIX) && s.length <= 80;
+/** "Post to LinkedIn" (rather than "Use my LinkedIn photo"). */
+export const isPostState = (s) => isAttendingState(s) && /^ttfc-att\.p[0-9a-f]{32}$/.test(s);
+export const newDraftId = () => crypto.randomBytes(16).toString("hex");
+export const isDraftId = (s) => typeof s === "string" && /^[0-9a-f]{32}$/.test(s);
 
-export function linkedinAuthUrl({ clientId, redirectUri, state }) {
-  const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, scope: LI_SCOPE, state });
+export function linkedinAuthUrl({ clientId, redirectUri, state, scope = LI_SCOPE }) {
+  const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, scope, state });
   return `https://www.linkedin.com/oauth/v2/authorization?${q.toString()}`;
 }
 
@@ -254,6 +261,34 @@ export function attendingReturnUrl(base, { firstName = "", lastName = "", pictur
     if (pic) q.set("pic", pic);
   }
   return `${String(base).replace(/\/+$/, "")}/attending#${q.toString().replace(/\+/g, "%20")}`;
+}
+
+/** Where the attending page picks up after posting: #posted=1&post=<post URL> or #post_error=<code>. */
+export function postReturnUrl(base, { post = "", error = "" } = {}) {
+  const q = new URLSearchParams();
+  if (error) q.set("post_error", error);
+  else {
+    q.set("posted", "1");
+    if (/^https:\/\/www\.linkedin\.com\/feed\/update\/urn:li:(share|ugcPost):\d+\/$/.test(post)) q.set("post", post);
+  }
+  return `${String(base).replace(/\/+$/, "")}/attending#${q.toString()}`;
+}
+
+export const POST_IMAGE_MAX_BYTES = 6 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** A "data:image/png;base64,…" URL → its bytes, or null unless it really is a PNG of a sane size. */
+export function pngFromDataUrl(raw) {
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(typeof raw === "string" ? raw : "");
+  if (!m || m[1].length > Math.ceil(POST_IMAGE_MAX_BYTES / 3) * 4) return null;
+  const buf = Buffer.from(m[1], "base64");
+  if (buf.length < 64 || buf.length > POST_IMAGE_MAX_BYTES || !buf.subarray(0, 8).equals(PNG_MAGIC)) return null;
+  return buf;
+}
+
+/** The post text as typed: up to 3,000 characters, no control characters except new lines. */
+export function cleanPostText(raw) {
+  return String(typeof raw === "string" ? raw : "").replace(/\r\n?/g, "\n").replace(/[^\P{Cc}\n\t]/gu, "").trim().slice(0, 3000);
 }
 
 export const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
