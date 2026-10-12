@@ -6,9 +6,11 @@ const attendeeSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+    // Required for every pass except a Speaker Pass, which is created before staff
+    // have the speaker's email (they add it in the admin panel, then send the pass).
     email: {
       type: String,
-      required: true,
+      required: function () { return this.ticketType !== "speaker"; },
       lowercase: true
     },
     ticketId: {
@@ -64,7 +66,17 @@ const attendeeSchema = new mongoose.Schema(
     claimedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User"
-    }
+    },
+    // Speaker Pass (ticketType "speaker"): the Sanity speaker document it was made for.
+    // One pass per speaker; the sync keys on this.
+    speakerId: {
+      type: String,
+      index: { unique: true, sparse: true }
+    },
+    // The Speaker Pass email: last sent, to which address, and how many times.
+    passEmailSentAt: { type: Date },
+    passEmailSentTo: { type: String },
+    passEmailSentCount: { type: Number }
   },
   {
     timestamps: true

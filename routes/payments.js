@@ -218,6 +218,9 @@ async function resolveUpgrade(buyer, ticketId, toTier) {
   if (!buyer) return { status: 401, error: "Sign in to upgrade your pass." };
   const ticket = (buyer.tickets || []).find((t) => t.ticketId === String(ticketId || "").trim());
   if (!ticket) return { status: 404, error: "That ticket isn't on your account." };
+  // A Speaker Pass (never sold, no inventory row) already includes everything; quoting it
+  // from $0 would charge a full pass and overwrite the speaker ticket.
+  if (String(ticket.type || "").toLowerCase() === "speaker") return { status: 409, error: "Your Speaker Pass already includes everything at TTFC 2026." };
   if (ticket.checkedIn) return { status: 409, error: "This pass has already been used at the door; upgrade at the registration desk." };
   const [from, to] = await Promise.all([
     TicketInventory.findOne({ tier: ticket.type }).lean(),

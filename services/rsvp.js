@@ -154,6 +154,7 @@ export function checkOptions(tier, days, options) {
 export function tierFromTicketType(type) {
   const s = String(type || "").toLowerCase().replace(/ttfc|20\d\d|pass|ticket/g, " ").replace(/[^a-z-]+/g, " ").trim();
   if (!s) return "connect";
+  if (/\bspeaker\b/.test(s)) return "speaker"; // Speaker Pass (staff-issued, never sold): every option
   if (/\b(apex|vip|all[- ]access)\b/.test(s)) return "apex";
   if (/\bpower\b/.test(s)) return "power";
   if (/\binfluence\b/.test(s)) return "influence";
@@ -453,7 +454,9 @@ export function validateRsvp(body) {
  */
 export function resolvePass(found, chosenTier) {
   if (found?.kind === "speaker") {
-    return { ok: true, tier: "speaker", tierVerified: false, kind: "speaker", detectedTier: found.ticket ? tierFromTicketType(found.ticket.type) : "" };
+    const detectedTier = found.ticket ? tierFromTicketType(found.ticket.type) : "";
+    // A verified Speaker Pass ticket proves it; a name on the public list alone doesn't.
+    return { ok: true, tier: "speaker", tierVerified: detectedTier === "speaker", kind: "speaker", detectedTier };
   }
   if (found?.kind === "ticket" && found.verified) return { ok: true, tier: found.tier, tierVerified: true, kind: "ticket" };
   if (!PASS_TIERS.includes(chosenTier)) return { ok: false, field: "tier", error: "Choose your pass" };

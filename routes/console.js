@@ -43,6 +43,12 @@ import {
 import Rsvp from "../models/Rsvp.js";
 import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "../services/rsvp.js";
 import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
+import {
+  SPEAKER_TYPE, fetchSpeakerDocs, syncSpeakerPasses, validateSpeakerEmail, speakerPassRow, speakerPassCounts,
+  readyToSend, SAMPLE_SPEAKER,
+} from "../services/speakerPasses.js";
+import { speakerPassEmailFor } from "../services/speakerPassEmail.js";
+import { sendSpeakerPassEmail } from "../services/emailService.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -949,6 +955,123 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
   });
   await audit(req, "ticket_complimentary", "ticket", attendee.ticketId, `${tier} pass for ${email}`);
   res.status(201).json({ ticketId: attendee.ticketId, name, email, tier, lastName: name.split(" ").slice(-1)[0] });
+});
+
+/* ---------- Speaker Passes ----------
+   A ghost pass (ticketType "speaker", never sold or listed) for every speaker on the
+   website, made from the Sanity speaker list with no email (services/speakerPasses.js).
+   Staff add each speaker's email, preview the pass email, then management sends it.
+   Nothing is ever emailed without a send click; send-all needs { confirm: "SEND" }. */
+
+const SPEAKER_PASS_FIELDS = "name email ticketId ticketType speakerId details passEmailSentAt passEmailSentTo " +
+  "passEmailSentCount claimedBy checkedIn createdAt purchaseDate";
+const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE };
+let speakerSendAllRunning = false;
+
+const findSpeakerPass = (id) => (isId(id)
+  ? Attendee.findOne({ _id: id, ...SPEAKER_SCOPE }).select(SPEAKER_PASS_FIELDS).lean()
+  : null);
+
+/** Emails one pass and records it (when, to which address, how many times). */
+async function sendSpeakerPass(a) {
+  const row = speakerPassRow(a);
+  await sendSpeakerPassEmail({ to: row.email, pass: row });
+  return Attendee.findOneAndUpdate(
+    { _id: a._id, ...SPEAKER_SCOPE },
+    { $set: { passEmailSentAt: new Date(), passEmailSentTo: row.email }, $inc: { passEmailSentCount: 1 } },
+    { new: true },
+  ).select(SPEAKER_PASS_FIELDS).lean();
+}
+
+// → { rows: [speakerPassRow], counts: { passes, withEmail, sent, ready } }
+router.get("/speaker-passes", async (req, res) => {
+  const docs = await Attendee.find(SPEAKER_SCOPE).select(SPEAKER_PASS_FIELDS).lean();
+  const rows = docs.map(speakerPassRow).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+  res.json({ rows, counts: speakerPassCounts(rows) });
+});
+
+// Makes a pass for every speaker who doesn't have one (keyed by Sanity _id; Chris Golden excluded).
+// Safe to run again. → { total, created, existing, excluded, createdNames, excludedNames }
+router.post("/speaker-passes/sync", requireManagement, async (req, res) => {
+  try {
+    const result = await syncSpeakerPasses({
+      loadSpeakers: () => fetchSpeakerDocs(),
+      existingSpeakerIds: async () => (await Attendee.find({ speakerId: { $nin: [null, ""] } }).select("speakerId").lean()).map((a) => a.speakerId),
+      create: (doc) => Attendee.create(doc),
+    });
+    await audit(req, "speaker_passes_sync", "ticket", "",
+      `${result.created} created, ${result.existing} existing, ${result.excluded} excluded${result.createdNames.length ? `: ${result.createdNames.join(", ")}` : ""}`);
+    res.json(result);
+  } catch (err) {
+    console.error("SPEAKER PASS SYNC ERROR:", err?.message || err);
+    res.status(502).json({ error: `Couldn't create the passes: ${err?.message || "speaker list unavailable"}` });
+  }
+});
+
+// The "Preview email" button: a made-up speaker, nothing personal.
+router.get("/speaker-passes/preview-sample", async (req, res) => {
+  const { subject, html, text } = await speakerPassEmailFor(SAMPLE_SPEAKER, { inline: true });
+  res.json({ to: "", subject, html, text });
+});
+
+// Body: { email } ("" clears it). Staff and management.
+router.patch("/speaker-passes/:id", async (req, res) => {
+  const check = validateSpeakerEmail(req.body?.email);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+  const before = await findSpeakerPass(req.params.id);
+  if (!before) return res.status(404).json({ error: "Speaker pass not found" });
+  const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SPEAKER_SCOPE }, { $set: { email: check.email } }, { new: true })
+    .select(SPEAKER_PASS_FIELDS).lean();
+  if ((before.email || "") !== check.email) {
+    await audit(req, "speaker_pass_email", "ticket", a.ticketId, `${a.name}: ${before.email || "no email"} → ${check.email || "no email"}`);
+  }
+  res.json({ row: speakerPassRow(a) });
+});
+
+// → { to, subject, html, text } with the QR inline, for the admin preview.
+router.get("/speaker-passes/:id/preview", async (req, res) => {
+  const a = await findSpeakerPass(req.params.id);
+  if (!a) return res.status(404).json({ error: "Speaker pass not found" });
+  const row = speakerPassRow(a);
+  const { subject, html, text } = await speakerPassEmailFor(row, { inline: true });
+  res.json({ to: row.email, subject, html, text });
+});
+
+// Emails one speaker their pass (again, if it was sent before). Management only.
+router.post("/speaker-passes/:id/send", requireManagement, async (req, res) => {
+  const a = await findSpeakerPass(req.params.id);
+  if (!a) return res.status(404).json({ error: "Speaker pass not found" });
+  if (!a.email) return res.status(400).json({ error: "Add the speaker's email first." });
+  const again = speakerPassRow(a).sentCount > 0;
+  let updated;
+  try {
+    updated = await sendSpeakerPass(a);
+  } catch (err) {
+    await audit(req, "speaker_pass_send_failed", "ticket", a.ticketId, `${a.name} → ${a.email}: ${err?.message || err}`);
+    return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
+  }
+  await audit(req, "speaker_pass_send", "ticket", a.ticketId, `${a.name} → ${a.email}${again ? " (resent)" : ""}`);
+  res.json({ row: speakerPassRow(updated || a) });
+});
+
+// Emails every pass that has an email and hasn't been sent to it. Body must be { confirm: "SEND" }.
+// → { sent, failed, skipped, failures: [{ id, name, email, error }] }
+router.post("/speaker-passes/send-all", requireManagement, async (req, res) => {
+  if (req.body?.confirm !== "SEND") return res.status(400).json({ error: 'Type SEND to confirm.' });
+  if (speakerSendAllRunning) return res.status(409).json({ error: "A send to all speakers is already running." });
+  speakerSendAllRunning = true;
+  try {
+    const all = await Attendee.find(SPEAKER_SCOPE).select(SPEAKER_PASS_FIELDS).lean();
+    const ready = readyToSend(all);
+    const { sent, failed } = await sendSequentially(ready, sendSpeakerPass, { delayMs: PROFILE_SEND_GAP_MS });
+    await audit(req, "speaker_pass_send_all", "ticket", "", `sent ${sent.length}, failed ${failed.length}, skipped ${all.length - ready.length}`);
+    res.json({
+      sent: sent.length, failed: failed.length, skipped: all.length - ready.length,
+      failures: failed.map(({ item, error }) => ({ id: String(item._id), name: item.name, email: item.email, error })),
+    });
+  } finally {
+    speakerSendAllRunning = false;
+  }
 });
 
 // Body: { keys: ["u:<userId>:<ticketId>" | "g:<ticketId>", …], hidden: true|false }

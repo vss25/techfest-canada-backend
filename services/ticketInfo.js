@@ -52,6 +52,8 @@ export const PASS_INCLUSIONS = {
 };
 // Retired tier keys that still exist on old tickets.
 PASS_INCLUSIONS.vip = PASS_INCLUSIONS.apex;
+// Speaker Pass (staff-issued, never sold): everything, plus the speaker lounge.
+PASS_INCLUSIONS.speaker = ["Speaker Lounge", ...PASS_INCLUSIONS.apex];
 
 export const isBoothId = (ticketId) => /^BOOTH-/i.test(String(ticketId || ""));
 

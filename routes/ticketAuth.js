@@ -110,6 +110,11 @@ router.post("/ticket-login", async (req, res) => {
     // Guest purchase → the account for that email (create one if needed).
     let user = a.claimedBy ? await User.findById(a.claimedBy) : null;
     if (!user && a.email) user = await User.findOne({ email: String(a.email).toLowerCase() });
+    // Same rule as above: a ticket ID never opens a staff account (staff-issued passes such as
+    // Speaker Passes can carry a staff member's email).
+    if (user && String(user.role || "").toLowerCase() === "admin") {
+      return res.status(400).json({ error: "Staff accounts sign in with their password." });
+    }
     let created = false;
     if (!user) {
       user = new User({
