@@ -4,7 +4,8 @@ import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
 import { lastNameMatches } from "../services/ticketAccess.js";
 import { findTicket, ticketNameMatches } from "./ticketAuth.js";
-import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS } from "../services/rsvp.js";
+import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS, buildRsvpEmail } from "../services/rsvp.js";
+import { sendFormSubmissionEmail } from "../services/emailService.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
 
 /* =========================================================
@@ -55,8 +56,13 @@ const speakers = makeSpeakerCache();
 
 const lookup = makeLookup({ verifyTicket, getHolders, getSpeakers: () => speakers.get() });
 
+// Each saved RSVP is emailed to the team (RSVP_INBOX, default enquire@thetechfestival.com).
+const RSVP_INBOX = (process.env.RSVP_INBOX || "enquire@thetechfestival.com").split(",").map((x) => x.trim()).filter(Boolean);
+const notify = (row, opts) => sendFormSubmissionEmail({ to: RSVP_INBOX, ...buildRsvpEmail(row, opts) });
+
 const handlers = makeRsvpHandlers({
   lookup,
+  notify,
   store: {
     // The edit token's hash is never read anywhere else (select: false in the model).
     findByKey: (key) => Rsvp.findOne({ key, spam: false }).select("+editTokenHash").lean(),

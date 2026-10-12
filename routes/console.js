@@ -775,6 +775,16 @@ router.get("/rsvps/export", requireManagement, async (req, res) => {
   res.send(rsvpsCsv(rows));
 });
 
+// Delete an RSVP for good (management). Rows that pointed at it as their duplicate are unflagged.
+router.delete("/rsvps/:id", requireManagement, async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
+  const r = await Rsvp.findByIdAndDelete(req.params.id).lean();
+  if (!r) return res.status(404).json({ error: "RSVP not found" });
+  await Rsvp.updateMany({ duplicateOf: String(r._id) }, { $unset: { duplicateOf: "" } });
+  await audit(req, "rsvp_delete", "rsvp", String(r._id), `${[r.firstName, r.lastName].filter(Boolean).join(" ")} (${r.tier || ""})`);
+  res.json({ ok: true });
+});
+
 router.get("/rsvps/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
   const r = await Rsvp.findById(req.params.id).lean();
