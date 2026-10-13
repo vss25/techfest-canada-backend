@@ -45,8 +45,10 @@ import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "
 import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import {
   SPEAKER_TYPE, fetchSpeakerDocs, syncSpeakerPasses, validateSpeakerEmail, speakerPassRow, speakerPassCounts,
-  readyToSend, SAMPLE_SPEAKER,
+  readyToSend, SAMPLE_SPEAKER, manualSpeakerPassDoc,
 } from "../services/speakerPasses.js";
+import { validateRunOfShow, validateContact } from "../services/runOfShow.js";
+import { sendSessionInvites } from "../services/speakerInvites.js";
 import { speakerPassEmailFor } from "../services/speakerPassEmail.js";
 import { sendSpeakerPassEmail } from "../services/emailService.js";
 
@@ -964,7 +966,10 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
    Nothing is ever emailed without a send click; send-all needs { confirm: "SEND" }. */
 
 const SPEAKER_PASS_FIELDS = "name email ticketId ticketType speakerId details passEmailSentAt passEmailSentTo " +
-  "passEmailSentCount claimedBy checkedIn createdAt purchaseDate";
+  "passEmailSentCount claimedBy checkedIn createdAt purchaseDate runOfShow speakerContact invitesSentAt invitesSentCount";
+// Copied on every speaker email and invite (SPEAKER_CC, comma-separated; "" = nobody).
+const speakerCc = (to) => String(process.env.SPEAKER_CC ?? "lubna@thetechfestival.com").split(",")
+  .map((e) => e.trim().toLowerCase()).filter((e) => e && e !== String(to || "").toLowerCase());
 const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE };
 let speakerSendAllRunning = false;
 
@@ -972,21 +977,48 @@ const findSpeakerPass = (id) => (isId(id)
   ? Attendee.findOne({ _id: id, ...SPEAKER_SCOPE }).select(SPEAKER_PASS_FIELDS).lean()
   : null);
 
-/** Emails one pass and records it (when, to which address, how many times). */
+/**
+ * Emails one pass (with its run of show), then a calendar invite per session, and records both.
+ * An invite failure doesn't undo the pass email: it comes back as `inviteError`.
+ */
 async function sendSpeakerPass(a) {
   const row = speakerPassRow(a);
-  await sendSpeakerPassEmail({ to: row.email, pass: row });
-  return Attendee.findOneAndUpdate(
+  const cc = speakerCc(row.email);
+  await sendSpeakerPassEmail({ to: row.email, pass: row, cc });
+  let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
     { $set: { passEmailSentAt: new Date(), passEmailSentTo: row.email }, $inc: { passEmailSentCount: 1 } },
     { new: true },
   ).select(SPEAKER_PASS_FIELDS).lean();
+  if (!row.sessions) return updated;
+  try {
+    await sendSessionInvites({ pass: row, to: row.email, cc, sequence: row.invitesSentCount });
+    updated = await Attendee.findOneAndUpdate(
+      { _id: a._id, ...SPEAKER_SCOPE },
+      { $set: { invitesSentAt: new Date() }, $inc: { invitesSentCount: 1 } },
+      { new: true },
+    ).select(SPEAKER_PASS_FIELDS).lean();
+    return updated;
+  } catch (err) {
+    return { ...updated, inviteError: String(err?.message || err).slice(0, 300) };
+  }
+}
+
+/** RSVPs keyed by ticket ID → { at, days, options } for the speaker passes list. */
+async function speakerRsvps(ticketIds) {
+  const ids = ticketIds.filter(Boolean);
+  if (!ids.length) return new Map();
+  const docs = await Rsvp.find({ ...LIVE_RSVPS, ticketId: { $in: ids.flatMap((t) => [t, t.toUpperCase(), t.toLowerCase()]) } })
+    .select("ticketId days options updatedAt").lean();
+  return new Map(docs.map((r) => [String(r.ticketId).toLowerCase(), { at: r.updatedAt || null, days: r.days || [], options: r.options || [] }]));
 }
 
 // → { rows: [speakerPassRow], counts: { passes, withEmail, sent, ready } }
 router.get("/speaker-passes", async (req, res) => {
   const docs = await Attendee.find(SPEAKER_SCOPE).select(SPEAKER_PASS_FIELDS).lean();
-  const rows = docs.map(speakerPassRow).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+  const rsvps = await speakerRsvps(docs.map((d) => d.ticketId));
+  const rows = docs.map((d) => ({ ...speakerPassRow(d), rsvp: rsvps.get(String(d.ticketId).toLowerCase()) || null }))
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
   res.json({ rows, counts: speakerPassCounts(rows) });
 });
 
@@ -1014,18 +1046,52 @@ router.get("/speaker-passes/preview-sample", async (req, res) => {
   res.json({ to: "", subject, html, text });
 });
 
-// Body: { email } ("" clears it). Staff and management.
+// Body: any of { email ("" clears it), contact ("own" | "handler" | "team" | ""), runOfShow (null clears it) }.
+// Staff and management.
 router.patch("/speaker-passes/:id", async (req, res) => {
-  const check = validateSpeakerEmail(req.body?.email);
-  if (!check.ok) return res.status(400).json({ error: check.error });
+  const body = req.body || {};
+  const set = {};
+  if ("email" in body || !("runOfShow" in body || "contact" in body)) {
+    const check = validateSpeakerEmail(body.email);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+    set.email = check.email;
+  }
+  if ("contact" in body) {
+    const check = validateContact(body.contact);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+    set.speakerContact = check.value;
+  }
+  if ("runOfShow" in body) {
+    const check = validateRunOfShow(body.runOfShow);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+    set.runOfShow = check.value;
+  }
   const before = await findSpeakerPass(req.params.id);
   if (!before) return res.status(404).json({ error: "Speaker pass not found" });
-  const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SPEAKER_SCOPE }, { $set: { email: check.email } }, { new: true })
+  const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SPEAKER_SCOPE }, { $set: set }, { new: true })
     .select(SPEAKER_PASS_FIELDS).lean();
-  if ((before.email || "") !== check.email) {
-    await audit(req, "speaker_pass_email", "ticket", a.ticketId, `${a.name}: ${before.email || "no email"} → ${check.email || "no email"}`);
+  if ("email" in set && (before.email || "") !== set.email) {
+    await audit(req, "speaker_pass_email", "ticket", a.ticketId, `${a.name}: ${before.email || "no email"} → ${set.email || "no email"}`);
+  }
+  if ("runOfShow" in set) {
+    await audit(req, "speaker_pass_run_of_show", "ticket", a.ticketId, `${a.name}: ${set.runOfShow?.sessions?.length || 0} session(s)`);
   }
   res.json({ row: speakerPassRow(a) });
+});
+
+// A pass for a speaker who isn't on the website. Body: { name, title?, company? }. Management.
+router.post("/speaker-passes", requireManagement, async (req, res) => {
+  const name = String(req.body?.name || "").replace(/\s+/g, " ").trim();
+  if (name.length < 3) return res.status(400).json({ error: "Enter the speaker's full name." });
+  const doc = manualSpeakerPassDoc({ name, title: req.body?.title, company: req.body?.company });
+  try {
+    const a = await Attendee.create(doc);
+    await audit(req, "speaker_pass_create", "ticket", a.ticketId, name);
+    res.status(201).json({ row: speakerPassRow(a.toObject()) });
+  } catch (err) {
+    if (err?.code === 11000) return res.status(409).json({ error: "There's already a pass for that name." });
+    throw err;
+  }
 });
 
 // → { to, subject, html, text } with the QR inline, for the admin preview.
@@ -1051,7 +1117,8 @@ router.post("/speaker-passes/:id/send", requireManagement, async (req, res) => {
     return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
   }
   await audit(req, "speaker_pass_send", "ticket", a.ticketId, `${a.name} → ${a.email}${again ? " (resent)" : ""}`);
-  res.json({ row: speakerPassRow(updated || a) });
+  if (updated?.inviteError) await audit(req, "speaker_invite_failed", "ticket", a.ticketId, `${a.name}: ${updated.inviteError}`);
+  res.json({ row: speakerPassRow(updated || a), ...(updated?.inviteError ? { inviteError: updated.inviteError } : {}) });
 });
 
 // Emails every pass that has an email and hasn't been sent to it. Body must be { confirm: "SEND" }.

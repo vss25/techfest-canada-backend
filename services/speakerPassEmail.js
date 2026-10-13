@@ -21,6 +21,7 @@ import { fileURLToPath } from "url";
 import QRCode from "qrcode";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { speakerFirstName, rsvpNameParts, SPEAKER_PASS_LABEL } from "./speakerPasses.js";
+import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween } from "./runOfShow.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -209,7 +210,110 @@ function passCard({ name, title, company, id, qrSrc, logoSrc }) {
  * @param {string} [p.logoSrc]  same; "" shows a text wordmark
  * @returns {{ subject: string, preheader: string, html: string, text: string }}
  */
-export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "" } = {}) {
+/* ---------- run of show (services/runOfShow.js) ---------- */
+
+const SPEAKER_CONTACT = { name: "Lubna Soni", role: "Founder", email: "lubna@thetechfestival.com", phone: "+1 416 717 3020" };
+
+function sessionCard(s, you) {
+  const others = s.lineup || [];
+  const lineup = others.length ? `
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border-top:1px solid ${C.hair};">
+                  ${others.map((p) => {
+                    const me = p.name === you;
+                    return `<tr>
+                    <td valign="top" width="96" style="padding:9px 8px 0 0;font-family:${SANS};font-size:11px;line-height:16px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:${C.dim};">${esc(p.role || "")}</td>
+                    <td valign="top" style="padding:8px 0 0;font-family:${SANS};font-size:14px;line-height:20px;color:${me ? C.white : C.text};${me ? "font-weight:700;" : ""}">${esc(p.name)}${me ? " (you)" : ""}${p.org ? `<span style="color:${C.muted};font-weight:400;">, ${esc(p.org)}</span>` : ""}</td>
+                  </tr>`;
+                  }).join("")}
+                </table>` : "";
+  return `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.card}" style="background:${C.card};border:1px solid ${C.cardEdge};border-radius:16px;border-collapse:separate;margin:0 0 14px;">
+              <tr><td style="padding:20px 22px;">
+                ${eyebrow(`${DAYS[s.day].short} · ${fmtTime(s.start)} to ${fmtTime(s.end)} ET · ${minutesBetween(s.start, s.end)} min`, C.orange)}
+                <div style="font-family:${SANS};font-size:18px;line-height:24px;font-weight:800;color:${C.white};margin:8px 0 4px;">${esc(s.title)}</div>
+                <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.muted};">${esc([s.format, s.role && `you're the ${s.role.toLowerCase()}`, STAGE].filter(Boolean).join(" · "))}</div>${lineup}
+              </td></tr>
+            </table>`;
+}
+
+function micUpCallout(sessions) {
+  const times = sessions.map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`);
+  return `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;margin:4px 0 0;">
+              <tr><td style="padding:16px 18px;border-radius:14px;border:1px solid ${C.orange};background:rgba(245,166,35,0.10);font-family:${SANS};font-size:15px;line-height:23px;color:${C.white};">
+                <b>Please be in the ${LOUNGE} at least ${ARRIVE_EARLY_MIN} minutes before your session for mic fitting</b>${times.length ? `: by ${esc(times.join(" and "))}` : ""}.
+              </td></tr>
+            </table>`;
+}
+
+function dayTable(plan) {
+  const rows = plan.items.map((it) => {
+    const hl = it.kind !== "anchor";
+    const time = `${fmtTime(it.start)}${it.end ? `<br><span style="font-size:10px;letter-spacing:1px;color:${C.dim};">TO ${esc(fmtTime(it.end))}</span>` : it.from ? `<br><span style="font-size:10px;letter-spacing:1px;color:${C.dim};">FROM</span>` : ""}`;
+    return `<tr>
+                  <td valign="top" width="78" style="padding:11px 8px 11px 12px;border-top:1px solid ${C.hair};${hl ? `border-left:3px solid ${it.kind === "micup" ? C.orange : C.magenta};` : "border-left:3px solid transparent;"}font-family:${SANS};font-size:13px;line-height:18px;font-weight:800;color:${C.white};">${time}</td>
+                  <td valign="top" style="padding:11px 12px 11px 4px;border-top:1px solid ${C.hair};font-family:${SANS};">
+                    <div style="font-size:14px;line-height:20px;font-weight:${hl ? 800 : 600};color:${C.white};">${esc(it.title)}</div>
+                    <div style="font-size:12px;line-height:18px;color:${C.muted};">${esc(it.where)}${it.note ? ` · ${esc(it.note)}` : ""}</div>
+                  </td>
+                </tr>`;
+  }).join("");
+  return `
+            <div style="font-family:${SANS};font-size:15px;line-height:22px;font-weight:800;color:${C.white};margin:22px 0 8px;">${esc(plan.long)}</div>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.panel}" style="background:${C.panel};border:1px solid ${C.hair};border-radius:14px;border-collapse:separate;overflow:hidden;">
+              ${rows}
+            </table>`;
+}
+
+/** The "Your run of show" block, or "" when the pass has no sessions. */
+export function runOfShowHtml({ name, runOfShow }) {
+  const sessions = runOfShow?.sessions || [];
+  if (!sessions.length) return "";
+  return `
+        <!-- Run of show -->
+        <tr>
+          <td class="pad" style="padding:40px 44px 6px;">
+            ${sectionTitle(sessions.length > 1 ? "Your sessions" : "Your session")}
+            ${sessions.map((s) => sessionCard(s, name)).join("")}
+            ${micUpCallout(sessions)}
+          </td>
+        </tr>
+        <tr>
+          <td class="pad" style="padding:30px 44px 6px;">
+            ${sectionTitle("Your days, hour by hour")}
+            <div style="font-family:${SANS};font-size:14px;line-height:22px;color:${C.text};">Your pass covers both days. Here's how they fit around your ${sessions.length > 1 ? "sessions" : "session"}.</div>
+            ${dayPlans(runOfShow).map(dayTable).join("")}
+            <div style="font-family:${SANS};font-size:13px;line-height:21px;color:${C.muted};margin:16px 0 0;">
+              Sessions are recorded and media partners may be present, so assume everything is on the record. A closed media room is available if your team has interviews to run.
+            </div>
+          </td>
+        </tr>
+        <tr><td class="pad" style="padding:30px 44px 0;"><div style="border-top:1px solid ${C.hair};font-size:0;line-height:0;height:1px;">&nbsp;</div></td></tr>`;
+}
+
+/** Plain-text version of the run of show (lines, no trailing blank). */
+export function runOfShowText({ name, runOfShow }) {
+  const sessions = runOfShow?.sessions || [];
+  if (!sessions.length) return [];
+  const out = [sessions.length > 1 ? "YOUR SESSIONS" : "YOUR SESSION"];
+  for (const s of sessions) {
+    out.push(`  ${DAYS[s.day].short}, ${fmtTime(s.start)} to ${fmtTime(s.end)} ET (${minutesBetween(s.start, s.end)} min), ${STAGE}`);
+    out.push(`  ${s.format ? `${s.format}: ` : ""}${s.title}${s.role ? ` (you're the ${s.role.toLowerCase()})` : ""}`);
+    for (const p of s.lineup || []) out.push(`    ${p.role ? `${p.role}: ` : ""}${p.name}${p.name === name ? " (you)" : ""}${p.org ? `, ${p.org}` : ""}`);
+    out.push("");
+  }
+  out.push(`  Please be in the ${LOUNGE} at least ${ARRIVE_EARLY_MIN} minutes before your session for mic fitting: by ${sessions.map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`).join(" and ")}.`, "");
+  out.push("YOUR DAYS, HOUR BY HOUR");
+  for (const plan of dayPlans(runOfShow)) {
+    out.push(`  ${plan.long}`);
+    for (const it of plan.items) out.push(`    ${fmtTime(it.start)}${it.end ? ` to ${fmtTime(it.end)}` : it.from ? " onwards" : ""}  ${it.title} (${it.where})`);
+    out.push("");
+  }
+  out.push("  Sessions are recorded and media partners may be present, so assume everything is on the record. A closed media room is available if your team has interviews to run.");
+  return out;
+}
+
+export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "" } = {}) {
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
   const id = displayTicketId(ticketId);
@@ -217,7 +321,9 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
   const t = String(title || "").replace(/\s+/g, " ").trim();
   const co = String(company || "").replace(/\s+/g, " ").trim();
 
-  const subject = `${first}, your Speaker Pass for TTFC 2026`;
+  const hasRos = !!runOfShow?.sessions?.length;
+  const viaContact = contact === "handler";
+  const subject = hasRos ? `${first}, your Speaker Pass and run of show for TTFC 2026` : `${first}, your Speaker Pass for TTFC 2026`;
   const preheader = `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`;
 
   const includes = SPEAKER_INCLUDES.map(([head, sub]) => `
@@ -264,12 +370,13 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
         <tr>
           <td class="pad" style="padding:44px 44px 8px;background-image:radial-gradient(ellipse at 85% 0%,rgba(122,63,209,0.35) 0%,rgba(6,2,15,0) 60%);">
             ${eyebrow("The Tech Festival Canada 2026", C.muted)}
+            ${viaContact ? `<div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.text};margin:20px 0 0;padding:12px 14px;border:1px solid ${C.hair};border-radius:12px;background:${C.panel};">We're sending this to you as the contact for <b style="color:${C.white};">${esc(fullName)}</b>. Please share it with them, or forward this email.</div>` : ""}
             <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:26px 0 6px;">Dear ${esc(first)},</div>
             <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">We're delighted to have you speaking at TTFC&nbsp;2026.</div>
             <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0;">
               The conversations that shape Canada's frontier tech happen because people like you take the stage.
               We look forward to welcoming you to Toronto on ${esc(EVENT.dates)}.
-              Your personal Speaker Pass is below.
+              Your personal Speaker Pass is below${hasRos ? ", followed by your run of show" : ""}.
             </div>
           </td>
         </tr>
@@ -281,6 +388,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
           </td>
         </tr>
 
+${runOfShowHtml({ name: fullName, runOfShow })}
         <!-- Included -->
         <tr>
           <td class="pad" style="padding:40px 44px 6px;">
@@ -308,7 +416,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.panel}" style="background:${C.panel};border:1px solid ${C.hair};border-radius:14px;border-collapse:separate;">
               <tr><td style="padding:20px 24px;font-family:${SANS};font-size:14px;line-height:22px;color:${C.text};">
                 <span style="color:${C.white};font-weight:700;">Questions, travel or session details?</span><br>
-                Reply to this email or write to <a href="mailto:${CONTACT_EMAIL}" style="color:${C.white};font-weight:600;">${CONTACT_EMAIL}</a>. We're glad to help.
+                ${hasRos ? `Speaker enquiries: ${esc(SPEAKER_CONTACT.name)}, ${esc(SPEAKER_CONTACT.role)}, <a href="mailto:${SPEAKER_CONTACT.email}" style="color:${C.white};font-weight:600;">${SPEAKER_CONTACT.email}</a>, ${esc(SPEAKER_CONTACT.phone)}.<br>General and on the day: ` : "Reply to this email or write to "}<a href="mailto:${CONTACT_EMAIL}" style="color:${C.white};font-weight:600;">${CONTACT_EMAIL}</a>. We're glad to help.
               </td></tr>
             </table>
           </td>
@@ -339,6 +447,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
 
   const role = [t, co].filter(Boolean).join(", ");
   const text = [
+    ...(viaContact ? [`We're sending this to you as the contact for ${fullName}. Please share it with them, or forward this email.`, ""] : []),
     `Dear ${first},`,
     "",
     "We're delighted to have you speaking at TTFC 2026.",
@@ -353,6 +462,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
     "  Access:    All Access",
     "  Your check-in QR code is in the HTML version of this email.",
     "",
+    ...(hasRos ? [...runOfShowText({ name: fullName, runOfShow }), ""] : []),
     "YOUR PASS INCLUDES",
     ...SPEAKER_INCLUDES.map(([head, sub]) => `  - ${head}: ${sub}`),
     "",
@@ -361,7 +471,9 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
     `  Your personal RSVP link (your details are already filled in):`,
     `  ${rsvpLink}`,
     "",
-    `Questions, travel or session details? Reply to this email or write to ${CONTACT_EMAIL}.`,
+    hasRos
+      ? `Questions, travel or session details? Speaker enquiries: ${SPEAKER_CONTACT.name}, ${SPEAKER_CONTACT.email}, ${SPEAKER_CONTACT.phone}. General and on the day: ${CONTACT_EMAIL}.`
+      : `Questions, travel or session details? Reply to this email or write to ${CONTACT_EMAIL}.`,
     "",
     "With thanks, and see you in Toronto,",
     "The Tech Festival Canada team",
@@ -376,7 +488,7 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
 
 /** Subject/html/text for one pass. `inline: true` uses data: URIs (admin preview, local demo). */
 export async function speakerPassEmailFor(pass, { inline = true } = {}) {
-  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId };
+  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "" };
   if (inline) return { ...buildSpeakerPassEmail({ ...base, ...(await inlineImageSrcs(pass.ticketId)) }), attachments: [] };
   const { srcs, attachments } = await speakerPassAttachments(pass.ticketId);
   return { ...buildSpeakerPassEmail({ ...base, ...srcs }), attachments };

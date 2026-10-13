@@ -168,12 +168,26 @@ export function speakerPassRow(a) {
     claimed: !!a.claimedBy,
     checkedIn: !!a.checkedIn,
     createdAt: a.createdAt || a.purchaseDate || null,
+    runOfShow: a.runOfShow?.sessions?.length ? a.runOfShow : null,
+    sessions: a.runOfShow?.sessions?.length || 0,
+    contact: a.speakerContact || "",
+    invitesSentAt: a.invitesSentAt || null,
+    invitesSentCount: Number(a.invitesSentCount) || 0,
   };
+}
+
+/** A pass for a speaker who isn't on the website (keyed "manual:<name>", so it's made once). */
+export function manualSpeakerPassDoc({ name, title = "", company = "" }, opts) {
+  const n = clean(name, 120);
+  const key = n.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return speakerPassDoc({ speakerId: `manual:${key}`, name: n, title: clean(title), company: clean(company) }, opts);
 }
 
 export function speakerPassCounts(rows = []) {
   return {
     passes: rows.length,
+    rsvpd: rows.filter((r) => r.rsvp).length,
+    withRunOfShow: rows.filter((r) => r.sessions > 0).length,
     withEmail: rows.filter((r) => r.status !== "no-email").length,
     sent: rows.filter((r) => r.status === "sent").length,
     ready: rows.filter((r) => r.status === "ready").length,

@@ -138,10 +138,11 @@ test("status: no email → ready → sent (a corrected email is ready again)", (
   assert.deepEqual(rows[2], {
     id: "3", speakerId: "s3", name: "C", title: "CEO", company: "Acme", ticketId: "t3", email: "c@x.co",
     emailSentAt: sentAt, emailSentTo: "c@x.co", sentCount: 2, status: "sent", claimed: false, checkedIn: false, createdAt: null,
+    runOfShow: null, sessions: 0, contact: "", invitesSentAt: null, invitesSentCount: 0,
   });
   assert.equal(rows[1].claimed, true);
   assert.equal(rows[1].checkedIn, true);
-  assert.deepEqual(speakerPassCounts(rows), { passes: 3, withEmail: 2, sent: 1, ready: 1 });
+  assert.deepEqual(speakerPassCounts(rows), { passes: 3, rsvpd: 0, withRunOfShow: 0, withEmail: 2, sent: 1, ready: 1 });
   assert.deepEqual(readyToSend(docs).map((d) => d.name), ["B"]);
 });
 
