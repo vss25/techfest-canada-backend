@@ -65,10 +65,13 @@ const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
  * Sends an invite for every session on the pass. Stops at the first failure (throws, with
  * how many went out). → { sent: number }
  */
-export async function sendSessionInvites({ pass, to, cc = [], sequence = 0, client = resend() }) {
+export const INVITE_GAP_MS = 700; // Resend allows ~2 requests a second; the pass email went just before
+
+export async function sendSessionInvites({ pass, to, cc = [], sequence = 0, client = resend(), wait = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const sessions = pass?.runOfShow?.sessions || [];
   let sent = 0;
   for (const s of sessions) {
+    await wait(INVITE_GAP_MS);
     const { subject, html, text, ics } = buildSessionInvite({ name: pass.name, ticketId: pass.ticketId, session: s, to, sequence, micUp: needsMicUp(sessions, s) });
     const { data, error } = await client.emails.send({
       from: FROM,

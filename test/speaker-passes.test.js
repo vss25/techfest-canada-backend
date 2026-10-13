@@ -136,7 +136,7 @@ test("status: no email → ready → sent (a corrected email is ready again)", (
   ];
   const rows = docs.map(speakerPassRow);
   assert.deepEqual(rows[2], {
-    id: "3", speakerId: "s3", name: "C", title: "CEO", company: "Acme", ticketId: "t3", email: "c@x.co",
+    id: "3", speakerId: "s3", name: "C", title: "CEO", company: "Acme", ticketId: "t3", email: "c@x.co", alsoTo: [], emails: ["c@x.co"],
     emailSentAt: sentAt, emailSentTo: "c@x.co", sentCount: 2, status: "sent", claimed: false, checkedIn: false, createdAt: null,
     runOfShow: null, sessions: 0, contact: "", invitesSentAt: null, invitesSentCount: 0,
   });
@@ -188,7 +188,7 @@ test("the speaker email: personal, complete and on brand", () => {
   const link = `${RSVP_URL}#t=A1B2C3D4E5F6&fn=Jane&ln=Doe`;
   assert.match(e.preheader, /^We're delighted to have you speaking at TTFC 2026\./);
   for (const s of [
-    "Dear Jane,", "We're delighted to have you speaking at TTFC&nbsp;2026.", "We look forward to welcoming you to Toronto",
+    "Dear Jane,", "delighted to have you speaking at TTFC&nbsp;2026.", "We look forward to welcoming you to Toronto",
     "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
     "October 26–27, 2026", "The Westin Harbour Castle", "A1B2C3D4E5F6", `src="cid:${QR_CID}"`, `src="cid:${LOGO_CID}"`,
     `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP Now",

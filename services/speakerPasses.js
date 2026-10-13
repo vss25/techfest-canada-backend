@@ -143,11 +143,29 @@ export function validateSpeakerEmail(raw) {
   return { ok: true, email };
 }
 
-/** Sent counts only for the address it went to: a corrected email is "ready" again. */
+/**
+ * One or more addresses ("a@x.com, b@y.com", or an array): lower-cased, de-duplicated.
+ * "" clears them. → { ok: true, list } | { ok: false, error }
+ */
+export function validateSpeakerEmails(raw, { max = 6 } = {}) {
+  if (typeof raw !== "string" && !Array.isArray(raw)) return { ok: false, error: "Enter an email address." };
+  const parts = (Array.isArray(raw) ? raw : raw.split(/[,;\s]+/)).map((e) => String(e || "").trim().toLowerCase()).filter(Boolean);
+  const list = [...new Set(parts)];
+  if (list.length > max) return { ok: false, error: `Up to ${max} addresses.` };
+  const bad = list.find((e) => e.length > 254 || !EMAIL.test(e));
+  if (bad) return { ok: false, error: `${bad} isn't a valid email address.` };
+  return { ok: true, list };
+}
+
+/** Everyone a pass email goes to: the main address, then any extra ones. */
+export const passRecipients = (a) => [...new Set([a?.email, ...(a?.alsoTo || [])]
+  .map((e) => String(e || "").trim().toLowerCase()).filter(Boolean))];
+
+/** Sent counts only for the addresses it went to: a changed address list is "ready" again. */
 export function passStatus(a) {
-  const email = String(a?.email || "").trim().toLowerCase();
-  if (!email) return "no-email";
-  if (a?.passEmailSentAt && String(a.passEmailSentTo || "").toLowerCase() === email) return "sent";
+  const to = passRecipients(a);
+  if (!to.length) return "no-email";
+  if (a?.passEmailSentAt && String(a.passEmailSentTo || "").toLowerCase() === to.join(", ")) return "sent";
   return "ready";
 }
 
@@ -161,6 +179,8 @@ export function speakerPassRow(a) {
     company: a.details?.organisation || "",
     ticketId: a.ticketId,
     email: a.email || "",
+    alsoTo: a.alsoTo || [],
+    emails: passRecipients(a),
     emailSentAt: a.passEmailSentAt || null,
     emailSentTo: a.passEmailSentTo || "",
     sentCount: Number(a.passEmailSentCount) || 0,

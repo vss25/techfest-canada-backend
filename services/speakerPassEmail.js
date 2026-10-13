@@ -313,7 +313,33 @@ export function runOfShowText({ name, runOfShow }) {
   return out;
 }
 
-export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "" } = {}) {
+/**
+ * The words staff can change (Admin → Speaker passes → Edit email). {firstName} and {fullName}
+ * are filled in per speaker. An empty field means the built-in text below.
+ */
+export const DEFAULT_COPY = Object.freeze({
+  subject: "{firstName}, your Speaker Pass and run of show for TTFC 2026",
+  headline: "We're delighted to have you speaking at TTFC 2026.",
+  message: `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below, followed by your run of show.`,
+});
+export const COPY_LIMITS = Object.freeze({ subject: 200, headline: 200, message: 3000 });
+
+/** Tidies edited wording: plain text, no control characters (new lines kept in the message). */
+export function cleanCopy(raw = {}) {
+  const out = {};
+  for (const k of ["subject", "headline", "message"]) {
+    if (raw[k] === undefined || raw[k] === null) continue;
+    let v = String(raw[k]).replace(/\r\n?/g, "\n").replace(/[^\P{Cc}\n]/gu, "");
+    v = k === "message" ? v.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : v.replace(/\s+/g, " ").trim();
+    out[k] = v.slice(0, COPY_LIMITS[k]);
+  }
+  return out;
+}
+
+const fillCopy = (s, { firstName, fullName }) => String(s || "")
+  .replace(/\{firstName\}/g, firstName).replace(/\{fullName\}/g, fullName).replace(/\{name\}/g, fullName);
+
+export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {} } = {}) {
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
   const id = displayTicketId(ticketId);
@@ -323,7 +349,13 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
 
   const hasRos = !!runOfShow?.sessions?.length;
   const viaContact = contact === "handler";
-  const subject = hasRos ? `${first}, your Speaker Pass and run of show for TTFC 2026` : `${first}, your Speaker Pass for TTFC 2026`;
+  const fill = (s) => fillCopy(s, { firstName: first, fullName });
+  const subject = copy.subject ? fill(copy.subject)
+    : hasRos ? `${first}, your Speaker Pass and run of show for TTFC 2026` : `${first}, your Speaker Pass for TTFC 2026`;
+  const headline = copy.headline ? fill(copy.headline) : DEFAULT_COPY.headline;
+  const message = copy.message ? fill(copy.message)
+    : `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below${hasRos ? ", followed by your run of show" : ""}.`;
+  const messageHtml = message.split(/\n\s*\n/).map((p, i) => `<div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:${i ? "14px" : "0"} 0 0;">${esc(p).replace(/\n/g, "<br>")}</div>`).join("");
   const preheader = `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`;
 
   const includes = SPEAKER_INCLUDES.map(([head, sub]) => `
@@ -372,12 +404,8 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
             ${eyebrow("The Tech Festival Canada 2026", C.muted)}
             ${viaContact ? `<div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.text};margin:20px 0 0;padding:12px 14px;border:1px solid ${C.hair};border-radius:12px;background:${C.panel};">We're sending this to you as the contact for <b style="color:${C.white};">${esc(fullName)}</b>. Please share it with them, or forward this email.</div>` : ""}
             <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:26px 0 6px;">Dear ${esc(first)},</div>
-            <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">We're delighted to have you speaking at TTFC&nbsp;2026.</div>
-            <div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0;">
-              The conversations that shape Canada's frontier tech happen because people like you take the stage.
-              We look forward to welcoming you to Toronto on ${esc(EVENT.dates)}.
-              Your personal Speaker Pass is below${hasRos ? ", followed by your run of show" : ""}.
-            </div>
+            <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 18px;">${esc(headline).replace("TTFC 2026", "TTFC&nbsp;2026")}</div>
+            ${messageHtml}
           </td>
         </tr>
 
@@ -450,9 +478,9 @@ ${runOfShowHtml({ name: fullName, runOfShow })}
     ...(viaContact ? [`We're sending this to you as the contact for ${fullName}. Please share it with them, or forward this email.`, ""] : []),
     `Dear ${first},`,
     "",
-    "We're delighted to have you speaking at TTFC 2026.",
+    headline,
     "",
-    `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below.`,
+    message,
     "",
     `YOUR ${SPEAKER_PASS_LABEL.toUpperCase()}`,
     `  ${fullName}${role ? `\n  ${role}` : ""}`,
@@ -487,8 +515,8 @@ ${runOfShowHtml({ name: fullName, runOfShow })}
 }
 
 /** Subject/html/text for one pass. `inline: true` uses data: URIs (admin preview, local demo). */
-export async function speakerPassEmailFor(pass, { inline = true } = {}) {
-  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "" };
+export async function speakerPassEmailFor(pass, { inline = true, copy = {} } = {}) {
+  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "", copy };
   if (inline) return { ...buildSpeakerPassEmail({ ...base, ...(await inlineImageSrcs(pass.ticketId)) }), attachments: [] };
   const { srcs, attachments } = await speakerPassAttachments(pass.ticketId);
   return { ...buildSpeakerPassEmail({ ...base, ...srcs }), attachments };
