@@ -76,7 +76,14 @@ const attendeeSchema = new mongoose.Schema(
     // The Speaker Pass email: last sent, to which address, and how many times.
     passEmailSentAt: { type: Date },
     passEmailSentTo: { type: String },
-    passEmailSentCount: { type: Number }
+    passEmailSentCount: { type: Number },
+    // Speaker run of show (services/runOfShow.js) and who the email address belongs to:
+    // "own" (the speaker), "handler" (assistant / office), "team" (TTFC).
+    runOfShow: { type: mongoose.Schema.Types.Mixed },
+    speakerContact: { type: String },
+    // Calendar invites for their sessions (sent with the pass email).
+    invitesSentAt: { type: Date },
+    invitesSentCount: { type: Number }
   },
   {
     timestamps: true
