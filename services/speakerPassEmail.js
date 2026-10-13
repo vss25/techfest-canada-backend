@@ -53,6 +53,15 @@ export const SPEAKER_INCLUDES = [
 /** Why speakers should RSVP (shown above the button and in the plain text). */
 export const RSVP_REASON = "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.";
 
+/**
+ * What changes between pass emails. The Speaker Pass is the default; staff-issued passes
+ * (services/issuedPasses.js) pass their own: label, access line, what's included, whether
+ * there's an RSVP button, and the built-in wording ({firstName}/{fullName} filled in).
+ */
+export const SPEAKER_VARIANT = Object.freeze({
+  label: "Speaker Pass", access: "All Access", includes: null, rsvp: true, rsvpReason: null,
+});
+
 export const qrPayload = (ticketId) => `TECHFEST:${String(ticketId || "").trim()}`;
 /** Shown to people: upper case reads better and sign-in ignores case. */
 export const displayTicketId = (ticketId) => String(ticketId || "").trim().toUpperCase();
@@ -130,7 +139,7 @@ function button(href, label) {
 }
 
 /** The pass card: a badge-style ticket that reads well in every client. */
-function passCard({ name, title, company, id, qrSrc, logoSrc }) {
+function passCard({ name, title, company, id, qrSrc, logoSrc, label = "Speaker Pass", access = "All Access" }) {
   const role = [title, company].filter(Boolean);
   const detail = (label, value, extra = "") => `
             <tr><td style="padding:0 0 14px;">
@@ -149,7 +158,7 @@ function passCard({ name, title, company, id, qrSrc, logoSrc }) {
           </td>
           <td valign="middle" align="right">
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;">
-              <tr><td bgcolor="${C.magenta}" style="background:${C.magenta};background-image:linear-gradient(90deg,${C.magenta} 0%,${C.orange} 100%);border-radius:999px;padding:7px 14px;font-family:${SANS};font-size:11px;line-height:13px;font-weight:800;letter-spacing:2.4px;color:#ffffff;white-space:nowrap;">SPEAKER PASS</td></tr>
+              <tr><td bgcolor="${C.magenta}" style="background:${C.magenta};background-image:linear-gradient(90deg,${C.magenta} 0%,${C.orange} 100%);border-radius:999px;padding:7px 14px;font-family:${SANS};font-size:11px;line-height:13px;font-weight:800;letter-spacing:2.4px;color:#ffffff;white-space:nowrap;">${esc(String(label).toUpperCase())}</td></tr>
             </table>
           </td>
         </tr>
@@ -177,7 +186,7 @@ function passCard({ name, title, company, id, qrSrc, logoSrc }) {
               ${detail("Dates", esc(EVENT.dates))}
               ${detail("Venue", `${esc(EVENT.venue)}<br><span style="font-weight:400;color:${C.muted};">${esc(EVENT.city.replace(", Ontario", ""))}</span>`)}
               ${detail("Ticket ID", esc(id), `font-family:${MONO};font-size:17px;letter-spacing:2px;color:${C.white};`)}
-              ${detail("Access", "All Access")}
+              ${detail("Access", esc(access))}
             </table>
           </td>
           <td class="stack qr" valign="top" align="right" width="170" style="width:170px;">
@@ -339,7 +348,11 @@ export function cleanCopy(raw = {}) {
 const fillCopy = (s, { firstName, fullName }) => String(s || "")
   .replace(/\{firstName\}/g, firstName).replace(/\{fullName\}/g, fullName).replace(/\{name\}/g, fullName);
 
-export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {} } = {}) {
+export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {}, variant = null } = {}) {
+  const v = { ...SPEAKER_VARIANT, ...(variant || {}) };
+  const isSpeaker = !variant;
+  const includeList = v.includes || SPEAKER_INCLUDES;
+  const rsvpReason = v.rsvpReason || RSVP_REASON;
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
   const id = displayTicketId(ticketId);
@@ -351,14 +364,18 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
   const viaContact = contact === "handler";
   const fill = (s) => fillCopy(s, { firstName: first, fullName });
   const subject = copy.subject ? fill(copy.subject)
+    : !isSpeaker ? fill(v.subject)
     : hasRos ? `${first}, your Speaker Pass and run of show for TTFC 2026` : `${first}, your Speaker Pass for TTFC 2026`;
-  const headline = copy.headline ? fill(copy.headline) : DEFAULT_COPY.headline;
+  const headline = copy.headline ? fill(copy.headline) : isSpeaker ? DEFAULT_COPY.headline : fill(v.headline);
   const message = copy.message ? fill(copy.message)
+    : !isSpeaker ? fill(v.message)
     : `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below${hasRos ? ", followed by your run of show" : ""}.`;
   const messageHtml = message.split(/\n\s*\n/).map((p, i) => `<div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:${i ? "14px" : "0"} 0 0;">${esc(p).replace(/\n/g, "<br>")}</div>`).join("");
-  const preheader = `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`;
+  const preheader = isSpeaker
+    ? `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`
+    : `Your ${v.label} for TTFC 2026: ticket ID, check-in QR code${v.rsvp ? " and personal RSVP link" : ""} inside.`;
 
-  const includes = SPEAKER_INCLUDES.map(([head, sub]) => `
+  const includes = includeList.map(([head, sub]) => `
               <tr>
                 <td valign="top" width="22" style="padding:3px 0 14px;"><div style="width:8px;height:8px;border-radius:2px;background:${C.magenta};background-image:linear-gradient(135deg,${C.purple},${C.magenta} 60%,${C.orange});font-size:0;line-height:0;margin-top:5px;">&nbsp;</div></td>
                 <td valign="top" style="padding:0 0 14px;font-family:${SANS};">
@@ -412,31 +429,31 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
         <!-- Pass -->
         <tr>
           <td class="pad" style="padding:30px 44px 8px;">
-            ${passCard({ name: fullName, title: t, company: co, id, qrSrc, logoSrc })}
+            ${passCard({ name: fullName, title: t, company: co, id, qrSrc, logoSrc, label: v.label, access: v.access })}
           </td>
         </tr>
 
 ${runOfShowHtml({ name: fullName, runOfShow })}
-        <!-- Included -->
+        ${includeList.length ? `<!-- Included -->
         <tr>
           <td class="pad" style="padding:40px 44px 6px;">
             ${sectionTitle("Your pass includes")}
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${includes}
             </table>
           </td>
-        </tr>
+        </tr>` : ""}
 
         <tr><td class="pad" style="padding:6px 44px 0;"><div style="border-top:1px solid ${C.hair};font-size:0;line-height:0;height:1px;">&nbsp;</div></td></tr>
 
-        <!-- RSVP -->
+        ${v.rsvp ? `<!-- RSVP -->
         <tr>
           <td class="pad" style="padding:36px 44px 4px;">
             ${sectionTitle("Save your seat")}
-            <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 20px;">${esc(RSVP_REASON)}</div>
+            <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 20px;">${esc(rsvpReason)}</div>
             ${button(rsvpLink, "RSVP Now")}
             <div style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin:12px 0 0;">Your link opens the RSVP page with your details already filled in.</div>
           </td>
-        </tr>
+        </tr>` : ""}
 
         <!-- Contact -->
         <tr>
@@ -463,7 +480,7 @@ ${runOfShowHtml({ name: fullName, runOfShow })}
           <td class="pad" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
             ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
             ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
-            <span style="color:#5f527f;">This pass and your RSVP link are personal to you. Please keep your ticket ID to yourself.</span>
+            <span style="color:#5f527f;">This pass${v.rsvp ? " and your RSVP link are" : " is"} personal to you. Please keep your ticket ID to yourself.</span>
           </td>
         </tr>
       </table>
@@ -482,23 +499,17 @@ ${runOfShowHtml({ name: fullName, runOfShow })}
     "",
     message,
     "",
-    `YOUR ${SPEAKER_PASS_LABEL.toUpperCase()}`,
+    `YOUR ${(isSpeaker ? SPEAKER_PASS_LABEL : v.label).toUpperCase()}`,
     `  ${fullName}${role ? `\n  ${role}` : ""}`,
     `  Dates:     ${EVENT.dates}`,
     `  Venue:     ${EVENT.venue}, ${EVENT.address}`,
     `  Ticket ID: ${id}`,
-    "  Access:    All Access",
+    `  Access:    ${v.access}`,
     "  Your check-in QR code is in the HTML version of this email.",
     "",
     ...(hasRos ? [...runOfShowText({ name: fullName, runOfShow }), ""] : []),
-    "YOUR PASS INCLUDES",
-    ...SPEAKER_INCLUDES.map(([head, sub]) => `  - ${head}: ${sub}`),
-    "",
-    "SAVE YOUR SEAT",
-    `  ${RSVP_REASON}`,
-    `  Your personal RSVP link (your details are already filled in):`,
-    `  ${rsvpLink}`,
-    "",
+    ...(includeList.length ? ["YOUR PASS INCLUDES", ...includeList.map(([head, sub]) => `  - ${head}: ${sub}`), ""] : []),
+    ...(v.rsvp ? ["SAVE YOUR SEAT", `  ${rsvpReason}`, "  Your personal RSVP link (your details are already filled in):", `  ${rsvpLink}`, ""] : []),
     hasRos
       ? `Questions, travel or session details? Speaker enquiries: ${SPEAKER_CONTACT.name}, ${SPEAKER_CONTACT.email}, ${SPEAKER_CONTACT.phone}. General and on the day: ${CONTACT_EMAIL}.`
       : `Questions, travel or session details? Reply to this email or write to ${CONTACT_EMAIL}.`,
@@ -508,15 +519,15 @@ ${runOfShowHtml({ name: fullName, runOfShow })}
     "",
     `${EVENT.name} · ${EVENT.dates}`,
     `${EVENT.venue}, ${EVENT.address}`,
-    "This pass and your RSVP link are personal to you. Please keep your ticket ID to yourself.",
+    `This pass${v.rsvp ? " and your RSVP link are" : " is"} personal to you. Please keep your ticket ID to yourself.`,
   ].join("\n");
 
   return { subject, preheader, html, text };
 }
 
 /** Subject/html/text for one pass. `inline: true` uses data: URIs (admin preview, local demo). */
-export async function speakerPassEmailFor(pass, { inline = true, copy = {} } = {}) {
-  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "", copy };
+export async function speakerPassEmailFor(pass, { inline = true, copy = {}, variant = null } = {}) {
+  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "", copy, variant };
   if (inline) return { ...buildSpeakerPassEmail({ ...base, ...(await inlineImageSrcs(pass.ticketId)) }), attachments: [] };
   const { srcs, attachments } = await speakerPassAttachments(pass.ticketId);
   return { ...buildSpeakerPassEmail({ ...base, ...srcs }), attachments };
