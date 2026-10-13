@@ -236,9 +236,9 @@ export async function sendFormSubmissionEmail({ to, subject, html, text, replyTo
    passes (routes/console.js). Throws when Resend refuses it.
 ========================================================= */
 
-export async function sendSpeakerPassEmail({ to, pass, cc = [] }) {
-  if (!to || !pass?.ticketId) throw new Error("Missing email or ticket");
-  const { subject, html, text, attachments } = await speakerPassEmailFor(pass, { inline: false });
+export async function sendSpeakerPassEmail({ to, pass, cc = [], copy = {} }) {
+  if (!to?.length || !pass?.ticketId) throw new Error("Missing email or ticket");
+  const { subject, html, text, attachments } = await speakerPassEmailFor(pass, { inline: false, copy });
   const { data, error } = await resend.emails.send({
     from: SPEAKER_PASS_FROM,
     to,

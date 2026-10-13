@@ -178,7 +178,7 @@ export function sessionInviteIcs({ ticketId, name, session: s, to, organizer, se
     `LOCATION:${icsText(`The Westin Harbour Castle, 1 Harbour Square, Toronto (${micUp ? `${LOUNGE}, then ` : ""}${STAGE})`)}`,
     `DESCRIPTION:${icsText(description)}`,
     `ORGANIZER;CN=${icsText(organizer.name)}:mailto:${organizer.email}`,
-    `ATTENDEE;CN=${icsText(name)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${to}`,
+    ...[].concat(to).filter(Boolean).map((addr) => `ATTENDEE;CN=${icsText(name)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${addr}`),
     `SEQUENCE:${Math.max(0, Number(sequence) || 0)}`,
     "STATUS:CONFIRMED",
     "TRANSP:OPAQUE",

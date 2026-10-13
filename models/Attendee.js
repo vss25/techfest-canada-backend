@@ -80,6 +80,8 @@ const attendeeSchema = new mongoose.Schema(
     // Speaker run of show (services/runOfShow.js) and who the email address belongs to:
     // "own" (the speaker), "handler" (assistant / office), "team" (TTFC).
     runOfShow: { type: mongoose.Schema.Types.Mixed },
+    // More addresses that get the same Speaker Pass email (e.g. the speaker and their assistant).
+    alsoTo: { type: [String], default: undefined },
     speakerContact: { type: String },
     // Calendar invites for their sessions (sent with the pass email).
     invitesSentAt: { type: Date },
