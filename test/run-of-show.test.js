@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { arriveAt, dayPlans, fmtTime, foldLine, sessionInviteIcs, validateContact, validateRunOfShow } from "../services/runOfShow.js";
+import { arriveAt, dayPlans, fmtTime, foldLine, needsMicUp, sessionInviteIcs, validateContact, validateRunOfShow } from "../services/runOfShow.js";
 import { buildSpeakerPassEmail } from "../services/speakerPassEmail.js";
 import { buildSessionInvite } from "../services/speakerInvites.js";
 
@@ -73,4 +73,17 @@ test("session invite email carries the .ics", () => {
   assert.match(inv.subject, /^Invitation: From Investment/);
   assert.match(inv.ics, /BEGIN:VEVENT/);
   assert.match(inv.text, /9:00 AM  Mic fitting/);
+});
+
+test("back-to-back sessions get one mic fitting", () => {
+  const sessions = [
+    { day: 1, start: "10:00", end: "10:05", title: "Keynote" },
+    { day: 1, start: "10:05", end: "10:30", title: "Fireside" },
+    { day: 1, start: "14:00", end: "14:30", title: "Later" },
+  ];
+  assert.deepEqual(sessions.map((s) => needsMicUp(sessions, s)), [true, false, true]);
+  const micups = dayPlans({ sessions })[0].items.filter((i) => i.kind === "micup").map((i) => i.start);
+  assert.deepEqual(micups, ["09:30", "13:30"]);
+  const ics = sessionInviteIcs({ ticketId: "x", name: "A", session: sessions[1], to: "a@b.co", organizer: { name: "L", email: "l@x.co" }, micUp: false });
+  assert.match(ics, /DTSTART:20261026T140500Z/);
 });

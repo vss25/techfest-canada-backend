@@ -60,6 +60,15 @@ export function fmtTime(hhmm) {
 export const arriveAt = (start) => fromMin(Math.max(0, toMin(start) - ARRIVE_EARLY_MIN));
 export const minutesBetween = (a, b) => toMin(b) - toMin(a);
 
+/**
+ * Whether a session needs its own mic fitting: not when the speaker is still on (or just off)
+ * stage from an earlier session that day, ending less than ARRIVE_EARLY_MIN before it starts.
+ */
+export function needsMicUp(sessions = [], s) {
+  return !sessions.some((o) => o !== s && o.day === s.day && toMin(o.start) < toMin(s.start)
+    && toMin(s.start) - toMin(o.end) < ARRIVE_EARLY_MIN);
+}
+
 /** The Date for a day + local "HH:MM". */
 export const localDate = (day, hhmm) => new Date(`${DAYS[day].date}T${hhmm}:00${UTC_OFFSET}`);
 
@@ -104,8 +113,10 @@ export function dayPlans(runOfShow, days = [1, 2]) {
   return days.map((day) => {
     const items = ANCHORS[day].map((a) => ({ ...a, kind: "anchor" }));
     for (const s of sessions.filter((x) => x.day === day)) {
-      items.push({ start: arriveAt(s.start), title: "Mic fitting in the VIP Lounge", where: LOUNGE, kind: "micup",
-        note: `Please be here at least ${ARRIVE_EARLY_MIN} minutes before your session.` });
+      if (needsMicUp(sessions, s)) {
+        items.push({ start: arriveAt(s.start), title: "Mic fitting in the VIP Lounge", where: LOUNGE, kind: "micup",
+          note: `Please be here at least ${ARRIVE_EARLY_MIN} minutes before your session.` });
+      }
       items.push({ start: s.start, end: s.end, title: `${s.format ? `${s.format}: ` : ""}${s.title}`, where: STAGE, kind: "session",
         note: `${minutesBetween(s.start, s.end)} minutes${s.role ? `, you're the ${s.role.toLowerCase()}` : ""}.` });
     }
@@ -141,11 +152,11 @@ export const inviteUid = (ticketId, s) => `ttfc26-${String(ticketId || "x").toLo
  * The invite for one session: from the mic fitting (ARRIVE_EARLY_MIN early) to the session's end.
  * Organizer = `organizer` (replies go there); the recipient is the attendee.
  */
-export function sessionInviteIcs({ ticketId, name, session: s, to, organizer, sequence = 0, now = new Date() }) {
-  const arrive = arriveAt(s.start);
+export function sessionInviteIcs({ ticketId, name, session: s, to, organizer, sequence = 0, now = new Date(), micUp = true }) {
+  const arrive = micUp ? arriveAt(s.start) : s.start;
   const others = (s.lineup || []).filter((p) => p.name !== name).map((p) => `${p.role ? `${p.role}: ` : ""}${p.name}${p.org ? ` (${p.org})` : ""}`);
   const description = [
-    `${fmtTime(arrive)}: mic fitting in the ${LOUNGE}. Please be there at least ${ARRIVE_EARLY_MIN} minutes before your session.`,
+    micUp ? `${fmtTime(arrive)}: mic fitting in the ${LOUNGE}. Please be there at least ${ARRIVE_EARLY_MIN} minutes before your session.` : "",
     `${fmtTime(s.start)} to ${fmtTime(s.end)}: ${s.format ? `${s.format}, ` : ""}${s.title}, ${STAGE}.`,
     others.length ? `On stage with you: ${others.join("; ")}.` : "",
     "",
@@ -164,7 +175,7 @@ export function sessionInviteIcs({ ticketId, name, session: s, to, organizer, se
     `DTSTART:${icsUtc(localDate(s.day, arrive))}`,
     `DTEND:${icsUtc(localDate(s.day, s.end))}`,
     `SUMMARY:${icsText(`TTFC 2026: ${s.title} (you're speaking)`)}`,
-    `LOCATION:${icsText(`The Westin Harbour Castle, 1 Harbour Square, Toronto (${LOUNGE}, then ${STAGE})`)}`,
+    `LOCATION:${icsText(`The Westin Harbour Castle, 1 Harbour Square, Toronto (${micUp ? `${LOUNGE}, then ` : ""}${STAGE})`)}`,
     `DESCRIPTION:${icsText(description)}`,
     `ORGANIZER;CN=${icsText(organizer.name)}:mailto:${organizer.email}`,
     `ATTENDEE;CN=${icsText(name)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${to}`,
@@ -174,7 +185,7 @@ export function sessionInviteIcs({ ticketId, name, session: s, to, organizer, se
     "BEGIN:VALARM",
     "TRIGGER:-PT60M",
     "ACTION:DISPLAY",
-    `DESCRIPTION:${icsText(`Mic fitting in the ${LOUNGE} at ${fmtTime(arrive)}`)}`,
+    `DESCRIPTION:${icsText(micUp ? `Mic fitting in the ${LOUNGE} at ${fmtTime(arrive)}` : `${s.title} at ${fmtTime(s.start)}`)}`,
     "END:VALARM",
     "END:VEVENT",
     "END:VCALENDAR",

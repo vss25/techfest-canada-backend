@@ -14,7 +14,7 @@
 import { Resend } from "resend";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { C, CONTACT_EMAIL, FROM } from "./speakerPassEmail.js";
-import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, fmtTime, sessionInviteIcs } from "./runOfShow.js";
+import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, fmtTime, needsMicUp, sessionInviteIcs } from "./runOfShow.js";
 
 export const organizer = (env = process.env) => ({
   name: env.SPEAKER_ORGANIZER_NAME || "Lubna Soni",
@@ -24,12 +24,12 @@ export const organizer = (env = process.env) => ({
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 /** Subject, html, text and the .ics for one session. */
-export function buildSessionInvite({ name, ticketId, session: s, to, sequence = 0, now = new Date(), org = organizer() }) {
-  const arrive = arriveAt(s.start);
+export function buildSessionInvite({ name, ticketId, session: s, to, sequence = 0, now = new Date(), org = organizer(), micUp = true }) {
+  const arrive = micUp ? arriveAt(s.start) : s.start;
   const when = `${DAYS[s.day].short}, ${fmtTime(arrive)}`;
-  const subject = `Invitation: ${s.title} · ${when} (mic fitting) · TTFC 2026`;
+  const subject = `Invitation: ${s.title} · ${when}${micUp ? " (mic fitting)" : ""} · TTFC 2026`;
   const lines = [
-    [`${fmtTime(arrive)}`, `Mic fitting in the ${LOUNGE}. Please be there at least ${ARRIVE_EARLY_MIN} minutes before your session.`],
+    ...(micUp ? [[`${fmtTime(arrive)}`, `Mic fitting in the ${LOUNGE}. Please be there at least ${ARRIVE_EARLY_MIN} minutes before your session.`]] : []),
     [`${fmtTime(s.start)}`, `${s.format ? `${s.format}: ` : ""}${s.title}, ${STAGE} (until ${fmtTime(s.end)})`],
   ];
   const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(subject)}</title></head>
@@ -54,7 +54,7 @@ export function buildSessionInvite({ name, ticketId, session: s, to, sequence = 
     "",
     `Accept the invite to add it to your calendar. Questions: ${org.name}, ${org.email}, or ${CONTACT_EMAIL}.`,
   ].join("\n");
-  const ics = sessionInviteIcs({ ticketId, name, session: s, to, organizer: org, sequence, now });
+  const ics = sessionInviteIcs({ ticketId, name, session: s, to, organizer: org, sequence, now, micUp });
   return { subject, html, text, ics };
 }
 
@@ -69,7 +69,7 @@ export async function sendSessionInvites({ pass, to, cc = [], sequence = 0, clie
   const sessions = pass?.runOfShow?.sessions || [];
   let sent = 0;
   for (const s of sessions) {
-    const { subject, html, text, ics } = buildSessionInvite({ name: pass.name, ticketId: pass.ticketId, session: s, to, sequence });
+    const { subject, html, text, ics } = buildSessionInvite({ name: pass.name, ticketId: pass.ticketId, session: s, to, sequence, micUp: needsMicUp(sessions, s) });
     const { data, error } = await client.emails.send({
       from: FROM,
       to,

@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 import QRCode from "qrcode";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { speakerFirstName, rsvpNameParts, SPEAKER_PASS_LABEL } from "./speakerPasses.js";
-import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween } from "./runOfShow.js";
+import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween, needsMicUp } from "./runOfShow.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -237,7 +237,7 @@ function sessionCard(s, you) {
 }
 
 function micUpCallout(sessions) {
-  const times = sessions.map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`);
+  const times = sessions.filter((s) => needsMicUp(sessions, s)).map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`);
   return `
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;margin:4px 0 0;">
               <tr><td style="padding:16px 18px;border-radius:14px;border:1px solid ${C.orange};background:rgba(245,166,35,0.10);font-family:${SANS};font-size:15px;line-height:23px;color:${C.white};">
@@ -302,7 +302,7 @@ export function runOfShowText({ name, runOfShow }) {
     for (const p of s.lineup || []) out.push(`    ${p.role ? `${p.role}: ` : ""}${p.name}${p.name === name ? " (you)" : ""}${p.org ? `, ${p.org}` : ""}`);
     out.push("");
   }
-  out.push(`  Please be in the ${LOUNGE} at least ${ARRIVE_EARLY_MIN} minutes before your session for mic fitting: by ${sessions.map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`).join(" and ")}.`, "");
+  out.push(`  Please be in the ${LOUNGE} at least ${ARRIVE_EARLY_MIN} minutes before your session for mic fitting: by ${sessions.filter((s) => needsMicUp(sessions, s)).map((s) => `${fmtTime(arriveAt(s.start))} on ${DAYS[s.day].short}`).join(" and ")}.`, "");
   out.push("YOUR DAYS, HOUR BY HOUR");
   for (const plan of dayPlans(runOfShow)) {
     out.push(`  ${plan.long}`);
