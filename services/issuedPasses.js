@@ -89,6 +89,13 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
   if ("company" in body) value.company = clean(body.company, 160);
   if ("label" in body) value.label = clean(body.label, 40);
   if ("rsvp" in body) value.rsvp = body.rsvp !== false;
+  // Exhibitor passes: the booth they're on (filled into the Exhibitor Manual).
+  if (["booth", "zone", "passes"].some((k) => k in body)) {
+    value.booth = {};
+    if ("booth" in body) value.booth.booth = clean(body.booth, 20);
+    if ("zone" in body) value.booth.zone = clean(body.zone, 60);
+    if ("passes" in body) value.booth.passes = clean(body.passes, 20);
+  }
   const copy = cleanCopy(body);
   if (Object.keys(copy).length) value.copy = copy;
   return { ok: true, value };
@@ -96,22 +103,25 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
 
 export const newIssuedTicketId = () => crypto.randomBytes(6).toString("hex");
 
-/** The Attendee document for a new issued pass. */
-export function issuedPassDoc(v, { ticketId = newIssuedTicketId(), by = "", now = new Date() } = {}) {
+/** The Attendee document for a new issued pass (`promo`: ISSUED, or EXHIBITOR for exhibitor passes). */
+export function issuedPassDoc(v, { ticketId = newIssuedTicketId(), by = "", now = new Date(), promo = ISSUED_PROMO } = {}) {
   const words = v.name.split(" ");
   return {
     name: v.name,
     email: v.emails[0] || "",
     alsoTo: v.emails.slice(1),
     ticketType: v.tier,
-    promoCode: ISSUED_PROMO,
+    promoCode: promo,
     ticketId,
     purchaseDate: now,
     details: {
       firstName: words.slice(0, -1).join(" "), lastName: words[words.length - 1],
       ...(v.title ? { jobTitle: v.title } : {}), ...(v.company ? { organisation: v.company } : {}),
     },
-    issuedPass: { label: v.label || "", rsvp: v.rsvp !== false, copy: v.copy || {}, issuedBy: by, issuedAt: now },
+    issuedPass: {
+      label: v.label || "", rsvp: v.rsvp !== false, copy: v.copy || {}, issuedBy: by, issuedAt: now,
+      ...(v.booth ? { booth: { booth: "", zone: "", passes: "", ...v.booth } } : {}),
+    },
   };
 }
 
@@ -131,14 +141,18 @@ export function issuedPassUpdate(v, before) {
   if ("label" in v) set["issuedPass.label"] = v.label;
   if ("rsvp" in v) set["issuedPass.rsvp"] = v.rsvp;
   if (v.copy) set["issuedPass.copy"] = { ...(before?.issuedPass?.copy || {}), ...v.copy };
+  if (v.booth) set["issuedPass.booth"] = { booth: "", zone: "", passes: "", ...(before?.issuedPass?.booth || {}), ...v.booth };
   return set;
 }
 
-/** The email settings for a pass: label, access, includes, RSVP, built-in wording. */
-export function issuedVariant(a) {
+/**
+ * The email settings for a pass: label, access, includes, RSVP, built-in wording.
+ * `copyFor(label)`: the default wording (exhibitor passes have their own).
+ */
+export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
   const tier = ISSUE_TIERS[String(a?.ticketType || "").toLowerCase()] || ISSUE_TIERS.influence;
   const label = a?.issuedPass?.label || tier.label;
-  return { label, access: tier.access, includes: tier.includes, rsvp: a?.issuedPass?.rsvp !== false, rsvpReason: tier.rsvpReason, ...defaultIssuedCopy(label) };
+  return { label, access: tier.access, includes: tier.includes, rsvp: a?.issuedPass?.rsvp !== false, rsvpReason: tier.rsvpReason, ...copyFor(label) };
 }
 
 /** One row for Admin → Issue passes. */
@@ -165,6 +179,7 @@ export function issuedPassRow(a) {
     issuedAt: a.issuedPass?.issuedAt || a.purchaseDate || null,
     claimed: !!a.claimedBy,
     checkedIn: !!a.checkedIn,
+    booth: a.issuedPass?.booth || null,
   };
 }
 

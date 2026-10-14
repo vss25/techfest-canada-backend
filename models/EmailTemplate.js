@@ -10,6 +10,8 @@ const emailTemplateSchema = new mongoose.Schema(
     headline: { type: String, default: "" },
     message: { type: String, default: "" },
     cc: { type: [String], default: undefined }, // undefined = the default copy list
+    // Structured wording for documents (e.g. "exhibitor-manual": the Exhibitor Manual PDF's text).
+    content: { type: mongoose.Schema.Types.Mixed, default: undefined },
     updatedBy: { type: String, default: "" },
   },
   { timestamps: true }
