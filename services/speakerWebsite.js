@@ -53,8 +53,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /**
  * The run of show for `name` from the agenda (Sanity session docs), or null when they
  * aren't on it. Shape: services/runOfShow.js ({ sessions: [{ day, start, end, title, format, role, lineup }] }).
+ * Agenda entries mostly list names only: `orgOf(name)` fills in each person's company.
  */
-export function agendaRunOfShow(name, sessions = []) {
+export function agendaRunOfShow(name, sessions = [], orgOf = () => "") {
   const key = nameKey(name);
   if (!key) return null;
   const list = [];
@@ -70,7 +71,7 @@ export function agendaRunOfShow(name, sessions = []) {
     if (!me) continue;
     list.push({
       day: Number(s.day), start: s.time, end: s.endTime, title: s.title || "Session", format, role: me.role,
-      lineup: people.map((p) => ({ name: p.name, role: p.role, org: p.org || "" })),
+      lineup: people.map((p) => ({ name: p.name, role: p.role, org: p.org || orgOf(p.name) || "" })),
     });
   }
   if (!list.length) return null;
@@ -97,10 +98,36 @@ export function applyWebsite(a, site) {
       doc = { ...a, name: changes.name ?? a.name, details: { ...details, jobTitle: speaker.title || "", organisation: speaker.company || "" } };
     }
   }
-  const fromAgenda = agendaRunOfShow(doc.name, site.sessions);
+  const fromAgenda = agendaRunOfShow(doc.name, site.sessions, lineupOrgs(a, site));
   let source = a?.runOfShow?.sessions?.length ? "saved" : null;
   if (fromAgenda) { doc = { ...doc, runOfShow: fromAgenda }; source = "agenda"; }
   return { doc, changes: Object.keys(changes).length ? changes : null, source, onWebsite: !!speaker };
+}
+
+/**
+ * name → company for an agenda lineup: what staff saved on this pass's run of show first,
+ * then the speaker's company on the website, then (for "David" vs "Dave", "Prof. Aspuru-Guzik")
+ * the one website speaker with that surname.
+ */
+function lineupOrgs(a, site) {
+  const orgs = new Map();
+  const bySurname = new Map();
+  for (const s of a?.runOfShow?.sessions || []) {
+    for (const p of s.lineup || []) {
+      const k = nameKey(p.name);
+      if (k && p.org && !orgs.has(k)) orgs.set(k, p.org);
+    }
+  }
+  for (const s of site.speakers || []) {
+    const k = nameKey(s.name);
+    if (k && s.company && !orgs.has(k)) orgs.set(k, s.company);
+    const last = k.split(" ").pop();
+    if (last) bySurname.set(last, bySurname.has(last) ? null : s.company || null);
+  }
+  return (name) => {
+    const k = nameKey(name);
+    return orgs.get(k) || bySurname.get(k.split(" ").pop()) || "";
+  };
 }
 
 /** Activity that makes a pass worth keeping: an address, a send, the app, check-in. */
