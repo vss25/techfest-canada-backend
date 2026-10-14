@@ -87,7 +87,10 @@ const attendeeSchema = new mongoose.Schema(
     speakerContact: { type: String },
     // Calendar invites for their sessions (sent with the pass email).
     invitesSentAt: { type: Date },
-    invitesSentCount: { type: Number }
+    invitesSentCount: { type: Number },
+    // Speaker pass nudges (a reminder to RSVP): last sent and how many times.
+    speakerNudgedAt: { type: Date },
+    speakerNudgeCount: { type: Number }
   },
   {
     timestamps: true

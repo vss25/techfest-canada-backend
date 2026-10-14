@@ -193,6 +193,10 @@ export function speakerPassRow(a) {
     contact: a.speakerContact || "",
     invitesSentAt: a.invitesSentAt || null,
     invitesSentCount: Number(a.invitesSentCount) || 0,
+    nudgedAt: a.speakerNudgedAt || null,
+    nudgeCount: Number(a.speakerNudgeCount) || 0,
+    // Made by hand ("manual:<name>"), not from a speaker on the website.
+    manual: String(a.speakerId || "").startsWith("manual:"),
   };
 }
 
