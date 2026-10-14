@@ -40,7 +40,7 @@ import completeProfileRouter from "./routes/completeProfile.js"; // attendee "co
 import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
 import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
 import rsvpRemindersRouter from "./routes/rsvpReminders.js";                         // RSVP reminder email (admin console)
-import issuedPassesRouter from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
+import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -133,6 +133,7 @@ app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (websit
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
+app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
 app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id
 app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no login)
