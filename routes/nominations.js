@@ -1,5 +1,7 @@
 import express from "express";
 import { Resend } from "resend";
+import Nomination from "../models/Nomination.js";
+import { nominationFromForm } from "../services/nominations.js";
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -160,7 +162,7 @@ function buildConfirmationEmail(n) {
 
 /* ═══════════════════════════════════════════════════════
    POST /api/nominations
-   Sends admin email + nominator confirmation email
+   Saves it (Admin → Catalyst Awards), sends admin email + nominator confirmation email
    ═══════════════════════════════════════════════════════ */
 router.post("/nominations", async (req, res) => {
   try {
@@ -189,14 +191,25 @@ router.post("/nominations", async (req, res) => {
       ? `${n.pillar} × ${n.sector}`
       : specialAwardLabels[n.specialAward] || "Special Recognition";
 
+    // Saved for Admin → Catalyst Awards → Nominations. A save failure never loses the
+    // nomination: the email to staff below still goes out.
+    let saved = null;
+    try {
+      saved = await Nomination.create(nominationFromForm(n));
+    } catch (saveErr) {
+      console.error("Nomination save failed (still emailing staff):", saveErr?.message || saveErr);
+    }
+
     // Send admin notification
-    await resend.emails.send({
+    const sent = await resend.emails.send({
       from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
       to: ["baldeep@thetechfestival.com", "nicole@thetechfestival.com"],
       reply_to: n.nominatorEmail,
       subject: `[Catalyst Nomination] ${n.nomineeName} — ${categoryShort}`,
       html: buildAdminEmail(n),
     });
+    // Remember which email it was, so recovering emailed nominations never imports it twice.
+    if (saved && sent?.data?.id) await Nomination.updateOne({ _id: saved._id }, { $set: { resendId: sent.data.id } }).catch(() => {});
 
     // Send confirmation to the nominator (non-blocking — if it fails, don't fail the whole request)
     try {

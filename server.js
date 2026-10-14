@@ -21,6 +21,7 @@ import trackingRoutes from "./routes/tracking.js";
 import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
 import nominationsRouter from "./routes/nominations.js";
+import nominationsAdminRouter from "./routes/nominationsAdmin.js";                 // Catalyst Awards nominations (admin console)
 import pavilionRouter from "./routes/pavilion.js";
 import linkedinRouter from "./routes/linkedin.js";
 import mediaRouter from "./routes/media.js"; // 👈 NEW — press & media accreditation
@@ -131,6 +132,7 @@ app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
+app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards (before the console router)
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
