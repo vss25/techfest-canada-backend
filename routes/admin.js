@@ -6,6 +6,7 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
+import { applyDuePrices, parseSchedule } from "../services/scheduledPrices.js";
 import { collectTickets, salesSummary } from "../services/staffTickets.js";
 import { planSync, applySync, listCompleteSessions, planDetailsBackfill, applyDetailsBackfill } from "../services/stripeSync.js";
 import { requireAdmin, requireManagementAdmin } from "../middleware/adminAuth.js";
@@ -53,6 +54,7 @@ const TIER_DEFAULTS = {
 export const RETIRED_TIERS = ["early", "festival", "discover", "vip"];
 
 async function ensureTiers() {
+  await applyDuePrices();   // a scheduled price change that's due is written in first
   await TicketInventory.updateMany(
     { tier: { $in: RETIRED_TIERS }, archived: { $exists: false } },
     { $set: { archived: true } }
@@ -209,6 +211,8 @@ router.put(
     try {
       const { tier } = req.params;
       const { total, price, archived } = req.body;
+      const schedule = parseSchedule(req.body);   // nextPrice + nextPriceAt, or both null to cancel
+      if (!schedule.ok) return res.status(400).json({ error: schedule.error });
 
       let inventory = await TicketInventory.findOne({ tier });
 
@@ -236,6 +240,11 @@ router.put(
 
       if (typeof archived === "boolean") {
         inventory.archived = archived;
+      }
+
+      if (schedule.set) {
+        inventory.nextPrice = schedule.set.nextPrice;
+        inventory.nextPriceAt = schedule.set.nextPriceAt;
       }
 
       await inventory.save();

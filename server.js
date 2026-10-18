@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
 import mongoose from "mongoose";
+import { startPriceScheduler } from "./services/scheduledPrices.js";
 import cors from "cors";
 import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
@@ -162,7 +163,7 @@ app.get("/", (req, res) => {
 ========================================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => { console.log("✅ MongoDB connected"); repairStripeSyncOnce(); })
+  .then(() => { console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler(); })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 /* ==========================================
