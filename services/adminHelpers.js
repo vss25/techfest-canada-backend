@@ -62,6 +62,13 @@ export const CONTENT_KEYS = {
   "flag.allow_groups": true,
   "flag.polls": true,                      // off = live polls hidden in the apps, votes refused
   "flag.qa": true,                         // off = audience Q&A hidden in the apps, questions refused
+  /* Ticket offer shown to guests in the web app (/app). It only shows while the code is live
+     (POST /api/promos/validate) and before offer.guest_ends. */
+  "flag.guestOffer": true,
+  "offer.guest_code": "APP50",
+  "offer.guest_discount": "50",
+  "offer.guest_ends": "2026-10-21T23:59:00-04:00",   // ISO time with offset (Toronto)
+  "offer.guest_passes": "Connect, Influence and Power",
 
   /* Website (Site settings page in the admin panel). Empty text = use the built-in default. */
   "site.announcement": "",                 // bar across the top of every page

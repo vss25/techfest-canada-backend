@@ -28,6 +28,10 @@ const promoSchema = new mongoose.Schema({
   // Usage limit: the code stops working once its paid uses reach this.
   // null = unlimited. See services/promoLimits.js.
   maxUses: { type: Number, min: 1, default: null },
+
+  // The code stops working after this moment (checkout and validation refuse it).
+  // null = no end date. See services/promoLimits.js promoExpired().
+  expiresAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

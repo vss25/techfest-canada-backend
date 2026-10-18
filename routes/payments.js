@@ -4,7 +4,7 @@ import Stripe from "stripe";
 import User from "../models/User.js";
 import TicketInventory from "../models/TicketInventory.js";
 import Promo from "../models/Promo.js";
-import { HOLD_MINUTES, LIMIT_REACHED, isFull, lockPromo, promoUsageNow } from "../services/promoLimits.js";
+import { HOLD_MINUTES, LIMIT_REACHED, isFull, promoExpired, lockPromo, promoUsageNow } from "../services/promoLimits.js";
 
 const router = express.Router();
 
@@ -387,7 +387,7 @@ router.post("/create-checkout", async (req, res) => {
       const code = String(promoCode).trim().toUpperCase();
       const promo = await Promo.findOne({ code, active: true });
 
-      if (promo) {
+      if (promo && !promoExpired(promo)) {
         // Per-tier scoping: empty tiers array = valid for all passes AND booths
         const tiersOk = !Array.isArray(promo.tiers) || promo.tiers.length === 0
           || promo.tiers.includes(String(tier).toLowerCase());
@@ -397,7 +397,7 @@ router.post("/create-checkout", async (req, res) => {
           appliedPromo = promo;
         }
       }
-      // If invalid/wrong-tier, silently ignore — frontend already showed an error to user.
+      // If invalid, expired or wrong-tier, silently ignore — frontend already showed an error to user.
     }
 
     // ===== PROMO USAGE LIMIT =====

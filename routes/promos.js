@@ -3,7 +3,7 @@ import Promo from "../models/Promo.js";
 import { requireManagementAdmin as requireAdmin } from "../middleware/adminAuth.js";   // promo codes = pricing → management only
 import Stripe from "stripe";
 import { stripeRows, promoUsage } from "../services/stripeSales.js";
-import { LIMIT_REACHED, isFull, parseMaxUses, promoUsageNow } from "../services/promoLimits.js";
+import { LIMIT_REACHED, EXPIRED, isFull, parseMaxUses, parseExpiresAt, promoExpired, promoUsageNow } from "../services/promoLimits.js";
 
 const router = express.Router();
 
@@ -60,6 +60,7 @@ router.post("/promos/validate", async (req, res) => {
 
     if (!promo) return res.status(404).json(genericInvalid);
     if (!promo.active) return res.status(400).json(genericInvalid);
+    if (promoExpired(promo)) return res.status(410).json({ valid: false, error: EXPIRED });
 
     // Tier scoping: empty tiers array = valid for all passes and booths
     if (Array.isArray(promo.tiers) && promo.tiers.length > 0) {
@@ -78,7 +79,7 @@ router.post("/promos/validate", async (req, res) => {
       } catch (e) { console.error("Promo usage check failed:", e.message); }
     }
 
-    return res.json({ valid: true, code: promo.code, discount: promo.discount });
+    return res.json({ valid: true, code: promo.code, discount: promo.discount, expiresAt: promo.expiresAt || null });
   } catch (err) {
     console.error("Promo validate error:", err);
     res.status(500).json({ valid: false, error: "Server error" });
@@ -101,7 +102,7 @@ router.get("/admin/promos", requireAdmin, async (_req, res) => {
       const u = usage?.[String(p.code).toUpperCase()];
       // "Used" in the admin = paidUses (paid Stripe sessions, cached up to 5 min).
       const paidUses = usage ? (u?.paidUses || 0) : null;
-      return { ...p, maxUses: p.maxUses ?? null, full: paidUses != null && isFull(paidUses, p.maxUses),
+      return { ...p, maxUses: p.maxUses ?? null, expiresAt: p.expiresAt ?? null, expired: promoExpired(p), full: paidUses != null && isFull(paidUses, p.maxUses),
                paidUses, revenue: u?.revenue || 0,
                discountGiven: u?.discountGiven || 0, lastUsedAt: u?.lastUsedAt || null, usageError };
     }));
@@ -123,10 +124,13 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
     const limit = parseMaxUses(req.body.maxUses);   // empty = unlimited
     if (!limit.ok) return res.status(400).json({ error: limit.error });
 
+    const ends = parseExpiresAt(req.body.expiresAt);  // empty = no end date
+    if (!ends.ok) return res.status(400).json({ error: ends.error });
+
     const existing = await Promo.findOne({ code });
     if (existing) return res.status(409).json({ error: "Code already exists" });
 
-    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, active: true });
+    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, expiresAt: ends.value, active: true });
     res.json(promo);
   } catch (err) {
     console.error("Promo create error:", err);
@@ -148,6 +152,11 @@ router.put("/admin/promos/:id", requireAdmin, async (req, res) => {
       const limit = parseMaxUses(req.body.maxUses);
       if (!limit.ok) return res.status(400).json({ error: limit.error });
       update.maxUses = limit.value;
+    }
+    if ("expiresAt" in req.body) {                   // "" or null = no end date
+      const ends = parseExpiresAt(req.body.expiresAt);
+      if (!ends.ok) return res.status(400).json({ error: ends.error });
+      update.expiresAt = ends.value;
     }
 
     const promo = await Promo.findByIdAndUpdate(req.params.id, update, { new: true });
