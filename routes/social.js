@@ -15,6 +15,7 @@ import { pushToUsers } from "../services/push.js";
 import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
 import { rankFeed } from "../services/feedRank.js";
 import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
+import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
@@ -513,7 +514,22 @@ router.post("/sessions/:id/register", async (req, res) => {
   res.json({ registered: !existing, count });
 });
 
-/* ================= SESSIONS: Q&A ================= */
+/* ================= SESSIONS: LIVE (Q&A + POLLS) =================
+   Two layers of switches. Global: flag.polls / flag.qa (requireSwitch, 403
+   {error: "closed", message}). Per session: the Sanity session's `polls` / `qa`
+   ("auto" | "on" | "off", rule in services/sessionLive.js). A session with its
+   switch off refuses writes for everyone with 403 {error: OFF_ERRORS[feature]}.
+   Reads there: staff (role admin or the moderate right) see everything as
+   before; everyone else gets an empty state (no questions, zero poll counts)
+   so older app builds that don't read the switch just show nothing. */
+
+const seesAllLive = (req) => isAdmin(req.user) || !!req.rights?.moderate;
+
+/** Express guard: 403 when this session's switch for `feature` is off. */
+const requireSessionFeature = (feature) => async (req, res, next) => {
+  if (await sessionAllows(req.params.id, feature)) return next();
+  res.status(403).json({ error: OFF_ERRORS[feature] });
+};
 
 const questionDTO = (q, me) => ({
   id: String(q._id), sessionId: q.sessionId, authorId: String(q.authorId), authorName: q.authorName,
@@ -523,6 +539,7 @@ const questionDTO = (q, me) => ({
 });
 
 router.get("/sessions/:id/questions", async (req, res) => {
+  if (!seesAllLive(req) && !(await sessionAllows(req.params.id, "qa"))) return res.json([]);
   const qs = await SessionQuestion.find({
     sessionId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id }],
@@ -530,7 +547,7 @@ router.get("/sessions/:id/questions", async (req, res) => {
   res.json(qs.map((q) => questionDTO(q, req.user._id)));
 });
 
-router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
+router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed right now."), requireSessionFeature("qa"), async (req, res) => {
   const body = trimBody(req.body?.body, 600);
   if (!body) return res.status(400).json({ error: "body required" });
   const status = await statusFor(body, req.user._id, "question");
@@ -543,6 +560,7 @@ router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed righ
 router.post("/sessions/questions/:qid/upvote", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const q = await SessionQuestion.findById(req.params.qid);
   if (!q) return res.status(404).json({ error: "Not found" });
+  if (!(await sessionAllows(q.sessionId, "qa"))) return res.status(403).json({ error: OFF_ERRORS.qa });
   const me = String(req.user._id);
   const i = q.upvotes.findIndex((u) => String(u) === me);
   if (i >= 0) q.upvotes.splice(i, 1); else q.upvotes.push(req.user._id);
@@ -554,12 +572,15 @@ router.post("/sessions/questions/:qid/upvote", requireSwitch(QA_KEY, "Q&A is clo
 
 router.get("/sessions/:id/polls/:pollId/results", async (req, res) => {
   const optionCount = Math.min(Math.max(Number(req.query.options) || 4, 1), 16);
+  if (!seesAllLive(req) && !(await sessionAllows(req.params.id, "polls"))) {
+    return res.json({ counts: tally([], optionCount), total: 0, myVote: null });
+  }
   const votes = await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean();
   const mine = votes.find((v) => String(v.userId) === String(req.user._id));
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
 
-router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls are closed right now."), async (req, res) => {
+router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls are closed right now."), requireSessionFeature("polls"), async (req, res) => {
   const optionIndex = Number(req.body?.optionIndex);
   if (!Number.isInteger(optionIndex) || optionIndex < 0) return res.status(400).json({ error: "optionIndex required" });
   const optionCount = Math.min(Math.max(Number(req.body?.options) || 4, 1), 16);

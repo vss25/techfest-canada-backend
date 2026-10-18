@@ -58,6 +58,12 @@ async function audit(req, action, type, id, detail = "") {
                             targetId: String(id || ""), detail: String(detail).slice(0, 500) }).catch(() => {});
 }
 
+/* Audit detail: field names, plus the value for the session live switches
+   ("polls=off"; cleared = back to auto). */
+const LIVE_FIELDS = ["polls", "qa"];
+const auditField = (k, set, unset) => (!LIVE_FIELDS.includes(k) ? k : unset.includes(k) ? `${k}=auto` : `${k}=${set[k]}`);
+const liveDetail = (set) => LIVE_FIELDS.filter((k) => set[k] !== undefined).map((k) => `${k}=${set[k]}`).join(", ");
+
 const fail = (res, err) => res.status(err.status && err.status < 500 ? err.status : 502).json({ error: err.message || "Sanity error" });
 
 router.get("/status", (req, res) => {
@@ -162,7 +168,7 @@ router.post("/:type", async (req, res) => {
   try {
     const out = await mutate([{ create: { _type: type, ...set } }]);
     const doc = out.results?.[0]?.document;
-    await audit(req, "cms_create", type, doc?._id, set.name || "");
+    await audit(req, "cms_create", type, doc?._id, [set.name || set.title || "", liveDetail(set)].filter(Boolean).join(" · "));
     res.status(201).json(doc);
   } catch (err) { fail(res, err); }
 });
@@ -179,7 +185,7 @@ router.patch("/:type/:id", async (req, res) => {
   if (!patch.set && !patch.unset) return res.status(400).json({ error: "Nothing to change" });
   try {
     const out = await mutate([{ patch }]);
-    await audit(req, "cms_edit", type, id, Object.keys(set).concat(unset).join(", "));
+    await audit(req, "cms_edit", type, id, Object.keys(set).concat(unset).map((k) => auditField(k, set, unset)).join(", "));
     res.json(out.results?.[0]?.document || { _id: id });
   } catch (err) { fail(res, err); }
 });

@@ -315,21 +315,30 @@ export function parseSessionIds(json) {
 
 /** Agenda session ids, cached 10 minutes. A failed fetch keeps the last good
     set and retries after a minute; until one has loaded, get() gives null
-    (count every session, the caps still apply). Never throws. */
-export function makeAgendaCache({ fetchImpl = globalThis.fetch, url = AGENDA_URL, ttlMs = 10 * 60 * 1000, retryMs = 60 * 1000, now = () => Date.now(), log = console } = {}) {
+    (count every session, the caps still apply). Never throws. Logs the first
+    failure of an outage, not every retry.
+    Also used by services/sessionLive.js with its own `url`, `parse` and `label`
+    (parse: Sanity JSON → value, or null when it shouldn't be trusted). */
+export function makeAgendaCache({
+  fetchImpl = globalThis.fetch, url = AGENDA_URL, parse = parseSessionIds, label = "POINTS AGENDA",
+  ttlMs = 10 * 60 * 1000, retryMs = 60 * 1000, now = () => Date.now(), log = console,
+} = {}) {
   let ids = null;
   let expires = 0;
   let pending = null;
+  let failing = false;
   async function load() {
     try {
       const res = await fetchImpl(url, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`Sanity ${res.status}`);
-      const parsed = parseSessionIds(await res.json());
+      const parsed = parse(await res.json());
       if (!parsed) throw new Error("no sessions on the agenda");
       ids = parsed;
       expires = now() + ttlMs;
+      failing = false;
     } catch (err) {
-      log.error?.("POINTS AGENDA ERROR:", err?.message || err);
+      if (!failing) log.error?.(`${label} ERROR:`, err?.message || err);
+      failing = true;
       expires = now() + retryMs;
     }
     return ids;

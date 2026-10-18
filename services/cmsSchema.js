@@ -15,6 +15,10 @@ const scale = { kind: "number", min: 30, max: 250 };   // logo size, % of the de
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
+/** Per-session live polls / audience Q&A switch (services/sessionLive.js has the rule). */
+export const LIVE_MODES = ["auto", "on", "off"];
+const liveMode = { ...oneOf(...LIVE_MODES), default: "auto" };
+
 export const SESSION_FORMATS = ["opening", "keynote", "fireside", "panel", "briefing", "provocation", "dialogue", "networking", "break", "awards", "closing", "Performance"];
 
 export const CMS_FIELDS = {
@@ -63,6 +67,9 @@ export const CMS_FIELDS = {
     moderator: person,                        // { name, org? }
     stage: str(80),
     description: str(1500),
+    // "auto" (on when there's a moderator, never keynotes or breaks) | "on" | "off"; missing = "auto"
+    polls: liveMode,
+    qa: liveMode,
   },
 };
 
@@ -101,6 +108,7 @@ export function sessionDoc(s) {
     sessionId: s.id, day: s.day, time: s.time, endTime: s.endTime, title: s.title, type: s.type,
     format: SESSION_FORMATS.includes(s.format) ? s.format : undefined, featured: !!s.featured, isBreak: !!s.isBreak,
     pillar: s.pillar, sector: s.sector, speakers: s.speakers || [], moderator: s.moderator, stage: s.stage, description: s.description,
+    polls: LIVE_MODES.includes(s.polls) ? s.polls : undefined, qa: LIVE_MODES.includes(s.qa) ? s.qa : undefined,
   }, { creating: true });
   const id = String(s.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60) || String(Date.now());
   return error ? { error } : { doc: { _id: `session-${id}`, _type: "session", ...set } };
@@ -176,6 +184,9 @@ export function toSanityPatch(type, body, { creating }) {
       if (rule.required && set[key] === undefined) return { set, unset, error: `${key} is required` };
     }
     if ("active" in fields && set.active === undefined) set.active = true;
+    for (const [key, rule] of Object.entries(fields)) {
+      if (rule.default !== undefined && set[key] === undefined) set[key] = rule.default;
+    }
   }
   return { set, unset, error: null };
 }
