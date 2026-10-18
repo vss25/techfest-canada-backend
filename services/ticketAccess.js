@@ -64,6 +64,53 @@ export function passName(type) {
   return TIER_NAMES[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) + " Pass" : "");
 }
 
+export const GUEST_FALLBACK_NAME = "TTFC attendee";
+
+const oneLine = (v, max = 120) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max).trim() : "");
+
+/** True when a stored name is really a number: all digits (an order number) or the ticket ID itself. */
+export function looksLikeTicketNumber(name, ticketId = "") {
+  const n = String(name || "").trim();
+  if (!n) return false;
+  if (/^\d+$/.test(n.replace(/[\s#-]/g, ""))) return true;
+  const id = normalizeTicketId(ticketId);
+  return !!id && normalizeTicketId(n) === id;
+}
+
+/**
+ * Name to show for an unclaimed pass: the stored name, else the first + last
+ * name from the checkout details, else "TTFC attendee" (never a ticket or
+ * order number). → { name, real } (real: false for the fallback, which must
+ * not be used to merge people).
+ */
+export function guestName(g) {
+  const stored = oneLine(g?.name, 120);
+  if (stored && !looksLikeTicketNumber(stored, g?.ticketId)) return { name: stored, real: true };
+  const fromDetails = oneLine([g?.details?.firstName, g?.details?.lastName].map((x) => oneLine(x)).filter(Boolean).join(" "));
+  if (fromDetails && !looksLikeTicketNumber(fromDetails, g?.ticketId)) return { name: fromDetails, real: true };
+  return { name: GUEST_FALLBACK_NAME, real: false };
+}
+
+/** Company and job title from a pass holder's checkout details (nothing else from them). */
+export function guestWork(details) {
+  const d = details && typeof details === "object" ? details : {};
+  return {
+    organization: oneLine(d.organisation) || oneLine(d.organization) || oneLine(d.company),
+    jobTitle: oneLine(d.jobTitle) || oneLine(d.title),
+  };
+}
+
+/** Fields of Attendee.details the directory reads (select only these: no phone, email or the rest). */
+export const GUEST_DETAILS_SELECT = "details.firstName details.lastName details.organisation details.organization details.company details.jobTitle details.title";
+
+/** Fill a guest entry's empty company / title from another of their passes. */
+function addGuestWork(entry, g) {
+  if (!String(entry.id).startsWith("guest:")) return;   // app users keep their own profile
+  const w = guestWork(g.details);
+  if (!entry.organization && w.organization) entry.organization = w.organization;
+  if (!entry.jobTitle && w.jobTitle) entry.jobTitle = w.jobTitle;
+}
+
 /**
  * Builds the attendee directory.
  *   users  — User docs that hold at least one ticket (lean)
@@ -118,8 +165,9 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
 
   const guestByName = new Map();
   for (const g of guests || []) {
-    const name = String(g.name || "").trim();
-    if (!name || /^guest$/i.test(name)) continue;
+    // "Guest" placeholders stay out; blank or number-like names fall back (guestName).
+    if (/^guest$/i.test(String(g.name || "").trim())) continue;
+    const { name, real } = guestName(g);
     if (/^BOOTH-/i.test(String(g.ticketId || ""))) continue;
     const email = String(g.email || "").toLowerCase();
     if (email && email === skipEmail) continue;
@@ -131,24 +179,29 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
         existing.purchaseDate = g.purchaseDate;
       }
       addPassKind(existing, g);
+      addGuestWork(existing, g);
       continue;
     }
-    const nameKey = fold(name);
-    const twin = guestByName.get(nameKey);
+    // Only a real name merges people; "TTFC attendee" is many different people.
+    const nameKey = real ? fold(name) : "";
+    const twin = nameKey ? guestByName.get(nameKey) : null;
     if (twin) {
       if (new Date(g.purchaseDate || 0) > new Date(twin.purchaseDate || 0)) {
         twin.ticketType = g.ticketType;
         twin.purchaseDate = g.purchaseDate;
       }
       addPassKind(twin, g);
+      addGuestWork(twin, g);
       continue;
     }
+    const work = guestWork(g.details);
     const person = {
       id: `guest:${g._id}`,
       onApp: false,
       name,
-      jobTitle: "",
-      organization: "",
+      // From their checkout form; never email, phone or the other details.
+      jobTitle: work.jobTitle,
+      organization: work.organization,
       linkedinUrl: "",
       country: "",
       topics: [],
@@ -160,7 +213,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       purchaseDate: g.purchaseDate,
     };
     addPassKind(person, g);
-    guestByName.set(nameKey, person);
+    if (nameKey) guestByName.set(nameKey, person);
     if (email) byEmail.set(email, person);
     else byEmail.set(`guest:${g._id}`, person);
   }

@@ -2,7 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { buildDirectory } from "../services/ticketAccess.js";
+import { buildDirectory, GUEST_DETAILS_SELECT } from "../services/ticketAccess.js";
 import { Block } from "../models/Admin.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
@@ -117,7 +117,7 @@ router.get("/attendees", async (req, res) => {
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
       .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff").lean(),
-    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select("name email ticketId ticketType purchaseDate promoCode issuedPass.booth").lean(),
+    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
   const exhibitors = await loadExhibitors();
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors });
