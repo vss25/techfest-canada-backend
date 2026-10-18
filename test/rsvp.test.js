@@ -7,7 +7,7 @@ import {
   validateRsvp, resolvePass, rsvpKeys, rsvpsFilter, summarizeRsvps, rsvpRow, rsvpDetail, rsvpsCsv, CSV_HEAD, optionLabel,
   nameVariants, ticketPersonNames, newEditToken, hashEditToken, planRsvpMerge, lastNameIs, rsvpListPayload,
 } from "../services/rsvp.js";
-import { buildRsvpEmail } from "../services/rsvp.js";
+import { buildRsvpEmail, parseRsvpAgenda, agendaTimes, clock12 } from "../services/rsvp.js";
 import { makeLookup, makeRsvpHandlers, publicLookup, cached, TOO_MANY, resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import { makeLimiter, makeGuessLimiter } from "../services/ticketAccess.js";
 
@@ -830,10 +830,10 @@ test("submit: a save error is a friendly 500", async () => {
   assert.match(res.body.message, /enquire@thetechfestival\.com/);
 });
 
-test("options endpoint serves the shared config", () => {
+test("options endpoint serves the shared config", async () => {
   const h = makeRsvpHandlers({ lookup: async () => ({}), store: {} });
   const res = fakeRes();
-  h.options({}, res);
+  await h.options({}, res);
   assert.deepEqual(res.body, rsvpOptionsPayload());
   assert.match(res.headers["Cache-Control"], /max-age/);
 });
@@ -1145,4 +1145,41 @@ test("speakers can't RSVP for the pre-matched meetings or the Scotch lounge (Ape
   assert.equal(r.ok, false);
   assert.deepEqual(r.invalid, ["meetings", "lounge"]);
   assert.ok(checkOptions("apex", ["day1"], ["meetings", "lounge"]).ok);
+});
+
+test("special-event times come from the agenda", async () => {
+  const sessions = parseRsvpAgenda({ result: [
+    { day: 1, time: "07:55", title: "CxO Breakfast" },
+    { day: 1, time: "12:35", title: "Networking Lunch" },
+    { day: 1, time: "17:30", title: "Awards Evening" },
+    { day: 2, time: "7:50", title: "CxO Breakfast" },
+    { day: 2, time: "12:00", title: "Lunch" },
+    { day: 2, time: "17:30", title: "Gala Dinner" },
+    { day: 3, time: "09:00", title: "CxO Breakfast" },
+    { day: 1, time: "soon", title: "Lunch" },
+  ] });
+  assert.equal(sessions.length, 6);
+  assert.deepEqual(agendaTimes(sessions), {
+    cxo_d1: "7:55 AM", lunch_d1: "12:35 PM", awards: "5:30 PM", cxo_d2: "7:50 AM", lunch_d2: "12:00 PM", gala: "5:30 PM",
+  });
+  assert.equal(parseRsvpAgenda({ result: [] }), null);
+  assert.equal(clock12("00:05"), "12:05 AM");
+  assert.equal(clock12("12:00"), "12:00 PM");
+
+  // The payload uses the agenda's time when there is one, the fallback otherwise; untimed options stay untimed.
+  const p = rsvpOptionsPayload({ cxo_d1: "8:05 AM", expo_d1: "9:00 AM" });
+  assert.equal(p.options.find((o) => o.key === "cxo_d1").time, "8:05 AM");
+  assert.equal(p.options.find((o) => o.key === "cxo_d2").time, "7:55 AM");
+  assert.equal(p.options.find((o) => o.key === "expo_d1").time, undefined);
+  assert.ok(!p.options.some((o) => o.time === "Morning"));
+
+  // The handler asks for the times; a failing lookup still serves the page.
+  const res = () => ({ headers: {}, setHeader(k, v) { this.headers[k] = v; }, json(b) { this.body = b; } });
+  const ok = makeRsvpHandlers({ lookup: async () => null, store: {}, agendaTimes: async () => ({ gala: "6:00 PM" }) });
+  const r1 = res(); await ok.options({}, r1);
+  assert.equal(r1.body.options.find((o) => o.key === "gala").time, "6:00 PM");
+  assert.equal(r1.headers["Cache-Control"], "public, max-age=60");
+  const broken = makeRsvpHandlers({ lookup: async () => null, store: {}, agendaTimes: async () => { throw new Error("down"); } });
+  const r2 = res(); await broken.options({}, r2);
+  assert.equal(r2.body.options.find((o) => o.key === "gala").time, "5:30 PM");
 });

@@ -4,7 +4,9 @@ import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
 import { lastNameMatches } from "../services/ticketAccess.js";
 import { findTicket, ticketNameMatches } from "./ticketAuth.js";
-import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS, buildRsvpEmail } from "../services/rsvp.js";
+import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS, buildRsvpEmail,
+  RSVP_AGENDA_URL, parseRsvpAgenda, agendaTimes } from "../services/rsvp.js";
+import { makeAgendaCache } from "../services/points.js";
 import { sendFormSubmissionEmail } from "../services/emailService.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
 
@@ -60,9 +62,13 @@ const lookup = makeLookup({ verifyTicket, getHolders, getSpeakers: () => speaker
 const RSVP_INBOX = (process.env.RSVP_INBOX || "enquire@thetechfestival.com").split(",").map((x) => x.trim()).filter(Boolean);
 const notify = (row, opts) => sendFormSubmissionEmail({ to: RSVP_INBOX, ...buildRsvpEmail(row, opts) });
 
+// Special-event times on the RSVP page come from the agenda (cached a minute; the last good copy if Sanity is down).
+const rsvpAgenda = makeAgendaCache({ url: RSVP_AGENDA_URL, parse: parseRsvpAgenda, label: "RSVP AGENDA", ttlMs: 60 * 1000 });
+
 const handlers = makeRsvpHandlers({
   lookup,
   notify,
+  agendaTimes: async () => { const s = await rsvpAgenda.get(); return s ? agendaTimes(s) : null; },
   store: {
     // The edit token's hash is never read anywhere else (select: false in the model).
     findByKey: (key) => Rsvp.findOne({ key, spam: false }).select("+editTokenHash").lean(),

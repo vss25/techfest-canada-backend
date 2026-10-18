@@ -137,6 +137,7 @@ export function makeRsvpHandlers({
   ticketGuessLimiter = ticketGuesses,
   submitIpLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }),
   submitNameLimiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 }), // per address + name, RSVPs about to be saved
+  agendaTimes = async () => null, // { optionKey: "7:55 AM" } from the CMS agenda; null keeps the fallback times
 }) {
   const ipOf = (req) => String(req.ip || "unknown");
 
@@ -334,9 +335,11 @@ export function makeRsvpHandlers({
     }
   }
 
-  function optionsHandler(req, res) {
-    res.setHeader("Cache-Control", "public, max-age=300");
-    res.json(rsvpOptionsPayload());
+  async function optionsHandler(req, res) {
+    const times = await Promise.resolve().then(agendaTimes).catch(() => null);
+    // Short, so a session moved in the admin Agenda shows on the RSVP page within a couple of minutes.
+    res.setHeader("Cache-Control", "public, max-age=60");
+    res.json(rsvpOptionsPayload(times));
   }
 
   return { lookup: lookupHandler, submit: submitHandler, options: optionsHandler };
