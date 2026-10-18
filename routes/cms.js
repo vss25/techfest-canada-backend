@@ -2,6 +2,7 @@ import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
 import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc } from "../services/cmsSchema.js";
+import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
 
 /* =========================================================
    /api/cms — edit the website's Sanity content (speakers,
@@ -98,6 +99,46 @@ router.post("/session/import", async (req, res) => {
     await audit(req, "cms_import", "session", "", `${docs.length} sessions`);
     res.status(201).json({ imported: docs.length, skipped: errors });
   } catch (err) { fail(res, err); }
+});
+
+/* "Running late": shift agenda times in one step on event day.
+   Body { id, minutes, scope?: "stage" | "day", only? }. The session `id` keeps its
+   start and its end moves by `minutes`; every session after it in scope moves both
+   times (rules in services/agendaShift.js). All patches go in one transaction, each
+   pinned to the revision we just read, so it's all or nothing and an edit made in
+   between fails the whole shift instead of mixing old and new times.
+   Undo = the same call with -minutes and `only` = the ids it moved (minus `id`).
+   → { ok, minutes, scope, moved: [{ _id, title, time, endTime }] } (the session `id` first). */
+router.post("/session/shift", async (req, res) => {
+  if (needToken(res)) return;
+  const body = req.body || {};
+  const id = typeof body.id === "string" ? body.id.trim() : "";
+  if (!id || id.length > 200) return res.status(400).json({ error: "Say which session is running late." });
+  const { minutes, scope, error } = readShift(body);
+  if (error) return res.status(400).json({ error });
+  let only;
+  if (body.only !== undefined && body.only !== null) {
+    if (!Array.isArray(body.only) || body.only.length > 300 || !body.only.every((x) => typeof x === "string")) {
+      return res.status(400).json({ error: "only must be a list of session ids." });
+    }
+    only = body.only;
+  }
+  try {
+    const out = await query(`*[_type == "session" && !(_id in path("drafts.**"))]{ _id, _rev, title, day, time, endTime, stage, isBreak }`);
+    const plan = planShift(out.result || [], id, minutes, scope, { only });
+    if (plan.error) return res.status(plan.status || 400).json({ error: plan.error });
+    await mutate(plan.changes.map((c) => ({ patch: { id: c._id, ...(c._rev ? { ifRevisionID: c._rev } : {}), set: c.set } })));
+    await audit(req, "cms_agenda_shift", "session", id, shiftSummary(plan));
+    res.json({
+      ok: true, minutes, scope,
+      moved: plan.changes.map(({ _id, title, time, endTime }) => ({ _id, title, time, endTime })),
+    });
+  } catch (err) {
+    if (err.status === 409) {
+      return res.status(409).json({ error: "The agenda changed while you were shifting it. Nothing was moved. Refresh and try again." });
+    }
+    fail(res, err);
+  }
 });
 
 router.get("/:type", async (req, res) => {
