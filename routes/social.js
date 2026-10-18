@@ -30,7 +30,7 @@ import { personAccess, rightsFor, overridesContact, rightError, RIGHT_ERRORS } f
 import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import {
   CONTACT_SELECT, SHARE_OFF_ERROR, contactItemsFor, contactCardDTO, cleanItems, cleanShareIds, accountEmailOf,
-  setShare, shareFields, legacyEmail, firstLinkedIn,
+  setShare, shareFields, legacyEmail, firstLinkedIn, applyQrShare,
 } from "../services/contactCard.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import {
@@ -140,6 +140,18 @@ router.put("/contact-card", async (req, res) => {
   await User.updateOne({ _id: req.user._id }, { $set: set });
   Object.assign(req.user, set);
   res.json({ ...contactCardDTO(req.user, req.rights), linkedinUrl: req.user.linkedinUrl || "" });
+});
+
+/* What people who scan my connect QR get (the QR sheet's checklist). Copied onto each
+   in-person connection made by a scan of my QR, unless I'd already picked for that person. */
+router.put("/contact-card/qr-share", async (req, res) => {
+  if (!req.rights.shareContact) return res.status(403).json({ error: SHARE_OFF_ERROR });
+  if (!shareSaves.hit(String(req.user._id))) return res.status(429).json({ error: TOO_FAST });
+  const ids = cleanShareIds(req.body?.share, contactItemsFor(req.user));
+  if (!ids) return res.status(400).json({ error: "share must be a list of contact detail ids" });
+  await User.updateOne({ _id: req.user._id }, { $set: { contactQrShare: ids } });
+  req.user.contactQrShare = ids;
+  res.json(contactCardDTO(req.user, req.rights));
 });
 
 /** My share list from a request body (`share: [ids]`), or null when there's none or I can't share. */
@@ -479,13 +491,14 @@ router.post("/connections/:id/withdraw", async (req, res) => {
 });
 
 /* Badge scan: both parties connected at once, whatever their request rights. The scanner
-   picks what they share (`share`); the person scanned shares their "share by default"
-   items until they pick (services/contactCard.js). Only with the shareContact right. */
+   picks what they share (`share`); the person scanned shares what their connect QR sheet
+   says (contactQrShare), else their "share by default" items, until they pick
+   (services/contactCard.js). Only with the shareContact right. */
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
   if (req.blocked.has(toUserId)) return res.status(403).json({ error: "You can't connect with this person." });
-  const target = await User.findById(toUserId).select("_id");
+  const target = await User.findById(toUserId).select(`_id ${RIGHTS_SELECT} ${CONTACT_SELECT}`).lean();
   if (!target) return res.status(404).json({ error: "User not found" });
   let c = await SocialConnection.findOne({
     $or: [{ fromUserId: req.user._id, toUserId }, { fromUserId: toUserId, toUserId: req.user._id }],
@@ -497,6 +510,8 @@ router.post("/connections/in-person", async (req, res) => {
   c.status = "accepted"; c.kind = "inPerson"; c.respondedAt = new Date();
   const share = shareFromBody(req);
   if (share) setShare(c, req.user._id, share);
+  // The person scanned shares what their connect QR sheet says, if they hadn't picked for this person.
+  applyQrShare(c, target, rightsFor(target, req.ctx));
   await c.save();
   res.json(await connectionDTO(c, req));
 });

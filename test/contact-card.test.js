@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   CONTACT_KINDS, MAX_CONTACT_ITEMS, CONTACT_SELECT, TOO_MANY_ERROR, cleanValue, cleanLabel, cleanItems, contactItemsFor,
   contactCardDTO, cleanShareIds, sideOf, pickedShare, setShare, effectiveShareIds, sharedContactFrom, shareFields,
-  legacyEmail, firstLinkedIn, syncLinkedInItem, accountEmailOf, isPlaceholderEmail,
+  legacyEmail, firstLinkedIn, syncLinkedInItem, accountEmailOf, isPlaceholderEmail, qrShareOf, applyQrShare,
 } from "../services/contactCard.js";
 import { RIGHTS, RIGHT_LABELS, rightsFor } from "../services/appRights.js";
 import { userCard, publicProfile } from "../services/socialHelpers.js";
@@ -265,6 +265,32 @@ test("legacyEmail and firstLinkedIn", () => {
   assert.equal(legacyEmail([]), "");
   assert.equal(firstLinkedIn(contactItemsFor(ann)), "https://www.linkedin.com/in/annlee");
   assert.equal(firstLinkedIn([]), "");
+});
+
+/* ---------- connect QR ---------- */
+
+test("qrShareOf: the QR sheet's pick (resolved live), else share-by-default items", () => {
+  assert.deepEqual(qrShareOf(ann), { ids: ["ph", "li"], picked: false });
+  assert.deepEqual(qrShareOf({ ...ann, contactQrShare: ["wa", "gone", "acc"] }), { ids: ["acc", "wa"], picked: true });
+  assert.deepEqual(qrShareOf({ ...ann, contactQrShare: [] }), { ids: [], picked: true });
+  assert.deepEqual(contactCardDTO({ ...ann, contactQrShare: ["wa"] }, can).qrShare, ["wa"]);
+  assert.equal(contactCardDTO(ann, can).qrSharePicked, false);
+});
+
+test("applyQrShare: copies the QR pick onto a scan of the QR, never over a pick or without the right", () => {
+  const scanned = { ...ann, contactQrShare: ["wa"] };
+  const c = conn({ fromUserId: "u-bo", toUserId: "u-ann", kind: "inPerson" });
+  assert.equal(applyQrShare(c, scanned, can), true);
+  assert.deepEqual(c.toShare, ["wa"]);
+  assert.deepEqual(sharedContactFrom(c, scanned, can), [{ kind: "whatsapp", label: "", value: "+1 416 555 0100" }]);
+  // Already picked for this person: left alone.
+  assert.equal(applyQrShare(c, { ...scanned, contactQrShare: ["ph"] }, can), false);
+  assert.deepEqual(c.toShare, ["wa"]);
+  // No QR pick (defaults apply by themselves) or no right: nothing stored.
+  const c2 = conn({ fromUserId: "u-bo", toUserId: "u-ann", kind: "inPerson" });
+  assert.equal(applyQrShare(c2, ann, can), false);
+  assert.equal(applyQrShare(c2, scanned, cannot), false);
+  assert.equal(c2.toShare, undefined);
 });
 
 /* ---------- profile LinkedIn ⇄ first LinkedIn item ---------- */

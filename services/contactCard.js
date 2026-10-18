@@ -35,7 +35,7 @@ const ID_RX = /^[A-Za-z0-9_-]{1,40}$/;
 const PLACEHOLDER_RX = /@ticket\.thetechfestival\.com$/i;
 
 /** Fields the contact helpers read from a User. */
-export const CONTACT_SELECT = "email linkedinUrl contactItems contactCardSavedAt";
+export const CONTACT_SELECT = "email linkedinUrl contactItems contactCardSavedAt contactQrShare";
 
 export const SHARE_OFF_ERROR = "Contact sharing is off for your pass type.";
 export const TOO_MANY_ERROR = `You can add up to ${MAX_CONTACT_ITEMS} contact details.`;
@@ -222,9 +222,36 @@ export function contactItemsFor(user) {
   return out;
 }
 
+/**
+ * What people who scan this person's connect QR get: the ids picked on the QR sheet
+ * (contactQrShare, resolved live), else the share-by-default items. → { ids, picked }.
+ */
+export function qrShareOf(user) {
+  const items = contactItemsFor(user);
+  if (Array.isArray(user?.contactQrShare)) {
+    const want = new Set(user.contactQrShare.map(String));
+    return { ids: items.filter((it) => want.has(it.id)).map((it) => it.id), picked: true };
+  }
+  return { ids: items.filter((it) => it.shareByDefault).map((it) => it.id), picked: false };
+}
+
+/**
+ * A badge / connect QR scan: the person scanned (`target`) hadn't picked for this connection,
+ * so they share what their QR sheet says (a copy, so a later QR change leaves this connection alone).
+ * → true when it set something. Never without their shareContact right.
+ */
+export function applyQrShare(connection, target, targetRights) {
+  if (!targetRights?.shareContact || !Array.isArray(target?.contactQrShare)) return false;
+  if (pickedShare(connection, target._id).picked) return false;
+  return setShare(connection, target._id, qrShareOf(target).ids);
+}
+
 /** What the person themself gets back (GET / PUT /api/social/contact-card). */
 export function contactCardDTO(user, rights) {
+  const qr = qrShareOf(user);
   return {
+    qrShare: qr.ids,
+    qrSharePicked: qr.picked,
     items: contactItemsFor(user),
     accountEmail: accountEmailOf(user),
     canShare: !!rights?.shareContact,

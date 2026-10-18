@@ -122,6 +122,9 @@ const userSchema = new mongoose.Schema(
     contactItems: { type: [{ _id: false, id: String, kind: { type: String, enum: CONTACT_KINDS }, label: String,
                              value: String, shareByDefault: Boolean, account: Boolean }], default: [] },
     contactCardSavedAt: { type: Date },
+    // What people who scan their connect QR get (item ids, set from the QR sheet). Unset = their
+    // share-by-default items. Copied onto the connection at scan time if they hadn't picked for it.
+    contactQrShare: { type: [String], default: undefined },
     // When they last opened each tab's activity (likes, comments, mentions, replies).
     activitySeen: { feed: { type: Date }, discussions: { type: Date } },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
