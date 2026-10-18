@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { isTeam } from "../services/teamRoles.js";
 
 export async function requireAdmin(req, res, next) {
   try {
@@ -21,6 +22,24 @@ export async function requireAdmin(req, res, next) {
     res.status(401).json({ error: "Unauthorized" });
   }
 }
+/* Staff or volunteer (services/teamRoles.js): for door check-in only. Everything
+   else staff-only keeps requireAdmin, so volunteers never reach the admin panel. */
+export async function requireTeam(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "No token" });
+    const decoded = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (!user || user.banned || !isTeam(user)) {
+      return res.status(403).json({ error: "Staff or volunteers only" });
+    }
+    req.user = user;
+    next();
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
+  }
+}
+
 /* Staff the owner said aren't management. They stay staff until management
    explicitly switches them to management in Staff accounts. */
 const DEFAULT_STAFF_EMAILS = ["nicole@thetechfestival.com", "nicole@thetechfestival..com"];

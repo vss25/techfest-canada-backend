@@ -2,7 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { buildDirectory } from "../services/ticketAccess.js";
+import { buildDirectory, GUEST_DETAILS_SELECT } from "../services/ticketAccess.js";
 import { Block } from "../models/Admin.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
@@ -10,12 +10,25 @@ import {
 } from "../models/Social.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
+import ActivityEvent, { recordActivity } from "../models/ActivityEvent.js";
 import { pushToUsers } from "../services/push.js";
+import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
+import { rankFeed } from "../services/feedRank.js";
+import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
+  publicProfile, PROFILE_SELECT, CARD_SELECT,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
+import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
+import { contactAccess, applyAccess } from "../services/contactAccess.js";
+import { cardsFor, loadExhibitors } from "../services/cards.js";
+import { kindFields, publicTier } from "../services/teamRoles.js";
+import {
+  cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
+  parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
+} from "../services/socialActivity.js";
 
 /* =========================================================
    /api/social — the iOS app's shared layer
@@ -60,7 +73,8 @@ async function statusFor(text, userId, context) {
 }
 
 const isAdmin = (u) => u.role === "admin";
-const authorTier = (u) => tierName(bestTierKey(u));
+/** The pass stored on someone's new post or comment: only a Speaker Pass or "Exhibitor" (publicTier). */
+const authorTier = async (u) => publicTier(tierName(bestTierKey(u)), kindFields(u, await loadExhibitors()).kind);
 
 /** authorId → avatarVersion for the people who have a profile photo. */
 async function avatarVersions(ids) {
@@ -72,8 +86,10 @@ async function avatarVersions(ids) {
 
 /* ================= ME / DIRECTORY ================= */
 
-router.get("/me", (req, res) => {
-  res.json({ ...userCard(req.user), email: req.user.email, isAdmin: isAdmin(req.user) });
+// isAdmin is staff only; role tells the apps a volunteer ("volunteer") from an attendee ("user").
+router.get("/me", async (req, res) => {
+  const exhibitors = await loadExhibitors();
+  res.json({ ...userCard(req.user, { exhibitors, self: true }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user" });
 });
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
@@ -82,14 +98,16 @@ router.get("/users", async (req, res) => {
   const filter = {
     _id: { $ne: req.user._id },
     directoryHidden: { $ne: true }, banned: { $ne: true },
-    $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } }],
+    $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } },
+      // Staff and volunteers on the app are listed (Network → Staff) even with an empty profile.
+      { role: { $in: ["admin", "volunteer"] }, $or: [{ appOnboarded: true }, { lastActiveAt: { $exists: true } }] }],
   };
   if (q) {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
-  const users = await User.find(filter).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").limit(60).lean();
-  res.json(users.filter((u) => !req.blocked.has(String(u._id))).map(userCard));
+  const users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.blocked.has(String(u._id)));
+  res.json(await cardsFor(req.user, users));
 });
 
 /* Every ticket holder (app users + guest purchases), one entry per person,
@@ -99,22 +117,36 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
-      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean(),
-    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select("name email ticketId ticketType purchaseDate").lean(),
+      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff").lean(),
+    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
-  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
+  const exhibitors = await loadExhibitors();
+  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
-  res.json(people.filter((p) => !req.blocked.has(p.id)));
+  people = people.filter((p) => !req.blocked.has(p.id));
+  const shown = new Set(people.map((p) => p.id));
+  const access = await contactAccess(req.user, users.filter((u) => shown.has(String(u._id))));
+  res.json(people.map((p) => applyAccess(p, access)));
 });
 
+/* One person's profile page: everything they filled in for others to see
+   (publicProfile in services/socialHelpers.js), never email, phone, role or tickets. */
 router.get("/users/:id", async (req, res) => {
-  if (!/^[a-f0-9]{24}$/i.test(String(req.params.id)) || req.blocked.has(String(req.params.id))) return res.status(404).json({ error: "Not found" });
-  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot directoryHidden banned").lean();
+  const id = String(req.params.id);
+  if (!isObjectId(id) || req.blocked.has(id)) return res.status(404).json({ error: "Not found" });
+  const u = await User.findById(id).select(`${PROFILE_SELECT} directoryHidden banned`).lean();
+  if (!u || u.banned) return res.status(404).json({ error: "Not found" });
   // Hidden people stay reachable from an existing chat or connection, but can't be looked up cold.
-  const known = u && u.directoryHidden ? await SocialConnection.exists({
-    $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }) : true;
-  if (!u || u.banned || !known) return res.status(404).json({ error: "Not found" });
-  res.json(userCard(u));
+  const self = String(u._id) === String(req.user._id);
+  if (u.directoryHidden && !self) {
+    const [connected, chatted] = await Promise.all([
+      SocialConnection.exists({ $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }),
+      SocialMessage.exists({ threadKey: threadKey(req.user._id, u._id) }),
+    ]);
+    if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
+  }
+  const [access, exhibitors] = await Promise.all([contactAccess(req.user, [u]), loadExhibitors()]);
+  res.json(applyAccess(publicProfile(u, { exhibitors, self }), access));
 });
 
 /* ================= FEED ================= */
@@ -124,43 +156,111 @@ router.get("/feed", async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  const posts = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean())
+  // Rank the recent window by engagement (with a small daily shuffle), then trim.
+  const recent = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(300).lean())
     .filter((p) => !req.blocked.has(String(p.authorId)));
+  const posts = rankFeed(recent, req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
-  res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
+  const staff = isAdmin(req.user);
+  res.json(posts.map((p) => postDTO(p, req.user._id, avatars, { staff })));
+});
+
+/* ================= FEED MEDIA (Cloudinary) ================= */
+
+/** Whether photo/video uploads are on, and their limits. */
+router.get("/media/config", (req, res) => {
+  res.json({ enabled: cloudinaryConfig().enabled, maxItems: MAX_ITEMS, maxVideoSeconds: MAX_VIDEO_SECONDS });
+});
+
+/** Signed parameters for one direct upload to Cloudinary. */
+router.post("/media/sign", (req, res) => {
+  const signed = signUpload({ type: req.body?.type, userId: req.user._id });
+  if (!signed) return res.status(503).json({ error: "media_unavailable", message: "Photo and video uploads aren't switched on yet." });
+  res.json(signed);
 });
 
 router.post("/feed", async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   const imageData = cleanImageData(req.body?.imageData, 450_000);
-  if (!body && !imageData) return res.status(400).json({ error: "Write something or add a photo" });
+  const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
+  if (!body && !imageData && !media.length) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
+  // @mentions: user ids must be real accounts; speaker ids are Sanity ids.
+  let mentions = cleanMentions(req.body?.mentions);
+  const mentionIds = mentionedUserIds(mentions);
+  const known = mentionIds.length ? await User.find({ _id: { $in: mentionIds } }).select("name").lean() : [];
+  mentions = keepKnownMentions(mentions, new Map(known.map((u) => [String(u._id), u.name])));
   const status = await statusFor([body, linkUrl].join(" "), req.user._id, "feed");
   const post = await SocialPost.create({
     authorId: req.user._id,
     authorName: req.user.name,
     authorTitle: req.user.jobTitle || "",
     authorOrg: req.user.organization || "",
-    authorTier: authorTier(req.user),
+    authorTier: await authorTier(req.user),
     kind: isAdmin(req.user) && req.body?.kind === "announcement" ? "announcement" : "member",
     body,
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
     linkUrl,
     imageData,
+    media,
+    mentions,
     status,
   });
-  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]])));
+  // Held posts aren't visible to anyone else yet, so nobody hears about them.
+  if (status === "approved") {
+    recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
+  }
+  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]]), { staff: isAdmin(req.user) }));
+});
+
+/** One post (opened from an activity row, a mention or a shared link). */
+router.get("/feed/:id", async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const post = await SocialPost.findById(req.params.id).lean();
+  if (!canViewPost(post, req.user, req.blocked)) return res.status(404).json({ error: "Not found" });
+  const avatars = await avatarVersions([post.authorId]);
+  res.json(postDTO(post, req.user._id, avatars, { staff: isAdmin(req.user) }));
+});
+
+/* The author deletes their own post (gone, with its comments); staff remove
+   anyone else's (kept as status "hidden" with removedBy/removedAt). */
+router.delete("/feed/:id", async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const post = await SocialPost.findById(req.params.id);
+  if (!post) return res.status(404).json({ error: "Not found" });
+  const mode = removeMode(post, req.user);
+  if (!mode) return res.status(403).json({ error: "You can only delete your own posts." });
+  if (mode === "author") {
+    await Promise.all([
+      SocialComment.deleteMany({ postId: post._id }),
+      ActivityEvent.deleteMany({ refId: post._id }),
+      post.deleteOne(),
+    ]);
+    return res.json({ ok: true, id: String(post._id), removed: "deleted" });
+  }
+  post.status = "hidden";
+  post.removedBy = req.user._id;
+  post.removedAt = new Date();
+  await post.save();
+  await ActivityEvent.deleteMany({ refId: post._id });
+  res.json({ ok: true, id: String(post._id), removed: "hidden" });
 });
 
 router.post("/feed/:id/like", async (req, res) => {
   const post = await SocialPost.findById(req.params.id);
   if (!post || post.status === "hidden") return res.status(404).json({ error: "Not found" });
-  const me = String(req.user._id);
-  const i = post.likes.findIndex((l) => String(l) === me);
-  if (i >= 0) post.likes.splice(i, 1); else post.likes.push(req.user._id);
-  post.likeCount = post.likes.length;
+  const t = toggleLike({ likes: post.likes, everLiked: post.everLiked, actorId: req.user._id });
+  post.likes = t.likes;
+  post.everLiked = t.everLiked;
+  post.likeCount = t.likes.length;
   await post.save();
-  res.json({ liked: i < 0, likeCount: post.likeCount });
+  // Only someone's first-ever like tells the author (not an unlike + relike).
+  if (t.firstLike) {
+    recordActivity(buildActivity({ kind: "like", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+  }
+  res.json({ liked: t.liked, likeCount: post.likeCount });
 });
 
 router.get("/feed/:id/comments", async (req, res) => {
@@ -170,7 +270,7 @@ router.get("/feed/:id/comments", async (req, res) => {
   }).sort({ createdAt: 1 }).lean();
   res.json(comments.filter((c) => !req.blocked.has(String(c.authorId))).map((c) => ({
     id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
-    authorName: c.authorName, authorTier: c.authorTier || "", body: c.body,
+    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body,
     status: c.status, createdAt: c.createdAt,
   })));
 });
@@ -183,24 +283,31 @@ router.post("/feed/:id/comments", async (req, res) => {
   const status = await statusFor(body, req.user._id, "comment");
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
-    authorTier: authorTier(req.user), body, status,
+    authorTier: await authorTier(req.user), body, status,
   });
-  if (status === "approved") { post.commentCount += 1; await post.save(); }
+  if (status === "approved") {
+    post.commentCount += 1;
+    await post.save();
+    recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+  }
   res.status(201).json({
     id: String(c._id), postId: String(post._id), authorId: String(req.user._id),
-    authorName: c.authorName, authorTier: c.authorTier, body: c.body, status: c.status, createdAt: c.createdAt,
+    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body, status: c.status, createdAt: c.createdAt,
     commentCount: post.commentCount,
   });
 });
 
 /* ================= CONNECTIONS ================= */
 
-async function connectionDTO(c, meId) {
+/** `viewer` is the signed-in user (req.user). */
+async function connectionDTO(c, viewer) {
+  const meId = viewer._id;
   const otherId = String(c.fromUserId) === String(meId) ? c.toUserId : c.fromUserId;
-  const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean();
+  const other = await User.findById(otherId).select(CARD_SELECT).lean();
   return {
     id: String(c._id),
-    user: userCard(other) || { id: String(otherId), name: "Attendee" },
+    user: (await cardsFor(viewer, [other]))[0] || { id: String(otherId), name: "Attendee" },
     direction: String(c.fromUserId) === String(meId) ? "outgoing" : "incoming",
     status: c.status, kind: c.kind, note: c.note || "",
     createdAt: c.createdAt, respondedAt: c.respondedAt,
@@ -213,7 +320,7 @@ router.get("/connections", async (req, res) => {
   const me = req.user._id;
   const all = await SocialConnection.find({ $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "declined" } })
     .sort({ updatedAt: -1 }).lean();
-  const items = await Promise.all(all.map((c) => connectionDTO(c, me)));
+  const items = await Promise.all(all.map((c) => connectionDTO(c, req.user)));
   res.json({
     accepted: items.filter((c) => c.status === "accepted"),
     incoming: items.filter((c) => c.status === "pending" && c.direction === "incoming"),
@@ -224,7 +331,7 @@ router.get("/connections", async (req, res) => {
 router.post("/connections/request", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
-  const target = await User.findById(toUserId).select("_id lastActiveAt appOnboarded");
+  const target = await User.findById(toUserId).select("_id name lastActiveAt appOnboarded requestsOff");
   if (!target) return res.status(404).json({ error: "User not found" });
   if (!isOnApp(target)) return res.status(409).json({ error: "They haven't joined the app yet. You can connect once they sign in." });
   const existing = await SocialConnection.findOne({
@@ -236,13 +343,15 @@ router.post("/connections/request", async (req, res) => {
       existing.status = "accepted"; existing.respondedAt = new Date(); await existing.save();
       pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) });
     }
-    return res.json(await connectionDTO(existing, req.user._id));
+    return res.json(await connectionDTO(existing, req.user));
   }
+  // Staff switch (VIPs): no new requests, but rows above (theirs included) still work.
+  if (!canRequest({ sender: req.user, target })) return res.status(403).json({ error: requestsOffError(target) });
   const c = await SocialConnection.create({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
   if (!req.blocked.has(toUserId)) {
     pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.status(201).json(await connectionDTO(c, req.user._id));
+  res.status(201).json(await connectionDTO(c, req.user));
 });
 
 router.post("/connections/:id/respond", async (req, res) => {
@@ -254,7 +363,7 @@ router.post("/connections/:id/respond", async (req, res) => {
   if (c.status === "accepted") {
     pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.json(await connectionDTO(c, req.user._id));
+  res.json(await connectionDTO(c, req.user));
 });
 
 // Badge scan: both parties connected immediately, details exchanged.
@@ -282,7 +391,7 @@ router.post("/connections/in-person", async (req, res) => {
   if (!c) c = new SocialConnection({ fromUserId: req.user._id, toUserId });
   c.status = "accepted"; c.kind = "inPerson"; c.respondedAt = new Date();
   await c.save();
-  res.json(await connectionDTO(c, req.user._id));
+  res.json(await connectionDTO(c, req.user));
 });
 
 /* ================= MESSAGES ================= */
@@ -305,9 +414,9 @@ router.get("/messages", async (req, res) => {
   const visible = recent.filter((t) => !req.blocked.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
   const threads = await Promise.all(visible.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
-    const other = await User.findById(otherId).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean();
+    const other = await User.findById(otherId).select(CARD_SELECT).lean();
     return {
-      user: userCard(other) || { id: String(otherId), name: "Attendee" },
+      user: (await cardsFor(req.user, [other]))[0] || { id: String(otherId), name: "Attendee" },
       lastMessage: { body: t.last.body, sentByMe: String(t.last.fromUserId) === String(me), createdAt: t.last.createdAt },
       unread: t.unread,
     };
@@ -332,9 +441,19 @@ router.get("/messages/:userId", async (req, res) => {
 router.post("/messages/:userId", async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
-  const to = await User.findById(req.params.userId).select("_id");
+  const to = await User.findById(req.params.userId).select("_id name messagesOff");
   if (!to) return res.status(404).json({ error: "User not found" });
   if (req.blocked.has(String(to._id))) return res.status(403).json({ error: "You can't message this person." });
+  // Staff switch (VIPs): only staff, accepted connections, or a reply to someone who wrote first.
+  if (to.messagesOff && !isAdmin(req.user)) {
+    const [connected, theyWroteFirst] = await Promise.all([
+      SocialConnection.exists({ status: "accepted", $or: [{ fromUserId: req.user._id, toUserId: to._id }, { fromUserId: to._id, toUserId: req.user._id }] }),
+      SocialMessage.exists({ fromUserId: to._id, toUserId: req.user._id }),
+    ]);
+    if (!canMessage({ sender: req.user, recipient: to, connected: !!connected, theyWroteFirst: !!theyWroteFirst })) {
+      return res.status(403).json({ error: messagesOffError(to) });
+    }
+  }
   const status = await statusFor(body, req.user._id, "message");
   const m = await SocialMessage.create({
     threadKey: threadKey(req.user._id, to._id), fromUserId: req.user._id, toUserId: to._id, body, status,
@@ -384,7 +503,7 @@ router.get("/sessions/:id/questions", async (req, res) => {
   res.json(qs.map((q) => questionDTO(q, req.user._id)));
 });
 
-router.post("/sessions/:id/questions", async (req, res) => {
+router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const body = trimBody(req.body?.body, 600);
   if (!body) return res.status(400).json({ error: "body required" });
   const status = await statusFor(body, req.user._id, "question");
@@ -394,7 +513,7 @@ router.post("/sessions/:id/questions", async (req, res) => {
   res.status(201).json(questionDTO(q, req.user._id));
 });
 
-router.post("/sessions/questions/:qid/upvote", async (req, res) => {
+router.post("/sessions/questions/:qid/upvote", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const q = await SessionQuestion.findById(req.params.qid);
   if (!q) return res.status(404).json({ error: "Not found" });
   const me = String(req.user._id);
@@ -413,7 +532,7 @@ router.get("/sessions/:id/polls/:pollId/results", async (req, res) => {
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
 
-router.post("/sessions/:id/polls/:pollId/vote", async (req, res) => {
+router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls are closed right now."), async (req, res) => {
   const optionIndex = Number(req.body?.optionIndex);
   if (!Number.isInteger(optionIndex) || optionIndex < 0) return res.status(400).json({ error: "optionIndex required" });
   const optionCount = Math.min(Math.max(Number(req.body?.options) || 4, 1), 16);
@@ -458,8 +577,42 @@ router.patch("/points/prefs", async (req, res) => {
   res.json({ hideFromLeaderboard: hide });
 });
 
+/* ================= MY ACTIVITY =================
+   Likes, comments and mentions on the feed, replies in discussions you
+   follow (those also push, see routes/community.js). The apps poll
+   /activity/unread and show a dot on the tab until the person opens it
+   (POST /activity/seen { section }). */
+
+const seenTimes = (u) => ({ feed: u.activitySeen?.feed, discussions: u.activitySeen?.discussions });
+
+router.get("/activity/unread", async (req, res) => {
+  const seen = seenTimes(req.user);
+  const [feed, discussions] = await Promise.all(ACTIVITY_SECTIONS.map((s) =>
+    ActivityEvent.countDocuments(unreadFilter(req.user._id, s, seen, req.blocked))));
+  res.json({ feed, discussions });
+});
+
+router.post("/activity/seen", async (req, res) => {
+  const section = parseSection(req.body?.section);
+  if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
+  const seenAt = new Date();
+  await User.updateOne({ _id: req.user._id }, { $set: { [`activitySeen.${section}`]: seenAt } });
+  res.json({ ok: true, section, seenAt });
+});
+
+router.get("/activity", async (req, res) => {
+  const section = parseSection(req.query.section ?? "feed");
+  if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+  const filter = { userId: req.user._id, section };
+  if (req.blocked.size) filter.actorId = { $nin: [...req.blocked] };
+  const rows = await ActivityEvent.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+  res.json(rows.map(activityDTO));
+});
+
 /* ================= MY NOTIFICATIONS =================
-   Personal notifications staff sent from the admin panel. The apps poll this
+   Personal notifications staff sent from the admin panel, and (for staff)
+   "Content reported" ones from POST /api/app/report. The apps poll this
    (on open and in the background) and show new ones as local notifications. */
 
 router.get("/notifications", async (req, res) => {
@@ -493,7 +646,7 @@ router.get("/admin/held", async (req, res) => {
     SocialMessage.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
   ]);
   res.json({
-    posts: posts.map((p) => postDTO(p, req.user._id)),
+    posts: posts.map((p) => postDTO(p, req.user._id, new Map(), { staff: true })),
     comments: comments.map((c) => ({ id: String(c._id), postId: String(c.postId), authorName: c.authorName, body: c.body, createdAt: c.createdAt })),
     questions: questions.map((q) => questionDTO(q, req.user._id)),
     messages: messages.map((m) => ({ id: String(m._id), body: m.body, createdAt: m.createdAt })),

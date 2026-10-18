@@ -9,6 +9,7 @@ import { sendResetPasswordEmail } from "../services/emailService.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile } from "../services/onboardingProfile.js";
+import { isTeam } from "../services/teamRoles.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -94,9 +95,10 @@ router.post("/login", async (req, res) => {
     loginPerEmail.reset(`e:${email}`);
 
     // The apps' "Staff sign-in" sends staffOnly: attendees sign in there with a link or
-    // their ticket ID, so a password only works for staff accounts.
-    if (req.body?.staffOnly === true && String(user.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ error: "This sign-in is for TTFC staff. Attendees: use a sign-in link or your ticket ID." });
+    // their ticket ID, so a password only works for staff and volunteer accounts.
+    // (Volunteers get door check-in, never the admin panel: see services/teamRoles.js.)
+    if (req.body?.staffOnly === true && !isTeam(user)) {
+      return res.status(403).json({ error: "This sign-in is for TTFC staff and volunteers. Attendees: use a sign-in link or your ticket ID." });
     }
 
     const token = jwt.sign(

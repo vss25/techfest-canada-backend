@@ -47,6 +47,8 @@ export const CONTENT_KEYS = {
   "flag.show_news": true,
   "flag.allow_posts": true,
   "flag.allow_groups": true,
+  "flag.polls": true,                      // off = live polls hidden in the apps, votes refused
+  "flag.qa": true,                         // off = audience Q&A hidden in the apps, questions refused
 
   /* Website (Site settings page in the admin panel). Empty text = use the built-in default. */
   "site.announcement": "",                 // bar across the top of every page

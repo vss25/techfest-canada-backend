@@ -1,3 +1,5 @@
+import { deliveryMedia } from "./cloudinary.js";
+import { kindFields, publicTier } from "./teamRoles.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -53,9 +55,14 @@ export function isOnApp(user) {
   return !!(user?.appOnboarded || user?.lastActiveAt);
 }
 
-/** Public card for another attendee — never email, never role. */
-export function userCard(user) {
+/** Public card for another attendee — never email, never role.
+    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for kind "exhibitor" + booth.
+    `tier` is only a Speaker Pass or "Exhibitor" (publicTier); `self: true` (their own card) keeps the real pass. */
+export function userCard(user, { exhibitors = null, self = false } = {}) {
   if (!user) return null;
+  // Network sections: "staff" | "volunteer" | "speaker" | "exhibitor" | "" (+ booth for exhibitors).
+  const kf = kindFields(user, exhibitors);
+  const tier = tierName(bestTierKey(user));
   return {
     id: String(user._id || user.id),
     name: user.name || "",
@@ -64,37 +71,69 @@ export function userCard(user) {
     linkedinUrl: user.linkedinUrl || "",
     country: user.country || "",
     topics: Array.isArray(user.topics) ? user.topics : [],
-    tier: tierName(bestTierKey(user)),
+    tier: self ? tier : publicTier(tier, kf.kind),
     tagline: user.tagline || "",
     // When/where they're happy to meet — they chose to share this.
     availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
     meetingSpot: user.meetingSpot || "",
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
+    // Staff contact switches (services/contactSwitches.js). False only hides the
+    // Message / Connect buttons; the server still decides (e.g. replies are allowed).
+    acceptsMessages: !user.messagesOff,
+    acceptsRequests: !user.requestsOff,
+    ...kf,
+  };
+}
+
+/** Fields userCard reads. Every query that builds cards must select these. */
+export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff";
+
+/** Fields a person's full profile page shows (GET /api/social/users/:id). */
+export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;
+
+/** Full public profile: the card plus the other profile answers they gave.
+    Never email, phone, role, tickets, gender or salutation. */
+export function publicProfile(user, opts = {}) {
+  const card = userCard(user, opts);
+  if (!card) return null;
+  return {
+    ...card,
+    fieldOfWork: user.fieldOfWork || "",
+    jobLevel: user.jobLevel || "",
+    objectives: Array.isArray(user.objectives) ? user.objectives : [],
   };
 }
 
 /** What the app sees for a post. `avatars` maps authorId → avatarVersion.
-    The photo itself is fetched from imageUrl, so the feed stays small. */
-export function postDTO(post, viewerId, avatars = new Map()) {
+    The photo itself is fetched from imageUrl, so the feed stays small.
+    `staff`: the viewer is staff, so canRemove is true on every post. */
+export function postDTO(post, viewerId, avatars = new Map(), { staff = false } = {}) {
   const me = String(viewerId || "");
+  // Cloudinary media first; a legacy inline photo shows as a one-item list.
+  const media = (post.media || []).map(deliveryMedia);
+  if (!media.length && post.imageData) media.push({ type: "image", url: postImagePath(post), posterUrl: "", width: 0, height: 0, duration: 0 });
   return {
     id: String(post._id),
     authorId: String(post.authorId),
     authorName: post.authorName,
     authorTitle: post.authorTitle || "",
     authorOrg: post.authorOrg || "",
-    authorTier: post.authorTier || "",
+    // Stored when posted; older posts may hold any pass name, so filter again.
+    authorTier: publicTier(post.authorTier),
     kind: post.kind || "member",
     body: post.body,
     topicTags: post.topicTags || [],
     linkUrl: post.linkUrl || "",
     imageData: "",
-    imageUrl: postImagePath(post),
+    imageUrl: postImagePath(post) || (media.find((m) => m.type === "image")?.url ?? ""),
+    media,
     authorAvatarUrl: avatarPath(post.authorId, avatars.get(String(post.authorId))),
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
     likedByMe: (post.likes || []).some((l) => String(l) === me),
+    mentions: (post.mentions || []).map((m) => ({ type: m.type, id: String(m.id), name: m.name || "" })),
+    canRemove: !!me && (String(post.authorId) === me || !!staff),
     status: post.status || "approved",
     createdAt: post.createdAt,
   };
