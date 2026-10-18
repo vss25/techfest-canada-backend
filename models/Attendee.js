@@ -67,9 +67,11 @@ const attendeeSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User"
     },
-    // Staff marked this pass holder as an exhibitor (Admin → People, default No). Like an
-    // exhibitor pass, it gives the account that claims the pass the exhibitor type.
-    exhibitor: { type: Boolean, default: false },
+    // Exhibitor switch set by staff in Admin → People. Unset = automatic (an exhibitor pass,
+    // promo EXHIBITOR, makes them an exhibitor; anything else doesn't). true = an exhibitor
+    // whatever the pass; false = not one, even with an exhibitor pass (no badge or booth in
+    // the apps). passKind and loadExhibitors read it, so the account that claims the pass follows.
+    exhibitor: { type: Boolean },
     // Staff-set logo for this person only; "" = their company's default (models/Company.js).
     companyLogoUrl: { type: String, default: "" },
     // Speaker Pass (ticketType "speaker"): the Sanity speaker document it was made for.

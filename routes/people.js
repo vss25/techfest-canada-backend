@@ -239,16 +239,19 @@ router.patch("/:id", wrap(async (req, res) => {
     if (want.company !== undefined && want.company !== (u.organization || "")) { note("company"); u.organization = want.company; }
     if (want.jobTitle !== undefined && want.jobTitle !== (u.jobTitle || "")) { note("jobTitle"); u.jobTitle = want.jobTitle; }
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {
-      // The person type follows the switch: on adds exhibitor (and lifts a typesOff), off removes the one staff gave.
-      // An exhibitor pass still makes them an exhibitor in the apps (an automatic type; App rights › person types switches it off).
+      // The switch sets what the apps use. On: the exhibitor type (and any typesOff lifted). Off: the type staff
+      // gave goes, and the automatic one (an exhibitor pass) is switched off with typesOff, so no badge or booth.
       const types = storedTypes(u.types);
       const off = storedTypes(u.typesOff);
       if (want.exhibitor) {
         u.types = PERSON_TYPES.filter((t) => t === "exhibitor" || types.includes(t));
         u.typesOff = off.filter((t) => t !== "exhibitor");
+        // A pass of theirs switched off before they claimed it goes back to automatic.
+        if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: false }, { $unset: { exhibitor: 1 } });
       } else {
         u.types = types.filter((t) => t !== "exhibitor");
-        if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: true }, { $set: { exhibitor: false } });
+        u.typesOff = PERSON_TYPES.filter((t) => t === "exhibitor" || off.includes(t));
+        if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: true }, { $unset: { exhibitor: 1 } });
       }
       note("exhibitor", p.exhibitor, want.exhibitor);
     }
@@ -268,8 +271,10 @@ router.patch("/:id", wrap(async (req, res) => {
     if (want.jobTitle !== undefined && want.jobTitle !== (a.details?.jobTitle || "")) { edit.jobTitle = want.jobTitle; note("jobTitle"); }
     if (Object.keys(edit).length) a.details = mergeStaffEdit(a.details, edit);
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {
-      // On: their main pass carries the flag. Off: every pass of theirs loses it.
-      if (!want.exhibitor) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: true }, { $set: { exhibitor: false } });
+      // On: their main pass says so (and none of their passes says No any more).
+      // Off: every pass of theirs says No, an exhibitor pass included (no badge or booth in the apps).
+      if (want.exhibitor) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: false }, { $unset: { exhibitor: 1 } });
+      else await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { exhibitor: false } });
       a.exhibitor = want.exhibitor;
       note("exhibitor", p.exhibitor, want.exhibitor);
     }

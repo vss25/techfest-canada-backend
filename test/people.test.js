@@ -5,7 +5,7 @@ import {
   PEOPLE_CSV_HEAD, agendaFor, specialEvents, suggestDomain, editInfo,
 } from "../services/people.js";
 import { companyKey, cleanDomain, domainOfUrl, companyDTO } from "../services/companies.js";
-import { passKind } from "../services/teamRoles.js";
+import { passKind, isExhibitorPass } from "../services/teamRoles.js";
 import { EXHIBITOR_FILTER } from "../services/exhibitorCache.js";
 
 const d = (s) => new Date(`2026-${s}T12:00:00Z`);
@@ -168,20 +168,46 @@ test("types: effective person types, unclaimed passes and the speaker list", () 
   assert.deepEqual(byName(buildPeople(w).people, "Bob Buyer").types, ["attendee"]);
 });
 
-test("exhibitor: an explicit staff field, default No, separate from the exhibitor pass", () => {
+test("exhibitor: what the apps use, the type from staff or an exhibitor pass, unless staff switched it off", () => {
   const { people } = buildPeople(world());
-  const ex = (n) => [byName(people, n).exhibitor, byName(people, n).exhibitorPass];
-  assert.deepEqual(ex("Jane Doe"), [false, false]);
-  assert.deepEqual(ex("Ed Exhibitor"), [false, true]); // has an exhibitor pass, but staff haven't said Yes
-  assert.deepEqual(ex("Fay Flagged"), [true, false]);
+  const ex = (list, n) => [byName(list, n).exhibitor, byName(list, n).exhibitorPass, byName(list, n).types.includes("exhibitor")];
+  assert.deepEqual(ex(people, "Jane Doe"), [false, false, false]); // No for everyone else
+  assert.deepEqual(ex(people, "Ed Exhibitor"), [true, true, true]); // an exhibitor pass: Yes
+  assert.deepEqual(ex(people, "Fay Flagged"), [true, false, true]); // staff said Yes
+  // An account: staff's type, or an exhibitor pass it claimed; typesOff switches either off.
   const w = world();
   w.users[0].types = ["vip", "exhibitor"];
-  assert.equal(byName(buildPeople(w).people, "Jane Doe").exhibitor, true);
-  // The app's exhibitor inference reads the same flag.
-  assert.equal(passKind({ exhibitor: true }), "exhibitor");
+  assert.deepEqual(ex(buildPeople(w).people, "Jane Doe"), [true, false, true]);
+  const claimed = world();
+  claimed.attendees.push({ _id: "a20", name: "Jane Doe", email: "jane@acme.com", ticketId: "EXJ001", ticketType: "connect", promoCode: "EXHIBITOR", claimedBy: "u1" });
+  assert.deepEqual(ex(buildPeople(claimed).people, "Jane Doe"), [true, true, true]);
+  claimed.users[0].typesOff = ["exhibitor"];
+  assert.deepEqual(ex(buildPeople(claimed).people, "Jane Doe"), [false, true, false]);
+  // A pass-only person: Attendee.exhibitor false switches the exhibitor pass off (badge and booth too).
+  const off = world();
+  off.attendees.find((a) => a._id === "a6").exhibitor = false;
+  assert.deepEqual(ex(buildPeople(off).people, "Ed Exhibitor"), [false, true, false]);
+  assert.deepEqual(byName(buildPeople(off).people, "Ed Exhibitor").types, ["attendee"]);
+});
+
+test("passKind and loadExhibitors agree: staff's switch wins, else the exhibitor pass", () => {
   assert.equal(passKind({ promoCode: "EXHIBITOR" }), "exhibitor");
+  assert.equal(passKind({ promoCode: "exhibitor" }), "exhibitor");
+  assert.equal(passKind({ exhibitor: true }), "exhibitor");
+  assert.equal(passKind({ promoCode: "EXHIBITOR", exhibitor: false }), "");
+  assert.equal(passKind({ promoCode: "EXHIBITOR", exhibitor: true }), "exhibitor");
+  assert.equal(passKind({ ticketType: "speaker", exhibitor: true }), "speaker");
+  assert.equal(passKind({ exhibitor: false }), "");
   assert.equal(passKind({}), "");
-  assert.deepEqual(EXHIBITOR_FILTER, { $or: [{ promoCode: "EXHIBITOR" }, { exhibitor: true }] });
+  assert.deepEqual(EXHIBITOR_FILTER, { $or: [{ promoCode: "EXHIBITOR", exhibitor: { $ne: false } }, { exhibitor: true }] });
+  // The Mongo filter loadExhibitors uses, evaluated by hand, picks exactly the passes isExhibitorPass does.
+  const matches = (doc, f) => f.$or.some((c) => Object.entries(c).every(([k, v]) => (v && typeof v === "object" && "$ne" in v ? doc[k] !== v.$ne : doc[k] === v)));
+  const docs = [
+    { promoCode: "EXHIBITOR" }, { promoCode: "EXHIBITOR", exhibitor: true }, { promoCode: "EXHIBITOR", exhibitor: false },
+    { promoCode: "COMP", exhibitor: true }, { promoCode: "COMP", exhibitor: false }, { promoCode: "COMP" }, {},
+  ];
+  assert.deepEqual(docs.map((x) => matches(x, EXHIBITOR_FILTER)), docs.map(isExhibitorPass));
+  assert.deepEqual(docs.map(isExhibitorPass), [true, true, false, true, false, false, false]);
 });
 
 test("companies: everyone at a company shows its logo; a person's own logo wins", () => {
@@ -235,8 +261,8 @@ test("search, filters, sorting and counts", () => {
   assert.deepEqual(names(filterPeople(people, { rsvp: "staff" })), ["Carol Colleague"]);
   assert.equal(filterPeople(people, { rsvp: "any" }).length, 4);
   assert.equal(filterPeople(people, { rsvp: "none" }).length, 8);
-  assert.deepEqual(names(filterPeople(people, { exhibitor: "yes" })), ["Fay Flagged"]);
-  assert.equal(filterPeople(people, { exhibitor: "no" }).length, 11);
+  assert.deepEqual(names(filterPeople(people, { exhibitor: "yes" })).sort(), ["Ed Exhibitor", "Fay Flagged"]);
+  assert.equal(filterPeople(people, { exhibitor: "no" }).length, 10);
   assert.equal(filterPeople(people, { type: "nonsense", status: "x" }).length, 12); // unknown filters are ignored
 
   assert.equal(sortPeople(people)[0].name, "Alán Aspuru-Guzik");
@@ -247,14 +273,15 @@ test("search, filters, sorting and counts", () => {
   assert.equal(sortPeople(people, "company", "desc").at(-1).company, "");
   assert.equal(sortPeople(people, "pass", "desc")[0].primary.tier, "speaker");
   assert.equal(sortPeople(people, "rsvp", "desc")[0].name, "Michael Chen"); // latest RSVP first
-  assert.equal(sortPeople(people, "exhibitor")[0].name, "Fay Flagged");
+  assert.deepEqual(sortPeople(people, "exhibitor").slice(0, 2).map((p) => p.name), ["Ed Exhibitor", "Fay Flagged"]);
 
   const c = peopleCounts(people);
   assert.equal(c.total, 12);
   assert.deepEqual([c.byType.speaker, c.byType.exhibitor, c.byType.vip, c.byType.none], [3, 2, 1, 2]);
   assert.deepEqual([c.byStatus.paid, c.byStatus.pending, c.byStatus.refunded, c.byStatus.none], [3, 1, 1, 5]);
   assert.deepEqual([c.byRsvp.attendee, c.byRsvp.staff, c.byRsvp.none], [3, 1, 8]);
-  assert.equal(c.exhibitors, 1);
+  assert.equal(c.exhibitors, 2); // the same people as the exhibitor type
+  assert.equal(c.exhibitors, c.byType.exhibitor);
 });
 
 test("CSV export: one row per person with pass, RSVP and a profile link", () => {

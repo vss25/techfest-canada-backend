@@ -42,7 +42,7 @@
    Pure; unit-tested in test/people.test.js.
 ========================================================= */
 
-import { effectiveTypes, storedTypes, exhibitorIndex, passKind, PERSON_TYPES, EXHIBITOR_PROMO } from "./teamRoles.js";
+import { effectiveTypes, storedTypes, exhibitorIndex, passKind, isExhibitorPass, PERSON_TYPES, EXHIBITOR_PROMO } from "./teamRoles.js";
 import { normalizeTicketId, guestName, guestWork, passName } from "./ticketAccess.js";
 import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, optionLabel } from "./rsvp.js";
 import { csvCell } from "./brochureDownloads.js";
@@ -309,7 +309,8 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
   }
 
   const companiesByKey = new Map((companies || []).filter((c) => c?.nameKey).map((c) => [c.nameKey, c]));
-  const exIdx = exhibitorIndex(attendees.filter((a) => String(a?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO || a?.exhibitor === true));
+  // The same passes services/exhibitorCache.js loadExhibitors gives the apps.
+  const exIdx = exhibitorIndex(attendees.filter(isExhibitorPass));
   const ctx = { companiesByKey, refunds, exIdx };
   for (const p of people) Object.assign(p, summarize(p, ctx));
   return { people, byId: alias };
@@ -366,8 +367,10 @@ function summarize(p, { companiesByKey, refunds, exIdx }) {
   const email = realEmail(u?.email) || [...p.emails][0] || realEmail(rsvp?.email) || "";
 
   const types = typesOf(p, exIdx);
-  const exhibitor = (u ? storedTypes(u.types).includes("exhibitor") : false) || p.attendees.some((a) => a.exhibitor === true);
-  const exhibitorPass = tickets.some((t) => !t.hidden && t.exhibitorPass);
+  // Exhibitor yes / no is what the apps use: the exhibitor type, from staff or from an exhibitor pass,
+  // unless staff switched it off (typesOff on an account, Attendee.exhibitor false on a pass).
+  const exhibitor = types.includes("exhibitor");
+  const exhibitorPass = p.attendees.some((a) => String(a.promoCode || "").toUpperCase() === EXHIBITOR_PROMO);
   const cKey = companyKey(company);
   const companyDoc = cKey ? companiesByKey.get(cKey) || null : null;
   const override = (u?.companyLogoUrl || "").trim() || (p.attendees.find((a) => a.companyLogoUrl)?.companyLogoUrl || "").trim();

@@ -109,11 +109,16 @@ export function canUseStaffSignIn(user) {
   return types.includes("staff") || types.includes("volunteer");
 }
 
-/** Kind for a ticket record (Attendee): "speaker" | "exhibitor" | "".
-    Exhibitor: an exhibitor pass (promo EXHIBITOR) or a pass staff marked as an exhibitor's (Attendee.exhibitor). */
+/** Is this ticket record an exhibitor's? Staff's switch (Attendee.exhibitor true / false) wins;
+    unset = an exhibitor pass (promo EXHIBITOR) is, anything else isn't. */
+export const isExhibitorPass = (a) => (typeof a?.exhibitor === "boolean"
+  ? a.exhibitor
+  : String(a?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO);
+
+/** Kind for a ticket record (Attendee): "speaker" | "exhibitor" | "". */
 export function passKind(a) {
   if (String(a?.ticketType || "").toLowerCase() === "speaker") return "speaker";
-  if (String(a?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO || a?.exhibitor === true) return "exhibitor";
+  if (isExhibitorPass(a)) return "exhibitor";
   return "";
 }
 
