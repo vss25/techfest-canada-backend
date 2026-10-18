@@ -37,6 +37,7 @@ const socialCommentSchema = new Schema({
   body:       { type: String, required: true, maxlength: 2000 },
   status:     { type: String, enum: STATUS, default: "approved" },
 }, { timestamps: true });
+socialCommentSchema.index({ authorId: 1 });   // points (services/points.js)
 
 const socialConnectionSchema = new Schema({
   fromUserId: { type: Types.ObjectId, ref: "User", required: true, index: true },
@@ -72,6 +73,7 @@ const sessionQuestionSchema = new Schema({
   upvotes:    { type: [Types.ObjectId], default: [] },
   status:     { type: String, enum: STATUS, default: "approved" },
 }, { timestamps: true });
+sessionQuestionSchema.index({ authorId: 1 });   // points
 
 const sessionVoteSchema = new Schema({
   sessionId:   { type: String, required: true },
@@ -81,6 +83,7 @@ const sessionVoteSchema = new Schema({
 }, { timestamps: true });
 sessionVoteSchema.index({ sessionId: 1, pollId: 1, userId: 1 }, { unique: true });
 sessionVoteSchema.index({ sessionId: 1, pollId: 1 });
+sessionVoteSchema.index({ userId: 1 });   // points
 
 export const SocialPost = mongoose.model("SocialPost", socialPostSchema);
 export const SocialComment = mongoose.model("SocialComment", socialCommentSchema);

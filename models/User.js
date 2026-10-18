@@ -89,6 +89,7 @@ const userSchema = new mongoose.Schema(
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
     directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
+    hideFromLeaderboard: { type: Boolean, default: false }, // opt out of the points leaderboard (still earns points)
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },

@@ -15,6 +15,7 @@ import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHe
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
 } from "../services/socialHelpers.js";
+import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 
 /* =========================================================
    /api/social — the iOS app's shared layer
@@ -424,6 +425,37 @@ router.post("/sessions/:id/polls/:pollId/vote", async (req, res) => {
   const votes = await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean();
   const mine = votes.find((v) => String(v.userId) === String(req.user._id));
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
+});
+
+/* ================= POINTS =================
+   Gamification. Points are worked out from what's already stored
+   (services/points.js), never reported by the app. Staff, banned people and
+   anyone who opted out (here, or from the directory) stay off the leaderboard
+   but still see their own points. Never returns email or role. */
+
+router.get("/points/me", async (req, res) => {
+  const { score, rank } = await standingFor(req.user);
+  res.json({
+    total: score.total, level: score.level, nextLevel: score.nextLevel, toNext: score.toNext,
+    breakdown: score.breakdown, rank, rules: RULES, levels: LEVELS,
+    hideFromLeaderboard: !!req.user.hideFromLeaderboard,
+  });
+});
+
+router.get("/points/leaderboard", async (req, res) => {
+  const [entries, { score, rank }] = await Promise.all([
+    leaderboard(clampLimit(req.query.limit), { exclude: req.blocked }),
+    standingFor(req.user),
+  ]);
+  res.json({ entries, me: { rank, points: score.total } });
+});
+
+router.patch("/points/prefs", async (req, res) => {
+  const hide = req.body?.hideFromLeaderboard;
+  if (typeof hide !== "boolean") return res.status(400).json({ error: "hideFromLeaderboard must be true or false" });
+  await User.updateOne({ _id: req.user._id }, { $set: { hideFromLeaderboard: hide } });
+  if (hide) dropFromBoard(req.user._id);
+  res.json({ hideFromLeaderboard: hide });
 });
 
 /* ================= MY NOTIFICATIONS =================
