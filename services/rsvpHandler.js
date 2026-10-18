@@ -26,6 +26,12 @@
    staff merge it or keep it as a separate person (resolveRsvpDuplicate, from
    routes/console.js). The answer looks the same either way, so it never says
    whether someone has RSVP'd.
+
+   Staff can enter or change RSVPs in Admin → People (services/rsvpStaff.js),
+   but the attendee's own RSVP always wins: it replaces staff's answers on the
+   same row (found by the ticket, the edit token, or, with their verified
+   ticket and their own name, a staff-made row for that name that has no
+   ticket) and sets `source` back to "attendee".
 ========================================================= */
 
 import { makeLimiter, ticketGuesses, ticketGuessKey } from "./ticketAccess.js";
@@ -228,6 +234,8 @@ export function makeRsvpHandlers({
         chosenTier: v.tier, detectedTier: pass.detectedTier || "",
         matchedSpeaker: found.kind === "speaker" ? cleanText(found.displayName).slice(0, 120) : "",
         options: opts.options, spam: false, spamReason: "",
+        // Their own answers: they replace anything staff entered (services/rsvpStaff.js).
+        source: "attendee", attendeeSubmittedAt: new Date(), staffOverride: false, passLimitOverride: false,
       };
       const sentToken = typeof body.editToken === "string" ? body.editToken.trim() : "";
       const sentHash = hashEditToken(sentToken);
@@ -294,7 +302,13 @@ export function makeRsvpHandlers({
           return update(own, set, pass);
         }
 
-        // 3. No proof: a row of its own, and never a change to anyone else's.
+        // 3. With their verified ticket and their own name: an RSVP staff entered for that name before they
+        //    had a ticket on file (no ticket of its own) is theirs, so their answers replace staff's.
+        if (keys.ticket) {
+          const staffRow = sameName.find((r) => r.source === "staff" && r.key === `n:${keys.name}` && !r.duplicateOf && !r.separatedAt);
+          if (staffRow) return update(staffRow, { ...doc, key: keys.ticket, duplicateOf: "" }, pass);
+        }
+        // 4. No proof: a row of its own, and never a change to anyone else's.
         if (keys.ticket) return insert({ key: keys.ticket });
         const nKey = `n:${keys.name}`;
         const primary = sameName.find((r) => !r.duplicateOf && String(r.key).startsWith("t:"))

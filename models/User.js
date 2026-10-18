@@ -87,6 +87,8 @@ const userSchema = new mongoose.Schema(
     fieldOfWork:  { type: String, default: "" },
     jobTitle:     { type: String, default: "" },
     organization: { type: String, default: "" },
+    // Staff-set logo for this person only (Admin → People); "" = their company's default (models/Company.js).
+    companyLogoUrl: { type: String, default: "" },
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
     directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list

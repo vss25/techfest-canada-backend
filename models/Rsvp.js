@@ -52,6 +52,17 @@ const rsvpSchema = new mongoose.Schema({
   separatedFrom: str,  // staff kept this row as a person of their own, apart from that _id…
   separatedAt: Date,   // …then: a later save by the namesake never flags it as a duplicate again
   separatedBy: str,    // staff name
+
+  // Who set the answers (services/rsvpStaff.js). "attendee": sent from /rsvp (rows from before
+  // this field have none: they're the attendee's too). "staff": entered or changed in Admin → People.
+  // The attendee's own RSVP always wins: their next one replaces staff's answers and sets "attendee".
+  source: { type: String, enum: ["attendee", "staff"], default: "attendee" },
+  attendeeSubmittedAt: Date, // when the attendee last sent it themselves
+  staffUpdatedBy: str,       // staff name, last staff change (kept as history after the attendee changes it)
+  staffUpdatedById: str,
+  staffUpdatedAt: Date,
+  staffOverride: { type: Boolean, default: false },     // staff replaced answers the attendee had sent
+  passLimitOverride: { type: Boolean, default: false }, // staff let it include options their pass doesn't cover
 }, { timestamps: true });
 
 rsvpSchema.index({ key: 1 }, { unique: true, partialFilterExpression: { spam: false } });
