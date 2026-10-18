@@ -6,6 +6,11 @@
    The app never reports points, so a modified client can't award
    itself anything, and nothing extra is stored: every read recomputes.
 
+   Session ids in the votes and questions collections come from the URL,
+   so live points (votes, questions, their upvotes, attendance) count only
+   for sessions on the agenda (Sanity session docs, the `sessionId` or
+   `_id` the apps use), and votes are capped per session and in total.
+
    Pure parts (RULES, LEVELS, scoreFromCounts, levelFor, mergeCounts,
    ranking) are exported for unit tests. The Mongo side only gathers
    counts: six aggregations grouped by person, shared by pointsFor (one
@@ -19,26 +24,29 @@ import {
   SessionRegistration, SessionQuestion, SessionVote,
 } from "../models/Social.js";
 import { avatarPath } from "./socialHelpers.js";
+import { SANITY_PROJECT } from "./rsvp.js";
 
 /* ================= RULES & LEVELS ================= */
 
 /** How to earn points, in display order. `max` caps how many are counted
-    (null = no cap), `per` says what the cap applies to: "total", "day"
-    (calendar day, UTC), "question" or "post". Sent to the apps as is. */
+    (null = no cap), `per` says what that cap applies to: "total", "day"
+    (calendar day, UTC), "session", "question" or "post"; `maxTotal` is an
+    overall cap on top of a per-day/session/question/post one (null = none).
+    Sent to the apps as is. */
 export const RULES = Object.freeze([
-  { key: "profile.linkedin",   label: "Add your LinkedIn",   description: "Add your LinkedIn profile to your TTFC profile.", points: 20, max: 1, per: "total" },
-  { key: "profile.topics",     label: "Pick your topics",    description: "Choose 3 or more topics of interest.", points: 10, max: 1, per: "total" },
-  { key: "session.saved",      label: "Save a session",      description: "Each session you save to your agenda (up to 10).", points: 5, max: 10, per: "total" },
-  { key: "session.attended",   label: "Take part in a session", description: "Each session where you vote in a poll or ask a question.", points: 20, max: null, per: null },
-  { key: "live.vote",          label: "Vote in a poll",      description: "Each live poll you vote in.", points: 5, max: null, per: null },
-  { key: "live.question",      label: "Ask a question",      description: "Each question you ask that's published.", points: 10, max: null, per: null },
-  { key: "live.upvoted",       label: "Get upvoted",         description: "Each upvote your questions get from others (up to 10 per question).", points: 2, max: 10, per: "question" },
-  { key: "network.request",    label: "Reach out",           description: "Each connection request you send (up to 20).", points: 5, max: 20, per: "total" },
-  { key: "network.connection", label: "Make a connection",   description: "Each accepted connection.", points: 15, max: null, per: null },
-  { key: "network.inPerson",   label: "Meet in person",      description: "Extra for each connection made by scanning a badge.", points: 10, max: null, per: null },
-  { key: "feed.post",          label: "Post on the feed",    description: "Each post (up to 3 a day).", points: 10, max: 3, per: "day" },
-  { key: "feed.comment",       label: "Comment",             description: "Each comment (up to 10 a day).", points: 3, max: 10, per: "day" },
-  { key: "feed.likes",         label: "Get likes",           description: "Each like your posts get from others (up to 25 per post).", points: 1, max: 25, per: "post" },
+  { key: "profile.linkedin",   label: "Add your LinkedIn",   description: "Add your LinkedIn profile to your TTFC profile.", points: 20, max: 1, per: "total", maxTotal: null },
+  { key: "profile.topics",     label: "Pick your topics",    description: "Choose 3 or more topics of interest.", points: 10, max: 1, per: "total", maxTotal: null },
+  { key: "session.saved",      label: "Save a session",      description: "Each session you save to your agenda (up to 10).", points: 5, max: 10, per: "total", maxTotal: null },
+  { key: "session.attended",   label: "Take part in a session", description: "Each session where you vote in a poll or ask a question (up to 40).", points: 20, max: 40, per: "total", maxTotal: null },
+  { key: "live.vote",          label: "Vote in a poll",      description: "Each live poll you vote in (up to 3 per session, 60 in all).", points: 5, max: 3, per: "session", maxTotal: 60 },
+  { key: "live.question",      label: "Ask a question",      description: "Each question you ask that's published.", points: 10, max: null, per: null, maxTotal: null },
+  { key: "live.upvoted",       label: "Get upvoted",         description: "Each upvote your questions get from others (up to 10 per question).", points: 2, max: 10, per: "question", maxTotal: null },
+  { key: "network.request",    label: "Reach out",           description: "Each connection request you send (up to 20).", points: 5, max: 20, per: "total", maxTotal: null },
+  { key: "network.connection", label: "Make a connection",   description: "Each accepted connection.", points: 15, max: null, per: null, maxTotal: null },
+  { key: "network.inPerson",   label: "Meet in person",      description: "Extra for each connection made by scanning a badge (up to 30).", points: 10, max: 30, per: "total", maxTotal: null },
+  { key: "feed.post",          label: "Post on the feed",    description: "Each post (up to 3 a day).", points: 10, max: 3, per: "day", maxTotal: null },
+  { key: "feed.comment",       label: "Comment",             description: "Each comment (up to 10 a day).", points: 3, max: 10, per: "day", maxTotal: null },
+  { key: "feed.likes",         label: "Get likes",           description: "Each like your posts get from others (up to 25 per post).", points: 1, max: 25, per: "post", maxTotal: null },
 ].map((r) => Object.freeze(r)));
 
 /** Lowest total for each level, ascending. */
@@ -71,10 +79,10 @@ export function emptyCounts() {
     hasLinkedin: false,
     topics: 0,                  // number of topics (or the array itself)
     sessionsSaved: 0,
-    sessionsAttended: 0,        // distinct sessions with a poll vote or an approved question
-    pollVotes: 0,
-    questionsApproved: 0,
-    upvotesPerQuestion: [],     // upvotes from others, one entry per approved question
+    sessionsAttended: 0,        // distinct agenda sessions with a poll vote or an approved question
+    votesPerSession: [],        // poll votes, one entry per agenda session (or a { sessionId: n } map)
+    questionsApproved: 0,       // approved questions in agenda sessions
+    upvotesPerQuestion: [],     // upvotes from others, one entry per counted question
     requestsSent: 0,            // connection requests sent, any status
     connections: 0,             // accepted, either direction
     inPersonConnections: 0,     // accepted and kind inPerson
@@ -89,13 +97,13 @@ const COUNTERS = {
   "profile.linkedin":   (c) => (c.hasLinkedin ? 1 : 0),
   "profile.topics":     (c) => (topicCount(c.topics) >= 3 ? 1 : 0),
   "session.saved":      (c, r) => capTotal(c.sessionsSaved, r.max),
-  "session.attended":   (c) => whole(c.sessionsAttended),
-  "live.vote":          (c) => whole(c.pollVotes),
+  "session.attended":   (c, r) => capTotal(c.sessionsAttended, r.max),
+  "live.vote":          (c, r) => capTotal(capEach(c.votesPerSession, r.max), r.maxTotal),
   "live.question":      (c) => whole(c.questionsApproved),
   "live.upvoted":       (c, r) => capEach(c.upvotesPerQuestion, r.max),
   "network.request":    (c, r) => capTotal(c.requestsSent, r.max),
   "network.connection": (c) => whole(c.connections),
-  "network.inPerson":   (c) => whole(c.inPersonConnections),
+  "network.inPerson":   (c, r) => capTotal(c.inPersonConnections, r.max),
   "feed.post":          (c, r) => capEach(c.postsPerDay, r.max),
   "feed.comment":       (c, r) => capEach(c.commentsPerDay, r.max),
   "feed.likes":         (c, r) => capEach(c.likesPerPost, r.max),
@@ -140,8 +148,11 @@ export function profileCounts(user) {
   };
 }
 
-/** Aggregation rows (see countPipelines) → Map<userId, counts>. */
-export function mergeCounts({ saved = [], votes = [], questions = [], connections = [], posts = [], comments = [] } = {}) {
+/** Aggregation rows (see countPipelines) → Map<userId, counts>. With `sessions`
+    (a Set of agenda session ids), votes and questions in any other session are
+    left out; null counts every session (the agenda couldn't be read). */
+export function mergeCounts({ saved = [], votes = [], questions = [], connections = [], posts = [], comments = [] } = {}, { sessions = null } = {}) {
+  const known = (s) => !sessions || sessions.has(String(s));
   const map = new Map();
   const attended = new Map();
   const get = (id) => {
@@ -153,12 +164,17 @@ export function mergeCounts({ saved = [], votes = [], questions = [], connection
   const rows = (a) => list(a).filter((r) => r && r._id != null);
 
   for (const r of rows(saved)) get(r._id).sessionsSaved = whole(r.n);
-  for (const r of rows(votes)) { get(r._id).pollVotes = whole(r.n); attend(r._id, r.sessions); }
+  for (const r of rows(votes)) {
+    const per = list(r.perSession).filter((x) => x && known(x.s));
+    get(r._id).votesPerSession = per.map((x) => whole(x.n));
+    attend(r._id, per.map((x) => x.s));
+  }
   for (const r of rows(questions)) {
+    const items = list(r.items).filter((q) => q && known(q.s));
     const c = get(r._id);
-    c.questionsApproved = whole(r.n);
-    c.upvotesPerQuestion = list(r.upvotes).map(whole);
-    attend(r._id, r.sessions);
+    c.questionsApproved = items.length;
+    c.upvotesPerQuestion = items.map((q) => whole(q.up));
+    attend(r._id, items.map((q) => q.s));
   }
   for (const r of rows(connections)) {
     const c = get(r._id);
@@ -242,11 +258,12 @@ export function countPipelines(oid = null) {
     ],
     votes: [
       match("userId"),
-      { $group: { _id: "$userId", n: { $sum: 1 }, sessions: { $addToSet: "$sessionId" } } },
+      { $group: { _id: { u: "$userId", s: "$sessionId" }, n: { $sum: 1 } } },
+      { $group: { _id: "$_id.u", perSession: { $push: { s: "$_id.s", n: "$n" } } } },
     ],
     questions: [
       match("authorId", { status: "approved" }),
-      { $group: { _id: "$authorId", n: { $sum: 1 }, sessions: { $addToSet: "$sessionId" }, upvotes: { $push: fromOthers("$upvotes", "$authorId") } } },
+      { $group: { _id: "$authorId", items: { $push: { s: "$sessionId", up: fromOthers("$upvotes", "$authorId") } } } },
     ],
     // Each connection counts for both people: once as "sent" for fromUserId.
     connections: [
@@ -277,9 +294,61 @@ export function countPipelines(oid = null) {
   };
 }
 
+/* ---------- agenda session ids (Sanity, public CDN) ---------- */
+
+const AGENDA_QUERY = '*[_type=="session" && !(_id in path("drafts.**"))]{_id, sessionId}';
+export const AGENDA_URL =
+  `https://${SANITY_PROJECT}.apicdn.sanity.io/v2021-10-21/data/query/production?query=${encodeURIComponent(AGENDA_QUERY)}`;
+
+/** Sanity result → Set of the ids the apps may use for a session (its
+    `sessionId`, else its `_id`; both are kept). Null when there are none. */
+export function parseSessionIds(json) {
+  const ids = new Set();
+  for (const s of list(json?.result)) {
+    for (const v of [s?.sessionId, s?._id]) {
+      const id = typeof v === "string" ? v.trim() : "";
+      if (id) ids.add(id);
+    }
+  }
+  return ids.size ? ids : null;
+}
+
+/** Agenda session ids, cached 10 minutes. A failed fetch keeps the last good
+    set and retries after a minute; until one has loaded, get() gives null
+    (count every session, the caps still apply). Never throws. */
+export function makeAgendaCache({ fetchImpl = globalThis.fetch, url = AGENDA_URL, ttlMs = 10 * 60 * 1000, retryMs = 60 * 1000, now = () => Date.now(), log = console } = {}) {
+  let ids = null;
+  let expires = 0;
+  let pending = null;
+  async function load() {
+    try {
+      const res = await fetchImpl(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`Sanity ${res.status}`);
+      const parsed = parseSessionIds(await res.json());
+      if (!parsed) throw new Error("no sessions on the agenda");
+      ids = parsed;
+      expires = now() + ttlMs;
+    } catch (err) {
+      log.error?.("POINTS AGENDA ERROR:", err?.message || err);
+      expires = now() + retryMs;
+    }
+    return ids;
+  }
+  return {
+    async get() {
+      if (now() < expires) return ids;
+      if (!pending) pending = load().finally(() => { pending = null; });
+      return pending;
+    },
+  };
+}
+
+const agenda = makeAgendaCache();
+
 async function queryCounts(oid = null) {
   const p = countPipelines(oid);
-  const [saved, votes, questions, connections, posts, comments] = await Promise.all([
+  const [sessions, saved, votes, questions, connections, posts, comments] = await Promise.all([
+    agenda.get(),
     SessionRegistration.aggregate(p.saved),
     SessionVote.aggregate(p.votes),
     SessionQuestion.aggregate(p.questions),
@@ -287,7 +356,7 @@ async function queryCounts(oid = null) {
     SocialPost.aggregate(p.posts),
     SocialComment.aggregate(p.comments),
   ]);
-  return mergeCounts({ saved, votes, questions, connections, posts, comments });
+  return mergeCounts({ saved, votes, questions, connections, posts, comments }, { sessions });
 }
 
 const isObjectId = (id) => /^[a-f0-9]{24}$/i.test(String(id || ""));

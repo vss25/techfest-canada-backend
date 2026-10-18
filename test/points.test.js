@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   RULES, LEVELS, scoreFromCounts, levelFor, nextLevelFor, emptyCounts, profileCounts, mergeCounts,
   onLeaderboard, leaderboardCard, rankRows, rankAmong, clampLimit, countPipelines,
+  parseSessionIds, makeAgendaCache,
 } from "../services/points.js";
 
 const pts = (score, key) => score.breakdown.find((b) => b.key === key);
@@ -17,21 +18,21 @@ const only = (key, counts) => {
 /* ================= RULES table ================= */
 
 test("RULES lists every rule once with its points and caps", () => {
-  const table = Object.fromEntries(RULES.map((r) => [r.key, [r.points, r.max, r.per]]));
+  const table = Object.fromEntries(RULES.map((r) => [r.key, [r.points, r.max, r.per, r.maxTotal]]));
   assert.deepEqual(table, {
-    "profile.linkedin": [20, 1, "total"],
-    "profile.topics": [10, 1, "total"],
-    "session.saved": [5, 10, "total"],
-    "session.attended": [20, null, null],
-    "live.vote": [5, null, null],
-    "live.question": [10, null, null],
-    "live.upvoted": [2, 10, "question"],
-    "network.request": [5, 20, "total"],
-    "network.connection": [15, null, null],
-    "network.inPerson": [10, null, null],
-    "feed.post": [10, 3, "day"],
-    "feed.comment": [3, 10, "day"],
-    "feed.likes": [1, 25, "post"],
+    "profile.linkedin": [20, 1, "total", null],
+    "profile.topics": [10, 1, "total", null],
+    "session.saved": [5, 10, "total", null],
+    "session.attended": [20, 40, "total", null],
+    "live.vote": [5, 3, "session", 60],
+    "live.question": [10, null, null, null],
+    "live.upvoted": [2, 10, "question", null],
+    "network.request": [5, 20, "total", null],
+    "network.connection": [15, null, null, null],
+    "network.inPerson": [10, 30, "total", null],
+    "feed.post": [10, 3, "day", null],
+    "feed.comment": [3, 10, "day", null],
+    "feed.likes": [1, 25, "post", null],
   });
   assert.equal(new Set(RULES.map((r) => r.key)).size, RULES.length);
   for (const r of RULES) assert.ok(r.label && r.description, `${r.key} has a label and description`);
@@ -70,13 +71,27 @@ test("session.saved: +5 each, 10 sessions counted at most", () => {
   assert.deepEqual(only("session.saved", { sessionsSaved: 14 }), { key: "session.saved", label: "Save a session", points: 50, count: 10 });
 });
 
-test("session.attended: +20 per distinct session, no cap", () => {
+test("session.attended: +20 per distinct session, 40 sessions counted at most", () => {
   assert.equal(only("session.attended", { sessionsAttended: 1 }).points, 20);
   assert.equal(only("session.attended", { sessionsAttended: 30 }).points, 600);
+  assert.equal(only("session.attended", { sessionsAttended: 40 }).points, 800);
+  assert.deepEqual(only("session.attended", { sessionsAttended: 55 }), { key: "session.attended", label: "Take part in a session", points: 800, count: 40 });
 });
 
-test("live.vote: +5 per poll vote", () => {
-  assert.equal(only("live.vote", { pollVotes: 7 }).points, 35);
+test("live.vote: +5 per poll vote, 3 counted per session", () => {
+  assert.equal(only("live.vote", { votesPerSession: [2, 1, 3] }).points, 30);
+  // 7 → 3, 1 → 1
+  assert.deepEqual(only("live.vote", { votesPerSession: [7, 1] }), { key: "live.vote", label: "Vote in a poll", points: 20, count: 4 });
+  // A { sessionId: n } map works too.
+  assert.equal(only("live.vote", { votesPerSession: { "d1-06": 9, "d2-01": 2 } }).points, 25);
+});
+
+test("live.vote: 60 votes counted in total", () => {
+  assert.equal(only("live.vote", { votesPerSession: Array(20).fill(3) }).points, 300);   // exactly 60
+  // 25 sessions × 3 = 75 → 60
+  assert.deepEqual(only("live.vote", { votesPerSession: Array(25).fill(3) }), { key: "live.vote", label: "Vote in a poll", points: 300, count: 60 });
+  // The per-session cap applies first: 30 sessions × 9 votes → 3 each = 90 → 60
+  assert.equal(only("live.vote", { votesPerSession: Array(30).fill(9) }).count, 60);
 });
 
 test("live.question: +10 per approved question", () => {
@@ -100,10 +115,14 @@ test("network.connection: +15 per accepted connection", () => {
   assert.equal(only("network.connection", { connections: 8 }).points, 120);
 });
 
-test("network.inPerson: +10 extra per badge-scan connection", () => {
+test("network.inPerson: +10 extra per badge-scan connection, 30 counted at most", () => {
   assert.equal(only("network.inPerson", { inPersonConnections: 2 }).points, 20);
+  assert.equal(only("network.inPerson", { inPersonConnections: 30 }).points, 300);
+  assert.deepEqual(only("network.inPerson", { inPersonConnections: 45 }), { key: "network.inPerson", label: "Meet in person", points: 300, count: 30 });
   const s = scoreFromCounts({ connections: 2, inPersonConnections: 2 });
   assert.equal(s.total, 2 * 15 + 2 * 10);
+  // The connection itself stays uncapped; only the in-person bonus stops at 30.
+  assert.equal(scoreFromCounts({ connections: 45, inPersonConnections: 45 }).total, 45 * 15 + 30 * 10);
 });
 
 test("feed.post: +10 each, 3 counted per UTC day", () => {
@@ -127,20 +146,20 @@ test("feed.likes: +1 per like from others, 25 counted per post", () => {
 });
 
 test("bad or missing counts score nothing instead of throwing", () => {
-  for (const c of [undefined, null, {}, { sessionsSaved: -4, pollVotes: NaN, connections: "x", postsPerDay: "abc", likesPerPost: [null, -3, "2"] }]) {
+  for (const c of [undefined, null, {}, { sessionsSaved: -4, votesPerSession: [NaN], connections: "x", postsPerDay: "abc", likesPerPost: [null, -3, "2"] }]) {
     const s = scoreFromCounts(c);
     assert.ok(Number.isInteger(s.total) && s.total >= 0);
   }
-  assert.equal(scoreFromCounts({ sessionsSaved: -4, pollVotes: NaN, connections: "x" }).total, 0);
+  assert.equal(scoreFromCounts({ sessionsSaved: -4, votesPerSession: [NaN, -2], connections: "x", votesPerSessionX: 9 }).total, 0);
   assert.equal(scoreFromCounts({ likesPerPost: [null, -3, "2"] }).total, 2);
-  assert.equal(scoreFromCounts({ pollVotes: 2.9 }).total, 10);   // whole numbers only
+  assert.equal(scoreFromCounts({ connections: 2.9 }).total, 30);   // whole numbers only
 });
 
 test("a full day at the festival adds up", () => {
   const s = scoreFromCounts({
     hasLinkedin: true, topics: 5,                       // 20 + 10
     sessionsSaved: 12, sessionsAttended: 4,             // 50 + 80
-    pollVotes: 6, questionsApproved: 2,                 // 30 + 20
+    votesPerSession: [4, 2, 1], questionsApproved: 2,   // (3 + 2 + 1) × 5 = 30, + 20
     upvotesPerQuestion: [12, 3],                        // (10 + 3) × 2 = 26
     requestsSent: 25, connections: 10, inPersonConnections: 4, // 100 + 150 + 40
     postsPerDay: [4, 1], commentsPerDay: [11], likesPerPost: [40, 2, 0], // 40 + 30 + 27
@@ -177,12 +196,12 @@ test("nextLevel and toNext", () => {
 
   const s0 = scoreFromCounts({});
   assert.deepEqual([s0.level.name, s0.nextLevel.name, s0.toNext], ["Explorer", "Connector", 100]);
-  const s95 = scoreFromCounts({ pollVotes: 19 });            // 95
+  const s95 = scoreFromCounts({ votesPerSession: Array(19).fill(1) });   // 95
   assert.deepEqual([s95.total, s95.level.name, s95.nextLevel.name, s95.toNext], [95, "Explorer", "Connector", 5]);
-  const s100 = scoreFromCounts({ pollVotes: 20 });           // exactly 100
+  const s100 = scoreFromCounts({ votesPerSession: Array(20).fill(1) });  // exactly 100
   assert.deepEqual([s100.level.name, s100.nextLevel.name, s100.toNext], ["Connector", "Insider", 200]);
-  const s1000 = scoreFromCounts({ sessionsAttended: 50 });   // exactly 1000
-  assert.deepEqual([s1000.level.name, s1000.nextLevel, s1000.toNext], ["Catalyst", null, 0]);
+  const s1000 = scoreFromCounts({ sessionsAttended: 40, connections: 13, sessionsSaved: 1 });   // 800 + 195 + 5
+  assert.deepEqual([s1000.total, s1000.level.name, s1000.nextLevel, s1000.toNext], [1000, "Catalyst", null, 0]);
 });
 
 /* ================= profile, merging ================= */
@@ -200,8 +219,8 @@ test("profileCounts wants a real LinkedIn link and counts distinct topics", () =
 test("mergeCounts joins the aggregation rows per person", () => {
   const map = mergeCounts({
     saved: [{ _id: "u1", n: 3 }],
-    votes: [{ _id: "u1", n: 4, sessions: ["s1", "s2"] }, { _id: "u2", n: 1, sessions: ["s9"] }],
-    questions: [{ _id: "u1", n: 2, sessions: ["s2", "s3"], upvotes: [5, 0] }],
+    votes: [{ _id: "u1", perSession: [{ s: "s1", n: 3 }, { s: "s2", n: 1 }] }, { _id: "u2", perSession: [{ s: "s9", n: 1 }] }],
+    questions: [{ _id: "u1", items: [{ s: "s2", up: 5 }, { s: "s3", up: 0 }] }],
     connections: [{ _id: "u1", sent: 7, accepted: 3, inPerson: 1 }, { _id: "u2", sent: 0, accepted: 1, inPerson: 0 }],
     posts: [{ _id: "u2", perDay: [4, 1], likes: [[2, 30], [1]] }],
     comments: [{ _id: "u2", perDay: [11] }, { _id: null, perDay: [3] }],
@@ -209,7 +228,7 @@ test("mergeCounts joins the aggregation rows per person", () => {
   assert.deepEqual([...map.keys()].sort(), ["u1", "u2"]);
   const u1 = map.get("u1");
   assert.equal(u1.sessionsSaved, 3);
-  assert.equal(u1.pollVotes, 4);
+  assert.deepEqual(u1.votesPerSession, [3, 1]);
   assert.equal(u1.sessionsAttended, 3);            // s1, s2 (vote + question), s3
   assert.equal(u1.questionsApproved, 2);
   assert.deepEqual(u1.upvotesPerQuestion, [5, 0]);
@@ -222,6 +241,64 @@ test("mergeCounts joins the aggregation rows per person", () => {
   // u2: 20 attended + 5 vote + 15 connection + 40 posts (3 + 1) + 30 comments + 28 likes (2 + 25 + 1)
   assert.equal(scoreFromCounts(u2).total, 20 + 5 + 15 + 40 + 30 + 28);
   assert.equal(mergeCounts().size, 0);
+});
+
+test("mergeCounts counts live activity only in agenda sessions", () => {
+  const rows = {
+    votes: [{ _id: "u1", perSession: [{ s: "d1-06", n: 2 }, { s: "fake-1", n: 3 }, { s: "fake-2", n: 3 }] }],
+    questions: [{ _id: "u1", items: [{ s: "d1-06", up: 4 }, { s: "fake-3", up: 10 }, { s: "abc123", up: 1 }] }],
+    connections: [{ _id: "u1", sent: 1, accepted: 1, inPerson: 0 }],
+  };
+  const agenda = new Set(["d1-06", "abc123"]);
+  const u1 = mergeCounts(rows, { sessions: agenda }).get("u1");
+  assert.deepEqual(u1.votesPerSession, [2]);
+  assert.equal(u1.questionsApproved, 2);
+  assert.deepEqual(u1.upvotesPerQuestion, [4, 1]);   // the invented session's upvotes go too
+  assert.equal(u1.sessionsAttended, 2);              // d1-06, abc123
+  assert.equal(u1.connections, 1);                   // the rest is untouched
+  // 2 attended (40) + 2 votes (10) + 2 questions (20) + 5 upvotes (10) + request (5) + connection (15)
+  assert.equal(scoreFromCounts(u1).total, 100);
+
+  // Agenda unreadable (null): every session counts, the caps still hold.
+  const open = mergeCounts(rows, { sessions: null }).get("u1");
+  assert.deepEqual(open.votesPerSession, [2, 3, 3]);
+  assert.equal(open.sessionsAttended, 5);             // d1-06, abc123 and three invented ones
+  // Only invented sessions → no live points, and no throw on odd rows.
+  const none = mergeCounts({ votes: [{ _id: "u2", perSession: [{ s: "nope", n: 1 }, null] }], questions: [{ _id: "u2", items: "x" }] }, { sessions: agenda }).get("u2");
+  assert.equal(scoreFromCounts(none).total, 0);
+});
+
+test("parseSessionIds keeps each session's sessionId and _id", () => {
+  const ids = parseSessionIds({ result: [{ _id: "abc123", sessionId: "d1-06" }, { _id: "def456" }, { _id: "  ", sessionId: "" }, null] });
+  assert.deepEqual([...ids].sort(), ["abc123", "d1-06", "def456"]);
+  assert.equal(parseSessionIds({ result: [] }), null);
+  assert.equal(parseSessionIds(null), null);
+});
+
+test("agenda cache: loads once, keeps the last good set on failure, null until loaded", async () => {
+  let t = 0;
+  let calls = 0;
+  let reply = { ok: true, json: async () => ({ result: [{ _id: "a1", sessionId: "d1-01" }] }) };
+  const fetchImpl = async () => { calls += 1; if (reply instanceof Error) throw reply; return reply; };
+  const log = { error() {} };
+  const cache = makeAgendaCache({ fetchImpl, now: () => t, ttlMs: 1000, retryMs: 100, log });
+
+  const first = await cache.get();
+  assert.deepEqual([...first].sort(), ["a1", "d1-01"]);
+  await cache.get();
+  assert.equal(calls, 1);                       // cached
+
+  t = 2000;
+  reply = new Error("offline");
+  assert.deepEqual([...(await cache.get())].sort(), ["a1", "d1-01"]);   // last good set
+  assert.equal(calls, 2);
+  t = 2050; await cache.get();
+  assert.equal(calls, 2);                       // waits retryMs before trying again
+
+  const never = makeAgendaCache({ fetchImpl: async () => ({ ok: false, status: 503 }), now: () => 0, log });
+  assert.equal(await never.get(), null);        // never loaded → count every session
+  const empty = makeAgendaCache({ fetchImpl: async () => ({ ok: true, json: async () => ({ result: [] }) }), now: () => 0, log });
+  assert.equal(await empty.get(), null);        // an empty agenda isn't trusted either
 });
 
 test("countPipelines read only that person's records when given an id", () => {
