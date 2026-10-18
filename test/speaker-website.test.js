@@ -41,7 +41,7 @@ test("applyWebsite: a renamed speaker's pass follows; sessions come from the age
   assert.equal(live.onWebsite, true);
 });
 
-test("applyWebsite: agenda lineups get each person's company (saved run of show, then the website)", () => {
+test("applyWebsite: agenda lineups get each person's company (the website, then the saved run of show)", () => {
   const pass = {
     speakerId: "abc", name: "Penny Longman", details: { jobTitle: "CEO", organisation: "NKST" },
     runOfShow: { sessions: [{ day: 1, start: "14:00", end: "14:30", title: "Old", lineup: [{ name: "Francois Guay", org: "CCN" }] }] },
@@ -52,7 +52,11 @@ test("applyWebsite: agenda lineups get each person's company (saved run of show,
     { speakerId: "fg", name: "François Guay", company: "Canadian Cybersecurity Network" },
   ], [{ ...SESSIONS[0], moderator: { name: "Brennan Lodge" }, speakers: [...SESSIONS[0].speakers, { name: "Dave Hochhalter" }] }]));
   const org = Object.fromEntries(live.doc.runOfShow.sessions[0].lineup.map((p) => [p.name, p.org]));
-  assert.deepEqual(org, { "Francois Guay": "CCN", "Penny Longman": "NKST", "Brennan Lodge": "BLodgic Inc.", "Dave Hochhalter": "" });
+  // François is on the website as "Canadian Cybersecurity Network": that beats the "CCN" saved on the pass.
+  assert.deepEqual(org, { "Francois Guay": "Canadian Cybersecurity Network", "Penny Longman": "NKST", "Brennan Lodge": "BLodgic Inc.", "Dave Hochhalter": "" });
+  // Someone who isn't on the website keeps what was saved on the pass.
+  const offSite = applyWebsite(pass, site([{ speakerId: "abc", name: "Penny Longman", company: "NKST" }]));
+  assert.equal(offSite.doc.runOfShow.sessions[0].lineup.find((p) => p.name === "Francois Guay").org, "CCN");
   // "David" on the website, "Dave" on the agenda: the one speaker with that surname.
   const withDavid = applyWebsite(pass, site([
     { speakerId: "abc", name: "Penny Longman", company: "NKST" },
