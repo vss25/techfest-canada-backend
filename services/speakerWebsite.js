@@ -105,28 +105,30 @@ export function applyWebsite(a, site) {
 }
 
 /**
- * name → company for an agenda lineup: what staff saved on this pass's run of show first,
- * then the speaker's company on the website, then (for "David" vs "Dave", "Prof. Aspuru-Guzik")
- * the one website speaker with that surname.
+ * name → company for an agenda lineup: the speaker's company on the website (so an edit in
+ * Admin → Speakers shows up in the next email), then (for "David" vs "Dave", "Prof. Aspuru-Guzik")
+ * the one website speaker with that surname, then what was saved on this pass's run of show
+ * (people who aren't on the website).
  */
 function lineupOrgs(a, site) {
-  const orgs = new Map();
+  const website = new Map();
   const bySurname = new Map();
-  for (const s of a?.runOfShow?.sessions || []) {
-    for (const p of s.lineup || []) {
-      const k = nameKey(p.name);
-      if (k && p.org && !orgs.has(k)) orgs.set(k, p.org);
-    }
-  }
   for (const s of site.speakers || []) {
     const k = nameKey(s.name);
-    if (k && s.company && !orgs.has(k)) orgs.set(k, s.company);
+    if (k && s.company && !website.has(k)) website.set(k, s.company);
     const last = k.split(" ").pop();
     if (last) bySurname.set(last, bySurname.has(last) ? null : s.company || null);
   }
+  const saved = new Map();
+  for (const s of a?.runOfShow?.sessions || []) {
+    for (const p of s.lineup || []) {
+      const k = nameKey(p.name);
+      if (k && p.org && !saved.has(k)) saved.set(k, p.org);
+    }
+  }
   return (name) => {
     const k = nameKey(name);
-    return orgs.get(k) || bySurname.get(k.split(" ").pop()) || "";
+    return website.get(k) || bySurname.get(k.split(" ").pop()) || saved.get(k) || "";
   };
 }
 
