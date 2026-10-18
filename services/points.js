@@ -11,8 +11,8 @@
    for sessions on the agenda (Sanity session docs, the `sessionId` or
    `_id` the apps use), and votes are capped per session and in total.
 
-   Pure parts (RULES, LEVELS, scoreFromCounts, levelFor, mergeCounts,
-   ranking) are exported for unit tests. The Mongo side only gathers
+   Pure parts (RULES, LEVELS, scoreFromCounts, activityFromCounts, levelFor,
+   mergeCounts, ranking) are exported for unit tests. The Mongo side only gathers
    counts: six aggregations grouped by person, shared by pointsFor (one
    person) and the leaderboard (everyone, cached for 60 s).
 ========================================================= */
@@ -134,6 +134,31 @@ export function scoreFromCounts(counts = {}) {
   const total = breakdown.reduce((sum, b) => sum + b.points, 0);
   const nextLevel = nextLevelFor(total);
   return { total, breakdown, level: levelFor(total), nextLevel, toNext: nextLevel ? nextLevel.min - total : 0 };
+}
+
+/** What the person actually did for each rule, before caps: { [rule key]: n }.
+    The apps' "Your activity" summary shows these (the breakdown's `count` is
+    what was counted for points, so it stops at a rule's cap). Every rule key
+    is present, zeros included. */
+export function activityFromCounts(counts = {}) {
+  const c = counts || {};
+  const sum = (v) => list(v).reduce((n, x) => n + whole(x), 0);
+  const raw = {
+    "profile.linkedin":   c.hasLinkedin ? 1 : 0,
+    "profile.topics":     topicCount(c.topics),
+    "session.saved":      whole(c.sessionsSaved),
+    "session.attended":   whole(c.sessionsAttended),
+    "live.vote":          sum(c.votesPerSession),
+    "live.question":      whole(c.questionsApproved),
+    "live.upvoted":       sum(c.upvotesPerQuestion),
+    "network.request":    whole(c.requestsSent),
+    "network.connection": whole(c.connections),
+    "network.inPerson":   whole(c.inPersonConnections),
+    "feed.post":          sum(c.postsPerDay),
+    "feed.comment":       sum(c.commentsPerDay),
+    "feed.likes":         sum(c.likesPerPost),
+  };
+  return Object.fromEntries(RULES.map((r) => [r.key, raw[r.key] ?? 0]));
 }
 
 /* ================= PURE: PROFILE, MERGING, RANKING ================= */
@@ -370,15 +395,17 @@ async function queryCounts(oid = null) {
 
 const isObjectId = (id) => /^[a-f0-9]{24}$/i.test(String(id || ""));
 
-/** One person's score. Pass `user` (with linkedinUrl + topics) to skip loading it. */
+/** One person's score, plus `activity` (activityFromCounts). Pass `user`
+    (with linkedinUrl + topics) to skip loading it. */
 export async function pointsFor(userId, { user } = {}) {
-  if (!isObjectId(userId)) return scoreFromCounts(emptyCounts());
+  const scored = (c) => ({ ...scoreFromCounts(c), activity: activityFromCounts(c) });
+  if (!isObjectId(userId)) return scored(emptyCounts());
   const oid = new mongoose.Types.ObjectId(String(userId));
   const [u, map] = await Promise.all([
     user || User.findById(oid).select("linkedinUrl topics").lean(),
     queryCounts(oid),
   ]);
-  return scoreFromCounts({ ...(map.get(String(oid)) || emptyCounts()), ...profileCounts(u) });
+  return scored({ ...(map.get(String(oid)) || emptyCounts()), ...profileCounts(u) });
 }
 
 /* ================= LEADERBOARD (cached 60 s) ================= */

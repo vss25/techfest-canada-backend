@@ -604,7 +604,7 @@ router.get("/points/me", async (req, res) => {
   const { score, rank } = await standingFor(req.user);
   res.json({
     total: score.total, level: score.level, nextLevel: score.nextLevel, toNext: score.toNext,
-    breakdown: score.breakdown, rank, rules: RULES, levels: LEVELS,
+    breakdown: score.breakdown, activity: score.activity, rank, rules: RULES, levels: LEVELS,
     hideFromLeaderboard: !!req.user.hideFromLeaderboard,
   });
 });
