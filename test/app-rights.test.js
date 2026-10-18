@@ -30,7 +30,7 @@ const volunteer = { _id: "o1", name: "Val Vol", role: "volunteer" };
 test("rights and labels: twelve rights, plain labels, inbound + admin powers named", () => {
   assert.equal(RIGHTS.length, 12);
   assert.deepEqual(Object.keys(RIGHT_LABELS), RIGHTS);
-  assert.equal(RIGHT_LABELS.shareContact, "Share contact details on badge scan");
+  assert.equal(RIGHT_LABELS.shareContact, "Share contact details");
   assert.equal(RIGHT_LABELS.checkIn, "Check people in");
   assert.deepEqual(INBOUND_RIGHTS, ["receiveMessages", "receiveRequests"]);
   assert.deepEqual(ADMIN_POWERS, ["deleteAnyPost", "moderate", "checkIn"]);

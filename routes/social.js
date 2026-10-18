@@ -26,8 +26,13 @@ import { canMessage, canRequest, messagesOffError, requestsOffError } from "../s
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
 import { cardsFor } from "../services/cards.js";
 import { publicTier, typesTier } from "../services/teamRoles.js";
-import { personAccess, rightsFor, overridesContact, rightError, sharedEmail, RIGHT_ERRORS } from "../services/appRights.js";
+import { personAccess, rightsFor, overridesContact, rightError, RIGHT_ERRORS } from "../services/appRights.js";
 import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
+import {
+  CONTACT_SELECT, SHARE_OFF_ERROR, contactItemsFor, contactCardDTO, cleanItems, cleanShareIds, accountEmailOf,
+  setShare, shareFields, legacyEmail, firstLinkedIn,
+} from "../services/contactCard.js";
+import { makeLimiter } from "../services/ticketAccess.js";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
   parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
@@ -105,8 +110,43 @@ router.get("/me", async (req, res) => {
   res.json({
     ...userCard(req.user, { exhibitors, matrix, self: true }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user",
     types: req.types, rights: req.rights,
+    contactCard: contactCardDTO(req.user, req.rights),
   });
 });
+
+/* ================= MY CONTACT CARD =================
+   The ways people can reach me (services/contactCard.js). Only I see the
+   whole list; others get just what I share with them (sharedContact on
+   connection and person payloads). Values are never logged. */
+
+const cardSaves = makeLimiter({ max: 30, windowMs: 10 * 60 * 1000 });
+const shareSaves = makeLimiter({ max: 120, windowMs: 10 * 60 * 1000 });
+const TOO_FAST = "Too many changes in a row. Try again in a few minutes.";
+
+router.get("/contact-card", (req, res) => {
+  res.json(contactCardDTO(req.user, req.rights));
+});
+
+router.put("/contact-card", async (req, res) => {
+  if (!cardSaves.hit(String(req.user._id))) return res.status(429).json({ error: TOO_FAST });
+  const out = cleanItems(req.body?.items, { accountEmail: accountEmailOf(req.user) });
+  if (out.error) return res.status(400).json({ error: out.error, index: out.index });
+  const before = contactItemsFor(req.user);
+  const set = { contactItems: out.items, contactCardSavedAt: new Date() };
+  // The first LinkedIn item is the profile LinkedIn (shown on the card, counted for points).
+  const linkedIn = firstLinkedIn(out.items);
+  if (linkedIn && linkedIn !== req.user.linkedinUrl) set.linkedinUrl = linkedIn;
+  else if (!linkedIn && before.some((it) => it.kind === "linkedin") && req.user.linkedinUrl) set.linkedinUrl = "";
+  await User.updateOne({ _id: req.user._id }, { $set: set });
+  Object.assign(req.user, set);
+  res.json({ ...contactCardDTO(req.user, req.rights), linkedinUrl: req.user.linkedinUrl || "" });
+});
+
+/** My share list from a request body (`share: [ids]`), or null when there's none or I can't share. */
+function shareFromBody(req) {
+  if (!req.rights.shareContact) return null;
+  return cleanShareIds(req.body?.share, contactItemsFor(req.user));
+}
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
 router.get("/users", async (req, res) => {
@@ -146,11 +186,13 @@ router.get("/attendees", async (req, res) => {
 });
 
 /* One person's profile page: everything they filled in for others to see
-   (publicProfile in services/socialHelpers.js), never email, phone, role or tickets. */
+   (publicProfile in services/socialHelpers.js), never email, phone, role or tickets.
+   Plus, when we're connected: sharedContact (only the contact details they share
+   with me), myShare / mySharePicked (what I share with them), connectionId / -Status. */
 router.get("/users/:id", async (req, res) => {
   const id = String(req.params.id);
   if (!isObjectId(id) || req.blocked.has(id)) return res.status(404).json({ error: "Not found" });
-  const u = await User.findById(id).select(`${PROFILE_SELECT} directoryHidden banned`).lean();
+  const u = await User.findById(id).select(`${PROFILE_SELECT} ${CONTACT_SELECT} directoryHidden banned`).lean();
   if (!u || u.banned) return res.status(404).json({ error: "Not found" });
   // Hidden people stay reachable from an existing chat or connection, but can't be looked up cold.
   const self = String(u._id) === String(req.user._id);
@@ -161,8 +203,30 @@ router.get("/users/:id", async (req, res) => {
     ]);
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
   }
-  const access = await contactAccess(req.user, [u], req.ctx);
-  res.json(applyAccess(publicProfile(u, { exhibitors: req.ctx.exhibitors, matrix: req.ctx.matrix, self }), access));
+  const [access, conn] = await Promise.all([
+    contactAccess(req.user, [u], req.ctx),
+    self ? null : SocialConnection.findOne({ $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }).lean(),
+  ]);
+  const profile = applyAccess(publicProfile(u, { exhibitors: req.ctx.exhibitors, matrix: req.ctx.matrix, self }), access);
+  // What they share with me and what I share with them (accepted connections show details).
+  const share = shareFields(conn, { viewer: req.user, viewerRights: req.rights, other: u, otherRights: rightsFor(u, req.ctx) });
+  res.json({ ...profile, connectionId: conn ? String(conn._id) : "", connectionStatus: conn?.status || "", ...share });
+});
+
+/* What I share with someone I'm connected to (or asked to connect): `share` = my contact
+   card item ids. Any time, from their profile or the chat header. */
+router.put("/users/:id/share", async (req, res) => {
+  const id = String(req.params.id);
+  if (!isObjectId(id) || id === String(req.user._id)) return res.status(404).json({ error: "Not found" });
+  if (!req.rights.shareContact) return res.status(403).json({ error: SHARE_OFF_ERROR });
+  if (!shareSaves.hit(String(req.user._id))) return res.status(429).json({ error: TOO_FAST });
+  const ids = cleanShareIds(req.body?.share, contactItemsFor(req.user));
+  if (!ids) return res.status(400).json({ error: "share must be a list of contact detail ids" });
+  const c = await SocialConnection.findOne({ status: { $ne: "declined" }, $or: [{ fromUserId: req.user._id, toUserId: id }, { fromUserId: id, toUserId: req.user._id }] });
+  if (!c) return res.status(404).json({ error: "Connect first, then you can share your contact details." });
+  setShare(c, req.user._id, ids);
+  await c.save();
+  res.json(await connectionDTO(c, req));
 });
 
 /* ================= FEED ================= */
@@ -316,23 +380,30 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
 
 /* ================= CONNECTIONS ================= */
 
-/** `viewer` is the signed-in user (req.user), `ctx` their req.ctx (services/rightsStore.js). */
-async function connectionDTO(c, viewer, ctx) {
+/** For the signed-in person (`req.user`, `req.ctx`, `req.rights`, `req.blocked`). */
+async function connectionDTO(c, req) {
+  const viewer = req.user;
   const meId = viewer._id;
   const otherId = String(c.fromUserId) === String(meId) ? c.toUserId : c.fromUserId;
-  const other = await User.findById(otherId).select(`${CARD_SELECT} email`).lean();
+  const other = await User.findById(otherId).select(`${CARD_SELECT} ${CONTACT_SELECT}`).lean();
+  // Contact details: only what each side chose to share (services/contactCard.js), only once
+  // accepted, only from people whose types share them (shareContact), never across a block.
+  const share = shareFields(c, {
+    viewer, viewerRights: req.rights, other, otherRights: other ? rightsFor(other, req.ctx) : null,
+    blocked: req.blocked?.has(String(otherId)),
+  });
   const inPerson = c.status === "accepted" && c.kind === "inPerson";
-  const email = inPerson && other ? sharedEmail(other, rightsFor(other, ctx)) : "";
+  const email = legacyEmail(share.sharedContact);
   return {
     id: String(c._id),
     user: (await cardsFor(viewer, [other]))[0] || { id: String(otherId), name: "Attendee" },
     direction: String(c.fromUserId) === String(meId) ? "outgoing" : "incoming",
     status: c.status, kind: c.kind, note: c.note || "",
     createdAt: c.createdAt, respondedAt: c.respondedAt,
-    // Contact details are exchanged only once connected in person (badge scan), and only
-    // from people whose types share them (shareContact). Not sent at all for other rows.
+    ...share,
+    // Older app builds read these two on in-person rows only.
     email: inPerson ? email : undefined,
-    contactShared: inPerson ? !!email : undefined,
+    contactShared: inPerson ? share.sharedContact.length > 0 : undefined,
   };
 }
 
@@ -340,7 +411,7 @@ router.get("/connections", async (req, res) => {
   const me = req.user._id;
   const all = await SocialConnection.find({ $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "declined" } })
     .sort({ updatedAt: -1 }).lean();
-  const items = await Promise.all(all.map((c) => connectionDTO(c, req.user, req.ctx)));
+  const items = await Promise.all(all.map((c) => connectionDTO(c, req)));
   res.json({
     accepted: items.filter((c) => c.status === "accepted"),
     incoming: items.filter((c) => c.status === "pending" && c.direction === "incoming"),
@@ -357,13 +428,17 @@ router.post("/connections/request", async (req, res) => {
   const existing = await SocialConnection.findOne({
     $or: [{ fromUserId: req.user._id, toUserId }, { fromUserId: toUserId, toUserId: req.user._id }],
   });
+  const share = shareFromBody(req);
   if (existing) {
     // Mutual interest → accept instead of duplicating
-    if (existing.status === "pending" && String(existing.toUserId) === String(req.user._id)) {
-      existing.status = "accepted"; existing.respondedAt = new Date(); await existing.save();
+    const accepting = existing.status === "pending" && String(existing.toUserId) === String(req.user._id);
+    if (accepting) { existing.status = "accepted"; existing.respondedAt = new Date(); }
+    if (share) setShare(existing, req.user._id, share);
+    if (accepting || share) await existing.save();
+    if (accepting) {
       pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) });
     }
-    return res.json(await connectionDTO(existing, req.user, req.ctx));
+    return res.json(await connectionDTO(existing, req));
   }
   // New requests need the sender's sendRequests and the target's receiveRequests (types + staff switch,
   // e.g. VIPs; staff and moderators may still ask). Rows above (theirs included) still work.
@@ -371,11 +446,13 @@ router.post("/connections/request", async (req, res) => {
   if (!canRequest({ sender: req.user, target, senderRights: req.rights, targetRights: rightsFor(target, req.ctx) })) {
     return res.status(403).json({ error: requestsOffError(target) });
   }
-  const c = await SocialConnection.create({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
+  const c = new SocialConnection({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
+  if (share) setShare(c, req.user._id, share);
+  await c.save();
   if (!req.blocked.has(toUserId)) {
     pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.status(201).json(await connectionDTO(c, req.user, req.ctx));
+  res.status(201).json(await connectionDTO(c, req));
 });
 
 router.post("/connections/:id/respond", async (req, res) => {
@@ -383,11 +460,13 @@ router.post("/connections/:id/respond", async (req, res) => {
   if (!c || String(c.toUserId) !== String(req.user._id)) return res.status(404).json({ error: "Not found" });
   c.status = req.body?.accept ? "accepted" : "declined";
   c.respondedAt = new Date();
+  const share = c.status === "accepted" ? shareFromBody(req) : null;
+  if (share) setShare(c, req.user._id, share);
   await c.save();
   if (c.status === "accepted") {
     pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.json(await connectionDTO(c, req.user, req.ctx));
+  res.json(await connectionDTO(c, req));
 });
 
 /* Withdraw a request you sent that hasn't been accepted yet. */
@@ -399,8 +478,9 @@ router.post("/connections/:id/withdraw", async (req, res) => {
   res.json({ withdrawn: true, id: String(c._id) });
 });
 
-/* Badge scan: both parties connected at once, whatever their request rights. Each
-   side sees the other's email only if that person shares contact details (shareContact). */
+/* Badge scan: both parties connected at once, whatever their request rights. The scanner
+   picks what they share (`share`); the person scanned shares their "share by default"
+   items until they pick (services/contactCard.js). Only with the shareContact right. */
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
@@ -415,8 +495,10 @@ router.post("/connections/in-person", async (req, res) => {
   }
   if (!c) c = new SocialConnection({ fromUserId: req.user._id, toUserId });
   c.status = "accepted"; c.kind = "inPerson"; c.respondedAt = new Date();
+  const share = shareFromBody(req);
+  if (share) setShare(c, req.user._id, share);
   await c.save();
-  res.json(await connectionDTO(c, req.user, req.ctx));
+  res.json(await connectionDTO(c, req));
 });
 
 /* ================= MESSAGES ================= */
