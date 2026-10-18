@@ -25,10 +25,17 @@ const socialPostSchema = new Schema({
   /** Photos and ≤30 s videos on Cloudinary (services/cloudinary.js), in order. */
   media:       { type: [{ _id: false, type: { type: String, enum: ["image", "video"] }, url: String, publicId: String,
                           width: Number, height: Number, duration: Number }], default: [] },
+  /** @mentions: { type: "user", id: <User _id> } or { type: "speaker", id: <Sanity id> }, ≤10. */
+  mentions:    { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: [] },
   likes:       { type: [Types.ObjectId], default: [] },
+  /** Everyone who has ever liked it (kept on unlike) so only a first like makes an activity row. */
+  everLiked:   { type: [Types.ObjectId], default: [] },
   likeCount:   { type: Number, default: 0 },
   commentCount:{ type: Number, default: 0 },
   status:      { type: String, enum: STATUS, default: "approved", index: true },
+  /** Set when staff take the post down (status "hidden") with DELETE /api/social/feed/:id. */
+  removedBy:   { type: Types.ObjectId, ref: "User" },
+  removedAt:   { type: Date },
 }, { timestamps: true });
 socialPostSchema.index({ createdAt: -1 });
 

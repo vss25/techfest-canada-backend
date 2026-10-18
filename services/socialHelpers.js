@@ -75,9 +75,26 @@ export function userCard(user) {
   };
 }
 
+/** Fields a person's full profile page shows (GET /api/social/users/:id). */
+export const PROFILE_SELECT = "name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot fieldOfWork jobLevel objectives";
+
+/** Full public profile: the card plus the other profile answers they gave.
+    Never email, phone, role, tickets, gender or salutation. */
+export function publicProfile(user) {
+  const card = userCard(user);
+  if (!card) return null;
+  return {
+    ...card,
+    fieldOfWork: user.fieldOfWork || "",
+    jobLevel: user.jobLevel || "",
+    objectives: Array.isArray(user.objectives) ? user.objectives : [],
+  };
+}
+
 /** What the app sees for a post. `avatars` maps authorId → avatarVersion.
-    The photo itself is fetched from imageUrl, so the feed stays small. */
-export function postDTO(post, viewerId, avatars = new Map()) {
+    The photo itself is fetched from imageUrl, so the feed stays small.
+    `staff`: the viewer is staff, so canRemove is true on every post. */
+export function postDTO(post, viewerId, avatars = new Map(), { staff = false } = {}) {
   const me = String(viewerId || "");
   // Cloudinary media first; a legacy inline photo shows as a one-item list.
   const media = (post.media || []).map(deliveryMedia);
@@ -100,6 +117,8 @@ export function postDTO(post, viewerId, avatars = new Map()) {
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
     likedByMe: (post.likes || []).some((l) => String(l) === me),
+    mentions: (post.mentions || []).map((m) => ({ type: m.type, id: String(m.id), name: m.name || "" })),
+    canRemove: !!me && (String(post.authorId) === me || !!staff),
     status: post.status || "approved",
     createdAt: post.createdAt,
   };

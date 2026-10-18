@@ -10,6 +10,7 @@ import {
 } from "../models/Social.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
+import ActivityEvent, { recordActivity } from "../models/ActivityEvent.js";
 import { pushToUsers } from "../services/push.js";
 import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
 import { rankFeed } from "../services/feedRank.js";
@@ -17,7 +18,12 @@ import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
+  publicProfile, PROFILE_SELECT,
 } from "../services/socialHelpers.js";
+import {
+  cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
+  parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
+} from "../services/socialActivity.js";
 
 /* =========================================================
    /api/social — the iOS app's shared layer
@@ -109,14 +115,23 @@ router.get("/attendees", async (req, res) => {
   res.json(people.filter((p) => !req.blocked.has(p.id)));
 });
 
+/* One person's profile page: everything they filled in for others to see
+   (publicProfile in services/socialHelpers.js), never email, phone, role or tickets. */
 router.get("/users/:id", async (req, res) => {
-  if (!/^[a-f0-9]{24}$/i.test(String(req.params.id)) || req.blocked.has(String(req.params.id))) return res.status(404).json({ error: "Not found" });
-  const u = await User.findById(req.params.id).select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot directoryHidden banned").lean();
+  const id = String(req.params.id);
+  if (!isObjectId(id) || req.blocked.has(id)) return res.status(404).json({ error: "Not found" });
+  const u = await User.findById(id).select(`${PROFILE_SELECT} directoryHidden banned`).lean();
+  if (!u || u.banned) return res.status(404).json({ error: "Not found" });
   // Hidden people stay reachable from an existing chat or connection, but can't be looked up cold.
-  const known = u && u.directoryHidden ? await SocialConnection.exists({
-    $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }) : true;
-  if (!u || u.banned || !known) return res.status(404).json({ error: "Not found" });
-  res.json(userCard(u));
+  const self = String(u._id) === String(req.user._id);
+  if (u.directoryHidden && !self) {
+    const [connected, chatted] = await Promise.all([
+      SocialConnection.exists({ $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }),
+      SocialMessage.exists({ threadKey: threadKey(req.user._id, u._id) }),
+    ]);
+    if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
+  }
+  res.json(publicProfile(u));
 });
 
 /* ================= FEED ================= */
@@ -131,7 +146,8 @@ router.get("/feed", async (req, res) => {
     .filter((p) => !req.blocked.has(String(p.authorId)));
   const posts = rankFeed(recent, req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
-  res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
+  const staff = isAdmin(req.user);
+  res.json(posts.map((p) => postDTO(p, req.user._id, avatars, { staff })));
 });
 
 /* ================= FEED MEDIA (Cloudinary) ================= */
@@ -154,6 +170,11 @@ router.post("/feed", async (req, res) => {
   const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
   if (!body && !imageData && !media.length) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
+  // @mentions: user ids must be real accounts; speaker ids are Sanity ids.
+  let mentions = cleanMentions(req.body?.mentions);
+  const mentionIds = mentionedUserIds(mentions);
+  const known = mentionIds.length ? await User.find({ _id: { $in: mentionIds } }).select("name").lean() : [];
+  mentions = keepKnownMentions(mentions, new Map(known.map((u) => [String(u._id), u.name])));
   const status = await statusFor([body, linkUrl].join(" "), req.user._id, "feed");
   const post = await SocialPost.create({
     authorId: req.user._id,
@@ -167,20 +188,64 @@ router.post("/feed", async (req, res) => {
     linkUrl,
     imageData,
     media,
+    mentions,
     status,
   });
-  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]])));
+  // Held posts aren't visible to anyone else yet, so nobody hears about them.
+  if (status === "approved") {
+    recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
+  }
+  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]]), { staff: isAdmin(req.user) }));
+});
+
+/** One post (opened from an activity row, a mention or a shared link). */
+router.get("/feed/:id", async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const post = await SocialPost.findById(req.params.id).lean();
+  if (!canViewPost(post, req.user, req.blocked)) return res.status(404).json({ error: "Not found" });
+  const avatars = await avatarVersions([post.authorId]);
+  res.json(postDTO(post, req.user._id, avatars, { staff: isAdmin(req.user) }));
+});
+
+/* The author deletes their own post (gone, with its comments); staff remove
+   anyone else's (kept as status "hidden" with removedBy/removedAt). */
+router.delete("/feed/:id", async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const post = await SocialPost.findById(req.params.id);
+  if (!post) return res.status(404).json({ error: "Not found" });
+  const mode = removeMode(post, req.user);
+  if (!mode) return res.status(403).json({ error: "You can only delete your own posts." });
+  if (mode === "author") {
+    await Promise.all([
+      SocialComment.deleteMany({ postId: post._id }),
+      ActivityEvent.deleteMany({ refId: post._id }),
+      post.deleteOne(),
+    ]);
+    return res.json({ ok: true, id: String(post._id), removed: "deleted" });
+  }
+  post.status = "hidden";
+  post.removedBy = req.user._id;
+  post.removedAt = new Date();
+  await post.save();
+  await ActivityEvent.deleteMany({ refId: post._id });
+  res.json({ ok: true, id: String(post._id), removed: "hidden" });
 });
 
 router.post("/feed/:id/like", async (req, res) => {
   const post = await SocialPost.findById(req.params.id);
   if (!post || post.status === "hidden") return res.status(404).json({ error: "Not found" });
-  const me = String(req.user._id);
-  const i = post.likes.findIndex((l) => String(l) === me);
-  if (i >= 0) post.likes.splice(i, 1); else post.likes.push(req.user._id);
-  post.likeCount = post.likes.length;
+  const t = toggleLike({ likes: post.likes, everLiked: post.everLiked, actorId: req.user._id });
+  post.likes = t.likes;
+  post.everLiked = t.everLiked;
+  post.likeCount = t.likes.length;
   await post.save();
-  res.json({ liked: i < 0, likeCount: post.likeCount });
+  // Only someone's first-ever like tells the author (not an unlike + relike).
+  if (t.firstLike) {
+    recordActivity(buildActivity({ kind: "like", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+  }
+  res.json({ liked: t.liked, likeCount: post.likeCount });
 });
 
 router.get("/feed/:id/comments", async (req, res) => {
@@ -205,7 +270,12 @@ router.post("/feed/:id/comments", async (req, res) => {
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
     authorTier: authorTier(req.user), body, status,
   });
-  if (status === "approved") { post.commentCount += 1; await post.save(); }
+  if (status === "approved") {
+    post.commentCount += 1;
+    await post.save();
+    recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
+      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+  }
   res.status(201).json({
     id: String(c._id), postId: String(post._id), authorId: String(req.user._id),
     authorName: c.authorName, authorTier: c.authorTier, body: c.body, status: c.status, createdAt: c.createdAt,
@@ -447,8 +517,41 @@ router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls 
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
 
+/* ================= MY ACTIVITY =================
+   Likes, comments and mentions on the feed, replies in discussions. No push:
+   the apps poll /activity/unread and show a dot on the tab until the person
+   opens it (POST /activity/seen { section }). */
+
+const seenTimes = (u) => ({ feed: u.activitySeen?.feed, discussions: u.activitySeen?.discussions });
+
+router.get("/activity/unread", async (req, res) => {
+  const seen = seenTimes(req.user);
+  const [feed, discussions] = await Promise.all(ACTIVITY_SECTIONS.map((s) =>
+    ActivityEvent.countDocuments(unreadFilter(req.user._id, s, seen, req.blocked))));
+  res.json({ feed, discussions });
+});
+
+router.post("/activity/seen", async (req, res) => {
+  const section = parseSection(req.body?.section);
+  if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
+  const seenAt = new Date();
+  await User.updateOne({ _id: req.user._id }, { $set: { [`activitySeen.${section}`]: seenAt } });
+  res.json({ ok: true, section, seenAt });
+});
+
+router.get("/activity", async (req, res) => {
+  const section = parseSection(req.query.section ?? "feed");
+  if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+  const filter = { userId: req.user._id, section };
+  if (req.blocked.size) filter.actorId = { $nin: [...req.blocked] };
+  const rows = await ActivityEvent.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+  res.json(rows.map(activityDTO));
+});
+
 /* ================= MY NOTIFICATIONS =================
-   Personal notifications staff sent from the admin panel. The apps poll this
+   Personal notifications staff sent from the admin panel, and (for staff)
+   "Content reported" ones from POST /api/app/report. The apps poll this
    (on open and in the background) and show new ones as local notifications. */
 
 router.get("/notifications", async (req, res) => {
@@ -482,7 +585,7 @@ router.get("/admin/held", async (req, res) => {
     SocialMessage.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
   ]);
   res.json({
-    posts: posts.map((p) => postDTO(p, req.user._id)),
+    posts: posts.map((p) => postDTO(p, req.user._id, new Map(), { staff: true })),
     comments: comments.map((c) => ({ id: String(c._id), postId: String(c.postId), authorName: c.authorName, body: c.body, createdAt: c.createdAt })),
     questions: questions.map((q) => questionDTO(q, req.user._id)),
     messages: messages.map((m) => ({ id: String(m._id), body: m.body, createdAt: m.createdAt })),

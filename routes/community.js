@@ -6,6 +6,8 @@ import { moderateText, isConfigured as moderationConfigured } from "../services/
 import { trimBody, userCard } from "../services/socialHelpers.js";
 import { Block } from "../models/Admin.js";
 import { pushToUsers } from "../services/push.js";
+import { recordActivity } from "../models/ActivityEvent.js";
+import { buildActivity } from "../services/socialActivity.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 
 /* =========================================================
@@ -104,7 +106,13 @@ router.post("/discussions/:id/replies", async (req, res) => {
   const r = await DiscussionReply.create({
     discussionId: d._id, parentId, authorId: req.user._id, authorName: req.user.name, body, status,
   });
-  if (status === "approved") { d.replyCount += 1; await d.save(); }
+  if (status === "approved") {
+    d.replyCount += 1;
+    await d.save();
+    // The discussion's author sees a dot on Discussions (no push).
+    recordActivity(buildActivity({ kind: "reply", section: "discussions", actorId: req.user._id, actorName: req.user.name,
+      refId: d._id, recipients: [d.authorId], blocked: req.blocked }));
+  }
   res.status(201).json({
     id: String(r._id), discussionId: String(d._id), parentId: parentId ? String(parentId) : null,
     authorId: me(req), authorName: r.authorName, body: r.body, status: r.status, mine: true,

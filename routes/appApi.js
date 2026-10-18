@@ -2,6 +2,9 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { AppEvent, AppContent, Report, Block } from "../models/Admin.js";
+import AppNotification from "../models/AppNotification.js";
+import { pushToUsers } from "../services/push.js";
+import { buildReportNotifications } from "../services/socialActivity.js";
 import { cleanEvent, CONTENT_KEYS } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
@@ -10,12 +13,14 @@ import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apn
 import { cleanFcmToken, upsertFcmToken, isConfigured as fcmConfigured } from "../services/fcm.js";
 
 const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batches per IP per minute
+const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });   // staff alerts per reporter
 
 /* =========================================================
    /api/app — things every iOS client needs:
    POST   /events        usage analytics (signed in or anonymous device)
    GET    /content       admin-editable texts + feature switches
-   POST   /report        report a post, comment, message, user… (signed in)
+   POST   /report        report a post, comment, message, user… (signed in);
+                         every staff account gets a "Content reported" notification
    POST   /block         block a user;  DELETE /block/:userId unblock
    GET    /blocks        my blocked user ids
    DELETE /account       delete my account (Apple 5.1.1(v))
@@ -70,10 +75,30 @@ router.post("/report", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;
   const { targetType, targetId } = req.body || {};
   if (!TARGETS.has(targetType) || !targetId) return res.status(400).json({ error: "targetType and targetId required" });
-  await Report.create({ reporterId: me._id, reporterName: me.name, targetType, targetId: String(targetId).slice(0, 64),
+  const report = await Report.create({ reporterId: me._id, reporterName: me.name, targetType, targetId: String(targetId).slice(0, 64),
                         reason: trimBody(req.body?.reason, 500) });
+  await alertStaff(me, report);
   res.status(201).json({ ok: true });
 });
+
+/* Every staff account gets "Content reported" in its app inbox (and a push).
+   The report is always saved; past 10 in 10 min from one person the alerts stop. */
+async function alertStaff(me, report) {
+  try {
+    if (!reportAlertLimiter.hit(String(me._id))) return;
+    const staff = await User.find({ role: "admin", banned: { $ne: true } }).select("_id").lean();
+    const rows = buildReportNotifications({
+      reporterId: me._id, reporterName: me.name, targetType: report.targetType, reason: report.reason,
+      reportId: report._id, staffIds: staff.map((u) => u._id),
+    });
+    if (!rows.length) return;
+    await AppNotification.insertMany(rows);
+    const [{ title, body, link }] = rows;
+    pushToUsers(rows.map((r) => r.userId), { title, body, link, thread: "reports", kind: "report", id: String(report._id) });
+  } catch (err) {
+    console.error("REPORT ALERT ERROR:", err?.message || err);
+  }
+}
 
 router.post("/block", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;

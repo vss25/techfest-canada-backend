@@ -101,6 +101,8 @@ const userSchema = new mongoose.Schema(
     objectives:   { type: [String], default: [] },        // what they want from TTFC
     availabilitySlots: { type: [String], default: [] },   // when they're free to meet
     meetingSpot:  { type: String, default: "" },
+    // When they last opened each tab's activity (likes, comments, mentions, replies).
+    activitySeen: { feed: { type: Date }, discussions: { type: Date } },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
     // Consent recorded by the apps (server-stamped): 18+ self-confirmation and
