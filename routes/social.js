@@ -12,6 +12,7 @@ import { moderateText, isConfigured as moderationConfigured } from "../services/
 import AppNotification from "../models/AppNotification.js";
 import { pushToUsers } from "../services/push.js";
 import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
+import { rankFeed } from "../services/feedRank.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
@@ -124,8 +125,10 @@ router.get("/feed", async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  const posts = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean())
+  // Rank the recent window by engagement (with a small daily shuffle), then trim.
+  const recent = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(300).lean())
     .filter((p) => !req.blocked.has(String(p.authorId)));
+  const posts = rankFeed(recent, req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
 });
