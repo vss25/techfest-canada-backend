@@ -22,6 +22,9 @@ const socialPostSchema = new Schema({
   linkUrl:     { type: String, default: "" },
   /** data:image/jpeg;base64,… — capped at ~350 KB by the route. */
   imageData:   { type: String, default: "" },
+  /** Photos and ≤30 s videos on Cloudinary (services/cloudinary.js), in order. */
+  media:       { type: [{ _id: false, type: { type: String, enum: ["image", "video"] }, url: String, publicId: String,
+                          width: Number, height: Number, duration: Number }], default: [] },
   likes:       { type: [Types.ObjectId], default: [] },
   likeCount:   { type: Number, default: 0 },
   commentCount:{ type: Number, default: 0 },

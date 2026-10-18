@@ -11,6 +11,9 @@ import {
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
 import { pushToUsers } from "../services/push.js";
+import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
+import { rankFeed } from "../services/feedRank.js";
+import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
@@ -123,16 +126,33 @@ router.get("/feed", async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  const posts = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(limit).lean())
+  // Rank the recent window by engagement (with a small daily shuffle), then trim.
+  const recent = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(300).lean())
     .filter((p) => !req.blocked.has(String(p.authorId)));
+  const posts = rankFeed(recent, req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
+});
+
+/* ================= FEED MEDIA (Cloudinary) ================= */
+
+/** Whether photo/video uploads are on, and their limits. */
+router.get("/media/config", (req, res) => {
+  res.json({ enabled: cloudinaryConfig().enabled, maxItems: MAX_ITEMS, maxVideoSeconds: MAX_VIDEO_SECONDS });
+});
+
+/** Signed parameters for one direct upload to Cloudinary. */
+router.post("/media/sign", (req, res) => {
+  const signed = signUpload({ type: req.body?.type, userId: req.user._id });
+  if (!signed) return res.status(503).json({ error: "media_unavailable", message: "Photo and video uploads aren't switched on yet." });
+  res.json(signed);
 });
 
 router.post("/feed", async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   const imageData = cleanImageData(req.body?.imageData, 450_000);
-  if (!body && !imageData) return res.status(400).json({ error: "Write something or add a photo" });
+  const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
+  if (!body && !imageData && !media.length) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
   const status = await statusFor([body, linkUrl].join(" "), req.user._id, "feed");
   const post = await SocialPost.create({
@@ -146,6 +166,7 @@ router.post("/feed", async (req, res) => {
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
     linkUrl,
     imageData,
+    media,
     status,
   });
   res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]])));
@@ -383,7 +404,7 @@ router.get("/sessions/:id/questions", async (req, res) => {
   res.json(qs.map((q) => questionDTO(q, req.user._id)));
 });
 
-router.post("/sessions/:id/questions", async (req, res) => {
+router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const body = trimBody(req.body?.body, 600);
   if (!body) return res.status(400).json({ error: "body required" });
   const status = await statusFor(body, req.user._id, "question");
@@ -393,7 +414,7 @@ router.post("/sessions/:id/questions", async (req, res) => {
   res.status(201).json(questionDTO(q, req.user._id));
 });
 
-router.post("/sessions/questions/:qid/upvote", async (req, res) => {
+router.post("/sessions/questions/:qid/upvote", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const q = await SessionQuestion.findById(req.params.qid);
   if (!q) return res.status(404).json({ error: "Not found" });
   const me = String(req.user._id);
@@ -412,7 +433,7 @@ router.get("/sessions/:id/polls/:pollId/results", async (req, res) => {
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
 
-router.post("/sessions/:id/polls/:pollId/vote", async (req, res) => {
+router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls are closed right now."), async (req, res) => {
   const optionIndex = Number(req.body?.optionIndex);
   if (!Number.isInteger(optionIndex) || optionIndex < 0) return res.status(400).json({ error: "optionIndex required" });
   const optionCount = Math.min(Math.max(Number(req.body?.options) || 4, 1), 16);

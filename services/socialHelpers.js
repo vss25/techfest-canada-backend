@@ -1,3 +1,4 @@
+import { deliveryMedia } from "./cloudinary.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -78,6 +79,9 @@ export function userCard(user) {
     The photo itself is fetched from imageUrl, so the feed stays small. */
 export function postDTO(post, viewerId, avatars = new Map()) {
   const me = String(viewerId || "");
+  // Cloudinary media first; a legacy inline photo shows as a one-item list.
+  const media = (post.media || []).map(deliveryMedia);
+  if (!media.length && post.imageData) media.push({ type: "image", url: postImagePath(post), posterUrl: "", width: 0, height: 0, duration: 0 });
   return {
     id: String(post._id),
     authorId: String(post.authorId),
@@ -90,7 +94,8 @@ export function postDTO(post, viewerId, avatars = new Map()) {
     topicTags: post.topicTags || [],
     linkUrl: post.linkUrl || "",
     imageData: "",
-    imageUrl: postImagePath(post),
+    imageUrl: postImagePath(post) || (media.find((m) => m.type === "image")?.url ?? ""),
+    media,
     authorAvatarUrl: avatarPath(post.authorId, avatars.get(String(post.authorId))),
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
