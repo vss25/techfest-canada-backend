@@ -3,10 +3,12 @@ import mongoose from "mongoose";
 const { Schema, Types } = mongoose;
 
 /* Personal activity: someone liked or commented on your post, mentioned you
-   in one, or replied to your discussion. No push and no AppNotification: the
+   in one, or replied in a discussion you follow. No AppNotification: the
    apps poll GET /api/social/activity/unread and show a dot on the Feed or
-   Discussions tab until the person opens it (POST /activity/seen).
-   Rules for who gets a row are in services/socialActivity.js (buildActivity). */
+   Discussions tab until the person opens it (POST /activity/seen). Discussion
+   replies also push (throttled, routes/community.js); the rest don't.
+   Rules for who gets a row are in services/socialActivity.js (buildActivity)
+   and, for discussion followers, services/discussionFollow.js. */
 const activityEventSchema = new Schema({
   userId:    { type: Types.ObjectId, ref: "User", required: true },   // recipient
   actorId:   { type: Types.ObjectId, ref: "User", required: true },

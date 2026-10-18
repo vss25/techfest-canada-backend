@@ -54,6 +54,7 @@ export async function deleteAccount(userId) {
     SocialPost.updateMany({ mentions: { $elemMatch: { type: "user", id: String(id) } } },
                           { $pull: { mentions: { type: "user", id: String(id) } } }),
     SessionQuestion.updateMany({ upvotes: id }, { $pull: { upvotes: id } }),
+    Discussion.updateMany({ $or: [{ followers: id }, { unfollowed: id }] }, { $pull: { followers: id, unfollowed: id } }),
     AppEvent.deleteMany({ userId: id }),
     Block.deleteMany({ $or: [{ userId: id }, { blockedId: id }] }),
     Report.deleteMany({ reporterId: id }),

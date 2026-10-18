@@ -544,9 +544,10 @@ router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls 
 });
 
 /* ================= MY ACTIVITY =================
-   Likes, comments and mentions on the feed, replies in discussions. No push:
-   the apps poll /activity/unread and show a dot on the tab until the person
-   opens it (POST /activity/seen { section }). */
+   Likes, comments and mentions on the feed, replies in discussions you
+   follow (those also push, see routes/community.js). The apps poll
+   /activity/unread and show a dot on the tab until the person opens it
+   (POST /activity/seen { section }). */
 
 const seenTimes = (u) => ({ feed: u.activitySeen?.feed, discussions: u.activitySeen?.discussions });
 
