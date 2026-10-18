@@ -99,7 +99,7 @@ export const DEFAULT_MANUAL = Object.freeze({
       ["What is not included", "Audio-visual equipment, screens, TV stands, lounge furniture, lead-retrieval scanners, additional lighting, internet hard lines and shipping or drayage. All of these are ordered through the vendors in Section 3."],
       ["Height limit", "Nothing in your booth may exceed the 8 ft back drape or encroach on the aisle. Zone B has an 8 ft 3 in ceiling, so pop-up banners and towers must fit within that."],
       ["Carpet & floor", "Both foyers are carpeted throughout. No additional floor covering is supplied or needed."],
-      ["Internet", "Venue Wi-Fi covers the exhibition floor and is shared with 500+ delegates. If your demo depends on bandwidth, order a hard line rather than relying on the shared network."],
+      ["Internet", "Venue Wi-Fi covers the exhibition floor and is shared with 1000+ attendees across 2 days. If your demo depends on bandwidth, order a hard line rather than relying on the shared network."],
       ["Food & beverage", "Coffee bars, F&B stations and the delegate lounge sit inside both zones. Catering into your own booth is not permitted without prior arrangement."],
     ],
   },

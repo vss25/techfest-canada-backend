@@ -7,7 +7,7 @@ import { sanitizeProfilePatch } from "../routes/profile.js";
 import { upgradeQuote } from "../routes/payments.js";
 
 test("CMS types mirror the website schema", () => {
-  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings", "session"]);
+  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings", "aboutContent", "session"]);
 });
 
 test("speaker create needs the required fields", () => {
@@ -104,4 +104,22 @@ test("photo framing and logo size", () => {
   assert.match(toSanityPatch("speaker", { image: { asset: "image-abc123-400x500-jpg", crop: { top: 2, bottom: 0, left: 0, right: 0 } } }, { creating: false }).error, /between 0 and 1/);
   assert.equal(toSanityPatch("partner", { logoScale: 140 }, { creating: false }).set.logoScale, 140);
   assert.match(toSanityPatch("partner", { logoScale: 900 }, { creating: false }).error, /between/);
+});
+
+test("About page numbers: value + label required, keys kept, at most 8", () => {
+  const ok = toSanityPatch("aboutContent", { stats: [
+    { _key: "c6c697df83f1", iconName: "users", label: " Attendees across 2 days ", suffix: "+", value: "1000" },
+    { label: "Signature Experiences", value: 5, iconName: "Not An Icon!" },
+  ] }, { creating: false });
+  assert.equal(ok.error, null);
+  assert.deepEqual(ok.set.stats, [
+    { _key: "c6c697df83f1", value: 1000, label: "Attendees across 2 days", suffix: "+", iconName: "users" },
+    { _key: "s1signaturee", value: 5, label: "Signature Experiences" },
+  ]);
+  assert.match(toSanityPatch("aboutContent", { stats: [{ label: "", value: 1 }] }, { creating: false }).error, /value and a label/);
+  assert.match(toSanityPatch("aboutContent", { stats: [{ label: "x", value: "lots" }] }, { creating: false }).error, /value and a label/);
+  assert.match(toSanityPatch("aboutContent", { stats: Array.from({ length: 9 }, (_, i) => ({ label: `n${i}`, value: i })) }, { creating: false }).error, /at most 8/);
+  assert.match(toSanityPatch("aboutContent", { stats: "1000" }, { creating: false }).error, /must be a list/);
+  // Only the numbers are writable on this document.
+  assert.deepEqual(Object.keys(toSanityPatch("aboutContent", { title: "x", stats: [] }, { creating: false }).set), ["stats"]);
 });
