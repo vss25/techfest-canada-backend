@@ -90,6 +90,7 @@ const userSchema = new mongoose.Schema(
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
     directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
+    hideFromLeaderboard: { type: Boolean, default: false }, // opt out of the points leaderboard (still earns points)
     // Staff switches for VIPs who won't reply (services/contactSwitches.js). Staff,
     // accepted connections and people they wrote to can still message them.
     messagesOff:  { type: Boolean, default: false },      // no new 1:1 messages from others
