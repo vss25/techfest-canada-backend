@@ -149,7 +149,8 @@ export function reportLink(targetType, targetId) {
   return targetType === "post" && /^[a-f0-9]{24}$/i.test(id) ? `ttfc://post/${id}` : "ttfc://moderation";
 }
 
-/** Staff inbox rows (AppNotification docs) for one new report, minus the reporter. */
+/** Moderator inbox rows (AppNotification docs) for one new report, minus the reporter.
+    `staffIds`: everyone with the moderate right (routes/appApi.js). */
 export function buildReportNotifications({ reporterId, reporterName, targetType, targetId, reason, reportId, staffIds = [] }) {
   const title = "Content reported";
   const what = TARGET_LABEL[targetType] || String(targetType || "item");
@@ -164,25 +165,29 @@ export function buildReportNotifications({ reporterId, reporterName, targetType,
   }));
 }
 
-/* ================= POSTS: REMOVE / VIEW ================= */
+/* ================= POSTS: REMOVE / VIEW =================
+   `rights` is the viewer's effectiveRights() (services/appRights.js); left
+   out, only staff accounts (role admin) count, as before rights existed. */
 
 const isStaff = (u) => u?.role === "admin";
+const hasRight = (user, rights, right) => (rights ? !!rights[right] : isStaff(user));
 
 /**
  * Who may take a post down: "author" (deletes it) or "staff" (hides it as
- * removed); null = not allowed. The author path wins for staff's own posts.
+ * removed; needs deleteAnyPost); null = not allowed. The author path wins for
+ * a staff member's own posts.
  */
-export function removeMode(post, user) {
+export function removeMode(post, user, rights = null) {
   if (!post || !user) return null;
   if (String(post.authorId) === String(user._id || user.id)) return "author";
-  return isStaff(user) ? "staff" : null;
+  return hasRight(user, rights, "deleteAnyPost") ? "staff" : null;
 }
 
-/** Can this viewer open one post (GET /social/feed/:id)? */
-export function canViewPost(post, user, blocked = new Set()) {
+/** Can this viewer open one post (GET /social/feed/:id)? Held / hidden ones: the author and moderators. */
+export function canViewPost(post, user, blocked = new Set(), rights = null) {
   if (!post || !user) return false;
   const author = String(post.authorId) === String(user._id || user.id);
   if (!author && blocked.has(String(post.authorId))) return false;
-  if (author || isStaff(user)) return true;
+  if (author || hasRight(user, rights, "moderate")) return true;
   return (post.status || "approved") === "approved";
 }

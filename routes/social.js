@@ -17,13 +17,15 @@ import { rankFeed } from "../services/feedRank.js";
 import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
-  threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
+  threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
   publicProfile, PROFILE_SELECT, CARD_SELECT,
 } from "../services/socialHelpers.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
-import { cardsFor, loadExhibitors } from "../services/cards.js";
-import { kindFields, publicTier } from "../services/teamRoles.js";
+import { cardsFor } from "../services/cards.js";
+import { publicTier, typesTier } from "../services/teamRoles.js";
+import { personAccess, rightsFor, overridesContact, rightError, sharedEmail, RIGHT_ERRORS } from "../services/appRights.js";
+import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
   parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
@@ -53,12 +55,21 @@ async function requireUser(req, res, next) {
     // Blocks work both ways: neither side sees the other's posts, comments or messages.
     const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
     req.blocked = new Set(rows.map((r) => String(String(r.userId) === String(user._id) ? r.blockedId : r.userId)));
+    // What they may do (services/appRights.js): their effective types and rights, plus the
+    // context (matrix, global switches, exhibitor passes) for checking other people.
+    req.ctx = await rightsContext();
+    const acc = personAccess(user, req.ctx);
+    req.types = acc.types;
+    req.rights = acc.rights;
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
   }
 }
 router.use(requireUser);
+
+/** 403 with a readable line unless the signed-in person has `right`. */
+const needRight = (right) => (req, res, next) => (req.rights[right] ? next() : res.status(403).json({ error: rightError(right, req.ctx.flags) }));
 
 /** "approved" or "held" after moderation; never throws. */
 async function statusFor(text, userId, context) {
@@ -72,8 +83,8 @@ async function statusFor(text, userId, context) {
 }
 
 const isAdmin = (u) => u.role === "admin";
-/** The pass stored on someone's new post or comment: only a Speaker Pass or "Exhibitor" (publicTier). */
-const authorTier = async (u) => publicTier(tierName(bestTierKey(u)), kindFields(u, await loadExhibitors()).kind);
+/** The pass stored on the signed-in person's new post or comment: only a Speaker Pass or "Exhibitor". */
+const authorTier = (req) => typesTier(req.types);
 
 /** authorId → avatarVersion for the people who have a profile photo. */
 async function avatarVersions(ids) {
@@ -86,9 +97,13 @@ async function avatarVersions(ids) {
 /* ================= ME / DIRECTORY ================= */
 
 // isAdmin is staff only; role tells the apps a volunteer ("volunteer") from an attendee ("user").
+// `types` = all their effective types (attendee included), `rights` = what they may do (services/appRights.js).
 router.get("/me", async (req, res) => {
-  const exhibitors = await loadExhibitors();
-  res.json({ ...userCard(req.user, { exhibitors, self: true }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user" });
+  const { exhibitors, matrix } = req.ctx;
+  res.json({
+    ...userCard(req.user, { exhibitors, matrix, self: true }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user",
+    types: req.types, rights: req.rights,
+  });
 });
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
@@ -116,15 +131,15 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
-      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff").lean(),
+      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff").lean(),
     Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
-  const exhibitors = await loadExhibitors();
-  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors });
+  const { exhibitors, matrix } = req.ctx;
+  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
   people = people.filter((p) => !req.blocked.has(p.id));
   const shown = new Set(people.map((p) => p.id));
-  const access = await contactAccess(req.user, users.filter((u) => shown.has(String(u._id))));
+  const access = await contactAccess(req.user, users.filter((u) => shown.has(String(u._id))), req.ctx);
   res.json(people.map((p) => applyAccess(p, access)));
 });
 
@@ -144,8 +159,8 @@ router.get("/users/:id", async (req, res) => {
     ]);
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
   }
-  const [access, exhibitors] = await Promise.all([contactAccess(req.user, [u]), loadExhibitors()]);
-  res.json(applyAccess(publicProfile(u, { exhibitors, self }), access));
+  const access = await contactAccess(req.user, [u], req.ctx);
+  res.json(applyAccess(publicProfile(u, { exhibitors: req.ctx.exhibitors, matrix: req.ctx.matrix, self }), access));
 });
 
 /* ================= FEED ================= */
@@ -160,7 +175,7 @@ router.get("/feed", async (req, res) => {
     .filter((p) => !req.blocked.has(String(p.authorId)));
   const posts = rankFeed(recent, req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
-  const staff = isAdmin(req.user);
+  const staff = req.rights.deleteAnyPost;
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars, { staff })));
 });
 
@@ -178,7 +193,7 @@ router.post("/media/sign", (req, res) => {
   res.json(signed);
 });
 
-router.post("/feed", async (req, res) => {
+router.post("/feed", needRight("post"), async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   const imageData = cleanImageData(req.body?.imageData, 450_000);
   const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
@@ -195,7 +210,7 @@ router.post("/feed", async (req, res) => {
     authorName: req.user.name,
     authorTitle: req.user.jobTitle || "",
     authorOrg: req.user.organization || "",
-    authorTier: await authorTier(req.user),
+    authorTier: authorTier(req),
     kind: isAdmin(req.user) && req.body?.kind === "announcement" ? "announcement" : "member",
     body,
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
@@ -210,25 +225,25 @@ router.post("/feed", async (req, res) => {
     recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
   }
-  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]]), { staff: isAdmin(req.user) }));
+  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]]), { staff: req.rights.deleteAnyPost }));
 });
 
 /** One post (opened from an activity row, a mention or a shared link). */
 router.get("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const post = await SocialPost.findById(req.params.id).lean();
-  if (!canViewPost(post, req.user, req.blocked)) return res.status(404).json({ error: "Not found" });
+  if (!canViewPost(post, req.user, req.blocked, req.rights)) return res.status(404).json({ error: "Not found" });
   const avatars = await avatarVersions([post.authorId]);
-  res.json(postDTO(post, req.user._id, avatars, { staff: isAdmin(req.user) }));
+  res.json(postDTO(post, req.user._id, avatars, { staff: req.rights.deleteAnyPost }));
 });
 
-/* The author deletes their own post (gone, with its comments); staff remove
-   anyone else's (kept as status "hidden" with removedBy/removedAt). */
+/* The author deletes their own post (gone, with its comments); people with
+   deleteAnyPost (staff) remove anyone else's (kept as status "hidden" with removedBy/removedAt). */
 router.delete("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const post = await SocialPost.findById(req.params.id);
   if (!post) return res.status(404).json({ error: "Not found" });
-  const mode = removeMode(post, req.user);
+  const mode = removeMode(post, req.user, req.rights);
   if (!mode) return res.status(403).json({ error: "You can only delete your own posts." });
   if (mode === "author") {
     await Promise.all([
@@ -274,7 +289,7 @@ router.get("/feed/:id/comments", async (req, res) => {
   })));
 });
 
-router.post("/feed/:id/comments", async (req, res) => {
+router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
   const post = await SocialPost.findById(req.params.id);
@@ -282,7 +297,7 @@ router.post("/feed/:id/comments", async (req, res) => {
   const status = await statusFor(body, req.user._id, "comment");
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
-    authorTier: await authorTier(req.user), body, status,
+    authorTier: authorTier(req), body, status,
   });
   if (status === "approved") {
     post.commentCount += 1;
@@ -299,19 +314,23 @@ router.post("/feed/:id/comments", async (req, res) => {
 
 /* ================= CONNECTIONS ================= */
 
-/** `viewer` is the signed-in user (req.user). */
-async function connectionDTO(c, viewer) {
+/** `viewer` is the signed-in user (req.user), `ctx` their req.ctx (services/rightsStore.js). */
+async function connectionDTO(c, viewer, ctx) {
   const meId = viewer._id;
   const otherId = String(c.fromUserId) === String(meId) ? c.toUserId : c.fromUserId;
-  const other = await User.findById(otherId).select(CARD_SELECT).lean();
+  const other = await User.findById(otherId).select(`${CARD_SELECT} email`).lean();
+  const inPerson = c.status === "accepted" && c.kind === "inPerson";
+  const email = inPerson && other ? sharedEmail(other, rightsFor(other, ctx)) : "";
   return {
     id: String(c._id),
     user: (await cardsFor(viewer, [other]))[0] || { id: String(otherId), name: "Attendee" },
     direction: String(c.fromUserId) === String(meId) ? "outgoing" : "incoming",
     status: c.status, kind: c.kind, note: c.note || "",
     createdAt: c.createdAt, respondedAt: c.respondedAt,
-    // email is shared only once connected in person (Discovery X model)
-    email: c.status === "accepted" && c.kind === "inPerson" ? (other?.email || "") : undefined,
+    // Contact details are exchanged only once connected in person (badge scan), and only
+    // from people whose types share them (shareContact). Not sent at all for other rows.
+    email: inPerson ? email : undefined,
+    contactShared: inPerson ? !!email : undefined,
   };
 }
 
@@ -319,7 +338,7 @@ router.get("/connections", async (req, res) => {
   const me = req.user._id;
   const all = await SocialConnection.find({ $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "declined" } })
     .sort({ updatedAt: -1 }).lean();
-  const items = await Promise.all(all.map((c) => connectionDTO(c, req.user)));
+  const items = await Promise.all(all.map((c) => connectionDTO(c, req.user, req.ctx)));
   res.json({
     accepted: items.filter((c) => c.status === "accepted"),
     incoming: items.filter((c) => c.status === "pending" && c.direction === "incoming"),
@@ -330,7 +349,7 @@ router.get("/connections", async (req, res) => {
 router.post("/connections/request", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
-  const target = await User.findById(toUserId).select("_id name lastActiveAt appOnboarded requestsOff");
+  const target = await User.findById(toUserId).select(`_id lastActiveAt appOnboarded ${RIGHTS_SELECT}`);
   if (!target) return res.status(404).json({ error: "User not found" });
   if (!isOnApp(target)) return res.status(409).json({ error: "They haven't joined the app yet. You can connect once they sign in." });
   const existing = await SocialConnection.findOne({
@@ -342,15 +361,19 @@ router.post("/connections/request", async (req, res) => {
       existing.status = "accepted"; existing.respondedAt = new Date(); await existing.save();
       pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) });
     }
-    return res.json(await connectionDTO(existing, req.user));
+    return res.json(await connectionDTO(existing, req.user, req.ctx));
   }
-  // Staff switch (VIPs): no new requests, but rows above (theirs included) still work.
-  if (!canRequest({ sender: req.user, target })) return res.status(403).json({ error: requestsOffError(target) });
+  // New requests need the sender's sendRequests and the target's receiveRequests (types + staff switch,
+  // e.g. VIPs; staff and moderators may still ask). Rows above (theirs included) still work.
+  if (!req.rights.sendRequests) return res.status(403).json({ error: RIGHT_ERRORS.sendRequests });
+  if (!canRequest({ sender: req.user, target, senderRights: req.rights, targetRights: rightsFor(target, req.ctx) })) {
+    return res.status(403).json({ error: requestsOffError(target) });
+  }
   const c = await SocialConnection.create({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
   if (!req.blocked.has(toUserId)) {
     pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.status(201).json(await connectionDTO(c, req.user));
+  res.status(201).json(await connectionDTO(c, req.user, req.ctx));
 });
 
 router.post("/connections/:id/respond", async (req, res) => {
@@ -362,10 +385,9 @@ router.post("/connections/:id/respond", async (req, res) => {
   if (c.status === "accepted") {
     pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
   }
-  res.json(await connectionDTO(c, req.user));
+  res.json(await connectionDTO(c, req.user, req.ctx));
 });
 
-// Badge scan: both parties connected immediately, details exchanged.
 /* Withdraw a request you sent that hasn't been accepted yet. */
 router.post("/connections/:id/withdraw", async (req, res) => {
   const c = await SocialConnection.findById(req.params.id).catch(() => null);
@@ -375,6 +397,8 @@ router.post("/connections/:id/withdraw", async (req, res) => {
   res.json({ withdrawn: true, id: String(c._id) });
 });
 
+/* Badge scan: both parties connected at once, whatever their request rights. Each
+   side sees the other's email only if that person shares contact details (shareContact). */
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
@@ -390,7 +414,7 @@ router.post("/connections/in-person", async (req, res) => {
   if (!c) c = new SocialConnection({ fromUserId: req.user._id, toUserId });
   c.status = "accepted"; c.kind = "inPerson"; c.respondedAt = new Date();
   await c.save();
-  res.json(await connectionDTO(c, req.user));
+  res.json(await connectionDTO(c, req.user, req.ctx));
 });
 
 /* ================= MESSAGES ================= */
@@ -440,16 +464,19 @@ router.get("/messages/:userId", async (req, res) => {
 router.post("/messages/:userId", async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
-  const to = await User.findById(req.params.userId).select("_id name messagesOff");
+  if (!req.rights.sendMessages) return res.status(403).json({ error: RIGHT_ERRORS.sendMessages });
+  const to = await User.findById(req.params.userId).select(`_id ${RIGHTS_SELECT}`);
   if (!to) return res.status(404).json({ error: "User not found" });
   if (req.blocked.has(String(to._id))) return res.status(403).json({ error: "You can't message this person." });
-  // Staff switch (VIPs): only staff, accepted connections, or a reply to someone who wrote first.
-  if (to.messagesOff && !isAdmin(req.user)) {
+  // Without receiveMessages (types such as VIP, or the staff switch): only staff / moderators,
+  // accepted connections, or a reply to someone who wrote first.
+  const toRights = rightsFor(to, req.ctx);
+  if (!toRights.receiveMessages && !overridesContact(req.user, req.rights)) {
     const [connected, theyWroteFirst] = await Promise.all([
       SocialConnection.exists({ status: "accepted", $or: [{ fromUserId: req.user._id, toUserId: to._id }, { fromUserId: to._id, toUserId: req.user._id }] }),
       SocialMessage.exists({ fromUserId: to._id, toUserId: req.user._id }),
     ]);
-    if (!canMessage({ sender: req.user, recipient: to, connected: !!connected, theyWroteFirst: !!theyWroteFirst })) {
+    if (!canMessage({ sender: req.user, recipient: to, senderRights: req.rights, recipientRights: toRights, connected: !!connected, theyWroteFirst: !!theyWroteFirst })) {
       return res.status(403).json({ error: messagesOffError(to) });
     }
   }
@@ -603,10 +630,10 @@ router.post("/notifications/read", async (req, res) => {
   res.json({ ok: true, updated: r.modifiedCount ?? 0 });
 });
 
-/* ================= STAFF MODERATION ================= */
+/* ================= STAFF MODERATION =================
+   Anyone with the moderate right (staff accounts always). */
 
-router.get("/admin/held", async (req, res) => {
-  if (!isAdmin(req.user)) return res.status(403).json({ error: "Admin only" });
+router.get("/admin/held", needRight("moderate"), async (req, res) => {
   const [posts, comments, questions, messages] = await Promise.all([
     SocialPost.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
     SocialComment.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
@@ -621,8 +648,7 @@ router.get("/admin/held", async (req, res) => {
   });
 });
 
-router.post("/admin/:type/:id/status", async (req, res) => {
-  if (!isAdmin(req.user)) return res.status(403).json({ error: "Admin only" });
+router.post("/admin/:type/:id/status", needRight("moderate"), async (req, res) => {
   const status = String(req.body?.status || "");
   if (!["approved", "held", "hidden"].includes(status)) return res.status(400).json({ error: "bad status" });
   const Model = { post: SocialPost, comment: SocialComment, question: SessionQuestion, message: SocialMessage }[req.params.type];

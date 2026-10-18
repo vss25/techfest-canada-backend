@@ -10,7 +10,8 @@
    Pure helpers are exported for unit tests.
 ========================================================= */
 
-import { kindFields, passKind, strongerKind, boothOf, publicTier } from "./teamRoles.js";
+import { passKind, strongerKind, boothOf, typesTier, storedTypes, PUBLIC_TYPES } from "./teamRoles.js";
+import { personAccess } from "./appRights.js";
 
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
 export function normalizeTicketId(raw) {
@@ -118,16 +119,20 @@ function addGuestWork(entry, g) {
  * People are merged by email; guest-only duplicates are also merged by
  * name. Each person keeps their most recent ticket. Never returns email.
  */
-/** An unclaimed pass (speaker / exhibitor) can raise a directory entry's kind, never lower it. */
-function addPassKind(entry, g) {
+/** An unclaimed pass (speaker / exhibitor) adds its type to a directory entry and can raise its kind,
+    never lower it. `off`: the account's typesOff (a type staff switched off stays off). */
+function addPassKind(entry, g, off = []) {
   const k = passKind(g);
+  if (!k || off.includes(k)) return;
+  if (!entry.types.includes(k)) entry.types = PUBLIC_TYPES.filter((t) => t === k || entry.types.includes(t));
   const kind = strongerKind(entry.kind || "", k);
   if (kind === entry.kind) return;
   entry.kind = kind;
   entry.booth = kind === "exhibitor" ? boothOf(g) : "";
 }
 
-export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null } = {}) {
+export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null, matrix = undefined } = {}) {
+  const offById = new Map();   // entry id → that account's typesOff
   const byEmail = new Map();
   const skipEmail = String(excludeEmail || "").toLowerCase();
 
@@ -139,6 +144,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
     const t = latestTicket(u.tickets) || (onApp ? { type: "", purchaseDate: null } : null);
     if (!t) continue;
     const email = String(u.email || "").toLowerCase();
+    const acc = personAccess(u, { exhibitors, matrix });
     byEmail.set(email || `user:${u._id}`, {
       id: String(u._id),
       // Only people who have signed into the app can be connected with or messaged.
@@ -153,14 +159,17 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       tagline: u.tagline || "",
       availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
       meetingSpot: u.meetingSpot || "",
-      // Staff contact switches, same as userCard (routes/social.js corrects them per viewer).
-      acceptsMessages: !u.messagesOff,
-      acceptsRequests: !u.requestsOff,
+      // Receive rights, same as userCard (routes/social.js corrects them per viewer).
+      acceptsMessages: acc.rights.receiveMessages,
+      acceptsRequests: acc.rights.receiveRequests,
       // Network sections (services/teamRoles.js); exhibitors = exhibitorIndex() for claimed exhibitor passes.
-      ...kindFields(u, exhibitors),
+      kind: acc.kind,
+      booth: acc.booth,
+      types: acc.publicTypes,
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
+    offById.set(String(u._id), storedTypes(u.typesOff));
   }
 
   const guestByName = new Map();
@@ -178,7 +187,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
         existing.ticketType = g.ticketType;
         existing.purchaseDate = g.purchaseDate;
       }
-      addPassKind(existing, g);
+      addPassKind(existing, g, offById.get(existing.id));
       addGuestWork(existing, g);
       continue;
     }
@@ -209,6 +218,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       acceptsRequests: true,
       kind: "",
       booth: "",
+      types: [],
       ticketType: g.ticketType,
       purchaseDate: g.purchaseDate,
     };
@@ -220,7 +230,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
 
   return [...byEmail.values()]
     // Others only see a Speaker Pass or "Exhibitor"; the viewer is never in their own directory.
-    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: publicTier(passName(ticketType), p.kind) }))
+    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: typesTier(p.types) }))
     .sort((a, b) => (a.onApp === b.onApp ? a.name.localeCompare(b.name) : a.onApp ? -1 : 1));
 }
 

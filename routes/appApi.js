@@ -5,6 +5,8 @@ import { AppEvent, AppContent, Report, Block } from "../models/Admin.js";
 import AppNotification from "../models/AppNotification.js";
 import { pushToUsers } from "../services/push.js";
 import { buildReportNotifications } from "../services/socialActivity.js";
+import { holdersQuery, rightsFor } from "../services/appRights.js";
+import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import { cleanEvent, CONTENT_KEYS } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
@@ -20,7 +22,7 @@ const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });  
    POST   /events        usage analytics (signed in or anonymous device)
    GET    /content       admin-editable texts + feature switches
    POST   /report        report a post, comment, message, user… (signed in);
-                         every staff account gets a "Content reported" notification
+                         everyone who can moderate gets a "Content reported" notification
    POST   /block         block a user;  DELETE /block/:userId unblock
    GET    /blocks        my blocked user ids
    DELETE /account       delete my account (Apple 5.1.1(v))
@@ -81,12 +83,19 @@ router.post("/report", async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-/* Every staff account gets "Content reported" in its app inbox (and a push).
-   The report is always saved; past 10 in 10 min from one person the alerts stop. */
+/* Everyone with the moderate right (staff accounts always, plus any type the
+   App rights matrix lets moderate) gets "Content reported" in its app inbox (and
+   a push). The report is always saved; past 10 in 10 min from one person the alerts stop. */
+const MAX_REPORT_ALERTS = 500;
+async function moderators() {
+  const ctx = await rightsContext();
+  const rows = await User.find(holdersQuery("moderate", ctx.matrix)).select(RIGHTS_SELECT).limit(5000).lean();
+  return rows.filter((u) => rightsFor(u, ctx).moderate).slice(0, MAX_REPORT_ALERTS);
+}
 async function alertStaff(me, report) {
   try {
     if (!reportAlertLimiter.hit(String(me._id))) return;
-    const staff = await User.find({ role: "admin", banned: { $ne: true } }).select("_id").lean();
+    const staff = await moderators();
     const rows = buildReportNotifications({
       reporterId: me._id, reporterName: me.name, targetType: report.targetType, targetId: report.targetId, reason: report.reason,
       reportId: report._id, staffIds: staff.map((u) => u._id),

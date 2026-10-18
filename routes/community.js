@@ -14,13 +14,17 @@ import {
   followingFilter, canSeeDiscussion, isFollowing, followerCount, fanOutRecipients, replyPush, createPushThrottle, MAX_FANOUT,
 } from "../services/discussionFollow.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
+import { personAccess, rightError } from "../services/appRights.js";
+import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 
 /* =========================================================
    /api/community — discussions (threaded replies) and groups
    (membership + group chat) for the iOS app. User JWT required.
-   New discussions and groups are `pending` until staff approve
+   New discussions and groups are `pending` until a moderator approves
    them (POST /admin/:type/:id/status); replies and group messages
-   are moderated like the rest of the social layer.
+   are moderated like the rest of the social layer. Starting a
+   discussion, replying and creating a group need the startDiscussions,
+   comment and createGroups rights (services/appRights.js).
 ========================================================= */
 
 const router = express.Router();
@@ -30,12 +34,14 @@ async function requireUser(req, res, next) {
     const h = req.headers.authorization;
     if (!h) return res.status(401).json({ error: "Unauthorized" });
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("name role banned");
+    const user = await User.findById(decoded.id).select(RIGHTS_SELECT);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact info@thetechfestival.com." });
     req.user = user;
     const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
     req.blocked = new Set(rows.map((r) => String(String(r.userId) === String(user._id) ? r.blockedId : r.userId)));
+    req.ctx = await rightsContext();
+    req.rights = personAccess(user, req.ctx).rights;
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
@@ -43,8 +49,11 @@ async function requireUser(req, res, next) {
 }
 router.use(requireUser);
 
-const isAdmin = (u) => u.role === "admin";
 const me = (req) => String(req.user._id);
+/** Moderators (the moderate right; staff accounts always) approve, see pending items and any group's chat. */
+const isModerator = (req) => !!req.rights.moderate;
+/** 403 with a readable line unless the signed-in person has `right`. */
+const needRight = (right) => (req, res, next) => (req.rights[right] ? next() : res.status(403).json({ error: rightError(right, req.ctx.flags) }));
 
 async function statusFor(text, userId, context, fallback = "approved") {
   if (!moderationConfigured()) return fallback;
@@ -78,7 +87,7 @@ router.get("/discussions", async (req, res) => {
   res.json(list.filter((d) => !req.blocked.has(String(d.authorId))).map((d) => discussionDTO(d, me(req))));
 });
 
-router.post("/discussions", async (req, res) => {
+router.post("/discussions", needRight("startDiscussions"), async (req, res) => {
   const title = trimBody(req.body?.title, 200);
   const body = trimBody(req.body?.body, 4000);
   if (title.length < 4 || !body) return res.status(400).json({ error: "title and body required" });
@@ -86,7 +95,7 @@ router.post("/discussions", async (req, res) => {
   const d = await Discussion.create({
     authorId: req.user._id, authorName: req.user.name, title, body,
     tags: Array.isArray(req.body?.tags) ? req.body.tags.filter((t) => typeof t === "string").slice(0, 6) : [],
-    status: flagged ? "held" : (isAdmin(req.user) ? "approved" : "pending"),
+    status: flagged ? "held" : (isModerator(req) ? "approved" : "pending"),
     followers: [req.user._id],
   });
   res.status(201).json(discussionDTO(d, me(req)));
@@ -120,7 +129,7 @@ router.get("/discussions/:id/replies", async (req, res) => {
   })));
 });
 
-router.post("/discussions/:id/replies", async (req, res) => {
+router.post("/discussions/:id/replies", needRight("comment"), async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
   const d = await Discussion.findById(req.params.id);
@@ -178,7 +187,7 @@ router.get("/groups", async (req, res) => {
   res.json(list.map((g) => groupDTO(g, me(req))).sort((a, b) => b.memberCount - a.memberCount));
 });
 
-router.post("/groups", async (req, res) => {
+router.post("/groups", needRight("createGroups"), async (req, res) => {
   const name = trimBody(req.body?.name, 80);
   const description = trimBody(req.body?.description, 500);
   if (name.length < 3) return res.status(400).json({ error: "name required" });
@@ -186,7 +195,7 @@ router.post("/groups", async (req, res) => {
   const g = await CommunityGroup.create({
     name, description, ownerId: req.user._id, ownerName: req.user.name, members: [req.user._id],
     tags: Array.isArray(req.body?.tags) ? req.body.tags.filter((t) => typeof t === "string").slice(0, 6) : [],
-    status: flagged ? "held" : (isAdmin(req.user) ? "approved" : "pending"),
+    status: flagged ? "held" : (isModerator(req) ? "approved" : "pending"),
   });
   res.status(201).json(groupDTO(g, me(req)));
 });
@@ -204,7 +213,7 @@ router.post("/groups/:id/join", async (req, res) => {
    who's in an approved group; the owner also sees a pending one. */
 router.get("/groups/:id/members", async (req, res) => {
   const g = await CommunityGroup.findById(req.params.id).lean();
-  if (!g || (g.status !== "approved" && String(g.ownerId) !== me(req) && !isAdmin(req.user))) {
+  if (!g || (g.status !== "approved" && String(g.ownerId) !== me(req) && !isModerator(req))) {
     return res.status(404).json({ error: "Not found" });
   }
   const users = await User.find({ _id: { $in: g.members || [] } }).select(CARD_SELECT).lean();
@@ -235,7 +244,7 @@ router.get("/typing", (req, res) => {
 async function requireMember(req, res) {
   const g = await CommunityGroup.findById(req.params.id);
   if (!g) { res.status(404).json({ error: "Not found" }); return null; }
-  if (!g.members.some((m) => String(m) === me(req)) && !isAdmin(req.user)) {
+  if (!g.members.some((m) => String(m) === me(req)) && !isModerator(req)) {
     res.status(403).json({ error: "Join the group to see its chat" }); return null;
   }
   return g;
@@ -272,10 +281,9 @@ router.post("/groups/:id/messages", async (req, res) => {
   });
 });
 
-/* ================= STAFF ================= */
+/* ================= MODERATORS ================= */
 
-router.get("/admin/pending", async (req, res) => {
-  if (!isAdmin(req.user)) return res.status(403).json({ error: "Admin only" });
+router.get("/admin/pending", needRight("moderate"), async (req, res) => {
   const [discussions, groups] = await Promise.all([
     Discussion.find({ status: { $in: ["pending", "held"] } }).sort({ createdAt: -1 }).lean(),
     CommunityGroup.find({ status: { $in: ["pending", "held"] } }).sort({ createdAt: -1 }).lean(),
@@ -283,8 +291,7 @@ router.get("/admin/pending", async (req, res) => {
   res.json({ discussions: discussions.map((d) => discussionDTO(d, me(req))), groups: groups.map((g) => groupDTO(g, me(req))) });
 });
 
-router.post("/admin/:type/:id/status", async (req, res) => {
-  if (!isAdmin(req.user)) return res.status(403).json({ error: "Admin only" });
+router.post("/admin/:type/:id/status", needRight("moderate"), async (req, res) => {
   const status = String(req.body?.status || "");
   if (!["approved", "held", "hidden", "pending"].includes(status)) return res.status(400).json({ error: "bad status" });
   const Model = { discussion: Discussion, group: CommunityGroup, reply: DiscussionReply, groupMessage: GroupMessage }[req.params.type];

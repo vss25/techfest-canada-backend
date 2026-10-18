@@ -12,7 +12,13 @@ import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
-import { cleanRole } from "../services/teamRoles.js";
+import { cleanRole, typeInfo, PERSON_TYPES } from "../services/teamRoles.js";
+import {
+  DEFAULT_MATRIX, RIGHTS, RIGHT_LABELS, INBOUND_RIGHTS, ADMIN_POWERS, mergeMatrix, cleanMatrix, matrixChanges,
+  consoleTypes, typesEdit, typeCandidates,
+} from "../services/appRights.js";
+import { rightsContext, matrixInfo, loadMatrix, saveMatrix } from "../services/rightsStore.js";
+import { loadExhibitors } from "../services/exhibitorCache.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
@@ -108,22 +114,42 @@ router.get("/stats", async (req, res) => {
              topTaps: topTaps.map((x) => ({ key: `${x._id.s} › ${x._id.t}`, count: x.n })) });
 });
 
-/* ---------- People ---------- */
+/* ---------- People ----------
+   Rows carry `types`: their effective person types (services/teamRoles.js).
+   `?type=vip` (any of PERSON_TYPES) keeps only people who have that type. */
+const PEOPLE_SELECT = "name email role jobTitle organization topics tickets banned directoryHidden messagesOff requestsOff lastActiveAt createdAt provider types typesOff";
+const PEOPLE_PAGE = 50;
 router.get("/users", async (req, res) => {
   const q = String(req.query.q || "").trim();
-  const filter = q ? { $or: [{ name: rx(q) }, { email: rx(q) }, { organization: rx(q) }, { "tickets.ticketId": q.toLowerCase() }] } : {};
+  let filter = q ? { $or: [{ name: rx(q) }, { email: rx(q) }, { organization: rx(q) }, { "tickets.ticketId": q.toLowerCase() }] } : {};
   if (req.query.role) filter.role = String(req.query.role);
   if (req.query.banned === "true") filter.banned = true;
   const page = Math.max(0, Number(req.query.page) || 0);
-  const [rows, total] = await Promise.all([
-    User.find(filter).select("name email role jobTitle organization topics tickets banned directoryHidden messagesOff requestsOff lastActiveAt createdAt provider")
-      .sort({ lastActiveAt: -1, createdAt: -1 }).skip(page * 50).limit(50).lean(),
-    User.countDocuments(filter),
-  ]);
+  const type = req.query.type ? String(req.query.type).toLowerCase() : "";
+  if (type && !PERSON_TYPES.includes(type)) return res.status(400).json({ error: `type must be one of: ${PERSON_TYPES.join(", ")}` });
+  const exhibitors = await loadExhibitors();
+  const sort = { lastActiveAt: -1, createdAt: -1 };
+  let rows;
+  let total;
+  if (type) {
+    // Automatic types (passes, roles) can't all be queried, so narrow, then keep exact matches.
+    const cand = typeCandidates(type);
+    if (Object.keys(cand).length) filter = { $and: [filter, cand] };
+    const all = (await User.find(filter).select(PEOPLE_SELECT).sort(sort).limit(5000).lean())
+      .filter((u) => typeInfo(u, exhibitors).types.includes(type));
+    total = all.length;
+    rows = all.slice(page * PEOPLE_PAGE, (page + 1) * PEOPLE_PAGE);
+  } else {
+    [rows, total] = await Promise.all([
+      User.find(filter).select(PEOPLE_SELECT).sort(sort).skip(page * PEOPLE_PAGE).limit(PEOPLE_PAGE).lean(),
+      User.countDocuments(filter),
+    ]);
+  }
   res.json({ total, page, users: rows.map((u) => ({
     id: String(u._id), name: u.name, email: u.email, role: u.role, jobTitle: u.jobTitle, organization: u.organization,
     topics: u.topics || [], tickets: (u.tickets || []).length, banned: !!u.banned, provider: u.provider,
     directoryHidden: !!u.directoryHidden, messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff,
+    types: typeInfo(u, exhibitors).types,
     lastActiveAt: u.lastActiveAt, createdAt: u.createdAt,
   })) });
 });
@@ -146,10 +172,11 @@ router.get("/users/:id", async (req, res) => {
     Report.find({ reporterId: id }).lean(),
   ]);
   const peerIds = connections.map((c) => (String(c.fromUserId) === String(id) ? c.toUserId : c.fromUserId));
-  const peers = await User.find({ _id: { $in: peerIds } }).select("name organization").lean();
+  const [peers, ctx] = await Promise.all([User.find({ _id: { $in: peerIds } }).select("name organization").lean(), rightsContext()]);
   const peerName = Object.fromEntries(peers.map((p) => [String(p._id), `${p.name}${p.organization ? " · " + p.organization : ""}`]));
   res.json({
-    user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff },
+    // types / typesOff (stored), autoTypes, holdsPass, effectiveTypes and rights: services/appRights.js consoleTypes.
+    user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff, ...consoleTypes(u, ctx) },
     activity: summarize(events),
     events: events.slice(0, 200),
     posts, comments, discussions, groups: groups.map((g) => g.name),
@@ -184,6 +211,9 @@ router.patch("/users/:id", async (req, res) => {
   if (!isManagement(req.user) && (u.role === "admin" || req.body?.email !== undefined)) {
     return res.status(403).json({ error: "Only management can change staff accounts or email addresses" });
   }
+  // Person types (services/appRights.js typesEdit): validated; staff / volunteer types are management only.
+  const typed = typesEdit(u, req.body, { management: isManagement(req.user) });
+  if (typed.error) return res.status(typed.status).json({ error: typed.error });
   for (const k of EDITABLE) {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
@@ -198,8 +228,9 @@ router.patch("/users/:id", async (req, res) => {
   // staffRole only means something for staff. An unset one counts as management
   // (accounts from before levels existed), so someone newly made staff starts at "staff".
   if (changed.includes("role")) u.staffRole = u.role === "admin" ? "staff" : undefined;
+  for (const [k, v] of Object.entries(typed.set)) { u[k] = v; changed.push(k); }
   await u.save();
-  if (changed.length) await audit(req, "edit_user", "user", u._id, changed.join(", "));
+  if (changed.length) await audit(req, "edit_user", "user", u._id, [changed.join(", "), typed.note].filter(Boolean).join(" | "));
   res.json({ ok: true, changed });
 });
 
@@ -347,6 +378,36 @@ router.put("/app-content/:key", async (req, res) => {
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
   res.json({ ok: true });
+});
+
+/* ---------- App rights: what each person type may do in the app ----------
+   One matrix (services/appRights.js, stored by services/rightsStore.js).
+   Everyone on the console can read it; only management can change it.
+   PUT { matrix: { type: { right: bool } } } (left-out cells keep their
+   defaults) or { reset: true }. Changes are audited with a diff. */
+async function appRightsPayload(req) {
+  const { matrix, updatedBy, updatedAt } = await matrixInfo();
+  return {
+    matrix, defaults: mergeMatrix(DEFAULT_MATRIX), types: PERSON_TYPES, rights: RIGHTS, labels: RIGHT_LABELS,
+    inbound: INBOUND_RIGHTS, adminPowers: ADMIN_POWERS, updatedBy, updatedAt, canEdit: isManagement(req.user),
+  };
+}
+
+router.get("/app-rights", async (req, res) => {
+  res.json(await appRightsPayload(req));
+});
+
+router.put("/app-rights", requireManagement, async (req, res) => {
+  const reset = req.body?.reset === true;
+  const c = cleanMatrix(reset ? DEFAULT_MATRIX : req.body?.matrix);
+  if (c.error) return res.status(400).json({ error: c.error });
+  const changes = matrixChanges(await loadMatrix(), c.matrix);
+  if (changes.length) {
+    await saveMatrix(c.matrix, req.user.name);
+    await audit(req, reset ? "app_rights_reset" : "app_rights", "app-rights", "matrix",
+      `${changes.length} change${changes.length === 1 ? "" : "s"}: ${changes.join("; ")}`);
+  }
+  res.json({ ...(await appRightsPayload(req)), changed: changes });
 });
 
 /* ---------- Broadcast: an official post everyone sees + a notification ---------- */

@@ -1,5 +1,6 @@
 import { deliveryMedia } from "./cloudinary.js";
-import { kindFields, publicTier } from "./teamRoles.js";
+import { publicTier, typesTier } from "./teamRoles.js";
+import { personAccess } from "./appRights.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -55,13 +56,14 @@ export function isOnApp(user) {
   return !!(user?.appOnboarded || user?.lastActiveAt);
 }
 
-/** Public card for another attendee — never email, never role.
-    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for kind "exhibitor" + booth.
-    `tier` is only a Speaker Pass or "Exhibitor" (publicTier); `self: true` (their own card) keeps the real pass. */
-export function userCard(user, { exhibitors = null, self = false } = {}) {
+/** Public card for another attendee — never email, never role, never rights.
+    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for the exhibitor type + booth.
+    `matrix`: the app rights matrix (services/rightsStore.js; defaults when left out).
+    `tier` is only a Speaker Pass or "Exhibitor" (from their types); `self: true` (their own card) keeps the real pass. */
+export function userCard(user, { exhibitors = null, matrix = undefined, self = false } = {}) {
   if (!user) return null;
-  // Network sections: "staff" | "volunteer" | "speaker" | "exhibitor" | "" (+ booth for exhibitors).
-  const kf = kindFields(user, exhibitors);
+  // Effective types → public `types`, the Network `kind` (+ booth) and the receive rights.
+  const acc = personAccess(user, { exhibitors, matrix });
   const tier = tierName(bestTierKey(user));
   return {
     id: String(user._id || user.id),
@@ -71,23 +73,27 @@ export function userCard(user, { exhibitors = null, self = false } = {}) {
     linkedinUrl: user.linkedinUrl || "",
     country: user.country || "",
     topics: Array.isArray(user.topics) ? user.topics : [],
-    tier: self ? tier : publicTier(tier, kf.kind),
+    tier: self ? tier : typesTier(acc.types),
     tagline: user.tagline || "",
     // When/where they're happy to meet — they chose to share this.
     availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
     meetingSpot: user.meetingSpot || "",
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
-    // Staff contact switches (services/contactSwitches.js). False only hides the
-    // Message / Connect buttons; the server still decides (e.g. replies are allowed).
-    acceptsMessages: !user.messagesOff,
-    acceptsRequests: !user.requestsOff,
-    ...kf,
+    // Their receive rights (types + staff switches, services/appRights.js). False only hides the
+    // Message / Connect buttons; routes correct it per viewer and the server still decides.
+    acceptsMessages: acc.rights.receiveMessages,
+    acceptsRequests: acc.rights.receiveRequests,
+    // "staff" | "volunteer" | "vip" | "speaker" | "exhibitor" | "vendor" | "" (+ booth for exhibitors).
+    kind: acc.kind,
+    booth: acc.booth,
+    // Public types only (never attendee), in badge order: types[0] === kind.
+    types: acc.publicTypes,
   };
 }
 
 /** Fields userCard reads. Every query that builds cards must select these. */
-export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff";
+export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff";
 
 /** Fields a person's full profile page shows (GET /api/social/users/:id). */
 export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;
@@ -107,7 +113,7 @@ export function publicProfile(user, opts = {}) {
 
 /** What the app sees for a post. `avatars` maps authorId → avatarVersion.
     The photo itself is fetched from imageUrl, so the feed stays small.
-    `staff`: the viewer is staff, so canRemove is true on every post. */
+    `staff`: the viewer may delete any post (deleteAnyPost), so canRemove is true on every post. */
 export function postDTO(post, viewerId, avatars = new Map(), { staff = false } = {}) {
   const me = String(viewerId || "");
   // Cloudinary media first; a legacy inline photo shows as a one-item list.

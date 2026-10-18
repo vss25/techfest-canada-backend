@@ -9,6 +9,7 @@ import { userCard, CARD_SELECT } from "../services/socialHelpers.js";
 import { buildDirectory } from "../services/ticketAccess.js";
 import { removeMode } from "../services/socialActivity.js";
 import { canMessage, canRequest } from "../services/contactSwitches.js";
+import { rightsFor } from "../services/appRights.js";
 
 const staff = { _id: "s1", name: "Sam", role: "admin" };
 const vol = { _id: "v1", name: "Val", role: "volunteer" };
@@ -32,11 +33,20 @@ test("cleanRole accepts user/admin/volunteer only", () => {
   for (const bad of ["staff", "management", "", null, undefined, 1, "root"]) assert.equal(cleanRole(bad), null, String(bad));
 });
 
-test("volunteers get no staff powers: post removal and contact-switch override stay staff-only", () => {
+test("volunteers get no staff powers by default: post removal and contact override need deleteAnyPost / moderate", () => {
   const post = { authorId: "someone-else" };
+  // With their rights (what the routes pass) …
+  assert.equal(removeMode(post, staff, rightsFor(staff)), "staff");
+  assert.equal(removeMode(post, vol, rightsFor(vol)), null);
+  const vip = { messagesOff: true, requestsOff: true };
+  const vipRights = rightsFor(vip);
+  assert.equal(canMessage({ sender: vol, recipient: vip, senderRights: rightsFor(vol), recipientRights: vipRights }), false);
+  assert.equal(canRequest({ sender: vol, target: vip, senderRights: rightsFor(vol), targetRights: vipRights }), false);
+  assert.equal(canMessage({ sender: staff, recipient: vip, senderRights: rightsFor(staff), recipientRights: vipRights }), true);
+  assert.equal(rightsFor(vol).checkIn, true);
+  // … and without (only role admin counts, as before rights existed).
   assert.equal(removeMode(post, staff), "staff");
   assert.equal(removeMode(post, vol), null);
-  const vip = { messagesOff: true, requestsOff: true };
   assert.equal(canMessage({ sender: vol, recipient: vip }), false);
   assert.equal(canRequest({ sender: vol, target: vip }), false);
   assert.equal(canMessage({ sender: staff, recipient: vip }), true);

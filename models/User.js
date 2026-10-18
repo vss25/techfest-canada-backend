@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { PERSON_TYPES } from "../services/teamRoles.js";
 
 const ticketSchema = new mongoose.Schema({
   ticketId: {
@@ -93,6 +94,11 @@ const userSchema = new mongoose.Schema(
     // accepted connections and people they wrote to can still message them.
     messagesOff:  { type: Boolean, default: false },      // no new 1:1 messages from others
     requestsOff:  { type: Boolean, default: false },      // no new connection requests (badge scan still works)
+    // Person types set by staff (services/teamRoles.js): attendee speaker exhibitor vip staff vendor volunteer.
+    // Effective types = these ∪ automatic ones (role, passes) − typesOff; they pick the app rights
+    // column(s) in services/appRights.js. typesOff is the only way to switch an automatic type off.
+    types:        { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
+    typesOff:     { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },
