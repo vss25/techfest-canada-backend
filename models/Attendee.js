@@ -67,6 +67,11 @@ const attendeeSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User"
     },
+    // Staff marked this pass holder as an exhibitor (Admin → People, default No). Like an
+    // exhibitor pass, it gives the account that claims the pass the exhibitor type.
+    exhibitor: { type: Boolean, default: false },
+    // Staff-set logo for this person only; "" = their company's default (models/Company.js).
+    companyLogoUrl: { type: String, default: "" },
     // Speaker Pass (ticketType "speaker"): the Sanity speaker document it was made for.
     // One pass per speaker; the sync keys on this.
     speakerId: {

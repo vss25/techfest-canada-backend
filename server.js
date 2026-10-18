@@ -42,6 +42,7 @@ import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "
 import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
 import rsvpRemindersRouter from "./routes/rsvpReminders.js";                         // RSVP reminder email (admin console)
 import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
+import peopleRouter, { companiesRouter } from "./routes/people.js";                   // Admin → People directory + company logos
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -92,6 +93,8 @@ app.use(
 app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
 // "I'm attending" Post to LinkedIn: the finished image arrives as a base64 PNG.
 app.post("/api/attending/post", express.json({ limit: "9mb" }), attendingPostDraft);
+// Company logos uploaded in Admin → People (2 MB images, as base64).
+app.use("/api/console/companies", express.json({ limit: "4mb" }), companiesRouter);
 // Feed photos and profile photos arrive as base64 JSON.
 app.use(express.json({ limit: "1mb" }));
 
@@ -136,8 +139,9 @@ app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards 
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
+app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
-app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id
+app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id, /company-logo/:id
 app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no login)
 // The admin console website: https://<backend>/console
 app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));

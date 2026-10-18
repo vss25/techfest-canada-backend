@@ -109,10 +109,11 @@ export function canUseStaffSignIn(user) {
   return types.includes("staff") || types.includes("volunteer");
 }
 
-/** Kind for a ticket record (Attendee): "speaker" | "exhibitor" | "". */
+/** Kind for a ticket record (Attendee): "speaker" | "exhibitor" | "".
+    Exhibitor: an exhibitor pass (promo EXHIBITOR) or a pass staff marked as an exhibitor's (Attendee.exhibitor). */
 export function passKind(a) {
   if (String(a?.ticketType || "").toLowerCase() === "speaker") return "speaker";
-  if (String(a?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO) return "exhibitor";
+  if (String(a?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO || a?.exhibitor === true) return "exhibitor";
   return "";
 }
 

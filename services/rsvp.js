@@ -584,7 +584,13 @@ export function rsvpRow(d) {
     hasAccessibility: !!d.accessibility,
     duplicateOf: d.duplicateOf ? String(d.duplicateOf) : "", // possible duplicate: not in the headcounts until staff decide
     separated: !!d.separatedAt, // staff kept it as a person of their own: never flagged again
-    submissions: d.submissions || 1,
+    submissions: d.submissions ?? 1, // 0: entered by staff, never sent by the attendee
+    // Who set the answers (services/rsvpStaff.js): rows from before `source` existed are the attendee's.
+    source: d.source === "staff" ? "staff" : "attendee",
+    staffUpdatedBy: d.staffUpdatedBy || "",
+    staffUpdatedAt: d.staffUpdatedAt || null,
+    staffOverride: !!d.staffOverride,
+    passLimitOverride: d.source === "staff" && !!d.passLimitOverride,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -602,6 +608,7 @@ export function rsvpDetail(d) {
     detectedTier: d.detectedTier || "",
     matchedSpeaker: d.matchedSpeaker || "",
     accessibility: d.accessibility || "",
+    attendeeSubmittedAt: d.attendeeSubmittedAt || null,
     page: d.page || "",
     userAgent: d.userAgent || "",
     fillMs: d.fillMs ?? null,
@@ -620,7 +627,7 @@ const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 1
 export const CSV_HEAD = [
   "Updated (UTC)", "First name", "Last name", "Email", "Pass", "Pass verified", "Matched as", "Ticket ID",
   ...OPTION_KEYS.map(optionLabel), "Dietary", "Dietary (other)", "Accessibility", "Times submitted", "First RSVP (UTC)",
-  "In headcounts",
+  "Entered by", "In headcounts",
 ];
 
 /** Spreadsheet for management: one Yes column per day/experience so catering can sum them. */
@@ -632,7 +639,8 @@ export function rsvpsCsv(docs) {
       !!d.tierVerified, KIND_LABEL[d.kind] || "", d.ticketId,
       ...OPTION_KEYS.map((k) => (picked.has(k) ? "Yes" : "")),
       (d.dietary || []).map((k) => DIETARY_LABEL[k] || k).join("; "), d.dietaryOther, d.accessibility,
-      d.submissions || 1, stamp(d.createdAt),
+      d.submissions ?? 1, stamp(d.createdAt),
+      d.source === "staff" ? `Staff${d.staffUpdatedBy ? `: ${d.staffUpdatedBy}` : ""}` : "Attendee",
       isDuplicate(d) ? "No: possible duplicate" : "Yes",
     ].map(csvCell).join(",");
   });
@@ -658,7 +666,9 @@ function newerRow(a, b, fallback) {
  *  - The row that stays listed (`survivor`): the ticket-verified one, with its key and verified
  *    pass; when neither (or both) is verified, `keep`. The other (`retired`) is kept for the record.
  *  - The answers (days, experiences, dietary, accessibility) are the NEWER row's (updatedAt, then
- *    createdAt; a tie keeps the survivor's), so a merge never rolls back a later change.
+ *    createdAt; a tie keeps the survivor's), so a merge never rolls back a later change. Except: when
+ *    one row was sent by the attendee and the other entered by staff (`source`, services/rsvpStaff.js),
+ *    the attendee's answers win whichever is newer.
  *    The email is the newer one's, or the older one's when the newer RSVP left it out.
  *  - The pass: the verified row's; with no verified row, the newer row's (it is their latest answer).
  *    Experiences that pass doesn't include on those days are dropped and reported.
@@ -669,18 +679,33 @@ function newerRow(a, b, fallback) {
 export function planRsvpMerge(keep, dup) {
   const survivor = isVerifiedRow(dup) && !isVerifiedRow(keep) ? dup : keep;
   const retired = survivor === keep ? dup : keep;
-  const newer = newerRow(dup, keep, survivor);
+  const sourceOf = (r) => (r.source === "staff" ? "staff" : "attendee");
+  // The attendee's own answers beat staff's; otherwise the newer answers win.
+  const newer = sourceOf(dup) !== sourceOf(keep)
+    ? (sourceOf(dup) === "attendee" ? dup : keep)
+    : newerRow(dup, keep, survivor);
   const older = newer === dup ? keep : dup;
   const passRow = isVerifiedRow(survivor) ? survivor : newer;
 
   const days = DAY_KEYS.filter((k) => (newer.days || []).includes(k));
   const allowed = new Set(allowedExperiences(passRow.tier, days));
-  const options = EXPERIENCE_KEYS.filter((k) => (newer.options || []).includes(k) && allowed.has(k));
+  // Staff answers saved past the pass's limits on purpose keep them.
+  const pastLimits = sourceOf(newer) === "staff" && !!newer.passLimitOverride;
+  const options = EXPERIENCE_KEYS.filter((k) => (newer.options || []).includes(k) && (pastLimits || allowed.has(k)));
   const set = {
     days, options, dietary: [...(newer.dietary || [])], dietaryOther: newer.dietaryOther || "",
     accessibility: newer.accessibility || "",
     email: newer.email || older.email || "",
   };
+  if (sourceOf(dup) === "staff" || sourceOf(keep) === "staff") {
+    // Who set the answers that stay (two RSVPs the attendee sent need nothing more).
+    Object.assign(set, {
+      source: sourceOf(newer), staffOverride: !!newer.staffOverride, passLimitOverride: pastLimits,
+      ...(sourceOf(newer) === "staff"
+        ? { staffUpdatedBy: newer.staffUpdatedBy || "", staffUpdatedById: newer.staffUpdatedById || "", staffUpdatedAt: newer.staffUpdatedAt || null }
+        : { attendeeSubmittedAt: newer.attendeeSubmittedAt || newer.updatedAt || newer.createdAt || null }),
+    });
+  }
   if (passRow !== survivor) {
     // Neither row is verified: the newer one's pass, as it was worked out when it was saved.
     Object.assign(set, {

@@ -134,7 +134,7 @@ router.get("/attendees", async (req, res) => {
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
       .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff").lean(),
-    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
+    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode exhibitor issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
   const { exhibitors, matrix } = req.ctx;
   let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix });
