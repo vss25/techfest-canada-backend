@@ -23,6 +23,7 @@ import {
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
 import { cardsFor, loadExhibitors } from "../services/cards.js";
+import { kindFields, publicTier } from "../services/teamRoles.js";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
   parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
@@ -71,7 +72,8 @@ async function statusFor(text, userId, context) {
 }
 
 const isAdmin = (u) => u.role === "admin";
-const authorTier = (u) => tierName(bestTierKey(u));
+/** The pass stored on someone's new post or comment: only a Speaker Pass or "Exhibitor" (publicTier). */
+const authorTier = async (u) => publicTier(tierName(bestTierKey(u)), kindFields(u, await loadExhibitors()).kind);
 
 /** authorId → avatarVersion for the people who have a profile photo. */
 async function avatarVersions(ids) {
@@ -86,7 +88,7 @@ async function avatarVersions(ids) {
 // isAdmin is staff only; role tells the apps a volunteer ("volunteer") from an attendee ("user").
 router.get("/me", async (req, res) => {
   const exhibitors = await loadExhibitors();
-  res.json({ ...userCard(req.user, { exhibitors }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user" });
+  res.json({ ...userCard(req.user, { exhibitors, self: true }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user" });
 });
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
@@ -143,7 +145,7 @@ router.get("/users/:id", async (req, res) => {
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
   }
   const [access, exhibitors] = await Promise.all([contactAccess(req.user, [u]), loadExhibitors()]);
-  res.json(applyAccess(publicProfile(u, { exhibitors }), access));
+  res.json(applyAccess(publicProfile(u, { exhibitors, self }), access));
 });
 
 /* ================= FEED ================= */
@@ -193,7 +195,7 @@ router.post("/feed", async (req, res) => {
     authorName: req.user.name,
     authorTitle: req.user.jobTitle || "",
     authorOrg: req.user.organization || "",
-    authorTier: authorTier(req.user),
+    authorTier: await authorTier(req.user),
     kind: isAdmin(req.user) && req.body?.kind === "announcement" ? "announcement" : "member",
     body,
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
@@ -267,7 +269,7 @@ router.get("/feed/:id/comments", async (req, res) => {
   }).sort({ createdAt: 1 }).lean();
   res.json(comments.filter((c) => !req.blocked.has(String(c.authorId))).map((c) => ({
     id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
-    authorName: c.authorName, authorTier: c.authorTier || "", body: c.body,
+    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body,
     status: c.status, createdAt: c.createdAt,
   })));
 });
@@ -280,7 +282,7 @@ router.post("/feed/:id/comments", async (req, res) => {
   const status = await statusFor(body, req.user._id, "comment");
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
-    authorTier: authorTier(req.user), body, status,
+    authorTier: await authorTier(req.user), body, status,
   });
   if (status === "approved") {
     post.commentCount += 1;
@@ -290,7 +292,7 @@ router.post("/feed/:id/comments", async (req, res) => {
   }
   res.status(201).json({
     id: String(c._id), postId: String(post._id), authorId: String(req.user._id),
-    authorName: c.authorName, authorTier: c.authorTier, body: c.body, status: c.status, createdAt: c.createdAt,
+    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body, status: c.status, createdAt: c.createdAt,
     commentCount: post.commentCount,
   });
 });

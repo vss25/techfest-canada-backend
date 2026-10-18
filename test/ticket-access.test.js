@@ -45,11 +45,11 @@ test("buildDirectory merges duplicate buyers, keeps most recent pass, never leak
   assert.equal(dir.length, 2);
   const g = dir.find((p) => p.name === "Gunant Singh Pahwa");
   assert.equal(g.onApp, true);   // has signed into the app
-  assert.equal(g.tier, "Power Pass");
+  assert.equal(g.tier, "");   // passes stay private (see test/public-tier.test.js)
   assert.equal(g.organization, "AtlasLink");
   const c = dir.find((p) => p.name === "Casey Guest");
   assert.equal(c.onApp, false);
-  assert.equal(c.tier, "Discover Pass");
+  assert.equal(c.tier, "");
   for (const p of dir) assert.equal(p.email, undefined);
   assert.equal(dir[0].onApp, true);
 });

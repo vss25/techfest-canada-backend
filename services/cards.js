@@ -25,5 +25,6 @@ export const clearExhibitorCache = () => { cached = { at: 0, index: null }; };
 export async function cardsFor(viewer, users) {
   const list = (users || []).filter(Boolean);
   const [access, exhibitors] = await Promise.all([contactAccess(viewer, list), loadExhibitors()]);
-  return (users || []).map((u) => (u ? applyAccess(userCard(u, { exhibitors }), access) : null));
+  const me = String(viewer?._id || viewer?.id || "");
+  return (users || []).map((u) => (u ? applyAccess(userCard(u, { exhibitors, self: !!me && String(u._id || u.id) === me }), access) : null));
 }

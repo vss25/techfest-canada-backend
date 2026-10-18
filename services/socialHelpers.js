@@ -1,5 +1,5 @@
 import { deliveryMedia } from "./cloudinary.js";
-import { kindFields } from "./teamRoles.js";
+import { kindFields, publicTier } from "./teamRoles.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -56,9 +56,13 @@ export function isOnApp(user) {
 }
 
 /** Public card for another attendee — never email, never role.
-    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for kind "exhibitor" + booth. */
-export function userCard(user, { exhibitors = null } = {}) {
+    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for kind "exhibitor" + booth.
+    `tier` is only a Speaker Pass or "Exhibitor" (publicTier); `self: true` (their own card) keeps the real pass. */
+export function userCard(user, { exhibitors = null, self = false } = {}) {
   if (!user) return null;
+  // Network sections: "staff" | "volunteer" | "speaker" | "exhibitor" | "" (+ booth for exhibitors).
+  const kf = kindFields(user, exhibitors);
+  const tier = tierName(bestTierKey(user));
   return {
     id: String(user._id || user.id),
     name: user.name || "",
@@ -67,7 +71,7 @@ export function userCard(user, { exhibitors = null } = {}) {
     linkedinUrl: user.linkedinUrl || "",
     country: user.country || "",
     topics: Array.isArray(user.topics) ? user.topics : [],
-    tier: tierName(bestTierKey(user)),
+    tier: self ? tier : publicTier(tier, kf.kind),
     tagline: user.tagline || "",
     // When/where they're happy to meet — they chose to share this.
     availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
@@ -78,8 +82,7 @@ export function userCard(user, { exhibitors = null } = {}) {
     // Message / Connect buttons; the server still decides (e.g. replies are allowed).
     acceptsMessages: !user.messagesOff,
     acceptsRequests: !user.requestsOff,
-    // Network sections: "staff" | "volunteer" | "speaker" | "exhibitor" | "" (+ booth for exhibitors).
-    ...kindFields(user, exhibitors),
+    ...kf,
   };
 }
 
@@ -116,7 +119,8 @@ export function postDTO(post, viewerId, avatars = new Map(), { staff = false } =
     authorName: post.authorName,
     authorTitle: post.authorTitle || "",
     authorOrg: post.authorOrg || "",
-    authorTier: post.authorTier || "",
+    // Stored when posted; older posts may hold any pass name, so filter again.
+    authorTier: publicTier(post.authorTier),
     kind: post.kind || "member",
     body: post.body,
     topicTags: post.topicTags || [],

@@ -77,6 +77,20 @@ export function exhibitorIndex(rows = []) {
   };
 }
 
+export const SPEAKER_TIER = "Speaker Pass";
+export const EXHIBITOR_TIER = "Exhibitor";
+
+/** The pass other attendees see on someone's card, post or comment: a Speaker
+    Pass, or "Exhibitor" for exhibitors; every other tier stays private ("").
+    The person still sees their own pass (/social/me, /auth/me). `tier` is a
+    display name ("Apex Pass"); a stored "Exhibitor" passes through. */
+export function publicTier(tier, kind = "") {
+  const t = String(tier || "").trim();
+  if (kind === "speaker" || t === SPEAKER_TIER) return SPEAKER_TIER;
+  if (kind === "exhibitor" || t === EXHIBITOR_TIER) return EXHIBITOR_TIER;
+  return "";
+}
+
 /** { kind, booth } for an account's card. */
 export function kindFields(user, index = null) {
   const booth = index ? index.boothFor(user) : null;

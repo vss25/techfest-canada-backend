@@ -215,7 +215,8 @@ test("publicProfile shows what they filled in, never email/phone/role/tickets", 
     availabilitySlots: ["d1-10"], meetingSpot: "Lobby", tickets: [{ ticketId: "T1", type: "power" }], avatarVersion: 7, appOnboarded: true,
   });
   assert.equal(p.name, "Ann");
-  assert.equal(p.tier, "Power Pass");
+  assert.equal(p.tier, "");   // passes are private, except Speaker / Exhibitor
+  assert.equal(publicProfile({ _id: A, name: "Ann", tickets: [{ type: "power" }] }, { self: true }).tier, "Power Pass");
   assert.equal(p.onApp, true);
   assert.equal(p.avatarUrl, `/api/files/avatar/${A}?v=7`);
   assert.deepEqual([p.fieldOfWork, p.jobLevel, p.objectives, p.tagline, p.country], ["Engineering", "C-level", ["Find partners"], "Robots", "Canada"]);

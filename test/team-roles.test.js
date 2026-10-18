@@ -84,7 +84,7 @@ test("userCard carries kind and booth, never role", () => {
   assert.ok(CARD_SELECT.split(" ").includes("role"));
   const idx = exhibitorIndex([{ claimedBy: "e1", ticketId: "x1", issuedPass: { booth: { booth: "B3" } } }]);
   const e = userCard({ _id: "e1", name: "Exa", role: "user", tickets: [{ ticketId: "x1", type: "connect" }] }, { exhibitors: idx });
-  assert.deepEqual([e.kind, e.booth, e.tier], ["exhibitor", "B3", "Connect Pass"]);
+  assert.deepEqual([e.kind, e.booth, e.tier], ["exhibitor", "B3", "Exhibitor"]);   // never their bought pass
   const v = userCard(vol);
   assert.deepEqual([v.kind, v.booth], ["volunteer", ""]);
   assert.equal("role" in v, false);

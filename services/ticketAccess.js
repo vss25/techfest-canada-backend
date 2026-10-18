@@ -10,7 +10,7 @@
    Pure helpers are exported for unit tests.
 ========================================================= */
 
-import { kindFields, passKind, strongerKind, boothOf } from "./teamRoles.js";
+import { kindFields, passKind, strongerKind, boothOf, publicTier } from "./teamRoles.js";
 
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
 export function normalizeTicketId(raw) {
@@ -166,7 +166,8 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
   }
 
   return [...byEmail.values()]
-    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: passName(ticketType) }))
+    // Others only see a Speaker Pass or "Exhibitor"; the viewer is never in their own directory.
+    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: publicTier(passName(ticketType), p.kind) }))
     .sort((a, b) => (a.onApp === b.onApp ? a.name.localeCompare(b.name) : a.onApp ? -1 : 1));
 }
 
