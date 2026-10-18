@@ -61,14 +61,15 @@ export const RSVP_OPTIONS = [
     description: "Coffee and conversation between sessions." },
   { key: "breaks_d2", kind: "experience", day: "day2", label: "Networking Breaks & Coffee", tiers: EVERYONE,
     description: "Coffee and conversation between sessions." },
-  // Each day in the order it happens (times from the website agenda / CMS sessions; the CxO Breakfast is the morning).
-  { key: "cxo_d1", kind: "experience", day: "day1", time: "Morning", label: "CxO Breakfast", tiers: POWER_UP,
+  // Each day in the order it happens. `time` is only a fallback: the page shows the start time of the
+  // matching agenda session (AGENDA_MATCH below, read from the CMS), so moving a session moves it here.
+  { key: "cxo_d1", kind: "experience", day: "day1", time: "7:55 AM", label: "CxO Breakfast", tiers: POWER_UP,
     description: "Invitation-only breakfast for senior leaders." },
   { key: "lunch_d1", kind: "experience", day: "day1", time: "12:35 PM", label: "Networking Luncheon", tiers: INFLUENCE_UP,
     description: "Seated lunch with fellow delegates." },
   { key: "awards", kind: "experience", day: "day1", time: "5:30 PM", label: "Catalyst Awards Night", tiers: POWER_UP,
     description: "The Catalyst Awards ceremony on the evening of Day 1." },
-  { key: "cxo_d2", kind: "experience", day: "day2", time: "Morning", label: "CxO Breakfast", tiers: POWER_UP,
+  { key: "cxo_d2", kind: "experience", day: "day2", time: "7:55 AM", label: "CxO Breakfast", tiers: POWER_UP,
     description: "Invitation-only breakfast for senior leaders." },
   { key: "lunch_d2", kind: "experience", day: "day2", time: "12:00 PM", label: "Networking Luncheon", tiers: INFLUENCE_UP,
     description: "Seated lunch with fellow delegates." },
@@ -106,13 +107,56 @@ export const DIETARY = [
 export const DIETARY_KEYS = DIETARY.map((d) => d.key);
 const DIETARY_LABEL = Object.fromEntries(DIETARY.map((d) => [d.key, d.label]));
 
-/** What GET /api/rsvp/options serves (the website builds the form from this). */
-export function rsvpOptionsPayload() {
+/* ---------- Times from the agenda (Sanity `session` docs, the admin Agenda editor) ----------
+   Which agenda session each timed experience is: same day, title matching. */
+export const AGENDA_MATCH = {
+  cxo_d1: { day: 1, title: /cxo\s*breakfast/i },
+  lunch_d1: { day: 1, title: /lunch/i },
+  awards: { day: 1, title: /award|catalyst/i },
+  cxo_d2: { day: 2, title: /cxo\s*breakfast/i },
+  lunch_d2: { day: 2, title: /lunch/i },
+  gala: { day: 2, title: /gala/i },
+};
+const RSVP_AGENDA_QUERY = '*[_type=="session" && !(_id in path("drafts.**"))]{day,time,title}';
+export const RSVP_AGENDA_URL =
+  `https://021qtoci.apicdn.sanity.io/v2021-10-21/data/query/production?query=${encodeURIComponent(RSVP_AGENDA_QUERY)}`;
+
+/** Sanity result → [{ day, time: "HH:MM", title }], or null when there are none (keep the last good copy). */
+export function parseRsvpAgenda(json) {
+  const out = [];
+  for (const s of Array.isArray(json?.result) ? json.result : []) {
+    const day = Number(s?.day);
+    const time = typeof s?.time === "string" ? s.time.trim() : "";
+    const title = typeof s?.title === "string" ? s.title.trim() : "";
+    if ((day === 1 || day === 2) && /^\d{1,2}:\d{2}$/.test(time) && title) out.push({ day, time: time.padStart(5, "0"), title });
+  }
+  return out.length ? out : null;
+}
+
+/** "07:55" → "7:55 AM", "17:30" → "5:30 PM". */
+export function clock12(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** Agenda sessions → { optionKey: "7:55 AM" } for every experience whose session is on the agenda (earliest match). */
+export function agendaTimes(sessions) {
+  const out = {};
+  for (const [key, m] of Object.entries(AGENDA_MATCH)) {
+    const hit = (sessions || []).filter((s) => s.day === m.day && m.title.test(s.title)).sort((a, b) => a.time.localeCompare(b.time))[0];
+    if (hit) out[key] = clock12(hit.time);
+  }
+  return out;
+}
+
+/** What GET /api/rsvp/options serves (the website builds the form from this).
+    `times` (from agendaTimes) replaces the fallback times. */
+export function rsvpOptionsPayload(times = null) {
   return {
     event: { name: "The Tech Festival Canada 2026", venue: "The Westin Harbour Castle, Toronto", start: "2026-10-26", end: "2026-10-27" },
     tiers: TIERS.map((key) => ({ key, label: TIER_LABELS[key], sold: key !== "speaker" })),
     days: DAYS,
-    options: RSVP_OPTIONS.map(({ tiers, ...o }) => ({ ...o, tiers: [...tiers] })),
+    options: RSVP_OPTIONS.map(({ tiers, ...o }) => ({ ...o, ...(o.time && times?.[o.key] ? { time: times[o.key] } : {}), tiers: [...tiers] })),
     dietary: DIETARY,
   };
 }

@@ -12,6 +12,7 @@ const time = { kind: "time" };
 const people = { kind: "people" };
 const person = { kind: "person" };
 const scale = { kind: "number", min: 30, max: 250 };   // logo size, % of the default
+const stats = { kind: "stats" };                        // About page numbers: [{ value, suffix?, label, iconName? }]
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
@@ -50,6 +51,8 @@ export const CMS_FIELDS = {
   sponsorMarquee: LOGO_TYPE,
   homeSponsor: LOGO_TYPE,
   siteSettings: { attendeesCarouselEnabled: bool, speakersEnabled: bool },
+  // The About page (website src/components/AboutUs.tsx): only its numbers are edited here; other fields are left as they are.
+  aboutContent: { stats },
   // One agenda slot. Mirrors the website's src/data/agenda.js shape.
   session: {
     sessionId: str(40),                       // stable id used by the app ("d1-06")
@@ -87,6 +90,20 @@ export function cleanPerson(p) {
   const org = String(p.org || "").trim().slice(0, 160);
   if (org) out.org = org;
   if (p.tentative === true) out.tentative = true;
+  return out;
+}
+
+/** One About page number → { _key, value, suffix?, label, iconName? }, or null without a label. Pure. */
+export function cleanStat(s, i = 0) {
+  if (!s || typeof s !== "object") return null;
+  const label = String(s.label || "").trim().slice(0, 60);
+  const value = Number(s.value);
+  if (!label || !Number.isFinite(value) || value < 0) return null;
+  const out = { _key: /^[A-Za-z0-9_-]{1,40}$/.test(String(s._key || "")) ? String(s._key) : `s${i}${keyFor(label)}`, value, label };
+  const suffix = String(s.suffix || "").trim().slice(0, 4);
+  if (suffix) out.suffix = suffix;
+  const icon = String(s.iconName || "").trim();
+  if (/^[a-z][a-z0-9-]{0,29}$/.test(icon)) out.iconName = icon;
   return out;
 }
 
@@ -155,6 +172,13 @@ export function toSanityPatch(type, body, { creating }) {
         if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
         set[key] = v.map(cleanPerson).filter(Boolean).slice(0, 20).map((p, i) => ({ _key: `p${i}${keyFor(p.name)}`, ...p }));
         break;
+      }
+      case "stats": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        if (v.length > 8) return { set, unset, error: `${key}: at most 8 numbers` };
+        const rows = v.map(cleanStat);
+        if (rows.some((r) => !r)) return { set, unset, error: `${key}: every number needs a value and a label` };
+        set[key] = rows; break;
       }
       case "boolean": set[key] = v === true || v === "true"; break;
       case "enum": {
