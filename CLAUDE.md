@@ -90,7 +90,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 
 ### Key Models (`models/`)
 
-- **User** — auth, ticket ownership, reset tokens; roles: `user` / `admin`. Staff contact switches `messagesOff` / `requestsOff` (see the contact switches row above)
+- **User** — auth, ticket ownership, reset tokens; roles: `user` (attendee) / `admin` (staff) / `volunteer`. Volunteers use the apps' staff sign-in (`POST /api/auth/login {staffOnly: true}`) and `POST /api/checkin/scan` (`requireTeam` in `middleware/adminAuth.js`), nothing else: the console, moderation, post removal, report alerts and the contact-switch override check role `admin`; ticket-ID sign-in refuses staff and volunteer accounts (password only). Console role values: `user | admin | volunteer` (`PATCH /api/console/users/:id`, management; making someone staff starts them at `staffRole: "staff"`, any other role clears it). `POST /api/console/staff {email, name, password, role: "admin" (default) | "volunteer"}` adds either (audited `staff_add`/`staff_promote` or `volunteer_add`/`volunteer_set`); `GET /api/console/staff` lists both with `role` (volunteers have `staffRole: ""`). Helpers in `services/teamRoles.js` (`isTeam`, `cleanRole`, `cardKind`). Staff contact switches `messagesOff` / `requestsOff` (see the contact switches row above)
 - **Campaign** — email campaigns with open/click/bounce stats
 - **CampaignTemplate** — 5-phase automation sequences
 - **Audience** — contact lists with nested contact schema (CSV import via multer)
@@ -110,7 +110,8 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 
 - Signs in with the same accounts (`/api/auth/login`, `/register`, `/google`), reads `/api/auth/me`, patches `/api/profile`.
 - Checkout: `POST /api/payments/create-checkout { tier, client: "ios" }` with a Bearer token. The buyer's `userId` goes into Stripe metadata so the webhook attaches the ticket to the account; success/cancel return via `/api/payments/app-return`, which opens `ttfc://checkout-complete`.
-- Ticket QR is `TECHFEST:<ticketId>` (same as the website wallet); `/api/checkin/scan` is admin-only.
+- Ticket QR is `TECHFEST:<ticketId>` (same as the website wallet); `/api/checkin/scan` is staff and volunteers only.
+- Network sections (All / Speakers / Exhibitors / Staff): user cards and `/api/social/attendees` entries carry `kind`: `"staff"` (role admin) > `"volunteer"` > `"speaker"` (a Speaker Pass, ticket type `speaker`) > `"exhibitor"` (an exhibitor pass: Attendee with promo `EXHIBITOR`, matched to the account that claimed it or by ticket ID; unclaimed ones appear as guests) > `""`, plus `booth` (exhibitors only, from `issuedPass.booth.booth`, else ""). `GET /api/social/me` adds `role`; `isAdmin` stays staff-only. `GET /api/social/users` also lists staff and volunteers who are on the app, unless `directoryHidden`. Cards are built by `cardsFor` in `services/cards.js` (exhibitor passes cached for a minute).
 
 ### Stripe Integration
 

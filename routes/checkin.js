@@ -1,15 +1,15 @@
 import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireTeam } from "../middleware/adminAuth.js";
 
 const router = express.Router();
 
 // ================= CHECK-IN =================
-// Staff only: the website's admin check-in page and the iOS app's scanner
-// both send an admin JWT. Previously this endpoint was open, so anyone who
-// knew a ticketId could mark it used.
-router.post("/scan", requireAdmin, async (req, res) => {
+// Staff and volunteers only: the website's admin check-in page sends a staff
+// JWT, the apps' scanner a staff or volunteer one (requireTeam). Previously
+// this endpoint was open, so anyone who knew a ticketId could mark it used.
+router.post("/scan", requireTeam, async (req, res) => {
   try {
     // Apple Wallet passes encode "TECHFEST:<ticketId>"; the website scanner sends the raw scan
     const ticketId = String(req.body?.ticketId || "").trim().replace(/^TECHFEST:/i, "");

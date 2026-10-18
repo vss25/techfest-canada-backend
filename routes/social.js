@@ -22,6 +22,7 @@ import {
 } from "../services/socialHelpers.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
+import { cardsFor, loadExhibitors } from "../services/cards.js";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
   parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
@@ -82,8 +83,10 @@ async function avatarVersions(ids) {
 
 /* ================= ME / DIRECTORY ================= */
 
-router.get("/me", (req, res) => {
-  res.json({ ...userCard(req.user), email: req.user.email, isAdmin: isAdmin(req.user) });
+// isAdmin is staff only; role tells the apps a volunteer ("volunteer") from an attendee ("user").
+router.get("/me", async (req, res) => {
+  const exhibitors = await loadExhibitors();
+  res.json({ ...userCard(req.user, { exhibitors }), email: req.user.email, isAdmin: isAdmin(req.user), role: req.user.role || "user" });
 });
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
@@ -92,15 +95,16 @@ router.get("/users", async (req, res) => {
   const filter = {
     _id: { $ne: req.user._id },
     directoryHidden: { $ne: true }, banned: { $ne: true },
-    $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } }],
+    $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } },
+      // Staff and volunteers on the app are listed (Network → Staff) even with an empty profile.
+      { role: { $in: ["admin", "volunteer"] }, $or: [{ appOnboarded: true }, { lastActiveAt: { $exists: true } }] }],
   };
   if (q) {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
   const users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.blocked.has(String(u._id)));
-  const access = await contactAccess(req.user, users);
-  res.json(users.map((u) => applyAccess(userCard(u), access)));
+  res.json(await cardsFor(req.user, users));
 });
 
 /* Every ticket holder (app users + guest purchases), one entry per person,
@@ -110,10 +114,11 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
-      .select("name email jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff").lean(),
-    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select("name email ticketId ticketType purchaseDate").lean(),
+      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff").lean(),
+    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select("name email ticketId ticketType purchaseDate promoCode issuedPass.booth").lean(),
   ]);
-  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email });
+  const exhibitors = await loadExhibitors();
+  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
   people = people.filter((p) => !req.blocked.has(p.id));
   const shown = new Set(people.map((p) => p.id));
@@ -137,7 +142,8 @@ router.get("/users/:id", async (req, res) => {
     ]);
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
   }
-  res.json(applyAccess(publicProfile(u), await contactAccess(req.user, [u])));
+  const [access, exhibitors] = await Promise.all([contactAccess(req.user, [u]), loadExhibitors()]);
+  res.json(applyAccess(publicProfile(u, { exhibitors }), access));
 });
 
 /* ================= FEED ================= */
@@ -298,7 +304,7 @@ async function connectionDTO(c, viewer) {
   const other = await User.findById(otherId).select(CARD_SELECT).lean();
   return {
     id: String(c._id),
-    user: applyAccess(userCard(other), await contactAccess(viewer, [other])) || { id: String(otherId), name: "Attendee" },
+    user: (await cardsFor(viewer, [other]))[0] || { id: String(otherId), name: "Attendee" },
     direction: String(c.fromUserId) === String(meId) ? "outgoing" : "incoming",
     status: c.status, kind: c.kind, note: c.note || "",
     createdAt: c.createdAt, respondedAt: c.respondedAt,
@@ -407,7 +413,7 @@ router.get("/messages", async (req, res) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
     const other = await User.findById(otherId).select(CARD_SELECT).lean();
     return {
-      user: applyAccess(userCard(other), await contactAccess(req.user, [other])) || { id: String(otherId), name: "Attendee" },
+      user: (await cardsFor(req.user, [other]))[0] || { id: String(otherId), name: "Attendee" },
       lastMessage: { body: t.last.body, sentByMe: String(t.last.fromUserId) === String(me), createdAt: t.last.createdAt },
       unread: t.unread,
     };

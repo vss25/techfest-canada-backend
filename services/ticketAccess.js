@@ -10,6 +10,8 @@
    Pure helpers are exported for unit tests.
 ========================================================= */
 
+import { kindFields, passKind, strongerKind, boothOf } from "./teamRoles.js";
+
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
 export function normalizeTicketId(raw) {
   return String(raw || "")
@@ -69,7 +71,16 @@ export function passName(type) {
  * People are merged by email; guest-only duplicates are also merged by
  * name. Each person keeps their most recent ticket. Never returns email.
  */
-export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "" } = {}) {
+/** An unclaimed pass (speaker / exhibitor) can raise a directory entry's kind, never lower it. */
+function addPassKind(entry, g) {
+  const k = passKind(g);
+  const kind = strongerKind(entry.kind || "", k);
+  if (kind === entry.kind) return;
+  entry.kind = kind;
+  entry.booth = kind === "exhibitor" ? boothOf(g) : "";
+}
+
+export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null } = {}) {
   const byEmail = new Map();
   const skipEmail = String(excludeEmail || "").toLowerCase();
 
@@ -98,6 +109,8 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       // Staff contact switches, same as userCard (routes/social.js corrects them per viewer).
       acceptsMessages: !u.messagesOff,
       acceptsRequests: !u.requestsOff,
+      // Network sections (services/teamRoles.js); exhibitors = exhibitorIndex() for claimed exhibitor passes.
+      ...kindFields(u, exhibitors),
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
@@ -117,6 +130,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
         existing.ticketType = g.ticketType;
         existing.purchaseDate = g.purchaseDate;
       }
+      addPassKind(existing, g);
       continue;
     }
     const nameKey = fold(name);
@@ -126,6 +140,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
         twin.ticketType = g.ticketType;
         twin.purchaseDate = g.purchaseDate;
       }
+      addPassKind(twin, g);
       continue;
     }
     const person = {
@@ -139,9 +154,12 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       topics: [],
       acceptsMessages: true,   // no switches on a guest; onApp: false already rules out contact
       acceptsRequests: true,
+      kind: "",
+      booth: "",
       ticketType: g.ticketType,
       purchaseDate: g.purchaseDate,
     };
+    addPassKind(person, g);
     guestByName.set(nameKey, person);
     if (email) byEmail.set(email, person);
     else byEmail.set(`guest:${g._id}`, person);

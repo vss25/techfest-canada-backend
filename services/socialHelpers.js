@@ -1,4 +1,5 @@
 import { deliveryMedia } from "./cloudinary.js";
+import { kindFields } from "./teamRoles.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -54,8 +55,9 @@ export function isOnApp(user) {
   return !!(user?.appOnboarded || user?.lastActiveAt);
 }
 
-/** Public card for another attendee — never email, never role. */
-export function userCard(user) {
+/** Public card for another attendee — never email, never role.
+    `exhibitors`: exhibitorIndex() from services/teamRoles.js, for kind "exhibitor" + booth. */
+export function userCard(user, { exhibitors = null } = {}) {
   if (!user) return null;
   return {
     id: String(user._id || user.id),
@@ -76,19 +78,21 @@ export function userCard(user) {
     // Message / Connect buttons; the server still decides (e.g. replies are allowed).
     acceptsMessages: !user.messagesOff,
     acceptsRequests: !user.requestsOff,
+    // Network sections: "staff" | "volunteer" | "speaker" | "exhibitor" | "" (+ booth for exhibitors).
+    ...kindFields(user, exhibitors),
   };
 }
 
 /** Fields userCard reads. Every query that builds cards must select these. */
-export const CARD_SELECT = "name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff";
+export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff";
 
 /** Fields a person's full profile page shows (GET /api/social/users/:id). */
 export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;
 
 /** Full public profile: the card plus the other profile answers they gave.
     Never email, phone, role, tickets, gender or salutation. */
-export function publicProfile(user) {
-  const card = userCard(user);
+export function publicProfile(user, opts = {}) {
+  const card = userCard(user, opts);
   if (!card) return null;
   return {
     ...card,

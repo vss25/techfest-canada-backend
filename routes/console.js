@@ -12,6 +12,7 @@ import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
+import { cleanRole } from "../services/teamRoles.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
@@ -173,6 +174,11 @@ router.patch("/users/:id", async (req, res) => {
   if (!u) return res.status(404).json({ error: "Not found" });
   const changed = [];
   if (req.body?.role !== undefined && !isManagement(req.user)) return res.status(403).json({ error: "Only management can change staff access" });
+  // user (attendee) | admin (staff) | volunteer (app staff sign-in + door check-in only)
+  if (req.body?.role !== undefined && !cleanRole(req.body.role)) return res.status(400).json({ error: "Role must be user, admin or volunteer" });
+  if (req.body?.role !== undefined && String(u._id) === String(req.user._id) && cleanRole(req.body.role) !== "admin") {
+    return res.status(400).json({ error: "You can't remove your own staff access" });
+  }
   // A staff account's email is its password-reset address: only management may
   // change it (or anyone's email), so staff can't take over each other's accounts.
   if (!isManagement(req.user) && (u.role === "admin" || req.body?.email !== undefined)) {
@@ -184,11 +190,14 @@ router.patch("/users/:id", async (req, res) => {
     if (EDIT_LISTS[k]) v = Array.isArray(v) ? v.filter((t) => typeof t === "string").map((t) => t.trim().slice(0, 80)).filter(Boolean).slice(0, EDIT_LISTS[k]) : u[k];
     else if (EDIT_BOOLS.has(k)) v = v === true || v === "true";
     else if (k === "name" && !String(v).trim()) continue;
-    else if (k === "role") v = v === "admin" ? "admin" : "user";
+    else if (k === "role") v = cleanRole(v);
     else if (k === "email") v = String(v).trim().toLowerCase().slice(0, 200);
     else v = String(v).slice(0, 300);
     if (JSON.stringify(u[k]) !== JSON.stringify(v)) { u[k] = v; changed.push(k); }
   }
+  // staffRole only means something for staff. An unset one counts as management
+  // (accounts from before levels existed), so someone newly made staff starts at "staff".
+  if (changed.includes("role")) u.staffRole = u.role === "admin" ? "staff" : undefined;
   await u.save();
   if (changed.length) await audit(req, "edit_user", "user", u._id, changed.join(", "));
   res.json({ ok: true, changed });
@@ -408,16 +417,23 @@ const isEmail = (s) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(s || ""));
 export const strongEnough = (pw) => typeof pw === "string" && pw.length >= 8;
 
 router.get("/staff", requireManagement, async (req, res) => {
-  const staff = await User.find({ role: "admin" }).select("name email role provider lastActiveAt createdAt password staffRole").lean();
+  const staff = await User.find({ role: { $in: ["admin", "volunteer"] } }).select("name email role provider lastActiveAt createdAt password staffRole").lean();
   res.json(staff.map((u) => ({ id: String(u._id), name: u.name, email: u.email, provider: u.provider || "local",
-    staffRole: isManagement({ ...u, role: "admin" }) ? "management" : "staff",
+    role: u.role === "volunteer" ? "volunteer" : "admin",
+    // Volunteers have no access level (they can't open the admin panel).
+    staffRole: u.role === "volunteer" ? "" : isManagement({ ...u, role: "admin" }) ? "management" : "staff",
     hasPassword: !!u.password, lastActiveAt: u.lastActiveAt || null, createdAt: u.createdAt, isMe: String(u._id) === String(req.user._id) })));
 });
 
+/* Add or promote staff ({ role: "admin" }, the default) or a volunteer ({ role: "volunteer" }:
+   the apps' staff sign-in for door check-in, never this panel; no staffRole). */
 router.post("/staff", requireManagement, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const name = trimBody(req.body?.name, 80);
   const password = req.body?.password;
+  const role = req.body?.role === undefined ? "admin" : cleanRole(req.body.role);
+  if (role !== "admin" && role !== "volunteer") return res.status(400).json({ error: "Role must be admin or volunteer" });
+  const volunteer = role === "volunteer";
   if (!isEmail(email)) return res.status(400).json({ error: "Enter a valid email address" });
   if (password !== undefined && password !== "" && !strongEnough(password)) {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
@@ -425,18 +441,22 @@ router.post("/staff", requireManagement, async (req, res) => {
   let user = await User.findOne({ email });
   const created = !user;
   if (!user) {
-    if (!password) return res.status(400).json({ error: "New staff need a password" });
+    if (!password) return res.status(400).json({ error: volunteer ? "New volunteers need a password" : "New staff need a password" });
     user = new User({ name: name || email.split("@")[0], email, provider: "local" });
   }
-  user.role = "admin";
+  if (volunteer && String(user._id) === String(req.user._id)) return res.status(400).json({ error: "You can't remove your own staff access" });
+  const wasStaff = user.role === "admin";
+  user.role = role;
   if (name) user.name = name;
+  if (volunteer) user.staffRole = undefined;
   // New staff default to "staff" (no sales/money) unless management is chosen.
-  if (req.body?.staffRole === "management" || req.body?.staffRole === "staff") user.staffRole = req.body.staffRole;
-  else if (created) user.staffRole = "staff";
+  else if (req.body?.staffRole === "management" || req.body?.staffRole === "staff") user.staffRole = req.body.staffRole;
+  else if (created || !wasStaff) user.staffRole = "staff";   // unset would mean management
   if (password) user.password = await bcrypt.hash(password, 10);
   await user.save();
-  await audit(req, created ? "staff_add" : "staff_promote", "user", user._id, email);
-  res.status(created ? 201 : 200).json({ id: String(user._id), email, name: user.name, created });
+  const action = volunteer ? (created ? "volunteer_add" : "volunteer_set") : (created ? "staff_add" : "staff_promote");
+  await audit(req, action, "user", user._id, email);
+  res.status(created ? 201 : 200).json({ id: String(user._id), email, name: user.name, role, created });
 });
 
 router.delete("/staff/:id", requireManagement, async (req, res) => {
