@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import Stripe from "stripe";
 import User from "../models/User.js";
 import TicketInventory from "../models/TicketInventory.js";
+import { applyDuePrices, priceAt } from "../services/scheduledPrices.js";
 import Promo from "../models/Promo.js";
 import { HOLD_MINUTES, LIMIT_REACHED, isFull, promoExpired, lockPromo, promoUsageNow } from "../services/promoLimits.js";
 
@@ -222,6 +223,7 @@ async function resolveUpgrade(buyer, ticketId, toTier) {
   // from $0 would charge a full pass and overwrite the speaker ticket.
   if (String(ticket.type || "").toLowerCase() === "speaker") return { status: 409, error: "Your Speaker Pass already includes everything at TTFC 2026." };
   if (ticket.checkedIn) return { status: 409, error: "This pass has already been used at the door; upgrade at the registration desk." };
+  await applyDuePrices();
   const [from, to] = await Promise.all([
     TicketInventory.findOne({ tier: ticket.type }).lean(),
     TicketInventory.findOne({ tier: toTier }).lean(),
@@ -229,9 +231,11 @@ async function resolveUpgrade(buyer, ticketId, toTier) {
   if (!to) return { status: 404, error: "Tier not found" };
   if (to.archived) return { status: 409, error: "This pass is no longer on sale." };
   if (to.total > 0 && to.sold >= to.total) return { status: 409, error: "This tier is sold out." };
-  const q = upgradeQuote(from?.price, to.price);
+  // priceAt: today's price even if a scheduled change hasn't been written in yet
+  const fromPrice = from ? priceAt(from) : 0, toPrice = priceAt(to);
+  const q = upgradeQuote(fromPrice, toPrice);
   if (q.error) return { status: 409, error: q.error };
-  return { ticket, fromTier: ticket.type, toTier, fromPrice: from?.price || 0, toPrice: to.price, ...q };
+  return { ticket, fromTier: ticket.type, toTier, fromPrice: fromPrice || 0, toPrice, ...q };
 }
 
 // GET /api/payments/upgrade-quote?ticketId=…&tier=…
@@ -360,11 +364,12 @@ router.post("/create-checkout", async (req, res) => {
       return res.json({ url: session.url, difference: up.difference, total: up.total });
     }
 
+    await applyDuePrices();
     const inventoryItem = await TicketInventory.findOne({ tier });
     if (!inventoryItem) return res.status(404).json({ error: "Tier not found" });
     if (inventoryItem.archived) return res.status(409).json({ error: "This pass is no longer on sale." });
 
-    const basePriceCAD = inventoryItem.price;
+    const basePriceCAD = priceAt(inventoryItem);   // never the old price once a scheduled change is due
     const isBooth = String(tier).startsWith("booth-");
 
     // A tier seeded without a price would otherwise create a $0 Stripe session

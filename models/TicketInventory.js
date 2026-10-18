@@ -34,6 +34,18 @@ const ticketInventorySchema = new mongoose.Schema(
       min: 0,
     },
 
+    // scheduled price change: from nextPriceAt the tier sells at nextPrice
+    // (services/scheduledPrices.js writes it into `price` and clears both)
+    nextPrice: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    nextPriceAt: {
+      type: Date,
+      default: null,
+    },
+
     // removed from sale: hidden from the website/app and checkout;
     // tickets already sold for this tier stay valid
     archived: {
