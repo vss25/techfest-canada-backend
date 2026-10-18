@@ -16,6 +16,22 @@
 import { stripeRows } from "./stripeSales.js";
 
 export const LIMIT_REACHED = "This code has reached its limit.";
+export const EXPIRED = "This code has expired.";
+
+/** Has the code's end date passed? No end date = never expires. */
+export function promoExpired(promo, now = Date.now()) {
+  const at = promo?.expiresAt ? new Date(promo.expiresAt).getTime() : NaN;
+  return Number.isFinite(at) && now > at;
+}
+
+/** Admin input → { ok, value: Date|null } or { ok: false, error }. Empty = no end date. */
+export function parseExpiresAt(input) {
+  if (input === undefined || input === null || input === "") return { ok: true, value: null };
+  const d = new Date(String(input));
+  if (Number.isNaN(d.getTime())) return { ok: false, error: "End date isn't a valid date and time" };
+  if (d.getFullYear() < 2024 || d.getFullYear() > 2100) return { ok: false, error: "End date is out of range" };
+  return { ok: true, value: d };
+}
 export const HOLD_MINUTES = 31;              // Stripe's minimum expiry is 30 min after creation
 const RECENT_SECONDS = 25 * 60 * 60;          // a session lives at most 24 h; 1 h slack
 

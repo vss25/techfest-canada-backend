@@ -4,6 +4,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import {
   parseMaxUses, isFull, countPromoUses, promoUsageNow, lockPromo, LIMIT_REACHED,
+  promoExpired, parseExpiresAt, EXPIRED,
 } from "../services/promoLimits.js";
 import Promo from "../models/Promo.js";
 import User from "../models/User.js";
@@ -140,8 +141,8 @@ test("validate: a code whose uses (paid + in checkout) reached maxUses is refuse
 });
 
 test("validate: codes under their limit or without one still work", async () => {
-  assert.deepEqual((await post("/promos/validate", { code: "ROOMY" })).body, { valid: true, code: "ROOMY", discount: 20 });
-  assert.deepEqual((await post("/promos/validate", { code: "OPEN" })).body, { valid: true, code: "OPEN", discount: 15 });
+  assert.deepEqual((await post("/promos/validate", { code: "ROOMY" })).body, { valid: true, code: "ROOMY", discount: 20, expiresAt: null });
+  assert.deepEqual((await post("/promos/validate", { code: "OPEN" })).body, { valid: true, code: "OPEN", discount: 15, expiresAt: null });
 });
 
 test("admin create: maxUses saved, empty = unlimited, bad values refused", async () => {
@@ -172,4 +173,48 @@ test("admin update: maxUses can be set, cleared and is validated; omitted leaves
   const bad = await put("/admin/promos/p1", { maxUses: 0 });
   assert.equal(bad.status, 400);
   assert.equal((await put("/admin/promos/p1", { discount: 150 })).status, 400);
+});
+
+/* ---------- end dates (APP50 guest offer, Oct 2026) ---------- */
+test("promoExpired / parseExpiresAt", () => {
+  const ends = "2026-10-21T23:59:00-04:00";
+  assert.equal(promoExpired({ expiresAt: ends }, Date.parse("2026-10-21T23:58:59-04:00")), false);
+  assert.equal(promoExpired({ expiresAt: ends }, Date.parse("2026-10-22T00:00:00-04:00")), true);
+  assert.equal(promoExpired({ expiresAt: null }), false);
+  assert.equal(promoExpired({}), false);
+  assert.deepEqual(parseExpiresAt(""), { ok: true, value: null });
+  assert.deepEqual(parseExpiresAt(null), { ok: true, value: null });
+  assert.equal(parseExpiresAt(ends).value.toISOString(), "2026-10-22T03:59:00.000Z");
+  assert.equal(parseExpiresAt("next wednesday").ok, false);
+  assert.equal(parseExpiresAt("1999-01-01").ok, false);
+});
+
+test("validate: an expired code is refused; one still running shows its end date", async () => {
+  promos.set("OLD50", { code: "OLD50", discount: 50, tiers: ["connect"], active: true, maxUses: null, expiresAt: new Date(Date.now() - 1000) });
+  const soon = new Date(Date.now() + 86400e3);
+  promos.set("APP50", { code: "APP50", discount: 50, tiers: ["connect", "influence", "power"], active: true, maxUses: null, expiresAt: soon });
+  const old = await post("/promos/validate", { code: "OLD50", tier: "connect" });
+  assert.equal(old.status, 410);
+  assert.deepEqual(old.body, { valid: false, error: EXPIRED });
+  const live = await post("/promos/validate", { code: "app50", tier: "power" });
+  assert.equal(live.status, 200);
+  assert.equal(live.body.discount, 50);
+  assert.equal(live.body.expiresAt, soon.toISOString());
+  assert.equal((await post("/promos/validate", { code: "APP50", tier: "apex" })).status, 404);
+});
+
+test("admin: end date is saved on create, can be changed or cleared, and is validated", async () => {
+  let r = await post("/admin/promos", { code: "ends", discount: 50, tiers: ["connect"], expiresAt: "2026-10-21T23:59:00-04:00" }, auth);
+  assert.equal(r.status, 200);
+  assert.equal(created.expiresAt.toISOString(), "2026-10-22T03:59:00.000Z");
+  r = await post("/admin/promos", { code: "noend", discount: 10 }, auth);
+  assert.equal(created.expiresAt, null);
+  r = await post("/admin/promos", { code: "badend", discount: 10, expiresAt: "soon" }, auth);
+  assert.equal(r.status, 400);
+  assert.equal((await put("/admin/promos/p1", { expiresAt: "2026-10-25T12:00:00Z" })).status, 200);
+  assert.equal(updated.expiresAt.toISOString(), "2026-10-25T12:00:00.000Z");
+  assert.equal((await put("/admin/promos/p1", { expiresAt: "" })).status, 200);
+  assert.equal(updated.expiresAt, null);
+  await put("/admin/promos/p1", { active: true });
+  assert.equal("expiresAt" in updated, false);
 });
