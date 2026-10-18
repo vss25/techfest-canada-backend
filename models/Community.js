@@ -17,6 +17,13 @@ const discussionSchema = new Schema({
   tags:       { type: [String], default: [] },
   replyCount: { type: Number, default: 0 },
   status:     { type: String, enum: STATUS, default: "pending", index: true },   // new threads go to review
+  // Who hears about new replies (activity dot + push). The author is added on
+  // create, repliers on their first reply. No default on purpose: threads from
+  // before following existed have no list, and their author counts as the one
+  // follower until it's written out (services/discussionFollow.js).
+  followers:  { type: [Types.ObjectId], default: undefined, index: true },
+  // People who unfollowed: replying again doesn't re-follow them.
+  unfollowed: { type: [Types.ObjectId], default: undefined },
 }, { timestamps: true });
 
 const discussionReplySchema = new Schema({

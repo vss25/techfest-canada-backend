@@ -9,6 +9,8 @@ import { sendResetPasswordEmail } from "../services/emailService.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile } from "../services/onboardingProfile.js";
+import { canUseStaffSignIn } from "../services/teamRoles.js";
+import { accessOf } from "../services/rightsStore.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -94,9 +96,11 @@ router.post("/login", async (req, res) => {
     loginPerEmail.reset(`e:${email}`);
 
     // The apps' "Staff sign-in" sends staffOnly: attendees sign in there with a link or
-    // their ticket ID, so a password only works for staff accounts.
-    if (req.body?.staffOnly === true && String(user.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ error: "This sign-in is for TTFC staff. Attendees: use a sign-in link or your ticket ID." });
+    // their ticket ID, so a password only works for staff and volunteer accounts (role
+    // admin / volunteer, or the staff / volunteer person type: canUseStaffSignIn).
+    // What they can do after that comes from their app rights (services/appRights.js).
+    if (req.body?.staffOnly === true && !canUseStaffSignIn(user)) {
+      return res.status(403).json({ error: "This sign-in is for TTFC staff and volunteers. Attendees: use a sign-in link or your ticket ID." });
     }
 
     const token = jwt.sign(
@@ -141,7 +145,10 @@ router.get("/me", async (req, res) => {
     // Fill profile gaps from the website checkout answers (incl. guest tickets
     // they've since claimed) so the apps never ask for them twice.
     const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
-    res.json(withCheckoutProfile(user.toObject(), claimed));
+    // `types`: their effective person types (attendee included), `rights`: what they may do in
+    // the app (services/appRights.js). Same values as GET /api/social/me.
+    const { types, rights } = await accessOf(user);
+    res.json({ ...withCheckoutProfile(user.toObject(), claimed), types, rights });
 
   } catch (err) {
 

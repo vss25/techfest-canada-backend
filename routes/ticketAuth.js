@@ -3,6 +3,9 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
+import { isTeam, isVolunteer } from "../services/teamRoles.js";
+
+const teamPasswordOnly = (u) => (isVolunteer(u) ? "Volunteer accounts sign in with their password." : "Staff accounts sign in with their password.");
 
 /* =========================================================
    Mounted at /api/auth alongside routes/auth.js (website auth):
@@ -96,10 +99,9 @@ router.post("/ticket-login", async (req, res) => {
     if (found.kind === "user") {
       // The name on the ticket itself also counts, so changing your profile name can't lock you out.
       if (!(await ticketNameMatches(found, lastName))) return res.status(401).json({ error: NO_MATCH });
-      // Staff accounts reach the admin panel: they always sign in with their password.
-      if (String(found.owner.role || "").toLowerCase() === "admin") {
-        return res.status(400).json({ error: "Staff accounts sign in with their password." });
-      }
+      // Staff accounts reach the admin panel and volunteers can check tickets in:
+      // they always sign in with their password.
+      if (isTeam(found.owner)) return res.status(400).json({ error: teamPasswordOnly(found.owner) });
       limiter.reset(key);
       return res.json({ token: sign(found.owner), created: false });
     }
@@ -112,9 +114,7 @@ router.post("/ticket-login", async (req, res) => {
     if (!user && a.email) user = await User.findOne({ email: String(a.email).toLowerCase() });
     // Same rule as above: a ticket ID never opens a staff account (staff-issued passes such as
     // Speaker Passes can carry a staff member's email).
-    if (user && String(user.role || "").toLowerCase() === "admin") {
-      return res.status(400).json({ error: "Staff accounts sign in with their password." });
-    }
+    if (user && isTeam(user)) return res.status(400).json({ error: teamPasswordOnly(user) });
     let created = false;
     if (!user) {
       user = new User({

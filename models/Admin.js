@@ -2,8 +2,9 @@ import mongoose from "mongoose";
 
 const { Schema, Types } = mongoose;
 
-/* Every tracked action from the iOS app: screen views, taps, searches,
-   interests. Kept 400 days, then removed automatically. */
+/* Every tracked action from the apps (platform "ios" | "android") and the
+   website's installable app ("web", pwa_* events): screen views, taps,
+   searches, interests. Kept 400 days, then removed automatically. */
 const appEventSchema = new Schema({
   userId:     { type: Types.ObjectId, ref: "User", index: true },
   deviceId:   { type: String, default: "", index: true },
@@ -16,6 +17,7 @@ const appEventSchema = new Schema({
   at:         { type: Date, default: Date.now },
 });
 appEventSchema.index({ userId: 1, at: -1 });
+appEventSchema.index({ platform: 1, name: 1, at: -1 });   // GET /api/console/pwa (web app installs + launches)
 appEventSchema.index({ at: 1 }, { expireAfterSeconds: 400 * 24 * 3600 });
 
 /* Text and switches the admin console can change in the app without a release. */

@@ -16,7 +16,8 @@ test("bestTierKey picks the highest ticket", () => {
 test("userCard never leaks email or role", () => {
   const c = userCard({ _id: "1", name: "A", email: "a@x.com", role: "admin", jobTitle: "CTO", tickets: [{ type: "connect" }] });
   assert.equal(c.name, "A");
-  assert.equal(c.tier, "Connect Pass");
+  assert.equal(c.tier, "");   // other attendees don't see someone's pass
+  assert.equal(userCard({ _id: "1", name: "A", tickets: [{ type: "connect" }] }, { self: true }).tier, "Connect Pass");
   assert.equal("email" in c, false);
   assert.equal("role" in c, false);
 });

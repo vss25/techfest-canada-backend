@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { PERSON_TYPES } from "../services/teamRoles.js";
 
 const ticketSchema = new mongoose.Schema({
   ticketId: {
@@ -89,6 +90,16 @@ const userSchema = new mongoose.Schema(
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
     directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
+    hideFromLeaderboard: { type: Boolean, default: false }, // opt out of the points leaderboard (still earns points)
+    // Staff switches for VIPs who won't reply (services/contactSwitches.js). Staff,
+    // accepted connections and people they wrote to can still message them.
+    messagesOff:  { type: Boolean, default: false },      // no new 1:1 messages from others
+    requestsOff:  { type: Boolean, default: false },      // no new connection requests (badge scan still works)
+    // Person types set by staff (services/teamRoles.js): attendee speaker exhibitor vip staff vendor volunteer.
+    // Effective types = these ∪ automatic ones (role, passes) − typesOff; they pick the app rights
+    // column(s) in services/appRights.js. typesOff is the only way to switch an automatic type off.
+    types:        { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
+    typesOff:     { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },
@@ -101,6 +112,8 @@ const userSchema = new mongoose.Schema(
     objectives:   { type: [String], default: [] },        // what they want from TTFC
     availabilitySlots: { type: [String], default: [] },   // when they're free to meet
     meetingSpot:  { type: String, default: "" },
+    // When they last opened each tab's activity (likes, comments, mentions, replies).
+    activitySeen: { feed: { type: Date }, discussions: { type: Date } },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
     // Consent recorded by the apps (server-stamped): 18+ self-confirmation and

@@ -1,5 +1,7 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { RIGHT_ERRORS } from "../services/appRights.js";
+import { accessOf } from "../services/rightsStore.js";
 
 export async function requireAdmin(req, res, next) {
   try {
@@ -21,6 +23,30 @@ export async function requireAdmin(req, res, next) {
     res.status(401).json({ error: "Unauthorized" });
   }
 }
+/* Door check-in (POST /api/checkin/scan): anyone whose types give them the
+   checkIn right in the App rights matrix (volunteers and staff by default;
+   staff accounts always, services/appRights.js). Everything else staff-only
+   keeps requireAdmin, so volunteers never reach the admin panel. */
+export async function requireCheckIn(req, res, next) {
+  let user;
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "No token" });
+    const decoded = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET);
+    user = await User.findById(decoded.id);
+  } catch {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  if (!user || user.banned) return res.status(403).json({ error: RIGHT_ERRORS.checkIn });
+  const { rights } = await accessOf(user);
+  if (!rights.checkIn) return res.status(403).json({ error: RIGHT_ERRORS.checkIn });
+  req.user = user;
+  next();
+}
+
+/** Former name of requireCheckIn (staff or volunteers only, before app rights). */
+export const requireTeam = requireCheckIn;
+
 /* Staff the owner said aren't management. They stay staff until management
    explicitly switches them to management in Staff accounts. */
 const DEFAULT_STAFF_EMAILS = ["nicole@thetechfestival.com", "nicole@thetechfestival..com"];

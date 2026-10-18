@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sign, signUpload, cleanMedia, deliveryMedia, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
+import { sign, signUpload, cleanMedia, deliveryMedia, MAX_VIDEO_SECONDS, INCOMING } from "../services/cloudinary.js";
 import { postDTO } from "../services/socialHelpers.js";
 
 const env = { CLOUDINARY_CLOUD_NAME: "demo", CLOUDINARY_API_KEY: "123", CLOUDINARY_API_SECRET: "abcd" };
@@ -10,15 +10,26 @@ test("signature matches Cloudinary's documented example", () => {
   assert.equal(sign(params, "abcd"), "bfd09f95f331f558cbd1320e67aa8d488770583e");
 });
 
-test("video uploads carry the 30 s trim inside the signature; off without keys", () => {
+test("video uploads carry the 30 s trim + compression inside the signature; off without keys", () => {
   const v = signUpload({ type: "video", userId: "u1", now: 1_700_000_000_000, env });
   assert.equal(v.resourceType, "video");
-  assert.equal(v.params.transformation, `du_${MAX_VIDEO_SECONDS}`);
+  assert.equal(v.params.transformation, "du_30,c_limit,w_1280,q_auto");
+  assert.ok(v.params.transformation.startsWith(`du_${MAX_VIDEO_SECONDS},`));
   assert.equal(v.params.folder, "ttfc/posts/u1");
   const { signature, ...rest } = v.params;
   assert.equal(signature, sign(rest, "abcd"));
-  assert.equal(signUpload({ type: "image", userId: "u1", env }).params.transformation, undefined);
   assert.equal(signUpload({ type: "video", userId: "u1", env: {} }), null);
+});
+
+test("image uploads are capped at 2048 px, q_auto:good, inside the signature", () => {
+  const i = signUpload({ type: "image", userId: "u1", now: 1_700_000_000_000, env });
+  assert.equal(i.resourceType, "image");
+  assert.equal(i.params.transformation, "c_limit,w_2048,q_auto:good");
+  assert.equal(i.params.transformation, INCOMING.image);
+  const { signature, ...rest } = i.params;
+  assert.equal(signature, sign(rest, "abcd"));
+  // Anything that isn't "video" signs as an image upload, never without compression.
+  assert.equal(signUpload({ type: "gif", userId: "u1", env }).params.transformation, INCOMING.image);
 });
 
 test("cleanMedia keeps only our uploads, ≤30 s videos, max six", () => {

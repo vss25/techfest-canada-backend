@@ -7,6 +7,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, Block, Report } from "../models/Admin.js";
 import AppNotification from "../models/AppNotification.js";
+import ActivityEvent from "../models/ActivityEvent.js";
 
 /* Deletes an account and everything it posted (Apple guideline 5.1.1(v)).
    Paid tickets survive: each one goes back to a guest Attendee record so
@@ -34,6 +35,8 @@ export async function deleteAccount(userId) {
   }
 
   const posts = await SocialPost.find({ authorId: id }).select("_id").lean();
+  const discussions = await Discussion.find({ authorId: id }).select("_id").lean();
+  const refIds = [...posts, ...discussions].map((x) => x._id);
   await Promise.all([
     SocialComment.deleteMany({ $or: [{ authorId: id }, { postId: { $in: posts.map((p) => p._id) } }] }),
     SocialPost.deleteMany({ authorId: id }),
@@ -47,12 +50,16 @@ export async function deleteAccount(userId) {
     GroupMessage.deleteMany({ authorId: id }),
     CommunityGroup.updateMany({}, { $pull: { members: id } }),
     CommunityGroup.updateMany({ ownerId: id }, { $set: { ownerName: "Former attendee" } }),
-    SocialPost.updateMany({ likes: id }, { $pull: { likes: id } }),
+    SocialPost.updateMany({ $or: [{ likes: id }, { everLiked: id }] }, { $pull: { likes: id, everLiked: id } }),
+    SocialPost.updateMany({ mentions: { $elemMatch: { type: "user", id: String(id) } } },
+                          { $pull: { mentions: { type: "user", id: String(id) } } }),
     SessionQuestion.updateMany({ upvotes: id }, { $pull: { upvotes: id } }),
+    Discussion.updateMany({ $or: [{ followers: id }, { unfollowed: id }] }, { $pull: { followers: id, unfollowed: id } }),
     AppEvent.deleteMany({ userId: id }),
     Block.deleteMany({ $or: [{ userId: id }, { blockedId: id }] }),
     Report.deleteMany({ reporterId: id }),
     AppNotification.deleteMany({ userId: id }),
+    ActivityEvent.deleteMany({ $or: [{ userId: id }, { actorId: id }, { refId: { $in: refIds } }] }),
   ]);
   await User.deleteOne({ _id: id });
   return true;

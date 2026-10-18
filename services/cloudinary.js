@@ -7,7 +7,9 @@ import crypto from "node:crypto";
    create the post with the returned URLs, which we validate.
    Videos are capped at 30 s twice: the apps refuse longer
    clips, and the signed upload carries an incoming trim (du_30)
-   the client can't change.
+   the client can't change. The same signed incoming transformation
+   shrinks what's stored: photos to ≤2048 px wide at q_auto:good,
+   videos to ≤1280 px wide at q_auto.
    Env: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.
    Unset → media is off and the apps keep the single inline photo.
 ========================================================= */
@@ -15,6 +17,12 @@ import crypto from "node:crypto";
 export const MAX_ITEMS = 6;
 export const MAX_VIDEO_SECONDS = 30;
 const FOLDER = "ttfc/posts";
+
+/** Incoming transformations, applied by Cloudinary before it stores the upload. */
+export const INCOMING = {
+  image: "c_limit,w_2048,q_auto:good",
+  video: `du_${MAX_VIDEO_SECONDS},c_limit,w_1280,q_auto`,
+};
 
 export function config(env = process.env) {
   const cloudName = env.CLOUDINARY_CLOUD_NAME || "";
@@ -38,8 +46,9 @@ export function signUpload({ type, userId, now = Date.now(), env = process.env }
   const params = {
     folder: `${FOLDER}/${String(userId).replace(/[^a-zA-Z0-9_-]/g, "")}`,
     timestamp: Math.floor(now / 1000),
-    // Incoming trim: whatever is sent, Cloudinary stores at most 30 s.
-    ...(resourceType === "video" ? { transformation: `du_${MAX_VIDEO_SECONDS}` } : {}),
+    // Signed, so the client can't change it: whatever is sent, Cloudinary stores
+    // a compressed copy, and for video at most 30 s.
+    transformation: INCOMING[resourceType],
   };
   return {
     cloudName: c.cloudName,

@@ -10,6 +10,9 @@
    Pure helpers are exported for unit tests.
 ========================================================= */
 
+import { passKind, strongerKind, boothOf, typesTier, storedTypes, PUBLIC_TYPES } from "./teamRoles.js";
+import { personAccess } from "./appRights.js";
+
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
 export function normalizeTicketId(raw) {
   return String(raw || "")
@@ -62,6 +65,53 @@ export function passName(type) {
   return TIER_NAMES[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) + " Pass" : "");
 }
 
+export const GUEST_FALLBACK_NAME = "TTFC attendee";
+
+const oneLine = (v, max = 120) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max).trim() : "");
+
+/** True when a stored name is really a number: all digits (an order number) or the ticket ID itself. */
+export function looksLikeTicketNumber(name, ticketId = "") {
+  const n = String(name || "").trim();
+  if (!n) return false;
+  if (/^\d+$/.test(n.replace(/[\s#-]/g, ""))) return true;
+  const id = normalizeTicketId(ticketId);
+  return !!id && normalizeTicketId(n) === id;
+}
+
+/**
+ * Name to show for an unclaimed pass: the stored name, else the first + last
+ * name from the checkout details, else "TTFC attendee" (never a ticket or
+ * order number). → { name, real } (real: false for the fallback, which must
+ * not be used to merge people).
+ */
+export function guestName(g) {
+  const stored = oneLine(g?.name, 120);
+  if (stored && !looksLikeTicketNumber(stored, g?.ticketId)) return { name: stored, real: true };
+  const fromDetails = oneLine([g?.details?.firstName, g?.details?.lastName].map((x) => oneLine(x)).filter(Boolean).join(" "));
+  if (fromDetails && !looksLikeTicketNumber(fromDetails, g?.ticketId)) return { name: fromDetails, real: true };
+  return { name: GUEST_FALLBACK_NAME, real: false };
+}
+
+/** Company and job title from a pass holder's checkout details (nothing else from them). */
+export function guestWork(details) {
+  const d = details && typeof details === "object" ? details : {};
+  return {
+    organization: oneLine(d.organisation) || oneLine(d.organization) || oneLine(d.company),
+    jobTitle: oneLine(d.jobTitle) || oneLine(d.title),
+  };
+}
+
+/** Fields of Attendee.details the directory reads (select only these: no phone, email or the rest). */
+export const GUEST_DETAILS_SELECT = "details.firstName details.lastName details.organisation details.organization details.company details.jobTitle details.title";
+
+/** Fill a guest entry's empty company / title from another of their passes. */
+function addGuestWork(entry, g) {
+  if (!String(entry.id).startsWith("guest:")) return;   // app users keep their own profile
+  const w = guestWork(g.details);
+  if (!entry.organization && w.organization) entry.organization = w.organization;
+  if (!entry.jobTitle && w.jobTitle) entry.jobTitle = w.jobTitle;
+}
+
 /**
  * Builds the attendee directory.
  *   users  — User docs that hold at least one ticket (lean)
@@ -69,7 +119,20 @@ export function passName(type) {
  * People are merged by email; guest-only duplicates are also merged by
  * name. Each person keeps their most recent ticket. Never returns email.
  */
-export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "" } = {}) {
+/** An unclaimed pass (speaker / exhibitor) adds its type to a directory entry and can raise its kind,
+    never lower it. `off`: the account's typesOff (a type staff switched off stays off). */
+function addPassKind(entry, g, off = []) {
+  const k = passKind(g);
+  if (!k || off.includes(k)) return;
+  if (!entry.types.includes(k)) entry.types = PUBLIC_TYPES.filter((t) => t === k || entry.types.includes(t));
+  const kind = strongerKind(entry.kind || "", k);
+  if (kind === entry.kind) return;
+  entry.kind = kind;
+  entry.booth = kind === "exhibitor" ? boothOf(g) : "";
+}
+
+export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null, matrix = undefined } = {}) {
+  const offById = new Map();   // entry id → that account's typesOff
   const byEmail = new Map();
   const skipEmail = String(excludeEmail || "").toLowerCase();
 
@@ -81,6 +144,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
     const t = latestTicket(u.tickets) || (onApp ? { type: "", purchaseDate: null } : null);
     if (!t) continue;
     const email = String(u.email || "").toLowerCase();
+    const acc = personAccess(u, { exhibitors, matrix });
     byEmail.set(email || `user:${u._id}`, {
       id: String(u._id),
       // Only people who have signed into the app can be connected with or messaged.
@@ -95,15 +159,24 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       tagline: u.tagline || "",
       availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
       meetingSpot: u.meetingSpot || "",
+      // Receive rights, same as userCard (routes/social.js corrects them per viewer).
+      acceptsMessages: acc.rights.receiveMessages,
+      acceptsRequests: acc.rights.receiveRequests,
+      // Network sections (services/teamRoles.js); exhibitors = exhibitorIndex() for claimed exhibitor passes.
+      kind: acc.kind,
+      booth: acc.booth,
+      types: acc.publicTypes,
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
+    offById.set(String(u._id), storedTypes(u.typesOff));
   }
 
   const guestByName = new Map();
   for (const g of guests || []) {
-    const name = String(g.name || "").trim();
-    if (!name || /^guest$/i.test(name)) continue;
+    // "Guest" placeholders stay out; blank or number-like names fall back (guestName).
+    if (/^guest$/i.test(String(g.name || "").trim())) continue;
+    const { name, real } = guestName(g);
     if (/^BOOTH-/i.test(String(g.ticketId || ""))) continue;
     const email = String(g.email || "").toLowerCase();
     if (email && email === skipEmail) continue;
@@ -114,36 +187,50 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
         existing.ticketType = g.ticketType;
         existing.purchaseDate = g.purchaseDate;
       }
+      addPassKind(existing, g, offById.get(existing.id));
+      addGuestWork(existing, g);
       continue;
     }
-    const nameKey = fold(name);
-    const twin = guestByName.get(nameKey);
+    // Only a real name merges people; "TTFC attendee" is many different people.
+    const nameKey = real ? fold(name) : "";
+    const twin = nameKey ? guestByName.get(nameKey) : null;
     if (twin) {
       if (new Date(g.purchaseDate || 0) > new Date(twin.purchaseDate || 0)) {
         twin.ticketType = g.ticketType;
         twin.purchaseDate = g.purchaseDate;
       }
+      addPassKind(twin, g);
+      addGuestWork(twin, g);
       continue;
     }
+    const work = guestWork(g.details);
     const person = {
       id: `guest:${g._id}`,
       onApp: false,
       name,
-      jobTitle: "",
-      organization: "",
+      // From their checkout form; never email, phone or the other details.
+      jobTitle: work.jobTitle,
+      organization: work.organization,
       linkedinUrl: "",
       country: "",
       topics: [],
+      acceptsMessages: true,   // no switches on a guest; onApp: false already rules out contact
+      acceptsRequests: true,
+      kind: "",
+      booth: "",
+      types: [],
       ticketType: g.ticketType,
       purchaseDate: g.purchaseDate,
     };
-    guestByName.set(nameKey, person);
+    addPassKind(person, g);
+    if (nameKey) guestByName.set(nameKey, person);
     if (email) byEmail.set(email, person);
     else byEmail.set(`guest:${g._id}`, person);
   }
 
   return [...byEmail.values()]
-    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: passName(ticketType) }))
+    // Others only see a Speaker Pass or "Exhibitor"; the viewer is never in their own directory.
+    .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: typesTier(p.types) }))
     .sort((a, b) => (a.onApp === b.onApp ? a.name.localeCompare(b.name) : a.onApp ? -1 : 1));
 }
 

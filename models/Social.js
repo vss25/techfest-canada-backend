@@ -25,10 +25,17 @@ const socialPostSchema = new Schema({
   /** Photos and ≤30 s videos on Cloudinary (services/cloudinary.js), in order. */
   media:       { type: [{ _id: false, type: { type: String, enum: ["image", "video"] }, url: String, publicId: String,
                           width: Number, height: Number, duration: Number }], default: [] },
+  /** @mentions: { type: "user", id: <User _id> } or { type: "speaker", id: <Sanity id> }, ≤10. */
+  mentions:    { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: [] },
   likes:       { type: [Types.ObjectId], default: [] },
+  /** Everyone who has ever liked it (kept on unlike) so only a first like makes an activity row. */
+  everLiked:   { type: [Types.ObjectId], default: [] },
   likeCount:   { type: Number, default: 0 },
   commentCount:{ type: Number, default: 0 },
   status:      { type: String, enum: STATUS, default: "approved", index: true },
+  /** Set when staff take the post down (status "hidden") with DELETE /api/social/feed/:id. */
+  removedBy:   { type: Types.ObjectId, ref: "User" },
+  removedAt:   { type: Date },
 }, { timestamps: true });
 socialPostSchema.index({ createdAt: -1 });
 
@@ -40,6 +47,7 @@ const socialCommentSchema = new Schema({
   body:       { type: String, required: true, maxlength: 2000 },
   status:     { type: String, enum: STATUS, default: "approved" },
 }, { timestamps: true });
+socialCommentSchema.index({ authorId: 1 });   // points (services/points.js)
 
 const socialConnectionSchema = new Schema({
   fromUserId: { type: Types.ObjectId, ref: "User", required: true, index: true },
@@ -75,6 +83,7 @@ const sessionQuestionSchema = new Schema({
   upvotes:    { type: [Types.ObjectId], default: [] },
   status:     { type: String, enum: STATUS, default: "approved" },
 }, { timestamps: true });
+sessionQuestionSchema.index({ authorId: 1 });   // points
 
 const sessionVoteSchema = new Schema({
   sessionId:   { type: String, required: true },
@@ -84,6 +93,7 @@ const sessionVoteSchema = new Schema({
 }, { timestamps: true });
 sessionVoteSchema.index({ sessionId: 1, pollId: 1, userId: 1 }, { unique: true });
 sessionVoteSchema.index({ sessionId: 1, pollId: 1 });
+sessionVoteSchema.index({ userId: 1 });   // points
 
 export const SocialPost = mongoose.model("SocialPost", socialPostSchema);
 export const SocialComment = mongoose.model("SocialComment", socialCommentSchema);

@@ -2,6 +2,7 @@ import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
 import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc } from "../services/cmsSchema.js";
+import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
 
 /* =========================================================
    /api/cms — edit the website's Sanity content (speakers,
@@ -57,6 +58,12 @@ async function audit(req, action, type, id, detail = "") {
                             targetId: String(id || ""), detail: String(detail).slice(0, 500) }).catch(() => {});
 }
 
+/* Audit detail: field names, plus the value for the session live switches
+   ("polls=off"; cleared = back to auto). */
+const LIVE_FIELDS = ["polls", "qa"];
+const auditField = (k, set, unset) => (!LIVE_FIELDS.includes(k) ? k : unset.includes(k) ? `${k}=auto` : `${k}=${set[k]}`);
+const liveDetail = (set) => LIVE_FIELDS.filter((k) => set[k] !== undefined).map((k) => `${k}=${set[k]}`).join(", ");
+
 const fail = (res, err) => res.status(err.status && err.status < 500 ? err.status : 502).json({ error: err.message || "Sanity error" });
 
 router.get("/status", (req, res) => {
@@ -100,6 +107,46 @@ router.post("/session/import", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/* "Running late": shift agenda times in one step on event day.
+   Body { id, minutes, scope?: "stage" | "day", only? }. The session `id` keeps its
+   start and its end moves by `minutes`; every session after it in scope moves both
+   times (rules in services/agendaShift.js). All patches go in one transaction, each
+   pinned to the revision we just read, so it's all or nothing and an edit made in
+   between fails the whole shift instead of mixing old and new times.
+   Undo = the same call with -minutes and `only` = the ids it moved (minus `id`).
+   → { ok, minutes, scope, moved: [{ _id, title, time, endTime }] } (the session `id` first). */
+router.post("/session/shift", async (req, res) => {
+  if (needToken(res)) return;
+  const body = req.body || {};
+  const id = typeof body.id === "string" ? body.id.trim() : "";
+  if (!id || id.length > 200) return res.status(400).json({ error: "Say which session is running late." });
+  const { minutes, scope, error } = readShift(body);
+  if (error) return res.status(400).json({ error });
+  let only;
+  if (body.only !== undefined && body.only !== null) {
+    if (!Array.isArray(body.only) || body.only.length > 300 || !body.only.every((x) => typeof x === "string")) {
+      return res.status(400).json({ error: "only must be a list of session ids." });
+    }
+    only = body.only;
+  }
+  try {
+    const out = await query(`*[_type == "session" && !(_id in path("drafts.**"))]{ _id, _rev, title, day, time, endTime, stage, isBreak }`);
+    const plan = planShift(out.result || [], id, minutes, scope, { only });
+    if (plan.error) return res.status(plan.status || 400).json({ error: plan.error });
+    await mutate(plan.changes.map((c) => ({ patch: { id: c._id, ...(c._rev ? { ifRevisionID: c._rev } : {}), set: c.set } })));
+    await audit(req, "cms_agenda_shift", "session", id, shiftSummary(plan));
+    res.json({
+      ok: true, minutes, scope,
+      moved: plan.changes.map(({ _id, title, time, endTime }) => ({ _id, title, time, endTime })),
+    });
+  } catch (err) {
+    if (err.status === 409) {
+      return res.status(409).json({ error: "The agenda changed while you were shifting it. Nothing was moved. Refresh and try again." });
+    }
+    fail(res, err);
+  }
+});
+
 router.get("/:type", async (req, res) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
@@ -121,7 +168,7 @@ router.post("/:type", async (req, res) => {
   try {
     const out = await mutate([{ create: { _type: type, ...set } }]);
     const doc = out.results?.[0]?.document;
-    await audit(req, "cms_create", type, doc?._id, set.name || "");
+    await audit(req, "cms_create", type, doc?._id, [set.name || set.title || "", liveDetail(set)].filter(Boolean).join(" · "));
     res.status(201).json(doc);
   } catch (err) { fail(res, err); }
 });
@@ -138,7 +185,7 @@ router.patch("/:type/:id", async (req, res) => {
   if (!patch.set && !patch.unset) return res.status(400).json({ error: "Nothing to change" });
   try {
     const out = await mutate([{ patch }]);
-    await audit(req, "cms_edit", type, id, Object.keys(set).concat(unset).join(", "));
+    await audit(req, "cms_edit", type, id, Object.keys(set).concat(unset).map((k) => auditField(k, set, unset)).join(", "));
     res.json(out.results?.[0]?.document || { _id: id });
   } catch (err) { fail(res, err); }
 });
