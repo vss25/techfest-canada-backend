@@ -16,6 +16,12 @@ const stats = { kind: "stats" };                        // About page numbers: [
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
+/* Where a partner shows: the website and the apps each have their own switch on
+   the same record. Missing = shown; `active` stays the master switch (off = hidden
+   everywhere). New partners get both switches on. */
+const shown = { ...bool, default: true };
+export const SPONSOR_DESCRIPTION_MAX = 600;
+
 /** Per-session live polls / audience Q&A switch (services/sessionLive.js has the rule). */
 export const LIVE_MODES = ["auto", "on", "off"];
 const liveMode = { ...oneOf(...LIVE_MODES), default: "auto" };
@@ -46,6 +52,11 @@ export const CMS_FIELDS = {
     // Partners page row (website src/data/partnerMatrix.js): paid partners, 5 tech pillars, 5 applied sectors, ecosystem
     matrixGroup: oneOf("featured", "ai", "quantum", "cyber", "robotics", "cleantech",
       "health", "bfsi", "supply", "defence", "energy", "ecosystem"),
+    // Sponsors = partners in the "featured" row (paid partners). The apps show this on
+    // their Sponsors cards; the website as a tooltip on the logo.
+    description: str(SPONSOR_DESCRIPTION_MAX),
+    showOnWebsite: shown,
+    showInApp: shown,
   },
   sponsor: LOGO_TYPE,
   sponsorMarquee: LOGO_TYPE,
@@ -77,6 +88,23 @@ export const CMS_FIELDS = {
 };
 
 export const CMS_TYPES = Object.keys(CMS_FIELDS);
+
+/* Audit log detail. Most fields are listed by name; these also show their value
+   ("showInApp=false", "polls=off"), and a cleared one shows what it falls back to. */
+const AUDIT_VALUE_FIELDS = { polls: "auto", qa: "auto", showOnWebsite: "true", showInApp: "true" };
+const auditValue = (k, set, unset) => (unset.includes(k) ? AUDIT_VALUE_FIELDS[k] : set[k]);
+
+/** Edit: "name, showInApp=false, polls=auto". Pure. */
+export function auditEditDetail(set = {}, unset = []) {
+  return Object.keys(set).concat(unset)
+    .map((k) => (k in AUDIT_VALUE_FIELDS ? `${k}=${auditValue(k, set, unset)}` : k)).join(", ");
+}
+
+/** Create: "IBM · showOnWebsite=true, showInApp=true". Pure. */
+export function auditCreateDetail(set = {}) {
+  const values = Object.keys(AUDIT_VALUE_FIELDS).filter((k) => set[k] !== undefined).map((k) => `${k}=${set[k]}`).join(", ");
+  return [set.name || set.title || "", values].filter(Boolean).join(" · ");
+}
 export const cmsFieldsFor = (type) => CMS_FIELDS[type] || null;
 
 const keyFor = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 10);
