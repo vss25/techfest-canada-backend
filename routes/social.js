@@ -11,6 +11,7 @@ import {
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
 import AppNotification from "../models/AppNotification.js";
 import { pushToUsers } from "../services/push.js";
+import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, tierName, bestTierKey, isOnApp,
@@ -129,10 +130,25 @@ router.get("/feed", async (req, res) => {
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars)));
 });
 
+/* ================= FEED MEDIA (Cloudinary) ================= */
+
+/** Whether photo/video uploads are on, and their limits. */
+router.get("/media/config", (req, res) => {
+  res.json({ enabled: cloudinaryConfig().enabled, maxItems: MAX_ITEMS, maxVideoSeconds: MAX_VIDEO_SECONDS });
+});
+
+/** Signed parameters for one direct upload to Cloudinary. */
+router.post("/media/sign", (req, res) => {
+  const signed = signUpload({ type: req.body?.type, userId: req.user._id });
+  if (!signed) return res.status(503).json({ error: "media_unavailable", message: "Photo and video uploads aren't switched on yet." });
+  res.json(signed);
+});
+
 router.post("/feed", async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   const imageData = cleanImageData(req.body?.imageData, 450_000);
-  if (!body && !imageData) return res.status(400).json({ error: "Write something or add a photo" });
+  const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
+  if (!body && !imageData && !media.length) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
   const status = await statusFor([body, linkUrl].join(" "), req.user._id, "feed");
   const post = await SocialPost.create({
@@ -146,6 +162,7 @@ router.post("/feed", async (req, res) => {
     topicTags: Array.isArray(req.body?.topicTags) ? req.body.topicTags.filter((t) => typeof t === "string").slice(0, 8) : [],
     linkUrl,
     imageData,
+    media,
     status,
   });
   res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]])));
