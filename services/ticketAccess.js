@@ -95,6 +95,9 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       tagline: u.tagline || "",
       availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
       meetingSpot: u.meetingSpot || "",
+      // Staff contact switches, same as userCard (routes/social.js corrects them per viewer).
+      acceptsMessages: !u.messagesOff,
+      acceptsRequests: !u.requestsOff,
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
@@ -134,6 +137,8 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       linkedinUrl: "",
       country: "",
       topics: [],
+      acceptsMessages: true,   // no switches on a guest; onApp: false already rules out contact
+      acceptsRequests: true,
       ticketType: g.ticketType,
       purchaseDate: g.purchaseDate,
     };

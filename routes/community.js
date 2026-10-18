@@ -3,7 +3,8 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { moderateText, isConfigured as moderationConfigured } from "../services/deepcleer.js";
-import { trimBody, userCard } from "../services/socialHelpers.js";
+import { trimBody, userCard, CARD_SELECT } from "../services/socialHelpers.js";
+import { contactAccess, applyAccess } from "../services/contactAccess.js";
 import { Block } from "../models/Admin.js";
 import { pushToUsers } from "../services/push.js";
 import { recordActivity } from "../models/ActivityEvent.js";
@@ -165,11 +166,12 @@ router.get("/groups/:id/members", async (req, res) => {
   if (!g || (g.status !== "approved" && String(g.ownerId) !== me(req) && !isAdmin(req.user))) {
     return res.status(404).json({ error: "Not found" });
   }
-  const users = await User.find({ _id: { $in: g.members || [] } })
-    .select("name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot").lean();
+  const users = await User.find({ _id: { $in: g.members || [] } }).select(CARD_SELECT).lean();
   const owner = String(g.ownerId);
+  // acceptsMessages/acceptsRequests are about 1:1 contact; the group chat itself is unaffected.
+  const access = await contactAccess(req.user, users);
   res.json(users
-    .map((u) => ({ ...userCard(u), isOwner: String(u._id) === owner, isMe: String(u._id) === me(req) }))
+    .map((u) => ({ ...applyAccess(userCard(u), access), isOwner: String(u._id) === owner, isMe: String(u._id) === me(req) }))
     .sort((a, b) => (b.isOwner - a.isOwner) || a.name.localeCompare(b.name)));
 });
 

@@ -223,6 +223,8 @@ async function person(m, id) {
       <label>Topics (comma separated)<input data-k="topics" value="${esc((u.topics || []).join(", "))}"></label>
       <label>Role<select data-k="role"><option value="user" ${u.role !== "admin" ? "selected" : ""}>Attendee</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>Staff (admin)</option></select></label>
       <label>Attendee list<select data-k="directoryHidden"><option value="false" ${!u.directoryHidden ? "selected" : ""}>Shown</option><option value="true" ${u.directoryHidden ? "selected" : ""}>Hidden</option></select></label>
+      <label>Messages<select data-k="messagesOff"><option value="false" ${!u.messagesOff ? "selected" : ""}>Can be messaged</option><option value="true" ${u.messagesOff ? "selected" : ""}>Off (staff, connections, replies only)</option></select></label>
+      <label>Connection requests<select data-k="requestsOff"><option value="false" ${!u.requestsOff ? "selected" : ""}>Allowed</option><option value="true" ${u.requestsOff ? "selected" : ""}>Off</option></select></label>
       <label>Account<select data-k="banned"><option value="false" ${!u.banned ? "selected" : ""}>Active</option><option value="true" ${u.banned ? "selected" : ""}>Suspended</option></select></label>
       ${f("bannedReason", "Suspension reason")}
       </div><div class="row" style="margin-top:14px"><button class="btn primary" id="save">Save changes</button><span class="muted" style="flex:1"></span><button class="btn danger" id="del">Delete account</button></div></div>`;

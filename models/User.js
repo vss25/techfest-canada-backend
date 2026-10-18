@@ -89,6 +89,10 @@ const userSchema = new mongoose.Schema(
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
     directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
+    // Staff switches for VIPs who won't reply (services/contactSwitches.js). Staff,
+    // accepted connections and people they wrote to can still message them.
+    messagesOff:  { type: Boolean, default: false },      // no new 1:1 messages from others
+    requestsOff:  { type: Boolean, default: false },      // no new connection requests (badge scan still works)
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },

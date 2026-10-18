@@ -72,11 +72,18 @@ export function userCard(user) {
     meetingSpot: user.meetingSpot || "",
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
+    // Staff contact switches (services/contactSwitches.js). False only hides the
+    // Message / Connect buttons; the server still decides (e.g. replies are allowed).
+    acceptsMessages: !user.messagesOff,
+    acceptsRequests: !user.requestsOff,
   };
 }
 
+/** Fields userCard reads. Every query that builds cards must select these. */
+export const CARD_SELECT = "name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff";
+
 /** Fields a person's full profile page shows (GET /api/social/users/:id). */
-export const PROFILE_SELECT = "name jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot fieldOfWork jobLevel objectives";
+export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;
 
 /** Full public profile: the card plus the other profile answers they gave.
     Never email, phone, role, tickets, gender or salutation. */

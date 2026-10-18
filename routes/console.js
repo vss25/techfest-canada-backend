@@ -115,13 +115,14 @@ router.get("/users", async (req, res) => {
   if (req.query.banned === "true") filter.banned = true;
   const page = Math.max(0, Number(req.query.page) || 0);
   const [rows, total] = await Promise.all([
-    User.find(filter).select("name email role jobTitle organization topics tickets banned lastActiveAt createdAt provider")
+    User.find(filter).select("name email role jobTitle organization topics tickets banned directoryHidden messagesOff requestsOff lastActiveAt createdAt provider")
       .sort({ lastActiveAt: -1, createdAt: -1 }).skip(page * 50).limit(50).lean(),
     User.countDocuments(filter),
   ]);
   res.json({ total, page, users: rows.map((u) => ({
     id: String(u._id), name: u.name, email: u.email, role: u.role, jobTitle: u.jobTitle, organization: u.organization,
     topics: u.topics || [], tickets: (u.tickets || []).length, banned: !!u.banned, provider: u.provider,
+    directoryHidden: !!u.directoryHidden, messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff,
     lastActiveAt: u.lastActiveAt, createdAt: u.createdAt,
   })) });
 });
@@ -147,7 +148,7 @@ router.get("/users/:id", async (req, res) => {
   const peers = await User.find({ _id: { $in: peerIds } }).select("name organization").lean();
   const peerName = Object.fromEntries(peers.map((p) => [String(p._id), `${p.name}${p.organization ? " · " + p.organization : ""}`]));
   res.json({
-    user: { ...u, id: String(u._id) },
+    user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff },
     activity: summarize(events),
     events: events.slice(0, 200),
     posts, comments, discussions, groups: groups.map((g) => g.name),
@@ -162,7 +163,9 @@ router.get("/users/:id", async (req, res) => {
 });
 
 const EDITABLE = ["name", "email", "jobTitle", "organization", "linkedinUrl", "country", "fieldOfWork", "topics", "role", "banned", "bannedReason", "directoryHidden",
-  "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot", "appOnboarded"];
+  "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot", "appOnboarded",
+  "messagesOff", "requestsOff"];   // contact switches for VIPs (services/contactSwitches.js)
+const EDIT_BOOLS = new Set(["banned", "directoryHidden", "appOnboarded", "messagesOff", "requestsOff"]);
 const EDIT_LISTS = { topics: 20, objectives: 12, availabilitySlots: 40 };
 router.patch("/users/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
@@ -179,7 +182,7 @@ router.patch("/users/:id", async (req, res) => {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
     if (EDIT_LISTS[k]) v = Array.isArray(v) ? v.filter((t) => typeof t === "string").map((t) => t.trim().slice(0, 80)).filter(Boolean).slice(0, EDIT_LISTS[k]) : u[k];
-    else if (k === "banned" || k === "directoryHidden" || k === "appOnboarded") v = v === true || v === "true";
+    else if (EDIT_BOOLS.has(k)) v = v === true || v === "true";
     else if (k === "name" && !String(v).trim()) continue;
     else if (k === "role") v = v === "admin" ? "admin" : "user";
     else if (k === "email") v = String(v).trim().toLowerCase().slice(0, 200);
