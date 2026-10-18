@@ -8,7 +8,8 @@ import crypto from "node:crypto";
    Videos are capped at 30 s twice: the apps refuse longer
    clips, and the signed upload carries an incoming trim (du_30)
    the client can't change.
-   Env: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.
+   Env: CLOUDINARY_URL (the one line Cloudinary shows), or
+   CLOUDINARY_CLOUD_NAME + CLOUDINARY_API_KEY + CLOUDINARY_API_SECRET.
    Unset → media is off and the apps keep the single inline photo.
 ========================================================= */
 
@@ -16,10 +17,18 @@ export const MAX_ITEMS = 6;
 export const MAX_VIDEO_SECONDS = 30;
 const FOLDER = "ttfc/posts";
 
+/** The single line Cloudinary shows: cloudinary://<api_key>:<api_secret>@<cloud_name>. Pure. */
+export function parseCloudinaryUrl(raw) {
+  const m = /^cloudinary:\/\/([^:@\s]+):([^@\s]+)@([a-z0-9_-]+)\s*$/i.exec(String(raw || "").trim().replace(/^CLOUDINARY_URL=/, ""));
+  return m ? { apiKey: m[1], apiSecret: m[2], cloudName: m[3] } : null;
+}
+
 export function config(env = process.env) {
-  const cloudName = env.CLOUDINARY_CLOUD_NAME || "";
-  const apiKey = env.CLOUDINARY_API_KEY || "";
-  const apiSecret = env.CLOUDINARY_API_SECRET || "";
+  // Either the three separate variables or the one CLOUDINARY_URL line.
+  const fromUrl = parseCloudinaryUrl(env.CLOUDINARY_URL) || {};
+  const cloudName = env.CLOUDINARY_CLOUD_NAME || fromUrl.cloudName || "";
+  const apiKey = env.CLOUDINARY_API_KEY || fromUrl.apiKey || "";
+  const apiSecret = env.CLOUDINARY_API_SECRET || fromUrl.apiSecret || "";
   return { cloudName, apiKey, apiSecret, enabled: !!(cloudName && apiKey && apiSecret) };
 }
 

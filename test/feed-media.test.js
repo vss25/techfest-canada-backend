@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sign, signUpload, cleanMedia, deliveryMedia, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
+import { sign, signUpload, cleanMedia, deliveryMedia, MAX_VIDEO_SECONDS, parseCloudinaryUrl, config } from "../services/cloudinary.js";
 import { postDTO } from "../services/socialHelpers.js";
 
 const env = { CLOUDINARY_CLOUD_NAME: "demo", CLOUDINARY_API_KEY: "123", CLOUDINARY_API_SECRET: "abcd" };
@@ -46,4 +46,14 @@ test("postDTO lists media; a legacy inline photo becomes one image", () => {
   assert.equal(legacy.media[0].url, "/api/files/post/p1");
   const none = postDTO({ _id: "p2", authorId: "u", authorName: "A", body: "hi" }, "u");
   assert.deepEqual(none.media, []);
+});
+
+test("CLOUDINARY_URL alone switches media on", () => {
+  assert.deepEqual(parseCloudinaryUrl("cloudinary://123456789012345:Ab-C_d9@demo-cloud"), { apiKey: "123456789012345", apiSecret: "Ab-C_d9", cloudName: "demo-cloud" });
+  assert.deepEqual(parseCloudinaryUrl("CLOUDINARY_URL=cloudinary://1:s@x"), { apiKey: "1", apiSecret: "s", cloudName: "x" });
+  assert.equal(parseCloudinaryUrl("https://example.com"), null);
+  const c = config({ CLOUDINARY_URL: "cloudinary://1:s@x" });
+  assert.equal(c.enabled, true);
+  assert.equal(c.cloudName, "x");
+  assert.equal(config({}).enabled, false);
 });
