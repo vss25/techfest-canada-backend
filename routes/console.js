@@ -17,7 +17,7 @@ import {
   DEFAULT_MATRIX, RIGHTS, RIGHT_LABELS, INBOUND_RIGHTS, ADMIN_POWERS, mergeMatrix, cleanMatrix, matrixChanges,
   consoleTypes, typesEdit, typeCandidates,
 } from "../services/appRights.js";
-import { rightsContext, matrixInfo, loadMatrix, saveMatrix } from "../services/rightsStore.js";
+import { rightsContext, matrixInfo, loadMatrix, saveMatrix, loadFlags } from "../services/rightsStore.js";
 import { loadExhibitors } from "../services/exhibitorCache.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
@@ -386,10 +386,10 @@ router.put("/app-content/:key", async (req, res) => {
    PUT { matrix: { type: { right: bool } } } (left-out cells keep their
    defaults) or { reset: true }. Changes are audited with a diff. */
 async function appRightsPayload(req) {
-  const { matrix, updatedBy, updatedAt } = await matrixInfo();
+  const [{ matrix, updatedBy, updatedAt }, flags] = await Promise.all([matrixInfo(), loadFlags()]);
   return {
     matrix, defaults: mergeMatrix(DEFAULT_MATRIX), types: PERSON_TYPES, rights: RIGHTS, labels: RIGHT_LABELS,
-    inbound: INBOUND_RIGHTS, adminPowers: ADMIN_POWERS, updatedBy, updatedAt, canEdit: isManagement(req.user),
+    inbound: INBOUND_RIGHTS, adminPowers: ADMIN_POWERS, flags, updatedBy, updatedAt, canEdit: isManagement(req.user),
   };
 }
 
