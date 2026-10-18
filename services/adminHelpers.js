@@ -28,6 +28,19 @@ export function cleanEvent(e, now = Date.now()) {
   };
 }
 
+/** Where a batch of events came from. */
+export const EVENT_PLATFORMS = Object.freeze(["ios", "android", "web"]);
+
+/** `platform` from POST /api/app/events: "ios" | "android" | "web". The
+    Android app (Analytics.kt) doesn't send it yet but ends appVersion with
+    "android" ("1.0.1 (3) android"); anything else or missing is an iOS build. */
+export function eventPlatform(body) {
+  const p = String(body?.platform ?? "").trim().toLowerCase();
+  if (EVENT_PLATFORMS.includes(p)) return p;
+  if (/\bandroid\b/i.test(String(body?.appVersion ?? ""))) return "android";
+  return "ios";
+}
+
 /** Editable app texts: the keys the app understands, with defaults. */
 export const CONTENT_KEYS = {
   "login.tagline": "Canada's first-of-its-kind\ndeal-making technology platform.",
@@ -58,6 +71,7 @@ export const CONTENT_KEYS = {
   "site.nominations_open": true,
   "site.volunteer_open": true,
   "site.show_agenda": true,
+  "flag.pwaPrompt": false,                 // on = the website offers "install the app" (the PWA at /app/)
   "site.hero_tagline": "",
   "site.contact_email": "info@thetechfestival.com",
   "site.linkedin_url": "",

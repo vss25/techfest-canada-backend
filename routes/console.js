@@ -9,6 +9,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
@@ -296,6 +297,15 @@ router.get("/events", async (req, res) => {
   const users = await User.find({ _id: { $in: ids } }).select("name").lean();
   const nm = Object.fromEntries(users.map((u) => [String(u._id), u.name]));
   res.json(events.map((e) => ({ ...e, userName: e.userId ? nm[String(e.userId)] || "Deleted user" : "Signed out" })));
+});
+
+/* ---------- Web app (PWA) installs + launches ----------
+   The website's installable app at /app/ posts pwa_* events with platform "web".
+   ?days=1…120 (default 30, Toronto days, today included); kept a minute,
+   ?refresh=1 skips the copy. Read-only like /stats, so not audited.
+   Shape and rules in services/pwaStats.js. */
+router.get("/pwa", async (req, res) => {
+  res.json(await pwaStats({ AppEvent, User }, { days: clampDays(req.query.days), refresh: req.query.refresh === "1" }));
 });
 
 /* ---------- Content moderation ---------- */

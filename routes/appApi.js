@@ -7,7 +7,7 @@ import { pushToUsers } from "../services/push.js";
 import { buildReportNotifications } from "../services/socialActivity.js";
 import { holdersQuery, rightsFor } from "../services/appRights.js";
 import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
-import { cleanEvent, CONTENT_KEYS } from "../services/adminHelpers.js";
+import { cleanEvent, eventPlatform, CONTENT_KEYS } from "../services/adminHelpers.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -19,7 +19,10 @@ const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });  
 
 /* =========================================================
    /api/app — things every iOS client needs:
-   POST   /events        usage analytics (signed in or anonymous device)
+   POST   /events        usage analytics (signed in or anonymous device) from the
+                         apps and the website's installable app (/app/):
+                         { deviceId, appVersion, platform: ios|android|web, events }
+                         (platform missing → ios, or android from appVersion)
    GET    /content       admin-editable texts + feature switches
    POST   /report        report a post, comment, message, user… (signed in);
                          everyone who can moderate gets a "Content reported" notification
@@ -56,8 +59,9 @@ router.post("/events", async (req, res) => {
   const user = await optionalUser(req);
   const deviceId = String(req.body?.deviceId || "").slice(0, 64);
   const appVersion = String(req.body?.appVersion || "").slice(0, 20);
+  const platform = eventPlatform(req.body);
   const docs = list.map((e) => cleanEvent(e)).filter(Boolean)
-    .map((e) => ({ ...e, userId: user?._id, deviceId, appVersion, platform: "ios" }));
+    .map((e) => ({ ...e, userId: user?._id, deviceId, appVersion, platform }));
   if (docs.length) await AppEvent.insertMany(docs, { ordered: false }).catch(() => {});
   if (user) User.updateOne({ _id: user._id }, { $set: { lastActiveAt: new Date() } }).catch(() => {});
   res.json({ accepted: docs.length });
