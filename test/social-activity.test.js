@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, seenAt, unreadFilter,
-  countUnread, parseSection, activityDTO, buildReportNotifications, removeMode, canViewPost, MAX_MENTIONS,
+  countUnread, parseSection, activityDTO, buildReportNotifications, reportLink, removeMode, canViewPost, MAX_MENTIONS,
 } from "../services/socialActivity.js";
 import { postDTO, publicProfile } from "../services/socialHelpers.js";
 
@@ -158,6 +158,16 @@ test("buildReportNotifications: one per staff account, not the reporter", () => 
     userId: undefined, title: "Content reported", body: "Ann reported a post: spam link", link: "ttfc://moderation",
     kind: "report", batchId: "report:r1", sentBy: A, sentByName: "Ann",
   });
+});
+
+test("reportLink: a reported post opens the post, everything else the queue", () => {
+  const P = "64b7f0c2a1b2c3d4e5f60718";
+  assert.equal(reportLink("post", P), `ttfc://post/${P}`);
+  const [r] = buildReportNotifications({ reporterId: A, reporterName: "Ann", targetType: "post", targetId: P, staffIds: [S] });
+  assert.equal(r.link, `ttfc://post/${P}`);
+  assert.equal(reportLink("post", "../x"), "ttfc://moderation");
+  assert.equal(reportLink("post", ""), "ttfc://moderation");
+  assert.equal(reportLink("comment", P), "ttfc://moderation");
 });
 
 test("buildReportNotifications: no reason, readable target names, body ≤ 500", () => {

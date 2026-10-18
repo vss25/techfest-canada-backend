@@ -143,8 +143,14 @@ export function activityDTO(e) {
 
 const TARGET_LABEL = { groupMessage: "group message" };
 
+/** Where the alert opens: a reported post opens that post (staff can remove it there); anything else the moderation queue. */
+export function reportLink(targetType, targetId) {
+  const id = String(targetId ?? "").trim();
+  return targetType === "post" && /^[a-f0-9]{24}$/i.test(id) ? `ttfc://post/${id}` : "ttfc://moderation";
+}
+
 /** Staff inbox rows (AppNotification docs) for one new report, minus the reporter. */
-export function buildReportNotifications({ reporterId, reporterName, targetType, reason, reportId, staffIds = [] }) {
+export function buildReportNotifications({ reporterId, reporterName, targetType, targetId, reason, reportId, staffIds = [] }) {
   const title = "Content reported";
   const what = TARGET_LABEL[targetType] || String(targetType || "item");
   const why = String(reason ?? "").replace(/\s+/g, " ").trim() || "no reason given";
@@ -152,7 +158,7 @@ export function buildReportNotifications({ reporterId, reporterName, targetType,
   const me = String(reporterId ?? "");
   const ids = [...new Set(staffIds.map(String))].filter((id) => id && id !== me);
   return ids.map((userId) => ({
-    userId, title, body, link: "ttfc://moderation", kind: "report",
+    userId, title, body, link: reportLink(targetType, targetId), kind: "report",
     batchId: reportId ? `report:${reportId}` : "",
     sentBy: me || undefined, sentByName: String(reporterName || ""),
   }));

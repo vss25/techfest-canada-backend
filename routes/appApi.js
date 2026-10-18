@@ -88,7 +88,7 @@ async function alertStaff(me, report) {
     if (!reportAlertLimiter.hit(String(me._id))) return;
     const staff = await User.find({ role: "admin", banned: { $ne: true } }).select("_id").lean();
     const rows = buildReportNotifications({
-      reporterId: me._id, reporterName: me.name, targetType: report.targetType, reason: report.reason,
+      reporterId: me._id, reporterName: me.name, targetType: report.targetType, targetId: report.targetId, reason: report.reason,
       reportId: report._id, staffIds: staff.map((u) => u._id),
     });
     if (!rows.length) return;
