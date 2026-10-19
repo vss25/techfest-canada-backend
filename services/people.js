@@ -116,6 +116,9 @@ const ISSUED_PROMOS = new Set(["ISSUED", "EXHIBITOR"]);
 
 const STAFF_PROMOS = new Set(["COMP", "ISSUED", "EXHIBITOR", "SPEAKER"]);
 const EMAILED_PROMOS = new Set(["ISSUED", "EXHIBITOR", "SPEAKER"]); // passes the admin panel emails out
+/** A Speaker Pass staff made (Admin › Speaker passes, Issue passes): one bought through checkout and changed to
+    the Speaker Pass by management keeps its Stripe payment, so it stays "paid" with its Stripe value. */
+const staffSpeakerPass = (t) => isSpeakerPass(t) && !t?.stripeSessionId;
 const PLACEHOLDER = /@ticket\.thetechfestival\.com$/i;
 const isBooth = (id) => /^BOOTH-/i.test(String(id || ""));
 const realEmail = (e) => {
@@ -140,7 +143,7 @@ const ms = (d) => {
  */
 export function passStatus(t, refunds = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
-  const speakerPass = isSpeakerPass(t);
+  const speakerPass = staffSpeakerPass(t);
   const r = t?.stripeSessionId && refunds ? refunds.get(t.stripeSessionId) : null;
   if (r && r.total > 0 && r.refunded >= r.total) return "refunded";
   if (STAFF_PROMOS.has(promo) || speakerPass) {
@@ -223,7 +226,7 @@ export function ticketValue(t, stripe = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
   // Paid outside Stripe: what management typed. (A pass with a Stripe session always takes Stripe's value.)
   if (!t?.stripeSessionId && num(t?.manualValue) !== undefined) return Math.round(t.manualValue * 100) / 100;
-  if (STAFF_PROMOS.has(promo) || isSpeakerPass(t)) return 0;
+  if (STAFF_PROMOS.has(promo) || staffSpeakerPass(t)) return 0;
   if (!stripe || !t?.stripeSessionId) return null;
   const extra = stripe.upgrades?.get(t.norm || normalizeTicketId(t.ticketId)) || 0;
   const share = Math.max(1, stripe.shared?.get(t.stripeSessionId) || 1);

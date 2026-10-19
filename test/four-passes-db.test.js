@@ -138,6 +138,8 @@ test("migration: exhibitor passes named Connect Pass, All Access gone, issued Sp
       issuedPass: { label: "Exhibitor Pass", rsvp: true, booth: { booth: "B7" }, copy: { message: "Your Exhibitor Pass and manual." } } },
     { name: "Gus Guest", email: "gus.guest@example.com", ticketId: "gus000000001", ticketType: "power", stripeSessionId: "cs_gus" },
     { name: "Vin Vip", email: "vin.vip@example.com", ticketId: "vin000000001", ticketType: "apex", promoCode: "ISSUED", issuedPass: { label: "VIP Guest Pass", rsvp: true } },
+    { name: "Pat Power", email: "pat.power@example.com", ticketId: "pat000000001", ticketType: "power", promoCode: "ISSUED",
+      issuedPass: { label: "All Access Pass", rsvp: true, copy: { headline: "Your ALL ACCESS PASS" } } },
   ]);
   await EmailTemplate.create([
     { key: "speaker-pass", subject: "{firstName}, your Speaker Pass and run of show", message: "All Access Passes go out today." },
@@ -148,19 +150,21 @@ test("migration: exhibitor passes named Connect Pass, All Access gone, issued Sp
     days: ["day1"], options: ["cxo_d1", "awards"] });
 
   const out = await migratePassNamesOnce({ Attendee, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } });
-  assert.deepEqual([out.exhibitorLabels, out.speakerLabels, out.otherLabels, out.passCopiesRenamed, out.templatesRenamed], [1, 1, 0, 2, 2]);
+  assert.deepEqual([out.exhibitorLabels, out.speakerLabels, out.otherLabels, out.passCopiesRenamed, out.templatesRenamed], [1, 1, 1, 3, 2]);
+  const pat = await Attendee.findOne({ ticketId: "pat000000001" }).lean();
+  assert.deepEqual([pat.ticketType, pat.issuedPass.label, pat.issuedPass.copy.headline], ["power", "", "Your POWER PASS"]);
   // No tier changes: Speaker Passes stay "speaker" (on passes, accounts and RSVPs).
   assert.equal(await Attendee.countDocuments({ ticketType: "speaker" }), 3);
   assert.equal(await User.countDocuments({ "tickets.type": "speaker" }), 1);
   const ida = await Attendee.findOne({ ticketId: "ida000000001" }).lean();
   assert.deepEqual([ida.ticketType, ida.issuedPass.label, ida.issuedPass.copy.subject, ida.issuedPass.copy.message],
-    ["speaker", "", "{firstName}, your Speaker Pass", "Your Power Pass is below."]);
+    ["speaker", "", "{firstName}, your Speaker Pass", "Your Speaker Pass is below."]);   // its old name was All Access Pass
   const eve = await Attendee.findOne({ ticketId: "eve000000001" }).lean();
   assert.deepEqual([eve.ticketType, eve.issuedPass.label, eve.issuedPass.copy.message], ["connect", "", "Your Connect Pass and manual."]);
   assert.equal((await Attendee.findOne({ ticketId: "vin000000001" }).lean()).issuedPass.label, "VIP Guest Pass"); // staff's own name stays
   const t = await EmailTemplate.find({}).sort({ key: 1 }).lean();
   assert.deepEqual(t.map((x) => [x.key, x.subject]), [["exhibitor-pass", "Your Connect Pass"], ["speaker-pass", "{firstName}, your Speaker Pass and run of show"]]);
-  assert.equal(t[1].message, "Power Passes go out today.");
+  assert.equal(t[1].message, "Speaker Passes go out today.");   // the Speaker passes template: the Speaker Pass's old name
   const r = await Rsvp.findOne({ key: "t:kai000000001" }).lean();
   assert.deepEqual([r.tier, r.kind, r.options], ["speaker", "speaker", ["cxo_d1", "awards"]]);
   // The speaker type and the CxO Breakfasts come with the Speaker Pass, as before.
@@ -172,7 +176,7 @@ test("migration: exhibitor passes named Connect Pass, All Access gone, issued Sp
   // Counts only in the audit row and the AppContent record.
   const audit = await AdminAudit.findOne({ action: "pass_names_migration" }).lean();
   assert.match(audit.detail, /^Pass names: 1 exhibitor passes now "Connect Pass", 1 issued Speaker Passes now "Speaker Pass"/);
-  assert.doesNotMatch(audit.detail, /Kai|Lee|Ida|Eve|example\.com/);
+  assert.doesNotMatch(audit.detail, /Kai|Lee|Ida|Eve|Pat|example\.com/);
   assert.ok(await AppContent.exists({ key: MIGRATION_KEY }));
   // Runs once.
   assert.equal(await migratePassNamesOnce({ Attendee, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } }), null);

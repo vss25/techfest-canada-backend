@@ -27,6 +27,9 @@ test("staff wording: All Access → Power, Exhibitor → Connect; Speaker Pass s
   assert.equal(renamePassNames("Exhibitor Passes for the booth"), "Connect Passes for the booth");
   assert.equal(renamePassNames("YOUR ALL ACCESS PASS"), "YOUR POWER PASS");
   assert.equal(renamePassNames("Your Speaker Pass and run of show"), "Your Speaker Pass and run of show");
+  // On a Speaker Pass "All Access Pass" was its own old name.
+  assert.equal(renamePassNames("Your All Access Pass. ALL ACCESS PASSES", { speaker: true }), "Your Speaker Pass. SPEAKER PASSES");
+  assert.equal(renamePassNames("Your Exhibitor Pass", { speaker: true }), "Your Connect Pass");
   assert.equal(renamePassNames("all access to the expo"), "all access to the expo");
   assert.equal(renamePassNames(""), "");
   assert.equal(renamePassNames(undefined), undefined);

@@ -1117,7 +1117,9 @@ function sendOptions(body = {}, template) {
   }
   return { ok: true, copy, to, cc };
 }
-const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE };
+// Speaker Passes made here (Sanity speakers, manual adds). One staff issued in Issue passes (promo ISSUED) has
+// its own list and email there, so it isn't listed, synced or sent from here too.
+const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE, promoCode: { $ne: "ISSUED" } };
 let speakerSendAllRunning = false;
 
 const findSpeakerPass = (id) => (isId(id)

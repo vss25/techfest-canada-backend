@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPeople, passStatus, primaryPass, namesMatch, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv,
-  PEOPLE_CSV_HEAD, agendaFor, specialEvents, suggestDomain, editInfo,
+  PEOPLE_CSV_HEAD, agendaFor, specialEvents, suggestDomain, editInfo, ticketValue,
 } from "../services/people.js";
 import { companyKey, cleanDomain, domainOfUrl, companyDTO } from "../services/companies.js";
 import { passKind, isExhibitorPass } from "../services/teamRoles.js";
@@ -143,6 +143,12 @@ test("pass status from the ticket records (and Stripe refunds)", () => {
   assert.equal(passStatus({ promoCode: "ISSUED", passEmailSentAt: d("10-01") }), "issued");
   assert.equal(passStatus({ promoCode: "EARLYBIRD" }), "paid");
   assert.equal(passStatus({ stripeSessionId: "x" }, new Map([["x", { total: 0, refunded: 0 }]])), "paid");
+  // Speaker Passes: staff-made ones are pending until emailed; a bought pass management changed to one stays paid.
+  assert.equal(passStatus({ type: "speaker", promoCode: "SPEAKER" }), "pending");
+  assert.equal(passStatus({ type: "speaker", claimed: true }), "complimentary");
+  assert.equal(passStatus({ type: "speaker", stripeSessionId: "x" }), "paid");
+  assert.equal(ticketValue({ type: "speaker", promoCode: "SPEAKER" }), 0);
+  assert.equal(ticketValue({ type: "speaker", stripeSessionId: "s", ticketId: "t" }, { paid: new Map([["s", 999]]) }), 999);
   assert.equal(primaryPass([{ status: "refunded", tier: "apex" }, { status: "paid", tier: "connect" }]).tier, "connect");
   assert.equal(primaryPass([{ status: "paid", tier: "apex", hidden: true }]), null);
 });

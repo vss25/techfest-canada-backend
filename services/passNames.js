@@ -17,7 +17,10 @@
      - in staff-saved email wording (each pass's own, and the Speaker
        passes / Exhibitor passes templates) "All Access Pass(es)" →
        "Power Pass(es)" and "Exhibitor Pass(es)" → "Connect Pass(es)".
-       "Speaker Pass" stays: it's a pass again.
+       On a Speaker Pass, and in the Speaker passes template, "All
+       Access Pass" was that pass's old name (an issued "speaker" pass
+       was printed "All Access Pass"), so there it becomes "Speaker
+       Pass". "Speaker Pass" itself stays: it's a pass again.
    Nothing changes tier. Counts only are kept (never names): in the
    AppContent row, the server log and the admin audit log
    ("pass_names_migration").
@@ -28,24 +31,26 @@ export const MIGRATION_KEY = "migration.pass_names_v1";
 const RETIRED_LABEL = /^\s*(all[- ]access|exhibitor)\s+pass\s*$/i;
 const RETIRED_NAMES = /\b(All Access|Exhibitor) Pass(es)?\b/i;
 
-/** The retired names in staff-written wording → today's: "All Access Pass" → "Power Pass",
-    "Exhibitor Pass" → "Connect Pass" (plurals and capitals too). Anything else, "Speaker Pass" included, stays. Pure. */
-export function renamePassNames(text) {
+/** The retired names in staff-written wording → today's: "All Access Pass" → "Power Pass" ("Speaker Pass" with
+    { speaker: true }: wording on a Speaker Pass, where it was that pass's old name), "Exhibitor Pass" → "Connect Pass"
+    (plurals and capitals too). Anything else, "Speaker Pass" included, stays. Pure. */
+export function renamePassNames(text, { speaker = false } = {}) {
   if (typeof text !== "string" || !text) return text;
+  const to = speaker ? "Speaker" : "Power";
   return text
-    .replace(/\bAll[- ]Access Passes\b/g, "Power Passes").replace(/\bAll[- ]Access Pass\b/g, "Power Pass")
+    .replace(/\bAll[- ]Access Passes\b/g, `${to} Passes`).replace(/\bAll[- ]Access Pass\b/g, `${to} Pass`)
     .replace(/\bExhibitor Passes\b/g, "Connect Passes").replace(/\bExhibitor Pass\b/g, "Connect Pass")
-    .replace(/\bALL[- ]ACCESS PASS(ES)?\b/g, (m, pl) => `POWER PASS${pl || ""}`)
+    .replace(/\bALL[- ]ACCESS PASS(ES)?\b/g, (m, pl) => `${to.toUpperCase()} PASS${pl || ""}`)
     .replace(/\bEXHIBITOR PASS(ES)?\b/g, (m, pl) => `CONNECT PASS${pl || ""}`);
 }
 
 /** { subject, headline, message } with the retired names renamed → { set: { field: text }, changed: n }. Pure. */
-export function renameCopy(copy = {}, prefix = "") {
+export function renameCopy(copy = {}, prefix = "", opts = {}) {
   const set = {};
   for (const k of ["subject", "headline", "message"]) {
     const v = copy?.[k];
     if (typeof v !== "string") continue;
-    const next = renamePassNames(v);
+    const next = renamePassNames(v, opts);
     if (next !== v) set[`${prefix}${k}`] = next;
   }
   return { set, changed: Object.keys(set).length };
@@ -70,15 +75,16 @@ export async function migratePassNamesOnce({
     let passCopiesRenamed = 0;
     const withCopy = await Attendee.find({
       $or: ["subject", "headline", "message"].map((k) => ({ [`issuedPass.copy.${k}`]: RETIRED_NAMES })),
-    }).select("issuedPass.copy").lean();
+    }).select("ticketType issuedPass.copy").lean();
     for (const a of withCopy) {
-      const { set, changed } = renameCopy(a.issuedPass?.copy, "issuedPass.copy.");
+      const speaker = /^\s*speaker\s*$/i.test(String(a.ticketType || ""));
+      const { set, changed } = renameCopy(a.issuedPass?.copy, "issuedPass.copy.", { speaker });
       if (changed) { await Attendee.updateOne({ _id: a._id }, { $set: set }); passCopiesRenamed++; }
     }
     let templatesRenamed = 0;
     if (EmailTemplate) {
       for (const t of await EmailTemplate.find({ key: { $in: ["speaker-pass", "exhibitor-pass"] } }).lean()) {
-        const { set, changed } = renameCopy(t);
+        const { set, changed } = renameCopy(t, "", { speaker: t.key === "speaker-pass" });
         if (changed) { await EmailTemplate.updateOne({ _id: t._id }, { $set: set }); templatesRenamed++; }
       }
     }
