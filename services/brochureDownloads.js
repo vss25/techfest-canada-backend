@@ -8,11 +8,13 @@
    staff CSV. routes/brochure.js saves and emails; routes/console.js
    lists them for Admin → Brochure downloads.
 
-   Where the PDF comes from: it lives only in the website's
-   public/ folder (served by Vercel at thetechfestival.com/Brochure.pdf).
-   The email always carries that link, so it can never point at a
-   stale copy. The file is attached as well only when it is small
-   enough to land in a company inbox (see DEFAULT_ATTACH_MAX_BYTES).
+   Where the PDF comes from: the copy management uploaded in
+   Admin › Site settings › Large site files (Sanity CDN, app content
+   key site.brochure_url, services/siteFiles.js) when there is one,
+   else the website's public/ folder (thetechfestival.com/Brochure.pdf).
+   The email always carries a link to the current file, so it can never
+   point at a stale copy. The file is attached as well only when it is
+   small enough to land in a company inbox (see DEFAULT_ATTACH_MAX_BYTES).
 ========================================================= */
 
 import { EVENT } from "./ticketInfo.js";
@@ -158,7 +160,9 @@ export function websiteBase(env = process.env) {
   return raw.replace(/\/+$/, "");
 }
 
-export function brochureUrl(brochure, base = EVENT.website) {
+/** The PDF's address: the uploaded copy (`uploaded`, already checked by cleanSiteFileUrl) when set, else the website's. */
+export function brochureUrl(brochure, base = EVENT.website, uploaded = "") {
+  if (uploaded) return uploaded;
   return `${String(base).replace(/\/+$/, "")}${brochure.path}`;
 }
 
@@ -185,9 +189,9 @@ export function shouldAttach(bytes, maxBytes = DEFAULT_ATTACH_MAX_BYTES) {
  * (too big, unknown size, not a PDF, slow or unreachable). Never throws.
  * HEAD first so an oversized file is never downloaded into memory.
  */
-export async function loadAttachment(brochure, { base = EVENT.website, maxBytes = DEFAULT_ATTACH_MAX_BYTES, fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
+export async function loadAttachment(brochure, { base = EVENT.website, uploaded = "", maxBytes = DEFAULT_ATTACH_MAX_BYTES, fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
   if (!brochure || !(maxBytes > 0) || typeof fetchImpl !== "function") return null;
-  const url = brochureUrl(brochure, base);
+  const url = brochureUrl(brochure, base, uploaded);
   try {
     const head = await fetchImpl(url, { method: "HEAD", signal: AbortSignal.timeout(timeoutMs) });
     if (!head.ok || !shouldAttach(head.headers.get("content-length"), maxBytes)) return null;

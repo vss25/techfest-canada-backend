@@ -1,5 +1,7 @@
 /* Pure helpers for analytics and the admin console (unit-tested). */
 
+import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
+
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
 /** Clean one event from the app; returns null when unusable. */
@@ -90,6 +92,12 @@ export const CONTENT_KEYS = {
   "site.linkedin_url": "",
   "site.instagram_url": "",
   "site.x_url": "",
+  /* Large site files (Admin › Site settings › Large site files): the Sanity CDN copies of the home page
+     video and the brochure PDF, uploaded through POST /api/cms/upload-file. Empty = the website's own copy
+     (public/hero-bg.mp4, public/Brochure.pdf). Only "" or this project's cdn.sanity.io file URLs are saved
+     (services/siteFiles.js). */
+  "site.hero_video_url": "",
+  "site.brochure_url": "",
 };
 
 /** Validates a content update; returns [key, value] or null. */
@@ -97,6 +105,10 @@ export function cleanContent(key, value) {
   if (!Object.prototype.hasOwnProperty.call(CONTENT_KEYS, key)) return null;
   const def = CONTENT_KEYS[key];
   if (typeof def === "boolean") return [key, value === true || value === "true"];
+  if (Object.prototype.hasOwnProperty.call(SITE_FILE_KEYS, key)) {
+    const url = cleanSiteFileUrl(key, value);
+    return url === null ? null : [key, url];
+  }
   return [key, String(value ?? "").slice(0, 2000)];
 }
 
