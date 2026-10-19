@@ -91,7 +91,10 @@ const userSchema = new mongoose.Schema(
     companyLogoUrl: { type: String, default: "" },
     country:      { type: String, default: "" },
     topics:       { type: [String], default: [] },
-    directoryHidden: { type: Boolean, default: false }, // opt out of the app's attendee list
+    // Kept out of the app's attendee list. Only staff decide that now (Admin › App users;
+    // people could hide themselves until Oct 18 2026), so it goes with directoryHiddenByStaff.
+    directoryHidden: { type: Boolean, default: false },
+    directoryHiddenByStaff: { type: Boolean, default: false }, // staff hid this person (services/directoryHide.js)
     hideFromLeaderboard: { type: Boolean, default: false }, // opt out of the points leaderboard (still earns points)
     // Staff switches for VIPs who won't reply (services/contactSwitches.js). Staff,
     // accepted connections and people they wrote to can still message them.

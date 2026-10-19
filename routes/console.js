@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
+import { staffDirectoryHide } from "../services/directoryHide.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage, SessionRegistration, SessionQuestion,
 } from "../models/Social.js";
@@ -230,6 +231,11 @@ router.patch("/users/:id", async (req, res) => {
   // (accounts from before levels existed), so someone newly made staff starts at "staff".
   if (changed.includes("role")) u.staffRole = u.role === "admin" ? "staff" : undefined;
   for (const [k, v] of Object.entries(typed.set)) { u[k] = v; changed.push(k); }
+  // The attendee-list switch is staff-only now: record that staff made the call (services/directoryHide.js).
+  if (req.body?.directoryHidden !== undefined) {
+    const hide = staffDirectoryHide(req.body.directoryHidden);
+    if (u.directoryHiddenByStaff !== hide) { u.directoryHiddenByStaff = hide; if (!changed.includes("directoryHidden")) changed.push("directoryHidden"); }
+  }
   await u.save();
   if (changed.length) await audit(req, "edit_user", "user", u._id, [changed.join(", "), typed.note].filter(Boolean).join(" | "));
   res.json({ ok: true, changed });

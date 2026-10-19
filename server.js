@@ -4,6 +4,9 @@ dotenv.config();
 import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
+import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
+import UserModel from "./models/User.js";
+import { AdminAudit, AppContent } from "./models/Admin.js";
 import cors from "cors";
 import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
@@ -163,7 +166,11 @@ app.get("/", (req, res) => {
 ========================================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => { console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler(); })
+  .then(() => {
+    console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
+    // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
+    migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
+  })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 /* ==========================================
