@@ -156,7 +156,8 @@ async function loadDirectory() {
 
 const DIR_TTL_MS = 20 * 1000;
 let dir = { at: 0, data: null, pending: null, gen: 0 };
-async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
+/** The directory (also read by the admin search, routes/console.js /search). */
+export async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   if (!fresh && dir.data && Date.now() - dir.at < maxAgeMs) return dir.data;
   if (dir.pending && !fresh) return dir.pending;
   const gen = dir.gen;
