@@ -246,7 +246,7 @@ export function ticketItems(people = [], pq, { extra = [], amounts = false } = {
    complimentary passes made on the Tickets page (COMP). Each links to its page, searched by the ticket ID. */
 const PASS_PAGES = {
   SPEAKER: { type: "speaker-pass", what: "Speaker passes", page: "/admin/speaker-passes" },
-  ISSUED: { type: "issued-pass", what: "Issue passes", page: "/admin/issued-passes" },
+  ISSUED: { type: "issued-pass", what: "Give a pass", page: "/admin/issued-passes" },
   EXHIBITOR: { type: "exhibitor-pass", what: "Exhibitor passes", page: "/admin/exhibitor-passes" },
   COMP: { type: "comp-pass", what: "Complimentary", page: "/admin/attendees" },
 };
@@ -276,7 +276,7 @@ export function passItems(people = [], pq) {
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d.key, d.label]));
 const rsvpName = (r) => String(r.name || [r.firstName, r.lastName].filter(Boolean).join(" ") || "").trim();
 
-/** RSVPs (the website /rsvp answers and staff-made ones; not bots, not merged). Opens the RSVP on Leads › RSVPs. */
+/** RSVPs (the website /rsvp answers and staff-made ones; not bots, not merged). Opens the RSVP on RSVPs & meals › Headcounts & RSVPs. */
 export function rsvpItems(rsvps = [], pq) {
   const out = [];
   for (const r of rsvps) {
