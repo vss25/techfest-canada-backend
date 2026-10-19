@@ -169,7 +169,7 @@ router.post("/claim-ticket", async (req, res) => {
       }
       // Only move tickets off auto-created ticket accounts, never off a real account.
       if (found.owner.provider !== "ticket" || found.owner.password) {
-        return res.status(409).json({ error: "This ticket is already linked to another TTFC account. Contact info@thetechfestival.com to move it." });
+        return res.status(409).json({ error: "This ticket is already linked to another TTFC account. Contact enquire@thetechfestival.com to move it." });
       }
       const t = found.ticket.toObject ? found.ticket.toObject() : found.ticket;
       found.owner.tickets = found.owner.tickets.filter((x) => x.ticketId !== found.ticketId);
@@ -185,7 +185,7 @@ router.post("/claim-ticket", async (req, res) => {
     if (a.claimedBy && String(a.claimedBy) !== String(me._id)) {
       const holder = await User.findById(a.claimedBy);
       if (holder && (holder.provider !== "ticket" || holder.password)) {
-        return res.status(409).json({ error: "This ticket is already linked to another TTFC account. Contact info@thetechfestival.com to move it." });
+        return res.status(409).json({ error: "This ticket is already linked to another TTFC account. Contact enquire@thetechfestival.com to move it." });
       }
       if (holder) {
         holder.tickets = holder.tickets.filter((x) => x.ticketId !== a.ticketId);

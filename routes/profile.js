@@ -49,7 +49,7 @@ export function sanitizeProfilePatch(body = {}) {
   return out;
 }
 
-export const SELF_HIDE_ERROR = "Everyone with a pass is shown in the attendee list. To be taken off it, contact the TTFC team at info@thetechfestival.com.";
+export const SELF_HIDE_ERROR = "Everyone with a pass is shown in the attendee list. To be taken off it, contact the TTFC team at enquire@thetechfestival.com.";
 
 /** Pure: the answer to a body that only tries to set directoryHidden (null when it doesn't). */
 export function selfHideReply(body = {}) {

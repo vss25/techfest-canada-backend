@@ -13,6 +13,8 @@ import axios from "axios";
    LinkedIn retires API versions after about a year and answers 426
    for a retired one, so we try the next version in the list.
    LINKEDIN_API_VERSION (YYYYMM), when set, goes first.
+
+   Every post tags The Tech Festival Canada's LinkedIn page.
 ========================================================= */
 
 export const API_VERSIONS = ["202609", "202606", "202603", "202512"];
@@ -33,13 +35,33 @@ export function littleText(text) {
     (m, tag) => (tag ? `{hashtag|\\#|${tag}}` : `\\${m}`));
 }
 
+/* linkedin.com/company/thetechfestival. LinkedIn links a mention only when the
+   name matches the page's name exactly. */
+export const TTFC_PAGE = { name: "The Tech Festival Canada", urn: "urn:li:organization:105812464" };
+
+/**
+ * Tags the page in little-text commentary: the first "The Tech Festival Canada"
+ * (with or without an @) becomes the mention; when the text doesn't name it, the
+ * mention goes on its own line at the end.
+ */
+export function withPageMention(commentary, page = TTFC_PAGE) {
+  const text = String(commentary || "");
+  if (!page?.name || !page?.urn) return text;
+  const tag = `@[${page.name}](${page.urn})`;
+  const name = page.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?:\\\\@)?${name}`, "i");
+  return re.test(text) ? text.replace(re, () => tag) : `${text}${text ? "\n\n" : ""}${tag}`;
+}
+
 const isRetiredVersion = (err) => err?.response?.status === 426
   || /VERSION/.test(String(err?.response?.data?.code || ""));
 
 /** Uploads the PNG and publishes the post. Returns { urn, url }. Throws LinkedIn's error otherwise. */
-export async function postImageToLinkedin({ accessToken, personId, png, text, title = "I'm attending TTFC 2026", altText = "", http = axios, versions = apiVersions(), wait = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function postImageToLinkedin({ accessToken, personId, png, text, title = "I'm attending TTFC 2026", altText = "", mention = TTFC_PAGE, http = axios, versions = apiVersions(), wait = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   if (!accessToken || !personId || !png?.length) throw new Error("Missing token, member or image");
   const author = `urn:li:person:${personId}`;
+  const plain = littleText(text);
+  const commentary = withPageMention(plain, mention);
   let lastErr;
   for (const version of versions) {
     const headers = {
@@ -58,7 +80,7 @@ export async function postImageToLinkedin({ accessToken, personId, png, text, ti
       });
       const body = {
         author,
-        commentary: littleText(text),
+        commentary,
         visibility: "PUBLIC",
         distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
         content: { media: { title, id: image, ...(altText ? { altText } : {}) } },
@@ -73,7 +95,14 @@ export async function postImageToLinkedin({ accessToken, personId, png, text, ti
         const s = err?.response?.status;
         if (s !== 400 && s !== 422 && !(s >= 500)) throw err;
         await wait(2500);
-        post = await http.post(`${API}/posts`, body, { headers, timeout: 15000 });
+        try {
+          post = await http.post(`${API}/posts`, body, { headers, timeout: 15000 });
+        } catch (again) {
+          // A refused tag shouldn't stop the post: one last try without it.
+          const s2 = again?.response?.status;
+          if (commentary === plain || (s2 !== 400 && s2 !== 422)) throw again;
+          post = await http.post(`${API}/posts`, { ...body, commentary: plain }, { headers, timeout: 15000 });
+        }
       }
       const urn = String(post.headers?.["x-restli-id"] || post.headers?.["x-linkedin-id"] || post.data?.id || "");
       return { urn, url: /^urn:li:(share|ugcPost):\d+$/.test(urn) ? `https://www.linkedin.com/feed/update/${urn}/` : "" };

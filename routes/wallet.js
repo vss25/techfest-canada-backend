@@ -49,7 +49,7 @@ function sendProblem(req, res, status, message) {
 <div style="font-weight:800;letter-spacing:2px;font-size:22px;">TTFC 2026</div>
 <p style="font-size:17px;line-height:1.5;margin:28px 0 12px;">${escapeHtml(message)}</p>
 <p style="color:#c9bfe3;font-size:15px;line-height:1.5;margin:0;">The ticket PDF attached to your confirmation email works at the door — show its QR code on your phone or printed.
-Questions? <a style="color:#fff" href="mailto:info@thetechfestival.com">info@thetechfestival.com</a></p>
+Questions? <a style="color:#fff" href="mailto:enquire@thetechfestival.com">enquire@thetechfestival.com</a></p>
 </div></body></html>`);
 }
 

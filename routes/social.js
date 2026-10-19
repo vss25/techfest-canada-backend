@@ -57,7 +57,7 @@ async function requireUser(req, res, next) {
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
     const user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
     if (!user) return res.status(401).json({ error: "Unauthorized" });
-    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact info@thetechfestival.com." });
+    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
     req.user = user;
     // Blocks work both ways: neither side sees the other's posts, comments or messages.
     const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
