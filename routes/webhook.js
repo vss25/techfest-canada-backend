@@ -13,10 +13,24 @@ import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
 import { effectiveExtras, extrasOverride, EXTRA_SELECT } from "../services/passExtras.js";
 import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
+import CampaignSend from "../models/CampaignSend.js";
+import { makePurchaseAlerter, alertStore, lazyResend } from "../services/purchaseAlert.js";
 
 const router = express.Router();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// The organisers' "New ticket" email (services/purchaseAlert.js): once per paid ticket or booth checkout,
+// in the background after the buyer's own email. It never throws, so it can't hold up or fail anything here.
+const alertPurchase = makePurchaseAlerter({
+  store: alertStore(CampaignSend),
+  resend: lazyResend(),
+  accountFor: async ({ userId, email }) => {
+    if (/^[a-f0-9]{24}$/i.test(userId) && await User.exists({ _id: userId })) return "signed-in";
+    if (email && await User.exists({ email })) return "exists";
+    return "none";
+  },
+});
 
 // ⚠️ raw body required for Stripe - handle both Buffer and string
 router.post("/stripe", async (req, res) => {
@@ -72,6 +86,7 @@ router.post("/stripe", async (req, res) => {
       const name = displayName(details, session.customer_details?.name) || "Guest";
 
       const isBooth = purchaseType === "booth";
+      const paidAt = event.created ? new Date(event.created * 1000) : new Date();
 
       if (!tier) {
         console.error("❌ Missing tier metadata");
@@ -170,6 +185,7 @@ router.post("/stripe", async (req, res) => {
         const ticketId = crypto.randomBytes(6).toString("hex");
         // A speaker buying a pass gets the CxO Breakfasts with it (services/passExtras.js); else the pass's rules.
         let buyerTypes = [];
+        let onAccount = false;
 
         // If user purchased while logged in → attach ticket to account
         if (userId && userId !== "guest") {
@@ -189,6 +205,7 @@ router.post("/stripe", async (req, res) => {
             });
 
             await user.save();
+            onAccount = true;
 
             console.log("🎟 Ticket attached to user:", userId);
 
@@ -235,6 +252,7 @@ router.post("/stripe", async (req, res) => {
         }
 
         console.log("✅ Ticket created:", ticketId);
+        alertPurchase({ session, ticketIds: [ticketId], signedIn: onAccount, paidAt });
       } else {
         // ================= SEND BOOTH PURCHASE EMAIL =================
         
@@ -257,6 +275,7 @@ router.post("/stripe", async (req, res) => {
         }
 
         console.log("✅ Booth purchase confirmed:", tier);
+        alertPurchase({ session, paidAt });
       }
 
     } catch (err) {

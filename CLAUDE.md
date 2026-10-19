@@ -47,6 +47,9 @@ BROCHURE_BASE_URL       # default https://www.thetechfestival.com — where the 
 
 # Optional — website forms (volunteer, speaker, booth, sponsor, partnership, enquiry)
 FORMS_INBOX             # default baldeep@thetechfestival.com (comma-separate for several)
+
+# Optional — "New ticket" emails to the organisers
+PURCHASE_ALERT_TO       # default vishwa@, lubna@, shweta@ and baldeep@thetechfestival.com (comma-separate for several)
 ```
 
 ## Architecture
@@ -61,7 +64,7 @@ Node.js + Express REST API using **ES modules** (`"type": "module"` in package.j
 |-------|------|-------|
 | `/api/auth` | `routes/auth.js` | JWT + bcrypt + Google/LinkedIn OAuth |
 | `/api/payments` | `routes/payments.js` | Stripe checkout session creation. Pass upgrades (`GET /upgrade-quote`, `POST /create-checkout` with `upgradeFrom`: the price difference, same ticket ID) are off unless staff turn on `flag.upgrades` (App text & switches › Pass upgrades, default off since Oct 19 2026: "don't offer upgrades at all"); while off both answer 403 `{code: "upgrades_off", error: "Pass upgrades aren't available."}`. A Speaker Pass (tier `speaker`, or promo `SPEAKER`) or a speaker-type account is always refused: 403 `{code: "speaker_pass", error: "Speakers' passes can't be upgraded."}`. The webhook still finishes an upgrade already paid |
-| `/api/webhook` | `routes/webhook.js` | Stripe webhook; ticket PDF + QR code generation |
+| `/api/webhook` | `routes/webhook.js` | Stripe webhook; ticket PDF + QR code generation. After a completed ticket or booth checkout (not pavilion deposits or upgrades) and the buyer's own email, one "New ticket" / "New booth" email goes to `PURCHASE_ALERT_TO` (reply-to the buyer; the buyer and form answers, pass and ticket ID, code, Stripe's subtotal / discount / tax / total, Website / iOS app / Android app, the website's `src_visit` / `src_first` source lines, Stripe and Admin › People links). In the background, at most once per session (a `CampaignSend` claim, campaign `purchase-alert-2026`, email = the session id), never failing the webhook; passes staff issue never get one (only the webhook imports `services/purchaseAlert.js`) |
 | `/api/checkin` | `routes/checkin.js` | QR code scan check-in |
 | `/api/admin` | `routes/admin.js` | Sales analytics, inventory management |
 | `/api` (promos) | `routes/promos.js` | `POST /promos/validate` (public), `GET/POST/PUT/DELETE /admin/promos` (management). "Used" = **paid uses**: complete + paid Stripe Checkout Sessions with the code in `metadata.promoCode` (`promoUsage` in `services/stripeSales.js`, cached 5 min); `Promo.timesUsed` is not used. Optional `maxUses` (null = unlimited): validate and `create-checkout` refuse a code whose paid uses + checkouts in progress reach it ("This code has reached its limit."); capped checkouts expire after 31 min and are created one at a time per code (in-process lock). See `services/promoLimits.js` |
