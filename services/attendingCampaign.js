@@ -37,6 +37,7 @@
 
 import crypto from "crypto";
 import { EVENT, firstNameFor, isBoothId } from "./ticketInfo.js";
+import { isSpeakerPass } from "./teamRoles.js";
 
 export const CAMPAIGN_KEY = "attending-2026";
 export const ATTENDING_URL = `${EVENT.website}/attending`;
@@ -133,7 +134,8 @@ export function planRecipients({ users = [], guests = [], optedOut = [] } = {}) 
     consider({
       email: g.email, name: g.name, details: g.details, profile: null, tier: g.ticketType, ticketId: g.ticketId,
       purchaseDate: g.purchaseDate, hidden: !!g.hiddenByStaff, banned: false,
-      source: String(g.ticketType || "").toLowerCase() === "speaker" ? "speaker" : "guest",
+      // A speaker's pass (Admin → Speaker passes): promo SPEAKER / speakerPass, or the old "speaker" type.
+      source: isSpeakerPass(g) ? "speaker" : "guest",
     });
   }
 

@@ -55,10 +55,11 @@ export function latestTicket(tickets) {
   return list.reduce((a, b) => (new Date(b.purchaseDate || 0) > new Date(a.purchaseDate || 0) ? b : a));
 }
 
+// "speaker": tickets from before Oct 19 2026, when speakers' passes became Power Passes.
 const TIER_NAMES = {
   discover: "Discover Pass", connect: "Connect Pass", influence: "Influence Pass",
   power: "Power Pass", apex: "Apex Pass", vip: "Apex Pass", session: "Session Pass",
-  speaker: "Speaker Pass",
+  speaker: "Power Pass",
 };
 export function passName(type) {
   const k = String(type || "").toLowerCase();
@@ -231,7 +232,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
   }
 
   return [...byEmail.values()]
-    // Others only see a Speaker Pass or "Exhibitor"; the viewer is never in their own directory.
+    // Others only see "Speaker" or "Exhibitor"; the viewer is never in their own directory.
     .map(({ purchaseDate, ticketType, ...p }) => ({ ...p, tier: typesTier(p.types) }))
     .sort((a, b) => (a.onApp === b.onApp ? a.name.localeCompare(b.name) : a.onApp ? -1 : 1));
 }

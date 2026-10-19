@@ -14,7 +14,7 @@ import {
 import { escapeHtml } from "../services/ticketInfo.js";
 import { tierFromTicketType, resolvePass, checkOptions, DAY_KEYS, OPTION_KEYS, TIER_LABELS } from "../services/rsvp.js";
 import { passName } from "../services/ticketAccess.js";
-import { collectTickets, duplicateKeys, salesSummary } from "../services/staffTickets.js";
+import { collectTickets, duplicateKeys, salesSummary, recountSold } from "../services/staffTickets.js";
 import Attendee from "../models/Attendee.js";
 import User from "../models/User.js";
 import ticketAuth from "../routes/ticketAuth.js";
@@ -80,7 +80,8 @@ test("the sync creates one pass per speaker, excludes Chris Golden and is idempo
   assert.equal(store.docs.length, 2);
   const evan = store.docs[0];
   assert.deepEqual(evan, {
-    name: "Hon. Evan Solomon", email: "", ticketId: "000000000001", ticketType: "speaker", promoCode: "SPEAKER",
+    // A Power Pass marked as a speaker's (Oct 19 2026: the passes are strictly four).
+    name: "Hon. Evan Solomon", email: "", ticketId: "000000000001", ticketType: "power", promoCode: "SPEAKER", speakerPass: true,
     speakerId: "s1", purchaseDate: new Date("2026-10-11T12:00:00Z"), details: { jobTitle: "Minister", organisation: "ISED" },
   });
 
@@ -136,7 +137,7 @@ test("status: no email → ready → sent (a corrected email is ready again)", (
   ];
   const rows = docs.map(speakerPassRow);
   assert.deepEqual(rows[2], {
-    id: "3", speakerId: "s3", name: "C", title: "CEO", company: "Acme", ticketId: "t3", email: "c@x.co", alsoTo: [], emails: ["c@x.co"],
+    id: "3", speakerId: "s3", name: "C", title: "CEO", company: "Acme", ticketId: "t3", tier: "power", tierLabel: "Power Pass", email: "c@x.co", alsoTo: [], emails: ["c@x.co"],
     emailSentAt: sentAt, emailSentTo: "c@x.co", sentCount: 2, status: "sent", claimed: false, checkedIn: false, createdAt: null,
     runOfShow: null, sessions: 0, contact: "", invitesSentAt: null, invitesSentCount: 0, nudgedAt: null, nudgeCount: 0, manual: false,
   });
@@ -182,14 +183,18 @@ test("the personal RSVP link carries ticket and names in the URL fragment, encod
   assert.equal(h.get("ln"), "O'Brien-Núñez");
 });
 
-test("the speaker email: personal, complete and on brand", () => {
+test("the speaker email: personal, complete and on brand; their pass is a Power Pass, the speaker extras listed", () => {
   const e = buildSpeakerPassEmail({ ...SAMPLE_SPEAKER, ticketId: "a1b2c3d4e5f6", qrSrc: `cid:${QR_CID}`, logoSrc: `cid:${LOGO_CID}` });
-  assert.equal(e.subject, "Jane, your Speaker Pass for TTFC 2026");
+  assert.equal(e.subject, "Jane, your Power Pass for TTFC 2026");
+  assert.equal(buildSpeakerPassEmail({ ...SAMPLE_SPEAKER, ticketId: "a1", runOfShow: { sessions: [{ day: 1, start: "10:00", end: "10:30", title: "Panel" }] } }).subject,
+    "Jane, your Power Pass and run of show for TTFC 2026");
+  // Never the retired pass names (Oct 19 2026: the passes are strictly four).
+  for (const body of [e.html, e.text, e.preheader, e.subject]) assert.ok(!/Speaker Pass|All Access Pass|Exhibitor Pass/i.test(body), body.slice(0, 80));
   const link = `${RSVP_URL}#t=A1B2C3D4E5F6&fn=Jane&ln=Doe`;
   assert.match(e.preheader, /^We're delighted to have you speaking at TTFC 2026\./);
   for (const s of [
     "Dear Jane,", "delighted to have you speaking at TTFC&nbsp;2026.", "We look forward to welcoming you to Toronto",
-    "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
+    "POWER PASS", "All Access · Speaker", "Jane Doe", "Chief AI Officer", "Example Corp",
     "October 26–27, 2026", "The Westin Harbour Castle", "A1B2C3D4E5F6", `src="cid:${QR_CID}"`, `src="cid:${LOGO_CID}"`,
     `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP Now",
     `mailto:${CONTACT_EMAIL}`, "All-Access", "CxO Breakfasts &amp; Luncheons", "The Gala Dinner",
@@ -197,7 +202,7 @@ test("the speaker email: personal, complete and on brand", () => {
   ]) assert.ok(e.html.includes(s), s);
   assert.ok(!/data:image/.test(e.html), "no data: URIs in a sent email");
   for (const s of ["Dear Jane,", "We're delighted to have you speaking at TTFC 2026.", "Ticket ID: A1B2C3D4E5F6", link,
-    RSVP_REASON, CONTACT_EMAIL, "Gala Dinner", "VIP Lounge"]) {
+    RSVP_REASON, CONTACT_EMAIL, "Gala Dinner", "VIP Lounge", "YOUR POWER PASS", "Your personal Power Pass is below", "CxO Breakfasts"]) {
     assert.ok(e.text.includes(s), s);
   }
   // Forward-looking, and the removed pieces are gone from both versions.
@@ -248,28 +253,35 @@ test("the QR is TECHFEST:<ticketId>, sent as an inline CID image", async () => {
 
 /* ---------- Tier everywhere else ---------- */
 
-test('tierFromTicketType("speaker") is "speaker": the RSVP page offers every option except meetings and the lounge', () => {
-  assert.equal(tierFromTicketType("speaker"), "speaker");
-  assert.equal(tierFromTicketType("Speaker Pass"), "speaker");
-  assert.equal(TIER_LABELS.speaker, "Speaker");
-  assert.equal(passName("speaker"), "Speaker Pass");
-  assert.deepEqual(resolvePass({ kind: "ticket", tier: "speaker", verified: true }, ""), { ok: true, tier: "speaker", tierVerified: true, kind: "ticket" });
-  // Name on the speaker list + a verified Speaker Pass ticket: proven.
-  assert.deepEqual(resolvePass({ kind: "speaker", tier: "speaker", verified: true, ticket: { type: "speaker" } }, ""),
-    { ok: true, tier: "speaker", tierVerified: true, kind: "speaker", detectedTier: "speaker" });
-  assert.ok(checkOptions("speaker", DAY_KEYS, OPTION_KEYS.filter((k) => k !== "meetings" && k !== "lounge")).ok);
+test('an old "speaker" ticket is a Power Pass everywhere; the speaker gets every option except meetings and the lounge', () => {
+  assert.equal(tierFromTicketType("speaker"), "power");
+  assert.equal(tierFromTicketType("Speaker Pass"), "power");
+  assert.equal(TIER_LABELS.speaker, undefined);
+  assert.equal(passName("speaker"), "Power Pass");
+  // Name on the speaker list + a verified speaker's Power Pass: proven.
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "power", verified: true, ticket: { type: "power" } }, ""),
+    { ok: true, tier: "power", tierVerified: true, kind: "speaker", detectedTier: "power" });
+  // Power plus the speaker's CxO Breakfasts = what the old speaker tier offered.
+  assert.ok(checkOptions("power", DAY_KEYS, OPTION_KEYS.filter((k) => k !== "meetings" && k !== "lounge"), { cxo: true }).ok);
+  assert.equal(checkOptions("power", DAY_KEYS, ["meetings"], { cxo: true }).ok, false);
 });
 
-test("speaker passes are not sales and never duplicates of a bought ticket", () => {
+test("speakers' passes (Power, marked) are not sales, not inventory and never duplicates of a bought ticket", () => {
   const rows = collectTickets([], [
-    { ticketId: "sp1", name: "Jane Doe", email: "jane@x.co", ticketType: "speaker", purchaseDate: "2026-10-11" },
-    { ticketId: "pw1", name: "Jane Doe", email: "jane@x.co", ticketType: "power", purchaseDate: "2026-09-01" },
+    { ticketId: "sp1", name: "Jane Doe", email: "jane@x.co", ticketType: "power", promoCode: "SPEAKER", speakerPass: true, purchaseDate: "2026-10-11" },
+    { ticketId: "sp0", name: "Old Speaker", email: "old@x.co", ticketType: "speaker", purchaseDate: "2026-10-11" },
+    { ticketId: "pw1", name: "Jane Doe", email: "jane@x.co", ticketType: "power", stripeSessionId: "cs_1", purchaseDate: "2026-09-01" },
+    // A bought pass whose holder staff marked as a speaker is still a sale.
+    { ticketId: "pw2", name: "Bo Bought", email: "bo@x.co", ticketType: "power", stripeSessionId: "cs_2", speakerPass: true, purchaseDate: "2026-09-02" },
   ]);
+  assert.deepEqual(rows.map((r) => [r.ticketId, r.tier, r.speakerPass]).sort(),
+    [["pw1", "power", false], ["pw2", "power", false], ["sp0", "power", true], ["sp1", "power", true]]);
   assert.deepEqual(duplicateKeys(rows), []);
   const s = salesSummary(rows, { power: 999 }, { range: "all", now: new Date("2026-10-12") });
-  assert.equal(s.totals.totalTickets, 1);
+  assert.equal(s.totals.totalTickets, 2);
   assert.equal(s.totals.hiddenTickets, 0);
   assert.deepEqual(s.byTier.map((t) => t.tier), ["power"]);
+  assert.deepEqual(recountSold(rows), { power: 2 });
 });
 
 /* ---------- App sign-in ---------- */
@@ -308,7 +320,9 @@ test("ticket sign-in works for a speaker pass with no email", async () => {
   });
   const user = saved[0];
   assert.equal(user.email, "5ea4e2c0ffee@ticket.thetechfestival.com"); // the existing fallback
-  assert.equal(user.tickets[0].type, "speaker");
+  // The account's ticket is the Power Pass, still a speaker's (the marker makes them a speaker).
+  assert.equal(user.tickets[0].type, "power");
+  assert.equal(user.tickets[0].speakerPass, true);
   assert.equal(user.tickets[0].ticketId, "5ea4e2c0ffee");
   assert.equal(String(pass.claimedBy), String(user._id));
   assert.equal(pass.email, "");

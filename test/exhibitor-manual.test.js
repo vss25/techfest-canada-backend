@@ -52,5 +52,11 @@ test("exhibitor passes: EXHIBITOR promo, booth details, the manual line in the e
   const variant = issuedVariant(d, { copyFor: exhibitorCopyFor({ subject: "{firstName}, your booth pack", headline: "" }) });
   assert.equal(variant.subject, "{firstName}, your booth pack");
   assert.equal(variant.headline, defaultExhibitorCopy().headline);
-  assert.equal(variant.label, "Exhibitor Pass");
+  // A Connect Pass, named "Connect Pass" (Oct 19 2026): an old "Exhibitor Pass" label is never printed.
+  assert.equal(variant.label, "Connect Pass");
+  assert.equal(d.issuedPass.label, "");
+  assert.equal(issuedVariant({ ...d, issuedPass: { ...d.issuedPass, label: "Exhibitor Pass" } }).label, "Connect Pass");
+  assert.match(defaultExhibitorCopy().subject, /your Connect Pass for TTFC 2026/);
+  assert.doesNotMatch(JSON.stringify(defaultExhibitorCopy()), /Exhibitor Pass/);
+  assert.equal(issuedPassRow({ _id: "1", ...d }).tierLabel, "Connect Pass");
 });

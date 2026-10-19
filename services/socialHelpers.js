@@ -9,14 +9,15 @@ export function threadKey(a, b) {
   return `${x}:${y}`;
 }
 
-const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5, speaker: 6 };
+const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5 };
 
-/** Highest ticket tier key a user holds ("" when none). */
+/** Highest ticket tier key a user holds ("" when none). An old "speaker" ticket is a Power Pass. */
 export function bestTierKey(user) {
   const tickets = Array.isArray(user?.tickets) ? user.tickets : [];
   let best = "";
   for (const t of tickets) {
-    const k = String(t?.type || "").toLowerCase();
+    let k = String(t?.type || "").toLowerCase();
+    if (k === "speaker") k = "power";
     if ((TIER_RANK[k] || 0) > (TIER_RANK[best] || 0)) best = k;
   }
   return best;
@@ -29,7 +30,7 @@ export function tierName(key) {
     case "influence": return "Influence Pass";
     case "power": return "Power Pass";
     case "apex": case "vip": return "Apex Pass";
-    case "speaker": return "Speaker Pass";
+    case "speaker": return "Power Pass"; // speakers' passes before Oct 19 2026
     default: return "";
   }
 }
@@ -59,7 +60,7 @@ export function isOnApp(user) {
 /** Public card for another attendee — never email, never role, never rights.
     `exhibitors`: exhibitorIndex() from services/teamRoles.js, for the exhibitor type + booth.
     `matrix`: the app rights matrix (services/rightsStore.js; defaults when left out).
-    `tier` is only a Speaker Pass or "Exhibitor" (from their types); `self: true` (their own card) keeps the real pass. */
+    `tier` is only "Speaker" or "Exhibitor" (from their types); `self: true` (their own card) keeps the real pass. */
 export function userCard(user, { exhibitors = null, matrix = undefined, self = false } = {}) {
   if (!user) return null;
   // Effective types → public `types`, the Network `kind` (+ booth) and the receive rights.
@@ -108,6 +109,22 @@ export function publicProfile(user, opts = {}) {
     fieldOfWork: user.fieldOfWork || "",
     jobLevel: user.jobLevel || "",
     objectives: Array.isArray(user.objectives) ? user.objectives : [],
+  };
+}
+
+/** A comment as the apps see it. `author`: the commenter's account (CARD_SELECT), or null when it's gone.
+    `kind`: their person kind now, as on cards and the directory ("staff" | "volunteer" | "vip" | "speaker" |
+    "exhibitor" | "vendor" | ""). `authorTier`: the badge signal older app builds read: "Speaker" or "Exhibitor"
+    from their types now (a person type, never a pass name), else what was stored when they commented. */
+export function commentDTO(c, author = null, ctx = {}) {
+  const acc = author ? personAccess(author, ctx) : null;
+  const stored = publicTier(c.authorTier);
+  return {
+    id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
+    authorName: c.authorName,
+    authorTier: acc ? typesTier(acc.types) : stored,
+    kind: acc ? acc.kind : stored === "Speaker" ? "speaker" : stored === "Exhibitor" ? "exhibitor" : "",
+    body: c.body, status: c.status, createdAt: c.createdAt,
   };
 }
 

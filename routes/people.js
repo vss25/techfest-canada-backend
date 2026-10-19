@@ -14,17 +14,22 @@ import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
 import { stripeSessions } from "../services/stripeSales.js";
 import { clearExhibitorCache } from "../services/exhibitorCache.js";
-import { storedTypes, PERSON_TYPES } from "../services/teamRoles.js";
+import TicketInventory from "../models/TicketInventory.js";
+import { storedTypes, PERSON_TYPES, isSpeakerPass, isIssuedSpeakerPass } from "../services/teamRoles.js";
+import { typesEdit } from "../services/appRights.js";
 import { cleanCxoSwitch, cxoLabel, effectiveCxo } from "../services/cxoBreakfast.js";
+import { deletePerson, emailHash, personDeletionScope, planPersonDeletion } from "../services/accountDeletion.js";
 import {
   REMINDER_CAMPAIGN, REMINDER_COOLDOWN_MS, campaignSendStore, makeReminderSender, reminderJob, sendRsvpReminder,
 } from "../services/rsvpReminder.js";
 import { sendSequentially } from "../services/profileRequest.js";
-import { mergeStaffEdit } from "../services/attendeeDetails.js";
-import { LIVE_RSVPS, SANITY_PROJECT, rsvpDetail, rsvpRow, rsvpOptionsPayload } from "../services/rsvp.js";
-import { planStaffRsvp } from "../services/rsvpStaff.js";
+import { cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
 import {
-  buildPeople, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv, agendaFor, editInfo,
+  LIVE_RSVPS, SANITY_PROJECT, PASS_TIERS, TIER_LABELS, checkOptions, optionLabel, personNameKey, rsvpDetail, rsvpRow, rsvpOptionsPayload,
+} from "../services/rsvp.js";
+import { planStaffRsvp, splitName } from "../services/rsvpStaff.js";
+import {
+  buildPeople, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv, agendaFor, editInfo, namesMatch,
   rsvpRulesFor, planPeopleReminders, stripeMaps, REMINDER_SKIP_LABELS,
 } from "../services/people.js";
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
@@ -47,8 +52,13 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
      GET    /:id            the profile: person, passes, RSVP (+ catalog for the editor),
                             agenda (sessions saved in the app + RSVP special events), company,
                             contactCard (their app contact details, read only)
-     PATCH  /:id            { name?, email? (management), linkedinUrl?, company?, jobTitle?, exhibitor?, vip? }
-     PATCH  /:id/passes/:ticketId  { cxoBreakfast: true | false | null (automatic) }
+     PATCH  /:id            { firstName?, lastName? (or name), email? (management), phone?, linkedinUrl?, company?, jobTitle?,
+                              types?, typesOff? (accounts), speaker? (pass-only), exhibitor?, vip?, rsvpEmailSent? (true | false | null) }
+                            every record they're made of follows: the account, their passes, their RSVP rows
+     PATCH  /:id/passes/:ticketId  { cxoBreakfast?: true | false | null (automatic), tier? (management: the four),
+                              manualValue?: CAD | null, manualValueNote? (management; passes paid outside Stripe) }
+     GET    /:id/delete-plan  (management) exactly what Delete person removes, with counts, and what stays
+     DELETE /:id            { confirmName } (management) deletes them from the database (services/accountDeletion.js)
      PUT    /:id/rsvp       { days, options, dietary, dietaryOther?, accessibility?, tier?,
                               allowOutsidePass?, basedOn?, rsvpId? } (an RSVP the attendee sent: add only)
    /api/console/companies
@@ -62,6 +72,8 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    services/logoStore.js. Every change is audited; nothing here emails
    anyone except POST /reminder (the RSVP reminder, management, after a
    confirmation), and listing never creates an account or any other record.
+   Passes are strictly four (Oct 19 2026): a speaker's pass is a Power Pass
+   (the person is a speaker by type), an exhibitor pass a Connect Pass.
 ========================================================= */
 
 const clean = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -107,12 +119,15 @@ async function loadStripe() {
 }
 
 /* ---------- The directory, rebuilt at most every 20 s (and after every change made here) ---------- */
-const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", "company", "jobTitle", "title", "linkedin"];
-const USER_SELECT = ["name email role types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
+const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", "company", "jobTitle", "title", "linkedin", "phone"];
+const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
+const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
+  "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
   "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId tickets.cxoBreakfast",
-  ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
+  "tickets.speakerPass tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
   "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip cxoBreakfast",
+  "speakerPass rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 async function loadDirectory() {
@@ -279,7 +294,7 @@ router.get("/:id", wrap(async (req, res) => {
     cmsLogoCache.get(),
     p.user ? User.findById(p.user._id).select(CONTACT_SELECT).lean() : Promise.resolve(null),
   ]);
-  const person = personDetail(p, { management: isManagement(req.user), cmsLogos: cmsLogos || [] });
+  const person = personDetail(p, { management: isManagement(req.user), cmsLogos: cmsLogos || [], staffId: req.user._id });
   res.json({
     canonicalId: p.id,
     person,
@@ -295,22 +310,53 @@ router.get("/:id", wrap(async (req, res) => {
 }));
 
 const LINK = /^https?:\/\/[^\s<>"]+$/i;
+const PHONE = /^[+()\d][\d\s().+-]{5,24}$/;
+const foldName = (s) => String(s || "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
 
+/** Is this pass (its checkout details) theirs? A ticket on an account bought for a colleague names the colleague. */
+const passIsTheirs = (details, name) => {
+  const d = details || {};
+  return !(d.firstName || d.lastName) || namesMatch({ firstName: String(d.firstName || ""), lastName: String(d.lastName || "") }, name);
+};
+
+/**
+ * Edit any detail of a person (Admin → People → profile). Every record they're made of is kept in step:
+ * the account (User), their passes (User.tickets and Attendee rows) and their RSVP rows. Body, any of:
+ *   firstName, lastName (or name)        account name, the names on their own passes and RSVPs
+ *   email (management)                   the account's sign-in email (unique), and the same address on their passes / RSVPs
+ *   phone, company, jobTitle, linkedinUrl  the account and their own passes' checkout details (the Tickets page edit)
+ *   types, typesOff                      an account's person types (the App › People rules: staff / volunteer = management)
+ *   speaker (pass-only people)           true / false on every pass of theirs (Attendee.speakerPass)
+ *   exhibitor, vip                       the switches (as before)
+ *   rsvpEmailSent                        true / false (staff's mark for an email sent outside the panel) | null (from our records)
+ * Staff accounts: management only. Audited `person_edit` (and `person_email` for a sign-in change).
+ */
 router.patch("/:id", wrap(async (req, res) => {
   const p = await findPerson(req.params.id, { fresh: true });
   if (!p) return res.status(404).json({ error: "Person not found" });
   const management = isManagement(req.user);
-  const info = editInfo(p, { management });
+  const info = editInfo(p, { management, staffId: req.user._id });
   const b = req.body && typeof req.body === "object" ? req.body : {};
   const want = {};
-  if (b.name !== undefined) {
+  if (b.firstName !== undefined || b.lastName !== undefined) {
+    const first = clean(b.firstName ?? p.firstName, 80);
+    const last = clean(b.lastName ?? p.lastName, 80);
+    if (!first) return res.status(400).json({ error: "Enter their first name", field: "firstName" });
+    want.parts = { firstName: first, lastName: last };
+    want.name = [first, last].filter(Boolean).join(" ");
+  } else if (b.name !== undefined) {
     want.name = clean(b.name, 120);
     if (!want.name) return res.status(400).json({ error: "Enter their name", field: "name" });
+    want.parts = splitName(want.name);
   }
   if (b.email !== undefined) {
     if (!management) return res.status(403).json({ error: "Only management can change email addresses" });
     want.email = clean(b.email, 200).toLowerCase();
     if (want.email && !EMAIL.test(want.email)) return res.status(400).json({ error: "Enter a valid email address", field: "email" });
+  }
+  if (b.phone !== undefined) {
+    want.phone = clean(b.phone, 30);
+    if (want.phone && !PHONE.test(want.phone)) return res.status(400).json({ error: "Enter a phone number (digits, spaces, + ( ) -)", field: "phone" });
   }
   if (b.linkedinUrl !== undefined) {
     want.linkedinUrl = clean(b.linkedinUrl, 300);
@@ -323,21 +369,57 @@ router.patch("/:id", wrap(async (req, res) => {
     if (typeof b.vip !== "boolean") return res.status(400).json({ error: "VIP must be Yes or No", field: "vip" });
     want.vip = b.vip;
   }
-  if (!Object.keys(want).length) return res.status(400).json({ error: "Nothing to change" });
+  if (b.speaker !== undefined) {
+    if (typeof b.speaker !== "boolean") return res.status(400).json({ error: "Speaker must be Yes or No", field: "speaker" });
+    want.speaker = b.speaker;
+  }
+  if (b.rsvpEmailSent !== undefined) {
+    if (![true, false, null].includes(b.rsvpEmailSent)) return res.status(400).json({ error: "RSVP email sent must be Yes, No or automatic", field: "rsvpEmailSent" });
+    want.rsvpEmailSent = b.rsvpEmailSent;
+  }
+  const typesAsked = b.types !== undefined || b.typesOff !== undefined;
+  if (!Object.keys(want).length && !typesAsked) return res.status(400).json({ error: "Nothing to change" });
   if (info.where === "none") return res.status(409).json({ error: info.reason });
   if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
+  if (typesAsked && !p.user) {
+    return res.status(409).json({ error: "Their types live on an app account. Without one, Speaker and Exhibitor are switched on their passes; the other types need an account first.", field: "types" });
+  }
+  if (want.speaker !== undefined && p.user) return res.status(400).json({ error: "Change an account's Speaker type with its types", field: "speaker" });
 
   const changed = [];
-  const note = (k, from, to) => changed.push(["exhibitor", "vip"].includes(k) ? `${k === "vip" ? "VIP" : k} ${from ? "Yes" : "No"} → ${to ? "Yes" : "No"}` : k);
+  const notes = [];
+  const yn = (v) => (v ? "Yes" : "No");
+  const note = (k, from, to) => changed.push(["exhibitor", "vip", "speaker"].includes(k) ? `${k === "vip" ? "VIP" : k} ${yn(from)} → ${yn(to)}` : k);
   const attIds = p.attendees.map((a) => a._id);
+  const oldName = p.name === "No name" ? "" : p.name;
+  const oldEmail = String(p.email || "").toLowerCase();
+  const staffName = clean(req.user.name || req.user.email, 120);
+  let emailChange = null;
 
+  // Validate everything that can refuse before anything is written.
+  let typed = { set: {} };
+  if (p.user) {
+    const u0 = await User.findById(p.user._id).select("types typesOff").lean();
+    if (typesAsked) {
+      typed = typesEdit(u0, b, { management });
+      if (typed.error) return res.status(typed.status).json({ error: typed.error, field: "types" });
+    }
+    if (want.email !== undefined && want.email !== String(p.user.email || "").toLowerCase()) {
+      if (!want.email) return res.status(400).json({ error: "An account needs an email address: it's how they sign in", field: "email" });
+      if (await User.exists({ email: want.email, _id: { $ne: p.user._id } })) return res.status(409).json({ error: "Another account already uses that email", field: "email" });
+    }
+  } else if (want.email === "" && p.attendees.some((a) => !isSpeakerPass(a))) {
+    // Only a speaker's pass can wait for an email (staff add it in Admin › Speaker passes).
+    return res.status(400).json({ error: "This pass needs an email address", field: "email" });
+  }
+
+  // 1. The account.
   if (p.user) {
     const u = await User.findById(p.user._id);
     if (!u) return res.status(404).json({ error: "Person not found" });
     if (want.name && want.name !== u.name) { note("name"); u.name = want.name; }
-    if (want.email !== undefined && want.email !== u.email) {
-      if (!want.email) return res.status(400).json({ error: "An account needs an email address", field: "email" });
-      if (await User.exists({ email: want.email, _id: { $ne: u._id } })) return res.status(409).json({ error: "Another account already uses that email", field: "email" });
+    if (want.email !== undefined && want.email !== String(u.email || "").toLowerCase()) {
+      emailChange = { from: u.email, to: want.email };
       note("email"); u.email = want.email;
     }
     if (want.linkedinUrl !== undefined && want.linkedinUrl !== (u.linkedinUrl || "")) {
@@ -348,6 +430,8 @@ router.patch("/:id", wrap(async (req, res) => {
     }
     if (want.company !== undefined && want.company !== (u.organization || "")) { note("company"); u.organization = want.company; }
     if (want.jobTitle !== undefined && want.jobTitle !== (u.jobTitle || "")) { note("jobTitle"); u.jobTitle = want.jobTitle; }
+    for (const [k, v] of Object.entries(typed.set)) { u[k] = v; if (!changed.includes("types")) changed.push("types"); }
+    if (typed.note) notes.push(typed.note);
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {
       // The switch sets what the apps use. On: the exhibitor type (and any typesOff lifted). Off: the type staff
       // gave goes, and the automatic one (an exhibitor pass) is switched off with typesOff, so no badge or booth.
@@ -371,72 +455,262 @@ router.patch("/:id", wrap(async (req, res) => {
       if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, vip: { $exists: true } }, { $unset: { vip: 1 } });
       if (want.vip !== p.vip) note("vip", p.vip, want.vip);
     }
-    if (changed.length || u.isModified("vip")) await u.save();
-  } else {
-    const primaryId = p.primary?.attendeeId || String(p.attendees[0]._id);
-    const a = await Attendee.findById(primaryId);
-    if (!a) return res.status(404).json({ error: "Person not found" });
-    if (want.name && want.name !== a.name) { note("name"); a.name = want.name; }
-    if (want.email !== undefined && want.email !== (a.email || "")) {
-      if (!want.email && a.ticketType !== "speaker") return res.status(400).json({ error: "This pass needs an email address", field: "email" });
-      note("email"); a.email = want.email;
+    if (u.isModified()) await u.save();
+    if (want.rsvpEmailSent !== undefined) {
+      await User.updateOne({ _id: u._id }, want.rsvpEmailSent === null
+        ? { $unset: { rsvpEmailMark: 1, rsvpEmailMarkBy: 1, rsvpEmailMarkAt: 1 } }
+        : { $set: { rsvpEmailMark: want.rsvpEmailSent, rsvpEmailMarkBy: staffName, rsvpEmailMarkAt: new Date() } });
+      changed.push(`RSVP email sent ${want.rsvpEmailSent === null ? "automatic" : yn(want.rsvpEmailSent)}`);
     }
-    const edit = {};
-    if (want.linkedinUrl !== undefined && want.linkedinUrl !== (a.details?.linkedin || "")) { edit.linkedin = want.linkedinUrl; note("linkedinUrl"); }
-    if (want.company !== undefined && want.company !== (a.details?.organisation || "")) { edit.organisation = want.company; note("company"); }
-    if (want.jobTitle !== undefined && want.jobTitle !== (a.details?.jobTitle || "")) { edit.jobTitle = want.jobTitle; note("jobTitle"); }
-    if (Object.keys(edit).length) a.details = mergeStaffEdit(a.details, edit);
+  }
+
+  // 2. Their passes: the account's own tickets and every pass row of theirs.
+  const detailEdit = cleanStaffEdit({
+    ...(want.phone !== undefined ? { phone: want.phone } : {}),
+    ...(want.company !== undefined ? { organisation: want.company } : {}),
+    ...(want.jobTitle !== undefined ? { jobTitle: want.jobTitle } : {}),
+    ...(want.linkedinUrl !== undefined ? { linkedin: want.linkedinUrl } : {}),
+  });
+  const passName = want.name ? want.parts : null;
+  let passesTouched = 0;
+  const editDetails = (details) => {
+    let next = details || {};
+    if (Object.keys(detailEdit).length) next = mergeStaffEdit(next, detailEdit);
+    if (passName && (details?.firstName || details?.lastName)) next = { ...next, firstName: passName.firstName, lastName: passName.lastName };
+    return next;
+  };
+  if (p.user) {
+    const u = await User.findById(p.user._id).select("tickets");
+    let dirty = false;
+    for (const t of u?.tickets || []) {
+      if (!t?.ticketId || /^BOOTH-/i.test(t.ticketId) || !passIsTheirs(t.details, oldName)) continue;
+      if (!Object.keys(detailEdit).length && !(passName && (t.details?.firstName || t.details?.lastName))) continue;
+      t.details = editDetails(t.details);
+      u.markModified("tickets");
+      dirty = true;
+      passesTouched++;
+    }
+    if (dirty) await u.save();
+  }
+  for (const a0 of p.attendees) {
+    const a = await Attendee.findById(a0._id);
+    if (!a) continue;
+    // A pass on someone's account but bought for a colleague keeps the colleague's details.
+    const theirs = !p.user || passIsTheirs(a.details, oldName) || namesMatch(a.name, oldName);
+    if (!theirs) continue;
+    let dirty = false;
+    if (Object.keys(detailEdit).length || (passName && (a.details?.firstName || a.details?.lastName))) { a.details = editDetails(a.details); a.markModified("details"); dirty = true; }
+    if (want.name && a.name !== want.name && (!p.user || namesMatch(a.name, oldName) || !String(a.name || "").trim())) { a.name = want.name; dirty = true; }
+    if (want.email !== undefined && (emailChange || !p.user)) {
+      const from = String(a.email || "").toLowerCase();
+      if (from !== want.email && (from === String(emailChange?.from || oldEmail).toLowerCase() || (!p.user && !from))) { a.email = want.email; dirty = true; }
+    }
+    if (!p.user && want.speaker !== undefined && isSpeakerPass(a) !== want.speaker) { a.speakerPass = want.speaker; dirty = true; }
+    if (!p.user && want.rsvpEmailSent !== undefined) {
+      if (want.rsvpEmailSent === null) { a.rsvpEmailMark = undefined; a.rsvpEmailMarkBy = undefined; a.rsvpEmailMarkAt = undefined; }
+      else { a.rsvpEmailMark = want.rsvpEmailSent; a.rsvpEmailMarkBy = staffName; a.rsvpEmailMarkAt = new Date(); }
+      dirty = true;
+    }
+    if (dirty) { await a.save(); passesTouched++; }
+  }
+  if (!p.user) {
+    if (want.name && want.name !== oldName) note("name");
+    if (want.email !== undefined && want.email !== oldEmail) { note("email"); emailChange = { from: oldEmail, to: want.email }; }
+    for (const k of ["phone", "company", "jobTitle", "linkedinUrl"]) if (want[k] !== undefined && want[k] !== (p[k] || "")) note(k);
+    if (want.speaker !== undefined && want.speaker !== p.types.includes("speaker")) note("speaker", p.types.includes("speaker"), want.speaker);
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {
-      // On: their main pass says so (and none of their passes says No any more).
-      // Off: every pass of theirs says No, an exhibitor pass included (no badge or booth in the apps).
-      if (want.exhibitor) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: false }, { $unset: { exhibitor: 1 } });
+      // On: their passes say so (and none of them says No any more). Off: every pass says No, an exhibitor pass included.
+      if (want.exhibitor) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { exhibitor: true } });
       else await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { exhibitor: false } });
-      a.exhibitor = want.exhibitor;
       note("exhibitor", p.exhibitor, want.exhibitor);
     }
     if (want.vip !== undefined && want.vip !== p.vip) {
       // Every pass of theirs, so the account that later claims any of them is a VIP too.
       if (want.vip) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { vip: true } });
       else await Attendee.updateMany({ _id: { $in: attIds } }, { $unset: { vip: 1 } });
-      a.vip = want.vip || undefined;
       note("vip", p.vip, want.vip);
     }
-    if (changed.length) await a.save();
+    if (want.rsvpEmailSent !== undefined) changed.push(`RSVP email sent ${want.rsvpEmailSent === null ? "automatic" : yn(want.rsvpEmailSent)}`);
+  } else if (want.phone !== undefined && want.phone !== (p.phone || "")) note("phone");
+
+  // 3. Their RSVPs: the name (and its key) and the email they're known by. What they chose is never changed.
+  let rsvpsTouched = 0;
+  for (const r0 of [...p.rsvps, ...p.dupRsvps]) {
+    const set = {};
+    if (want.name && namesMatch({ firstName: r0.firstName, lastName: r0.lastName }, oldName || want.name)) {
+      const nameKey = personNameKey(want.parts.firstName, want.parts.lastName);
+      Object.assign(set, { firstName: want.parts.firstName, lastName: want.parts.lastName, name: want.name, nameKey });
+      if (String(r0.key || "").startsWith("n:") && r0.key !== `n:${nameKey}` && !(await Rsvp.exists({ key: `n:${nameKey}`, spam: false }))) set.key = `n:${nameKey}`;
+    }
+    if (emailChange && String(r0.email || "").toLowerCase() === String(emailChange.from || "").toLowerCase() && emailChange.from) set.email = emailChange.to;
+    if (Object.keys(set).length) { await Rsvp.updateOne({ _id: r0._id }, { $set: set }); rsvpsTouched++; }
   }
-  if (want.exhibitor !== undefined || want.vip !== undefined) clearExhibitorCache();
-  if (changed.length) await audit(req, "person_edit", "person", p.id, `${p.name}: ${changed.join(", ")}`);
+
+  if (want.exhibitor !== undefined || want.vip !== undefined || want.speaker !== undefined || typesAsked) clearExhibitorCache();
+  if (changed.length) {
+    const where = [passesTouched ? `${passesTouched} pass record(s)` : "", rsvpsTouched ? `${rsvpsTouched} RSVP(s)` : ""].filter(Boolean).join(", ");
+    await audit(req, "person_edit", "person", p.id, `${want.name || p.name}: ${changed.join(", ")}${notes.length ? ` | ${notes.join("; ")}` : ""}${where ? ` (also ${where})` : ""}`);
+  }
+  if (emailChange) {
+    await audit(req, "person_email", "person", p.id,
+      `${want.name || p.name}: ${p.user ? "sign-in email changed (their app and website sign-in)" : "email changed"} · ${emailHash(emailChange.from) || "none"} → ${emailHash(emailChange.to) || "none"} (sha256)`);
+  }
   invalidate();
   const after = await findPerson(p.id);
   res.json({ ok: true, changed, person: after ? personRow(after) : null });
 }));
 
-/* "CxO Breakfast included" for one pass: true / false = staff's choice, null = automatic
-   (services/cxoBreakfast.js). Saved on the ticket record: the account's ticket (User.tickets) and the
-   Attendee row of the same ticket, whichever exist. Never changes an RSVP. */
+/* One pass of theirs: PATCH /:id/passes/:ticketId, any of
+     cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (staff; audited pass_cxo_breakfast)
+     tier: connect | influence | power | apex            change the pass between the four (management): no charge, the
+                                                         account ticket, its pass row and its RSVP rows follow, and the
+                                                         inventory counts move like a paid upgrade (old −1, new +1; a
+                                                         speaker's or a hidden pass never counted). Audited pass_tier.
+     manualValue: number (CAD before HST) | null, manualValueNote?
+                                                         ticket value after payment for a pass paid outside Stripe
+                                                         (management; a Stripe-paid pass keeps Stripe's). Audited pass_value.
+   Saved on the ticket record: the account's ticket (User.tickets) and the Attendee row of the same ticket,
+   whichever exist. Never changes what they chose in their RSVP. */
 router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   const p = await findPerson(req.params.id, { fresh: true });
   if (!p) return res.status(404).json({ error: "Person not found" });
-  const info = editInfo(p, { management: isManagement(req.user) });
+  const management = isManagement(req.user);
+  const info = editInfo(p, { management, staffId: req.user._id });
   if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
   const b = req.body && typeof req.body === "object" ? req.body : {};
-  const want = cleanCxoSwitch(b.cxoBreakfast);
-  if (want === undefined) return res.status(400).json({ error: "CxO Breakfast must be Yes, No or automatic", field: "cxoBreakfast" });
   const norm = normalizeTicketId(req.params.ticketId);
   const t = p.passList.find((x) => x.norm === norm);
   if (!t) return res.status(404).json({ error: "Pass not found" });
-  const before = cxoLabel(t.cxoOverride, t.cxo);
-  const op = want === null ? { $unset: { cxoBreakfast: 1 } } : { $set: { cxoBreakfast: want } };
-  if (t.onAccount && p.user) {
-    await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId },
-      want === null ? { $unset: { "tickets.$.cxoBreakfast": 1 } } : { $set: { "tickets.$.cxoBreakfast": want } });
-  }
   const variants = [...new Set([t.ticketId, norm, norm.toUpperCase()])];
-  await Attendee.updateMany({ ticketId: { $in: variants } }, op);
-  const after = cxoLabel(want ?? undefined, effectiveCxo({ ticketType: t.type, types: p.types, override: want ?? undefined }));
-  await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
-  invalidate();
+  const onTicket = (set, unset) => ({ ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) });
+  const writeTicket = async (set, unset = {}) => {
+    if (t.onAccount && p.user) {
+      const sub = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [`tickets.$.${k}`, v]));
+      await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId }, onTicket(sub(set), sub(unset)));
+    }
+    await Attendee.updateMany({ ticketId: { $in: variants } }, onTicket(set, unset));
+  };
+  let did = false;
+  const warnings = [];
+
+  // Validate first.
+  let cxo;
+  if (b.cxoBreakfast !== undefined) {
+    cxo = cleanCxoSwitch(b.cxoBreakfast);
+    if (cxo === undefined) return res.status(400).json({ error: "CxO Breakfast must be Yes, No or automatic", field: "cxoBreakfast" });
+  }
+  let tier;
+  if (b.tier !== undefined) {
+    if (!management) return res.status(403).json({ error: "Only management can change a pass", field: "tier" });
+    tier = clean(b.tier, 20).toLowerCase();
+    if (!PASS_TIERS.includes(tier)) return res.status(400).json({ error: "The pass must be Connect, Influence, Power or Apex", field: "tier" });
+  }
+  let value;
+  if (b.manualValue !== undefined) {
+    if (!management) return res.status(403).json({ error: "Only management can set a ticket value", field: "manualValue" });
+    if (t.stripeSessionId) return res.status(409).json({ error: "This pass was paid through Stripe, so its value comes from Stripe.", field: "manualValue" });
+    if (b.manualValue === null || b.manualValue === "") value = null;
+    else {
+      value = Math.round(Number(b.manualValue) * 100) / 100;
+      if (!Number.isFinite(value) || value < 0 || value > 100000) return res.status(400).json({ error: "Enter the amount paid in CAD, before HST (0 to 100,000)", field: "manualValue" });
+    }
+  }
+  if (cxo === undefined && tier === undefined && value === undefined) return res.status(400).json({ error: "Nothing to change" });
+
+  if (cxo !== undefined) {
+    const before = cxoLabel(t.cxoOverride, t.cxo);
+    await writeTicket(cxo === null ? {} : { cxoBreakfast: cxo }, cxo === null ? { cxoBreakfast: 1 } : {});
+    const after = cxoLabel(cxo ?? undefined, effectiveCxo({ ticketType: tier || t.type, types: p.types, override: cxo ?? undefined, speakerPass: t.speakerPass }));
+    await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
+    did = true;
+  }
+  if (tier !== undefined && tier !== t.tier) {
+    if (t.onAccount && p.user) await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId }, { $set: { "tickets.$.type": tier } });
+    await Attendee.updateMany({ ticketId: { $in: variants } }, { $set: { ticketType: tier } });
+    // Their RSVP under this ticket follows the pass; what they chose stays as it is.
+    const rsvpFilter = { $or: [{ key: `t:${norm}` }, { ticketId: { $in: variants }, ticketVerified: true }] };
+    await Rsvp.updateMany(rsvpFilter, { $set: { tier } });
+    const rsvp = await Rsvp.findOne({ ...rsvpFilter, ...LIVE_RSVPS }).lean();
+    if (rsvp) {
+      const rules = rsvpRulesFor(p);
+      const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { cxo: rules.speaker ? true : rules.cxo, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
+      if (!check.ok) warnings.push(`Their RSVP has ${check.invalid.map(optionLabel).join(", ")}, which the ${TIER_LABELS[tier]} doesn't include. It stays: staff never take away what they chose.`);
+    }
+    // Inventory, the way a paid upgrade moves it (routes/webhook.js): a speaker's pass and a hidden one never took a seat.
+    let moved = "not counted in the inventory";
+    if (!t.hidden && !isIssuedSpeakerPass(t)) {
+      const from = String(t.type || "").toLowerCase();
+      await TicketInventory.updateOne({ tier: from, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
+      const to = await TicketInventory.findOneAndUpdate({ tier }, { $inc: { sold: 1 } }, { new: true }).lean();
+      moved = `inventory ${from} −1, ${tier} +1`;
+      if (to && to.total > 0 && to.sold > to.total) warnings.push(`${TIER_LABELS[tier]} is now over its allocation (${to.sold} of ${to.total}). Change the allocation in Tickets › Inventory if that's right.`);
+    }
+    await audit(req, "pass_tier", "ticket", t.ticketId, `${p.name} · ${t.ticketId.toUpperCase()}: ${t.label} → ${TIER_LABELS[tier]} (no charge; ${moved})`);
+    did = true;
+  }
+  if (value !== undefined) {
+    const before = t.manualValue !== undefined ? `${t.manualValue.toFixed(2)} CAD (manual)` : t.value === null || t.value === undefined ? "not known" : `${Number(t.value).toFixed(2)} CAD`;
+    if (value === null) await writeTicket({}, { manualValue: 1, manualValueNote: 1, manualValueBy: 1, manualValueAt: 1 });
+    else {
+      await writeTicket({
+        manualValue: value, manualValueNote: clean(b.manualValueNote, 120), manualValueBy: clean(req.user.name || req.user.email, 120), manualValueAt: new Date(),
+      });
+    }
+    await audit(req, "pass_value", "ticket", t.ticketId, `${p.name} · ${t.ticketId.toUpperCase()}: ticket value ${before} → ${value === null ? "worked out again" : `${value.toFixed(2)} CAD (manual, paid outside Stripe)`}`);
+    did = true;
+  }
+  if (did) invalidate();
   const fresh = await findPerson(p.id);
-  res.json({ ok: true, person: fresh ? personDetail(fresh, { management: isManagement(req.user) }) : null });
+  res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null });
+}));
+
+/* ---------- Delete person (management) ----------
+   GET  /:id/delete-plan  → { name, items: [{ key, label, count, change }], kept: [...], total, blockers: [..] }
+   DELETE /:id { confirmName } (their full name, as shown) → { deleted: true, items, total }
+   Everything in services/accountDeletion.js (deletePerson): the account, every pass and ticket row, RSVPs,
+   their app content and activity, and everything under an email only they use. Never: their own account,
+   the last management account. Audited `person_delete` with counts and an email hash only (no name). */
+async function deletionContext(req) {
+  const d = await directory({ fresh: true });
+  const p = d.byId.get(String(req.params.id || "").slice(0, 80)) || null;
+  if (!p) return { error: { status: 404, error: "Person not found" } };
+  const blockers = [];
+  if (p.user && String(p.user._id) === String(req.user._id)) blockers.push("You can't delete your own account.");
+  if (p.user && isManagement(p.user)) {
+    const admins = await User.find({ role: "admin" }).select("role staffRole email").lean();
+    if (admins.filter(isManagement).length <= 1) blockers.push("This is the last management account. Make someone else management first.");
+  }
+  return { p, d, scope: personDeletionScope(p, d.people), blockers };
+}
+
+router.get("/:id/delete-plan", requireManagement, wrap(async (req, res) => {
+  const ctx = await deletionContext(req);
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.error });
+  const plan = await planPersonDeletion(ctx.scope);
+  if (!plan.total) ctx.blockers.push("There's nothing about them in our database to delete.");
+  res.json({ id: ctx.p.id, name: ctx.p.name, ...plan, blockers: ctx.blockers, speaker: ctx.scope.speaker, sharedEmails: ctx.scope.sharedEmails.length });
+}));
+
+router.delete("/:id", requireManagement, wrap(async (req, res) => {
+  const ctx = await deletionContext(req);
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.error });
+  if (ctx.blockers.length) return res.status(409).json({ error: ctx.blockers[0], code: "blocked" });
+  const typed = foldName(req.body?.confirmName);
+  if (!typed || typed !== foldName(ctx.p.name)) {
+    return res.status(400).json({ error: `Type their full name (${ctx.p.name}) to confirm.`, code: "confirm", field: "confirmName" });
+  }
+  const result = await deletePerson(ctx.scope);
+  if (!result.total) return res.status(409).json({ error: "There's nothing about them in our database to delete.", code: "nothing" });
+  invalidate();
+  clearExhibitorCache();
+  // Counts only, the main records first (the detail is capped at 500 characters), and an email hash: never the name or address.
+  const first = ["account", "accountTickets", "passes", "rsvps"];
+  const counts = [...first.map((k) => result.items.find((x) => x.key === k)).filter(Boolean), ...result.items.filter((x) => !first.includes(x.key))]
+    .filter((x) => x.count).map((x) => `${x.key} ${x.count}`).join(", ");
+  await audit(req, "person_delete", "person", "",
+    `Deleted a person (${ctx.p.user ? "account" : ctx.p.attendees.length ? "pass only" : "RSVP only"})`
+    + `${ctx.scope.mainEmail ? `, email sha256 ${emailHash(ctx.scope.mainEmail)}` : ""}${ctx.scope.speaker ? ", still on the website speaker list" : ""}: ${counts}`);
+  res.json({ deleted: true, items: result.items, total: result.total, speaker: ctx.scope.speaker });
 }));
 
 router.put("/:id/rsvp", wrap(async (req, res) => {

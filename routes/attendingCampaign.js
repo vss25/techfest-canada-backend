@@ -53,7 +53,7 @@ async function audit(req, action, detail = "") {
 async function currentRecipients() {
   const [users, guests, optedOut, sends] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email jobTitle organization banned tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType details hiddenByStaff purchaseDate").lean(),
+    Attendee.find({}).select("name email ticketId ticketType promoCode speakerPass details hiddenByStaff purchaseDate").lean(),
     Subscription.find({ subscribed: false }).select("email").lean(),
     CampaignSend.find({ campaign: CAMPAIGN_KEY }).select("email status sentAt error attempts").lean(),
   ]);

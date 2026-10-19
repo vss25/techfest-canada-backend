@@ -47,7 +47,17 @@ const ticketSchema = new mongoose.Schema({
   // unset = automatic. On the ticket itself because tickets bought on an account have no Attendee row.
   cxoBreakfast: {
     type: Boolean
-  }
+  },
+  // A speaker's pass (a Power Pass since Oct 19 2026): makes the account a speaker automatically
+  // (services/teamRoles.js isSpeakerPass). Copied from the Attendee row when the pass is claimed.
+  speakerPass: {
+    type: Boolean
+  },
+  // Ticket value after payment typed by management for a pass paid outside Stripe (CAD before HST).
+  manualValue: { type: Number },
+  manualValueNote: { type: String },
+  manualValueBy: { type: String },
+  manualValueAt: { type: Date }
 });
 
 const userSchema = new mongoose.Schema(
@@ -115,6 +125,11 @@ const userSchema = new mongoose.Schema(
     // VIP yes / no set by staff (Admin → People). Unset = from their passes (Attendee.vip). Not a type:
     // it gives no app rights of its own; the apps show the VIP badge (kind "vip").
     vip:          { type: Boolean },
+    // "RSVP Email Sent" marked by staff (Admin → People) for an email sent outside the admin panel:
+    // true / false, unset = from our send records (services/people.js). Staff-only: never in /auth/me.
+    rsvpEmailMark:   { type: Boolean, select: false },
+    rsvpEmailMarkBy: { type: String, select: false },
+    rsvpEmailMarkAt: { type: Date, select: false },
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },

@@ -35,7 +35,7 @@ export const APP_COMING_SOON = {
 };
 
 const BASE = ["2x Day Conference Access", "Expo Floor Access", "Networking Breaks"];
-/** The CxO Breakfasts line. Apex and Speaker Passes include them; Power doesn't since Oct 19 2026.
+/** The CxO Breakfasts line. Apex includes them, and speakers get them on any pass; Power doesn't since Oct 19 2026.
     A single pass can have them switched on or off by staff (services/cxoBreakfast.js). */
 export const CXO_INCLUSION = "2x CxO Breakfasts";
 
@@ -53,10 +53,8 @@ export const PASS_INCLUSIONS = {
     "1x Gala Dinner & Networking Reception", "1x Awards Night", "Expo Floor Access", "Networking Breaks",
   ],
 };
-// Retired tier keys that still exist on old tickets.
+// Retired tier keys that still exist on old tickets. (The old "speaker" key reads as "power", see tierKey.)
 PASS_INCLUSIONS.vip = PASS_INCLUSIONS.apex;
-// Speaker Pass (staff-issued, never sold): everything, plus the speaker lounge.
-PASS_INCLUSIONS.speaker = ["Speaker Lounge", ...PASS_INCLUSIONS.apex];
 
 /* The tagline and the paragraph each pass card carries on the website
    (Tickets.jsx PASS_META). Repeated in the confirmation email so the
@@ -84,8 +82,10 @@ export const blurbFor = (tier) => PASS_BLURB[tierKey(tier)] || "";
 
 export const isBoothId = (ticketId) => /^BOOTH-/i.test(String(ticketId || ""));
 
+/** A tier as a key; the old "speaker" ticket type is a Power Pass (Oct 19 2026: the passes are strictly four). */
 export function tierKey(tier) {
-  return String(tier || "").trim().toLowerCase();
+  const k = String(tier || "").trim().toLowerCase();
+  return k === "speaker" ? "power" : k;
 }
 
 /**

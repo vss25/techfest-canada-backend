@@ -12,8 +12,9 @@ import { makeLookup, makeRsvpHandlers, publicLookup, cached, TOO_MANY, resolveRs
 import { makeLimiter, makeGuessLimiter } from "../services/ticketAccess.js";
 
 /* ---------- the matrix (must match the Tickets page) ---------- */
-// Same table as src/pages/Tickets.jsx passFeatureMap, plus speakers (everything).
-const ALL = ["connect", "influence", "power", "apex", "speaker"];
+// Same table as src/pages/Tickets.jsx passFeatureMap. Strictly four passes (Oct 19 2026): speakers hold a
+// Power Pass and get the CxO Breakfasts by being speakers (the `cxo` rule), not from a tier of their own.
+const ALL = ["connect", "influence", "power", "apex"];
 const EXPECTED = {
   day1: ALL,
   day2: ALL,
@@ -24,13 +25,13 @@ const EXPECTED = {
   expo_d2: ALL,
   breaks_d1: ALL,
   breaks_d2: ALL,
-  lunch_d1: ["influence", "power", "apex", "speaker"],
-  lunch_d2: ["influence", "power", "apex", "speaker"],
-  // Oct 19 2026: "There are only 4 passes." Apex and speakers only; Power no longer (per-pass switch: cxoBreakfast).
-  cxo_d1: ["apex", "speaker"],
-  cxo_d2: ["apex", "speaker"],
-  gala: ["power", "apex", "speaker"],
-  awards: ["power", "apex", "speaker"],
+  lunch_d1: ["influence", "power", "apex"],
+  lunch_d2: ["influence", "power", "apex"],
+  // Oct 19 2026: "There are only 4 passes." Apex by pass (and speakers on any pass, by the cxo rule); Power no longer.
+  cxo_d1: ["apex"],
+  cxo_d2: ["apex"],
+  gala: ["power", "apex"],
+  awards: ["power", "apex"],
   meetings: ["apex"],
   lounge: ["apex"],
 };
@@ -40,7 +41,11 @@ test("the option matrix matches the Tickets page", () => {
   for (const [key, tiers] of Object.entries(EXPECTED)) {
     for (const t of TIERS) assert.equal(tierIncludes(t, key), tiers.includes(t), `${t} / ${key}`);
   }
-  assert.deepEqual(TIERS, ["connect", "influence", "power", "apex", "speaker"]);
+  assert.deepEqual(TIERS, ["connect", "influence", "power", "apex"]);
+  // A row still saved with the old "speaker" tier reads as a speaker's Power Pass: Power plus the breakfasts.
+  assert.equal(tierIncludes("speaker", "cxo_d1"), true);
+  assert.equal(tierIncludes("speaker", "gala"), true);
+  assert.equal(tierIncludes("speaker", "meetings"), false);
   assert.deepEqual(DAY_KEYS, ["day1", "day2"]);
   assert.equal(tierIncludes("apex", "nope"), false);
   assert.equal(tierIncludes("vip", "day1"), false);
@@ -80,7 +85,9 @@ test("what each pass can choose, by day: every pass is asked about the day itsel
   assert.deepEqual(allowedExperiences("power", ["day2"], { extra: ["cxo_d2"] }), ["sessions_d2", "expo_d2", "breaks_d2", "cxo_d2", "lunch_d2", "gala"]);
   assert.deepEqual(allowedExperiences("apex", ["day2"], { cxo: false, extra: ["cxo_d2"] }).includes("cxo_d2"), true);
   assert.deepEqual(allowedExperiences("apex", ["day1", "day2"]), EXPERIENCE_KEYS);
-  assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), EXPERIENCE_KEYS.filter((k) => k !== "meetings" && k !== "lounge"));
+  // A speaker's Power Pass with the speaker's breakfasts is everything the old "speaker" tier offered.
+  assert.deepEqual(allowedExperiences("power", ["day1", "day2"], { cxo: true }), EXPERIENCE_KEYS.filter((k) => k !== "meetings" && k !== "lounge"));
+  assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), allowedExperiences("power", ["day1", "day2"], { cxo: true }));
   assert.deepEqual(allowedExperiences("apex", []), ["meetings", "lounge"]);
   assert.deepEqual(allowedExperiences("bogus", ["day1"]), []);
 });
@@ -107,14 +114,16 @@ test("checkOptions accepts what's included and rejects the rest", () => {
 test("the options payload is the shared config the website reads", () => {
   const p = rsvpOptionsPayload();
   assert.deepEqual(p.tiers.map((t) => t.key), TIERS);
-  assert.equal(p.tiers.find((t) => t.key === "speaker").sold, false);
+  assert.deepEqual(p.tiers.map((t) => [t.key, t.label, t.sold]),
+    [["connect", "Connect Pass", true], ["influence", "Influence Pass", true], ["power", "Power Pass", true], ["apex", "Apex Pass", true]]);
+  assert.equal(JSON.stringify(p).includes("Speaker Pass"), false);
   assert.deepEqual(p.options.map((o) => o.key), OPTION_KEYS);
   assert.deepEqual(p.options.filter((o) => o.kind === "experience").slice(0, 6).map((o) => o.key), ON_THE_DAY);
   for (const k of ON_THE_DAY) assert.deepEqual(p.options.find((o) => o.key === k).tiers, TIERS, k);
   assert.deepEqual(p.options.find((o) => o.key === "expo_d1"), {
     key: "expo_d1", kind: "experience", day: "day1", label: "Expo Floor", description: "Exhibitors, product demos and partner stands.", tiers: TIERS,
   });
-  assert.deepEqual(p.options.find((o) => o.key === "gala").tiers, ["power", "apex", "speaker"]);
+  assert.deepEqual(p.options.find((o) => o.key === "gala").tiers, ["power", "apex"]);
   assert.deepEqual(p.dietary.map((d) => d.key), DIETARY_KEYS);
   assert.deepEqual(p.days.map((d) => d.date), ["2026-10-26", "2026-10-27"]);
   p.options[0].tiers.push("hacked"); // a copy, not the real list
@@ -310,7 +319,7 @@ function makeWorld() {
   return { lookup, verifyCalls };
 }
 
-test("lookup: ticket ID + last name is verified; speakers see everything; one name is never enough", async () => {
+test("lookup: ticket ID + last name is verified; speakers get their Power Pass with the CxO Breakfasts; one name is never enough", async () => {
   const { lookup } = makeWorld();
   const r1 = await lookup(cleanLookup({ firstName: "", lastName: "doe", ticketId: "TECHFEST:ABC123DEF" }));
   // A verified ticket also says whether its pass has the CxO Breakfasts (Power: no) and which ones they keep.
@@ -322,11 +331,14 @@ test("lookup: ticket ID + last name is verified; speakers see everything; one na
   assert.equal(r2.kind, "none"); // wrong last name, and no Jane Smith holds a ticket
   assert.equal(publicLookup(r2, { ticketId: "abc123def" }).ticketMatched, false);
   const r3 = await lookup(cleanLookup({ firstName: "alan", lastName: "aspuru guzik" }));
-  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Alán Aspuru-Guzik", allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
-  // A speaker with a verified (complimentary Connect) ticket still sees everything.
+  // A speaker (on the public list): a Power Pass, and the CxO Breakfasts for being a speaker. Never "Speaker Pass".
+  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "power", tierLabel: "Power Pass", displayName: "Alán Aspuru-Guzik",
+    cxoBreakfast: true, keepOptions: [], allowedOptions: allowedExperiences("power", DAY_KEYS, { cxo: true }) });
+  // A speaker with a verified (complimentary Connect) ticket: their speaker's Power Pass.
   const r4 = await lookup(cleanLookup({ firstName: "Chris", lastName: "Golden", ticketId: "spk999xyz" }));
   assert.equal(r4.kind, "speaker");
   assert.equal(r4.ticket.ticketId, "SPK999XYZ");
+  assert.deepEqual([r4.tier, r4.cxoBreakfast], ["power", true]);
   const r5 = await lookup(cleanLookup({ firstName: "Jane", lastName: "Doe" }));
   assert.deepEqual(publicLookup(r5), { kind: "ticket", verified: false, tier: "apex", tierLabel: "Apex Pass", displayName: "Jane", allowedOptions: EXPERIENCE_KEYS });
   const r6 = await lookup(cleanLookup({ firstName: "", lastName: "Doe" }));
@@ -336,7 +348,7 @@ test("lookup: ticket ID + last name is verified; speakers see everything; one na
   // The speaker is matched on the name typed: the ticket's holder has the same last name (it was
   // checked), so the speaker list decides, and resolvePass saves it unverified for staff to confirm.
   const r8 = await lookup(cleanLookup({ firstName: "Chris", lastName: "Golden", ticketId: "ccc333ddd444" }));
-  assert.deepEqual([r8.kind, r8.tier, r8.verified, r8.ticket.holderMatch, r8.ticket.holderLastMatch], ["speaker", "speaker", true, false, true]);
+  assert.deepEqual([r8.kind, r8.tier, r8.verified, r8.ticket.holderMatch, r8.ticket.holderLastMatch], ["speaker", "power", true, false, true]);
   assert.equal(r4.ticket.holderMatch, true);
   const r9 = await lookup(cleanLookup({ firstName: "Alex", lastName: "Pu" }));
   assert.equal(r9.kind, "speaker");
@@ -346,11 +358,11 @@ test("lookup: a speaker whose ticket has another form of their first name is sti
   const { lookup } = makeWorld();
   // Ticket "Christopher Golden", speaker list "Dr. Chris Golden", typed "Chris" + the ticket ID.
   const r = await lookup(cleanLookup({ firstName: "Chris", lastName: "Golden", ticketId: "TECHFEST:CHR111IST222" }));
-  assert.deepEqual([r.kind, r.tier, r.verified, r.displayName], ["speaker", "speaker", true, "Dr. Chris Golden"]);
+  assert.deepEqual([r.kind, r.tier, r.verified, r.displayName], ["speaker", "power", true, "Dr. Chris Golden"]);
   assert.deepEqual([r.ticket.ticketId, r.ticket.holderMatch, r.ticket.holderLastMatch], ["CHR111IST222", false, true]);
   assert.deepEqual(publicLookup(r, { ticketId: "chr111ist222" }),
-    { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Dr. Chris Golden", ticketMatched: true, cxoBreakfast: true, keepOptions: [],
-      allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
+    { kind: "speaker", verified: true, tier: "power", tierLabel: "Power Pass", displayName: "Dr. Chris Golden", ticketMatched: true, cxoBreakfast: true, keepOptions: [],
+      allowedOptions: allowedExperiences("power", DAY_KEYS, { cxo: true }) });
   // The full ticket name isn't on the speaker list: the ticket's pass.
   const full = await lookup(cleanLookup({ firstName: "Christopher", lastName: "Golden", ticketId: "chr111ist222" }));
   assert.deepEqual([full.kind, full.tier, full.verified], ["ticket", "connect", true]);
@@ -444,9 +456,16 @@ test("validateRsvp rejects bad input", () => {
 
 test("resolvePass: verified ticket > speaker (unverified: the list is public) > what they chose", () => {
   assert.deepEqual(resolvePass({ kind: "ticket", tier: "connect", verified: true }, "apex"), { ok: true, tier: "connect", tierVerified: true, kind: "ticket" });
-  assert.deepEqual(resolvePass({ kind: "speaker", tier: "speaker", verified: true }, "connect"), { ok: true, tier: "speaker", tierVerified: false, kind: "speaker", detectedTier: "" });
-  assert.deepEqual(resolvePass({ kind: "speaker", tier: "speaker", verified: true, ticket: { type: "connect" } }, ""),
-    { ok: true, tier: "speaker", tierVerified: false, kind: "speaker", detectedTier: "connect" });
+  // A speaker: their Power Pass (verified when the ticket they gave is it), an Apex one when that's the ticket.
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "power", verified: true }, "connect"), { ok: true, tier: "power", tierVerified: false, kind: "speaker", detectedTier: "" });
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "power", verified: true, ticket: { type: "connect" } }, ""),
+    { ok: true, tier: "power", tierVerified: false, kind: "speaker", detectedTier: "connect" });
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "power", verified: true, ticket: { type: "power" } }, ""),
+    { ok: true, tier: "power", tierVerified: true, kind: "speaker", detectedTier: "power" });
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "apex", verified: true, ticket: { type: "apex" } }, ""),
+    { ok: true, tier: "apex", tierVerified: true, kind: "speaker", detectedTier: "apex" });
+  // A not-yet-migrated "speaker" ticket is a Power Pass.
+  assert.deepEqual(resolvePass({ kind: "speaker", tier: "power", verified: true, ticket: { type: "speaker" } }, "").tier, "power");
   // The one holder with their name has a Power pass: they can't claim more without the ticket.
   const up = resolvePass({ kind: "ticket", tier: "power", verified: false }, "apex");
   assert.deepEqual([up.ok, up.field], [false, "ticketId"]);
@@ -542,9 +561,9 @@ test("submit: the server's pass wins and options are checked against it", async 
   assert.equal(store.rows[0].chosenTier, "apex");
   assert.equal(store.rows[0].editTokenHash, hashEditToken(r2.body.editToken));
 
-  // Speakers get everything, whatever they picked, but a name on the public list is no proof.
+  // Speakers get their Power Pass with the breakfasts, whatever they picked, but a name on the public list is no proof.
   const r3 = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", tier: "connect", options: ["cxo_d1", "cxo_d2", "awards"] });
-  assert.deepEqual([r3.statusCode, r3.body.tier, r3.body.tierVerified, r3.body.kind], [201, "speaker", false, "speaker"]);
+  assert.deepEqual([r3.statusCode, r3.body.tier, r3.body.tierVerified, r3.body.kind], [201, "power", false, "speaker"]);
   assert.equal(store.rows[1].matchedSpeaker, "Dr. Chris Golden");
 
   // Nobody we know: their choice stands, unverified.
@@ -565,7 +584,7 @@ test("submit: a speaker's verified ticket is noted, but the speaker match stays 
   const { run, store } = submitter();
   // A Connect holder whose name is also on the speaker list ("Michael J. Chen").
   const r = await run({ ...GOOD, firstName: "Michael", lastName: "Chen", ticketId: "eee555fff666", tier: "connect", days: ["day1"], options: ["cxo_d1", "awards"] });
-  assert.deepEqual([r.statusCode, r.body.tier, r.body.tierVerified, r.body.kind], [201, "speaker", false, "speaker"]);
+  assert.deepEqual([r.statusCode, r.body.tier, r.body.tierVerified, r.body.kind], [201, "power", false, "speaker"]);
   const row = store.rows[0];
   assert.deepEqual([row.key, row.ticketVerified, row.detectedTier, row.matchedSpeaker], ["t:eee555fff666", true, "connect", "Michael J. Chen"]);
   assert.equal(summarizeRsvps(store.rows).verifiedCounts.awards, 0); // not in the verified headcounts
@@ -693,7 +712,7 @@ test("submit: a ticket holder can't take over a namesake's RSVP by typing their 
   const [chris, bob] = store.rows;
   assert.equal(store.rows.length, 2);
   assert.deepEqual([chris.key, chris.email, chris.tier, chris.options, chris.days, chris.duplicateOf || "", chris.submissions],
-    ["n:chris golden", "chris@real.com", "speaker", ["cxo_d1", "gala"], ["day1", "day2"], "", 1]);
+    ["n:chris golden", "chris@real.com", "power", ["cxo_d1", "gala"], ["day1", "day2"], "", 1]);
   assert.deepEqual([bob.key, bob.nameKey, bob.detectedTier, bob.tierVerified], ["t:ccc333ddd444", "", "connect", false]);
   // ...and it doesn't shadow Chris's name either.
   assert.equal(counted(store).total, 2);
@@ -702,14 +721,14 @@ test("submit: a ticket holder can't take over a namesake's RSVP by typing their 
   assert.equal(token.body.updated, true);
   assert.equal(store.rows.length, 2);
   assert.deepEqual([chris.days, chris.submissions], [["day1", "day2"], 1]);
-  assert.deepEqual([bob.key, bob.days, bob.tier, bob.detectedTier], ["t:ccc333ddd444", ["day2"], "speaker", "connect"]);
+  assert.deepEqual([bob.key, bob.days, bob.tier, bob.detectedTier], ["t:ccc333ddd444", ["day2"], "power", "connect"]);
 });
 
-test("submit: a speaker whose ticket says Christopher, typing Chris and the ticket ID, gets every option", async () => {
+test("submit: a speaker whose ticket says Christopher, typing Chris and the ticket ID, gets their Power Pass with the breakfasts", async () => {
   const { run, store } = submitter();
   const all = ["sessions_d1", "expo_d1", "breaks_d1", "cxo_d1", "lunch_d1", "awards"];
   const r = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "TECHFEST:CHR111IST222", tier: "connect", days: ["day1"], options: all });
-  assert.deepEqual([r.statusCode, r.body.kind, r.body.tier, r.body.tierVerified], [201, "speaker", "speaker", false]);
+  assert.deepEqual([r.statusCode, r.body.kind, r.body.tier, r.body.tierLabel, r.body.tierVerified], [201, "speaker", "power", "Power Pass", false]);
   const row = store.rows[0];
   assert.deepEqual([row.key, row.ticketVerified, row.detectedTier, row.matchedSpeaker, row.options], ["t:chr111ist222", true, "connect", "Dr. Chris Golden", all]);
   // Typed with the ticket's full name instead: the ticket's own (Connect) pass, the same row.
@@ -724,7 +743,7 @@ test("submit: a nickname typed over your own ticket keeps the name the RSVP is k
   assert.deepEqual([row.key, row.nameKey], ["t:chr111ist222", "christopher golden"]);
   // Later, as "Chris" with the same ticket (no token): the ticket proves it is theirs.
   const nick = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "chr111ist222", tier: "", days: ["day1", "day2"], options: ["gala"] }, "9.9.9.9");
-  assert.deepEqual([nick.body.updated, nick.body.tier], [true, "speaker"]);
+  assert.deepEqual([nick.body.updated, nick.body.tier], [true, "power"]);
   assert.equal(store.rows.length, 1);
   assert.deepEqual([row.nameKey, row.firstName, row.days, row.options], ["christopher golden", "Chris", ["day1", "day2"], ["gala"]]);
   // ...so a name-only RSVP as Christopher still finds it and waits for staff instead of being counted twice.
@@ -762,7 +781,7 @@ test("submit: a speaker's name-only RSVP, later proven by a ticket in another fo
   assert.deepEqual([row.key, row.nameKey], ["n:chris golden", "chris golden"]);
   // His ticket says Christopher: the token proves the RSVP is his, the ticket now keys it.
   const proven = await run({ ...GOOD, firstName: "Chris", lastName: "Golden", ticketId: "chr111ist222", tier: "", days: ["day1"], options: ["awards", "cxo_d1"], editToken: first.body.editToken });
-  assert.deepEqual([proven.body.updated, proven.body.tier, proven.body.tierVerified], [true, "speaker", false]);
+  assert.deepEqual([proven.body.updated, proven.body.tier, proven.body.tierVerified], [true, "power", false]);
   assert.equal(store.rows.length, 1);
   assert.deepEqual([row.key, row.nameKey, row.ticketVerified, row.options], ["t:chr111ist222", "chris golden", true, ["cxo_d1", "awards"]]);
   // Then from the same browser without the ticket ID: still that row (a token saved under the ticket works too).
@@ -881,7 +900,7 @@ test("headcounts per day, experience, dietary need and pass", () => {
   const s = summarizeRsvps([
     { tier: "apex", tierVerified: true, days: ["day1", "day2"], options: ["sessions_d1", "gala", "lounge", "lunch_d1"], dietary: ["vegan", "nut_allergy"] },
     { tier: "power", tierVerified: false, days: ["day1", "day2"], options: ["sessions_d1", "expo_d2", "gala"], dietary: ["other"], dietaryOther: "No pork", name: "Sam Lee" },
-    { tier: "speaker", tierVerified: false, days: ["day2"], options: [], dietary: [] },
+    { tier: "speaker", kind: "speaker", tierVerified: false, days: ["day2"], options: [], dietary: [] }, // saved before Oct 19 2026: a Power Pass
     { tier: "apex", tierVerified: false, days: ["day1", "day2"], options: ["lounge", "meetings"], dietary: ["halal"], duplicateOf: "r1" }, // waits for staff
     { tier: "apex", days: ["day1"], options: ["lounge"], mergedInto: "r1" },
   ]);
@@ -896,8 +915,8 @@ test("headcounts per day, experience, dietary need and pass", () => {
   assert.equal(s.dietary.other, 1);
   assert.deepEqual(s.dietaryNotes, [{ name: "Sam Lee", note: "No pork" }]);
   assert.deepEqual(s.tiers.apex, { total: 1, verified: 1 });
-  assert.deepEqual(s.tiers.power, { total: 1, verified: 0 });
-  assert.deepEqual(s.tiers.speaker, { total: 1, verified: 0 });
+  assert.deepEqual(s.tiers.power, { total: 2, verified: 0 });
+  assert.deepEqual(Object.keys(s.tiers), ["connect", "influence", "power", "apex"]);
   assert.equal(s.unverified, 2);
 });
 

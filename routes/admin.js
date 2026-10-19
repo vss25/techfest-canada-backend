@@ -11,6 +11,8 @@ import { collectTickets, salesSummary } from "../services/staffTickets.js";
 import { planSync, applySync, listCompleteSessions, planDetailsBackfill, applyDetailsBackfill } from "../services/stripeSync.js";
 import { requireAdmin, requireManagementAdmin } from "../middleware/adminAuth.js";
 import { AppContent } from "../models/Admin.js";
+import { isSpeakerPass } from "../services/teamRoles.js";
+import { tierKey, displayPassName } from "../services/ticketInfo.js";
 
 const router = express.Router();
 
@@ -114,7 +116,7 @@ router.get(
       const [inventory, users, guests] = await Promise.all([
         TicketInventory.find().lean(),
         User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode").lean(),
+        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode speakerPass stripeSessionId").lean(),
       ]);
       const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
       const summary = salesSummary(collectTickets(users, guests), prices, { range });
@@ -318,11 +320,14 @@ router.post(
         ticket.checkedIn = true;
         await user.save();
 
+        // `type`: one of the four passes (an old "speaker" ticket is a Power Pass); `speaker`: a speaker's pass.
         res.json({
           success: true,
           name: user.name,
           ticketId: ticket.ticketId,
-          type: ticket.type,
+          type: tierKey(ticket.type),
+          passName: displayPassName(ticket.type, ticket.ticketId),
+          speaker: isSpeakerPass(ticket),
         });
 
         return;
@@ -348,7 +353,9 @@ router.post(
         success: true,
         name: attendee.name,
         ticketId: attendee.ticketId,
-        type: attendee.ticketType,
+        type: tierKey(attendee.ticketType),
+        passName: displayPassName(attendee.ticketType, attendee.ticketId),
+        speaker: isSpeakerPass(attendee),
       });
     } catch (err) {
       console.error("Check-in error:", err);

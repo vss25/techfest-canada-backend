@@ -244,7 +244,14 @@ test("RSVP status on the row: not yet, the attendee's, or staff's; duplicates do
   assert.equal(row("Bob Buyer").rsvp.status, "none");
   const r = row("Jane Doe");
   assert.deepEqual([r.pass.label, r.pass.status, r.passStatusLabel, r.company, r.hasAccount], ["Power Pass", "paid", "Paid", "Acme Inc.", true]);
-  assert.equal(row("Ed Exhibitor").pass.label, "Exhibitor Pass");
+  // Strictly four passes: an exhibitor pass is a Connect Pass (being an exhibitor is their type).
+  assert.deepEqual([row("Ed Exhibitor").pass.label, row("Ed Exhibitor").exhibitor, row("Ed Exhibitor").types.includes("exhibitor")], ["Connect Pass", true, true]);
+  // A speaker's pass is a Power Pass, marked as a speaker's; the person is a Speaker by type.
+  const mike = row("Michael Chen");
+  assert.deepEqual([mike.pass.label, mike.pass.tier, mike.pass.speakerPass, mike.types.includes("speaker")], ["Power Pass", "power", true, true]);
+  for (const p of people) {
+    for (const t of personDetail(p).passes) assert.ok(["Connect Pass", "Influence Pass", "Power Pass", "Apex Pass"].includes(t.label), `${p.name}: ${t.label}`);
+  }
   assert.equal(row("Alán Aspuru-Guzik").photoUrl, "https://cdn.sanity.io/images/x/alan.jpg");
 });
 
@@ -257,7 +264,8 @@ test("search, filters, sorting and counts", () => {
   assert.deepEqual(names(filterPeople(people, { type: "speaker" })).sort(), ["Alán Aspuru-Guzik", "Dr. Chris Golden", "Michael Chen"]);
   assert.deepEqual(names(filterPeople(people, { type: "none" })).sort(), ["Bob Buyer", "Walk In"]);
   assert.deepEqual(names(filterPeople(people, { status: "pending" })), ["Michael Chen"]);
-  assert.deepEqual(names(filterPeople(people, { pass: "power" })), ["Jane Doe"]);
+  // Speakers hold Power Passes (the old "speaker" tickets too).
+  assert.deepEqual(names(filterPeople(people, { pass: "power" })).sort(), ["Alán Aspuru-Guzik", "Jane Doe", "Michael Chen"]);
   // Only the four passes filter: "speaker" (a type, not a pass) and "none" are ignored.
   assert.equal(filterPeople(people, { pass: "none" }).length, 12);
   assert.equal(filterPeople(people, { pass: "speaker" }).length, 12);
@@ -276,7 +284,7 @@ test("search, filters, sorting and counts", () => {
   assert.equal(byCompany[0].company, "Acme Inc.");
   assert.equal(byCompany.at(-1).company, ""); // blanks last
   assert.equal(sortPeople(people, "company", "desc").at(-1).company, "");
-  assert.equal(sortPeople(people, "pass", "desc")[0].primary.tier, "speaker");
+  assert.equal(sortPeople(people, "pass", "desc")[0].primary.tier, "apex"); // no "speaker" pass: Apex is the top
   assert.equal(sortPeople(people, "rsvp", "desc")[0].name, "Michael Chen"); // latest RSVP first
   assert.deepEqual(sortPeople(people, "exhibitor").slice(0, 2).map((p) => p.name), ["Ed Exhibitor", "Fay Flagged"]);
 
@@ -295,7 +303,7 @@ test("CSV export: one row per person with pass, RSVP and a profile link", () => 
   const [head, line] = csv.replace(/^﻿/, "").split("\n");
   assert.equal(head.split(",").length, PEOPLE_CSV_HEAD.length);
   // Types, VIP, pass, value (unknown without Stripe), CxO Breakfast (Power: No), RSVP status.
-  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,No,1,Confirmed by Individual,Attendee,/);
+  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,Stripe,No,1,Confirmed by Individual,Attendee,/);
   // A breakfast she chose before Power lost it stays on her RSVP; nothing added by staff; no RSVP email recorded.
   assert.match(line, /Day 1 & Day 2,CxO Breakfast \(Day 1\); Gala Dinner & Networking Reception \(Day 2\),,No,,No,/);
   assert.match(line, /,https:\/\/www\.thetechfestival\.com\/admin\/people\/u-u1$/);

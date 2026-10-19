@@ -20,12 +20,24 @@ import { createHash, randomBytes } from "node:crypto";
 import { cleanText, cleanPage, csvCell } from "./brochureDownloads.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
-/* ---------- Passes ---------- */
+/* ---------- Passes ----------
+   Strictly four (Oct 19 2026). Speakers hold a Power Pass: being a speaker (their person type,
+   or `kind: "speaker"` on an RSVP matched to the speaker list) adds the CxO Breakfasts, which
+   is everything the old "speaker" tier offered (it never had the Apex meetings or lounge).
+   RSVP rows saved with tier "speaker" before then were moved to "power" on start
+   (services/fourPasses.js); normalizeTier reads any left over the same way. */
 export const PASS_TIERS = ["connect", "influence", "power", "apex"];
-export const TIERS = [...PASS_TIERS, "speaker"]; // speakers aren't sold; they see everything
+export const TIERS = PASS_TIERS;
 export const TIER_LABELS = {
-  connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", speaker: "Speaker",
+  connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass",
 };
+/** A stored tier as one of the four: the old "speaker" tier is a Power Pass; anything else as it is. */
+export const normalizeTier = (t) => {
+  const k = String(t || "").trim().toLowerCase();
+  return k === "speaker" ? "power" : k;
+};
+/** "Power Pass" for any stored tier ("" when it isn't one of the four). */
+export const tierLabel = (t) => TIER_LABELS[normalizeTier(t)] || "";
 
 /* ---------- Days ---------- */
 export const DAYS = [
@@ -34,10 +46,10 @@ export const DAYS = [
 ];
 export const DAY_KEYS = DAYS.map((d) => d.key);
 
-const EVERYONE = [...TIERS];
-const INFLUENCE_UP = ["influence", "power", "apex", "speaker"];
-const POWER_UP = ["power", "apex", "speaker"];
-const APEX_UP = ["apex", "speaker"];
+const EVERYONE = [...PASS_TIERS];
+const INFLUENCE_UP = ["influence", "power", "apex"];
+const POWER_UP = ["power", "apex"];
+const APEX_UP = ["apex"];
 
 /* ---------- What each pass includes ----------
    `day`: the day it happens on, so it is only offered to people coming that
@@ -63,8 +75,8 @@ export const RSVP_OPTIONS = [
     description: "Coffee and conversation between sessions." },
   // Each day in the order it happens. `time` is only a fallback: the page shows the start time of the
   // matching agenda session (AGENDA_MATCH below, read from the CMS), so moving a session moves it here.
-  // CxO Breakfasts (Oct 19 2026): Apex and Speaker Passes, plus speakers on any pass and passes staff
-  // switched on (`cxo` in allowedExperiences, services/cxoBreakfast.js). Power no longer includes them.
+  // CxO Breakfasts (Oct 19 2026): Apex, plus speakers on any pass and passes staff switched on
+  // (`cxo` in allowedExperiences, services/cxoBreakfast.js). Power no longer includes them.
   { key: "cxo_d1", kind: "experience", day: "day1", time: "7:55 AM", label: "CxO Breakfast", tiers: APEX_UP,
     description: "Invitation-only breakfast for senior leaders." },
   { key: "lunch_d1", kind: "experience", day: "day1", time: "12:35 PM", label: "Networking Luncheon", tiers: INFLUENCE_UP,
@@ -78,7 +90,7 @@ export const RSVP_OPTIONS = [
   // Day 2 evening, as on the website agenda (src/data/agenda.js "d2-21") and the CMS session (17:30).
   { key: "gala", kind: "experience", day: "day2", time: "5:30 PM", label: "Gala Dinner & Networking Reception", tiers: POWER_UP,
     description: "Dinner and drinks with speakers, partners and delegates on the evening of Day 2." },
-  // Apex only: speakers don't get pre-matched meetings or the Scotch lounge (client decision, Oct 2026).
+  // Apex only: speakers (on their Power Pass) don't get pre-matched meetings or the Scotch lounge (client decision, Oct 2026).
   { key: "meetings", kind: "experience", day: null, label: "Two Pre-Matched Business Meetings", tiers: ["apex"],
     description: "Two meetings we line up for you in advance, matched to your objectives." },
   { key: "lounge", kind: "experience", day: null, label: "Private Scotch & Cocktail Lounge (19+)", tiers: ["apex"],
@@ -158,7 +170,7 @@ export function agendaTimes(sessions) {
 export function rsvpOptionsPayload(times = null) {
   return {
     event: { name: "The Tech Festival Canada 2026", venue: "The Westin Harbour Castle, Toronto", start: "2026-10-26", end: "2026-10-27" },
-    tiers: TIERS.map((key) => ({ key, label: TIER_LABELS[key], sold: key !== "speaker" })),
+    tiers: PASS_TIERS.map((key) => ({ key, label: TIER_LABELS[key], sold: true })),
     days: DAYS,
     options: RSVP_OPTIONS.map(({ tiers, ...o }) => ({ ...o, ...(o.time && times?.[o.key] ? { time: times[o.key] } : {}), tiers: [...tiers] })),
     dietary: DIETARY,
@@ -170,7 +182,9 @@ export function tierIncludes(tier, key, { cxo } = {}) {
   const o = OPTION_BY_KEY[key];
   if (!o) return false;
   if (CXO_KEYS.includes(key) && typeof cxo === "boolean") return cxo;
-  return o.tiers.includes(tier);
+  // A row still saved with the old "speaker" tier: a speaker's Power Pass, so the breakfasts too.
+  if (CXO_KEYS.includes(key) && String(tier || "").trim().toLowerCase() === "speaker") return true;
+  return o.tiers.includes(normalizeTier(tier));
 }
 
 /**
@@ -207,7 +221,7 @@ export function checkOptions(tier, days, options, { cxo, extra = [] } = {}) {
   const invalid = picked.filter((k) => !allowed.has(k));
   if (invalid.length) {
     const what = invalid.map((k) => (OPTION_BY_KEY[k] ? optionLabel(k) : `"${k.slice(0, 40)}"`)).join(", ");
-    return { ok: false, invalid, error: `Not included with the ${TIER_LABELS[tier] || "selected pass"} on the days you picked: ${what}` };
+    return { ok: false, invalid, error: `Not included with the ${tierLabel(tier) || "selected pass"} on the days you picked: ${what}` };
   }
   return { ok: true, options: EXPERIENCE_KEYS.filter((k) => picked.includes(k)) };
 }
@@ -217,11 +231,12 @@ export function checkOptions(tier, days, options, { cxo, extra = [] } = {}) {
    tickets, but older ones hold retired keys ("vip", "discover", "early",
    "festival", "session") and a few hold display names ("TTFC Apex Pass").
    Retired/unknown passes get the base Connect entitlements, the same as
-   inclusionsFor() in services/ticketInfo.js does. */
+   inclusionsFor() in services/ticketInfo.js does. Always one of the four:
+   the old "speaker" type is a Power Pass (the speaker type adds the rest). */
 export function tierFromTicketType(type) {
   const s = String(type || "").toLowerCase().replace(/ttfc|20\d\d|pass|ticket/g, " ").replace(/[^a-z-]+/g, " ").trim();
   if (!s) return "connect";
-  if (/\bspeaker\b/.test(s)) return "speaker"; // Speaker Pass (staff-issued, never sold): every option
+  if (/\bspeaker\b/.test(s)) return "power"; // speakers' passes are Power Passes (Oct 19 2026)
   if (/\b(apex|vip|all[- ]access)\b/.test(s)) return "apex";
   if (/\bpower\b/.test(s)) return "power";
   if (/\binfluence\b/.test(s)) return "influence";
@@ -511,19 +526,24 @@ export function validateRsvp(body) {
   return { ok: true, value: { ...v, days, options, dietary } };
 }
 
+/** A speaker's pass on the RSVP: their Power Pass, or the Apex Pass when the ticket they gave is one. */
+export const speakerTier = (ticketTier = "") => (normalizeTier(ticketTier) === "apex" ? "apex" : "power");
+
 /**
  * The pass an RSVP is saved with. A verified ticket wins, then a speaker; otherwise
  * what the person chose (one of the four passes) is kept, marked unverified.
- * Speakers are found by name on the public speaker list, so a speaker RSVP is never
- * "verified": staff confirm it (`detectedTier` notes the pass of a verified ticket).
+ * Speakers are found by name on the public speaker list: their pass is a Power Pass
+ * (an Apex one when that's the ticket they gave), verified only when the ticket they
+ * gave is that pass (`detectedTier` notes the pass of a verified ticket). Their CxO
+ * Breakfasts come from being a speaker (services/rsvpHandler.js lookupRules).
  * Without a ticket, nobody can claim more than the one ticket holder with their name has.
  * @param {{kind: string, tier?: string, verified: boolean, ticket?: object}} found  the server-side lookup
  */
 export function resolvePass(found, chosenTier) {
   if (found?.kind === "speaker") {
     const detectedTier = found.ticket ? tierFromTicketType(found.ticket.type) : "";
-    // A verified Speaker Pass ticket proves it; a name on the public list alone doesn't.
-    return { ok: true, tier: "speaker", tierVerified: detectedTier === "speaker", kind: "speaker", detectedTier };
+    const tier = speakerTier(detectedTier);
+    return { ok: true, tier, tierVerified: !!detectedTier && detectedTier === tier, kind: "speaker", detectedTier };
   }
   if (found?.kind === "ticket" && found.verified) return { ok: true, tier: found.tier, tierVerified: true, kind: "ticket" };
   if (!PASS_TIERS.includes(chosenTier)) return { ok: false, field: "tier", error: "Choose your pass" };
@@ -565,11 +585,15 @@ const escRx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 /** Rows that are listed: not bots, not merged into another RSVP by staff. */
 export const LIVE_RSVPS = Object.freeze({ spam: { $ne: true }, mergedInto: { $in: ["", null] } });
 
-/** ?q= name, email or ticket ID; ?tier=; ?option= (a day or an experience); ?verified=0|1; ?review=1 possible duplicates */
-export function rsvpsFilter({ q, tier, option, verified, review } = {}) {
+/** ?q= name, email or ticket ID; ?tier= one of the four (rows saved as "speaker" before Oct 19 2026 count as Power);
+    ?kind=speaker (matched to the speaker list); ?option= (a day or an experience); ?verified=0|1; ?review=1 possible duplicates */
+export function rsvpsFilter({ q, tier, kind, option, verified, review } = {}) {
   const filter = { ...LIVE_RSVPS };
   const t = cleanText(tier).toLowerCase();
-  if (TIERS.includes(t)) filter.tier = t;
+  if (t === "power") filter.tier = { $in: ["power", "speaker"] };
+  else if (TIERS.includes(t)) filter.tier = t;
+  else if (t === "speaker") filter.kind = "speaker"; // old links: the speakers
+  if (cleanText(kind).toLowerCase() === "speaker") filter.kind = "speaker";
   const o = cleanText(option);
   if (DAY_KEYS.includes(o)) filter.days = o;
   else if (EXPERIENCE_KEYS.includes(o)) filter.options = o;
@@ -617,9 +641,10 @@ export function summarizeRsvps(docs = []) {
       if (d.tierVerified) verifiedCounts[k] += 1;
     }
     for (const k of d.dietary || []) if (k in dietary) dietary[k] += 1;
-    if (tiers[d.tier]) {
-      tiers[d.tier].total += 1;
-      if (d.tierVerified) tiers[d.tier].verified += 1;
+    const tk = normalizeTier(d.tier);
+    if (tiers[tk]) {
+      tiers[tk].total += 1;
+      if (d.tierVerified) tiers[tk].verified += 1;
     }
     if (!d.tierVerified) unverified += 1;
   }
@@ -639,8 +664,8 @@ export function rsvpRow(d) {
     name: nameOf(d),
     email: d.email || "",
     kind: d.kind || "none",
-    tier: d.tier || "",
-    tierLabel: TIER_LABELS[d.tier] || d.tier || "",
+    tier: normalizeTier(d.tier),
+    tierLabel: tierLabel(d.tier) || d.tier || "",
     tierVerified: !!d.tierVerified,
     days: d.days || [],
     options: d.options || [],
@@ -703,7 +728,7 @@ export function rsvpsCsv(docs) {
   const lines = docs.map((d) => {
     const picked = new Set([...(d.days || []), ...(d.options || [])]);
     return [
-      stamp(d.updatedAt || d.createdAt), d.firstName, d.lastName, d.email, TIER_LABELS[d.tier] || d.tier,
+      stamp(d.updatedAt || d.createdAt), d.firstName, d.lastName, d.email, tierLabel(d.tier) || d.tier,
       !!d.tierVerified, KIND_LABEL[d.kind] || "", d.ticketId,
       ...OPTION_KEYS.map((k) => (picked.has(k) ? "Yes" : "")),
       (d.dietary || []).map((k) => DIETARY_LABEL[k] || k).join("; "), d.dietaryOther, d.accessibility,
@@ -812,14 +837,14 @@ export function buildRsvpEmail(r, { updated = false } = {}) {
   const diet = (r.dietary || []).map((k) => (k === "other" && r.dietaryOther ? `Other: ${r.dietaryOther}` : dietMap[k] || k));
   const rows = [
     ["Name", name],
-    ["Pass", TIER_LABELS[r.tier] || r.tier || ""],
+    ["Pass", `${tierLabel(r.tier) || r.tier || ""}${r.kind === "speaker" ? " (speaker)" : ""}`],
     ["Ticket ID", r.ticketId || ""],
     ["Days", days],
     ["Special events", events.length ? events.join("\n") : "None"],
     ["Dietary", diet.length ? diet.join(", ") : "None"],
     ["Accessibility", r.accessibility || "None"],
   ];
-  const subject = `${updated ? "[RSVP updated]" : "[RSVP]"} ${name} · ${TIER_LABELS[r.tier] || r.tier || "Pass"}`.replace(/[\r\n]+/g, " ");
+  const subject = `${updated ? "[RSVP updated]" : "[RSVP]"} ${name} · ${tierLabel(r.tier) || r.tier || "Pass"}`.replace(/[\r\n]+/g, " ");
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:620px">
 <h2 style="margin:0 0 12px;color:#0d0520">${updated ? "RSVP updated" : "New RSVP"}: ${escHtml(name)}</h2>
 <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%">

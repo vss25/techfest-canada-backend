@@ -53,7 +53,7 @@ import Rsvp from "../models/Rsvp.js";
 import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "../services/rsvp.js";
 import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import {
-  SPEAKER_TYPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
+  SPEAKER_SCOPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
   readyToSend, SAMPLE_SPEAKER, manualSpeakerPassDoc, validateSpeakerEmails, passRecipients,
 } from "../services/speakerPasses.js";
 import EmailTemplate from "../models/EmailTemplate.js";
@@ -607,7 +607,7 @@ router.post("/kill-switch", requireManagement, async (req, res) => {
 async function allTicketRows() {
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode details").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode speakerPass stripeSessionId details").lean(),
   ]);
   return collectTickets(users, guests);
 }
@@ -1068,9 +1068,10 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
   res.status(201).json({ ticketId: attendee.ticketId, name, email, tier, lastName: name.split(" ").slice(-1)[0] });
 });
 
-/* ---------- Speaker Passes ----------
-   A ghost pass (ticketType "speaker", never sold or listed) for every speaker on the
-   website, made from the Sanity speaker list with no email (services/speakerPasses.js).
+/* ---------- Speakers' passes (Admin → Speaker passes) ----------
+   A Power Pass marked as a speaker's (promo SPEAKER, speakerPass: true; never sold or counted
+   in the inventory) for every speaker on the website, made from the Sanity speaker list with
+   no email (services/speakerPasses.js). Being a speaker adds the CxO Breakfasts and the VIP Lounge.
    Staff add each speaker's email, preview the pass email, then management sends it.
    Nothing is ever emailed without a send click; send-all needs { confirm: "SEND" }. */
 
@@ -1114,7 +1115,6 @@ function sendOptions(body = {}, template) {
   }
   return { ok: true, copy, to, cc };
 }
-const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE };
 let speakerSendAllRunning = false;
 
 const findSpeakerPass = (id) => (isId(id)
@@ -1144,7 +1144,7 @@ async function sendSpeakerPass(a, opts = {}) {
   await sendSpeakerPassEmail({ to, pass: row, cc, copy: opts.copy || {} });
   let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
-    // The Speaker Pass email always has the RSVP button (People › "RSVP email sent").
+    // The speakers' pass email always has the RSVP button (People › "RSVP email sent").
     { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", "), passEmailRsvp: true }, $inc: { passEmailSentCount: 1 } },
     { new: true },
   ).select(SPEAKER_PASS_FIELDS).lean();
@@ -1411,7 +1411,7 @@ router.post("/speaker-passes/:id/send", requireManagement, async (req, res) => {
 });
 
 /* ---------- Nudges: a reminder to RSVP ----------
-   The Speaker Pass email again (same pass, run of show and RSVP button) with nudge wording
+   The speakers' pass email again (same pass, run of show and RSVP button) with nudge wording
    (services/speakerWebsite.js NUDGE_COPY, editable per send) and the usual cc. No calendar
    invites. Speakers who have RSVP'd are always skipped. */
 

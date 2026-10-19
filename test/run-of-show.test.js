@@ -56,7 +56,7 @@ test("invite .ics: REQUEST, Toronto times in UTC, escaped and folded", () => {
 
 test("pass email: run of show, mic fitting and the assistant note", () => {
   const e = buildSpeakerPassEmail({ name: "Dennis Darby", ticketId: "abc123", runOfShow: ROS, contact: "handler" });
-  assert.match(e.subject, /Speaker Pass and run of show/);
+  assert.match(e.subject, /Power Pass and run of show/);
   assert.match(e.html, /Your session/);
   assert.match(e.html, /VIP Lounge at least 30 minutes before your session for mic fitting/);
   assert.match(e.html, /Dennis Darby \(you\)/);
@@ -64,7 +64,7 @@ test("pass email: run of show, mic fitting and the assistant note", () => {
   assert.match(e.text, /9:00 AM  Mic fitting in the VIP Lounge/);
   const plain = buildSpeakerPassEmail({ name: "Jane Doe", ticketId: "abc123" });
   assert.doesNotMatch(plain.html, /Your session/);
-  assert.match(plain.subject, /your Speaker Pass for TTFC 2026$/);
+  assert.match(plain.subject, /your Power Pass for TTFC 2026$/);
 });
 
 test("session invite email carries the .ics", () => {

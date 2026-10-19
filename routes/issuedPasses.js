@@ -14,7 +14,7 @@ import {
   issuedPassUpdate, issuedVariant, validateIssuedPass,
 } from "../services/issuedPasses.js";
 import {
-  EXHIBITOR_LABEL, EXHIBITOR_PROMO, EXHIBITOR_TEMPLATE_KEY, EXHIBITOR_TIER, MANUAL_TEMPLATE_KEY, defaultExhibitorCopy,
+  EXHIBITOR_PROMO, EXHIBITOR_TEMPLATE_KEY, EXHIBITOR_TIER, MANUAL_TEMPLATE_KEY, defaultExhibitorCopy,
   exhibitorBooth, exhibitorCopyFor,
 } from "../services/exhibitorPasses.js";
 import { DEFAULT_MANUAL, buildExhibitorManual, cleanBooth, cleanManual, manualFileName } from "../services/exhibitorManual.js";
@@ -53,7 +53,8 @@ const KINDS = {
   },
   exhibitor: {
     promo: EXHIBITOR_PROMO, campaign: "exhibitor-pass-2026", audit: "exhibitor_pass", ccEnv: "EXHIBITOR_PASS_CC",
-    defaultTier: EXHIBITOR_TIER, defaultLabel: EXHIBITOR_LABEL, manual: true,
+    // No stored label: the pass is named after its tier ("Connect Pass"), never "Exhibitor Pass".
+    defaultTier: EXHIBITOR_TIER, defaultLabel: "", manual: true,
   },
 };
 

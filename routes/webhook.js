@@ -12,7 +12,7 @@ import { sendResetPasswordEmail } from "../services/emailService.js";
 import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
 import { effectiveCxo, cxoOverride } from "../services/cxoBreakfast.js";
-import { effectiveTypes } from "../services/teamRoles.js";
+import { effectiveTypes, isIssuedSpeakerPass } from "../services/teamRoles.js";
 
 const router = express.Router();
 
@@ -134,11 +134,13 @@ router.post("/stripe", async (req, res) => {
         // ================= PASS UPGRADE: same ticketId, new type =================
         const fromTier = session.metadata.fromTier;
         const ticketId = session.metadata.upgradeFrom;
-        if (fromTier) {
-          await TicketInventory.updateOne({ tier: fromTier, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
-        }
         const user = userId ? await User.findById(userId) : null;
         const ticket = user?.tickets?.find((t) => t.ticketId === ticketId);
+        // A speaker's pass (a Power Pass we issued) never took a seat from the inventory, so there's none to give back.
+        const speakerSeatless = !!ticket && isIssuedSpeakerPass(ticket);
+        if (fromTier && !speakerSeatless) {
+          await TicketInventory.updateOne({ tier: fromTier, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
+        }
         if (ticket) {
           ticket.upgradedFrom = ticket.type;
           ticket.type = tier;

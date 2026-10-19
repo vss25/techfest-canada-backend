@@ -32,7 +32,9 @@ test("the rule: Apex and Speaker Passes, a speaker on any pass; staff's switch w
 test("ticket inclusions per ticket: Power without, Power switched on, Apex switched off", () => {
   assert.equal(PASS_INCLUSIONS.power.includes(CXO_INCLUSION), false);
   assert.equal(PASS_INCLUSIONS.apex.includes(CXO_INCLUSION), true);
-  assert.equal(PASS_INCLUSIONS.speaker.includes(CXO_INCLUSION), true);
+  // No "speaker" pass any more (Oct 19 2026): an old speaker ticket is a Power Pass, the breakfasts come per ticket.
+  assert.equal(PASS_INCLUSIONS.speaker, undefined);
+  assert.deepEqual(inclusionsFor("speaker", { cxoBreakfast: true }), inclusionsFor("power", { cxoBreakfast: true }));
   assert.deepEqual(inclusionsFor("power"), PASS_INCLUSIONS.power);
   const on = inclusionsFor("power", { cxoBreakfast: true });
   assert.deepEqual(on.slice(0, 3), ["2x Day Conference Access", CXO_INCLUSION, "2x Luncheons"]);
@@ -177,9 +179,9 @@ test("a breakfast already on an attendee's RSVP is kept and still offered; the R
   // Someone who never RSVP'd with a Power Pass doesn't see it (an RSVP link sent but never opened).
   assert.ok(!(await w.look(who("Pam", "Power", "POW000000001"))).allowedOptions.includes("cxo_d1"));
   assert.deepEqual(extraOptionsFor([{ options: ["cxo_d2", "gala"] }, { options: ["cxo_d1"] }]), ["cxo_d1", "cxo_d2"]);
-  // The public options list says Apex and speakers.
+  // The public options list says Apex (speakers get them on any pass, by the lookup's cxoBreakfast).
   const cxo = rsvpOptionsPayload().options.find((o) => o.key === "cxo_d1");
-  assert.deepEqual(cxo.tiers, ["apex", "speaker"]);
+  assert.deepEqual(cxo.tiers, ["apex"]);
   assert.deepEqual(publicLookup({ kind: "none", verified: false }), { kind: "none", verified: false });
 });
 

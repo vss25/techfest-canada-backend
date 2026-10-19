@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
-import { isTeam, isVolunteer } from "../services/teamRoles.js";
+import { isTeam, isVolunteer, isSpeakerPass } from "../services/teamRoles.js";
 import { tokenClaims, cleanVia, VIA_TICKET } from "../services/signInMethod.js";
 
 const teamPasswordOnly = (u) => (isVolunteer(u)
@@ -71,6 +71,8 @@ function ticketFromAttendee(a) {
     checkedInAt: a.checkedInAt,
     // What they told us at checkout comes along, so the app doesn't ask again.
     ...(a.details ? { details: a.details } : {}),
+    // A speaker's pass stays one on the account (it's what makes them a speaker: services/teamRoles.js).
+    ...(isSpeakerPass(a) ? { speakerPass: true } : typeof a.speakerPass === "boolean" ? { speakerPass: a.speakerPass } : {}),
   };
 }
 
@@ -174,7 +176,8 @@ router.post("/claim-ticket", async (req, res) => {
       const t = found.ticket.toObject ? found.ticket.toObject() : found.ticket;
       found.owner.tickets = found.owner.tickets.filter((x) => x.ticketId !== found.ticketId);
       await found.owner.save();
-      me.tickets.push({ ticketId: t.ticketId, type: t.type, purchaseDate: t.purchaseDate, checkedIn: t.checkedIn, checkedInAt: t.checkedInAt });
+      me.tickets.push({ ticketId: t.ticketId, type: t.type, purchaseDate: t.purchaseDate, checkedIn: t.checkedIn, checkedInAt: t.checkedInAt,
+        ...(typeof t.speakerPass === "boolean" ? { speakerPass: t.speakerPass } : {}) });
       await me.save();
       await Attendee.updateOne({ ticketId: found.ticketId }, { $set: { claimedBy: me._id } });
       return res.json({ user: await User.findById(me._id).select("-password") });

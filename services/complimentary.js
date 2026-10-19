@@ -1,7 +1,8 @@
 /* Complimentary tickets: staff-issued passes for speakers, guests and App Review.
    Pure validation here; routes/console.js stores the Attendee. */
 
-export const COMP_TIERS = ["discover", "connect", "influence", "power", "apex", "session"];
+// The four passes (Oct 19 2026: "The pass types are strictly four"); Discover and Session are retired.
+export const COMP_TIERS = ["connect", "influence", "power", "apex"];
 export const COMP_PROMO = "COMP";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

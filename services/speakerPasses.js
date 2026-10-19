@@ -1,13 +1,19 @@
 /* =========================================================
-   Speaker Passes
+   Speakers' passes (Admin → Speaker passes)
    ---------------------------------------------------------
-   A "ghost" pass for every speaker on the website: ticketType
-   "speaker" ("Speaker Pass"), promo code SPEAKER. Never sold, never
-   on the Tickets page or in the inventory; it includes everything.
+   A pass for every speaker on the website. Since Oct 19 2026 it is a
+   Power Pass ("There is no 'speaker pass'. The pass types are strictly
+   four"): ticketType "power", promo code SPEAKER and `speakerPass: true`,
+   the marker that makes its holder a speaker (services/teamRoles.js
+   isSpeakerPass). Being a speaker adds the CxO Breakfasts
+   (services/cxoBreakfast.js) and the VIP Lounge (the email lists it).
+   Never sold, and left out of the inventory counts and sales numbers.
+   Passes made before then (ticketType "speaker") were changed on start
+   (services/fourPasses.js).
 
    The ticket ID works like any other: app sign-in with the last
-   name, the website /rsvp page (tier "speaker" = every option) and
-   the check-in QR (TECHFEST:<ticketId>).
+   name, the website /rsvp page (Power + the speaker's CxO Breakfasts)
+   and the check-in QR (TECHFEST:<ticketId>).
 
    Passes are made from the Sanity speaker list (one per speaker
    document, keyed by `speakerId`, so running the sync again never
@@ -20,11 +26,14 @@
 ========================================================= */
 
 import crypto from "crypto";
-import { SANITY_PROJECT, fullNameMatches } from "./rsvp.js";
+import { SANITY_PROJECT, fullNameMatches, tierLabel, normalizeTier } from "./rsvp.js";
 
-export const SPEAKER_TYPE = "speaker";
+/** The pass a speaker gets: one of the four, a Power Pass. */
+export const SPEAKER_PASS_TIER = "power";
 export const SPEAKER_PROMO = "SPEAKER";
-export const SPEAKER_PASS_LABEL = "Speaker Pass";
+export const SPEAKER_PASS_LABEL = "Power Pass";
+/** Which Attendee rows Admin → Speaker passes manages (the ticket type is "power" like any Power Pass). */
+export const SPEAKER_SCOPE = Object.freeze({ promoCode: SPEAKER_PROMO });
 
 export const SPEAKER_PASS_QUERY = '*[_type=="speaker"]{_id,name,title,company}';
 export const SPEAKER_PASS_URL =
@@ -79,13 +88,13 @@ export function planSpeakerPasses(speakers = [], existingSpeakerIds = []) {
   return plan;
 }
 
-/** The Attendee document for a new Speaker Pass (no email yet). */
+/** The Attendee document for a speaker's new pass (no email yet): a Power Pass marked as a speaker's. */
 export function speakerPassDoc(s, { ticketId = newSpeakerTicketId(), now = new Date() } = {}) {
   const details = {};
   if (s.title) details.jobTitle = s.title;
   if (s.company) details.organisation = s.company;
   return {
-    name: s.name, email: "", ticketId, ticketType: SPEAKER_TYPE, promoCode: SPEAKER_PROMO,
+    name: s.name, email: "", ticketId, ticketType: SPEAKER_PASS_TIER, promoCode: SPEAKER_PROMO, speakerPass: true,
     speakerId: s.speakerId, purchaseDate: now, ...(Object.keys(details).length ? { details } : {}),
   };
 }
@@ -178,6 +187,9 @@ export function speakerPassRow(a) {
     title: a.details?.jobTitle || "",
     company: a.details?.organisation || "",
     ticketId: a.ticketId,
+    // The pass: a Power Pass (one of the four; the holder is a speaker by type).
+    tier: tierLabel(a.ticketType) ? normalizeTier(a.ticketType) : SPEAKER_PASS_TIER,
+    tierLabel: tierLabel(a.ticketType) || SPEAKER_PASS_LABEL,
     email: a.email || "",
     alsoTo: a.alsoTo || [],
     emails: passRecipients(a),

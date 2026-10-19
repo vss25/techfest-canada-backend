@@ -270,7 +270,8 @@ export function typeCandidates(type) {
     case "vendor": return { types: type };
     case "staff": return { $or: [{ role: "admin" }, { types: "staff" }] };
     case "volunteer": return { $or: [{ role: "volunteer" }, { types: "volunteer" }] };
-    case "speaker": return { $or: [{ types: "speaker" }, { "tickets.type": { $regex: "^speaker$", $options: "i" } }] };
+    // Speakers' passes: the marker (Power Passes since Oct 19 2026) or the old "speaker" ticket type.
+    case "speaker": return { $or: [{ types: "speaker" }, { "tickets.speakerPass": true }, { "tickets.type": { $regex: "^speaker$", $options: "i" } }] };
     case "exhibitor": case "attendee": return {};
     default: return null;
   }

@@ -29,9 +29,10 @@
 
 import { cleanText } from "./brochureDownloads.js";
 import { normalizeTicketId } from "./ticketAccess.js";
+import { isSpeakerPass } from "./teamRoles.js";
 import {
-  DAY_KEYS, OPTION_KEYS, EXPERIENCE_KEYS, DIETARY, DIETARY_KEYS, MAX_LENGTH, TIERS, TIER_LABELS,
-  checkOptions, optionLabel, personNameKey, tierFromTicketType,
+  DAY_KEYS, OPTION_KEYS, EXPERIENCE_KEYS, DIETARY, DIETARY_KEYS, MAX_LENGTH, TIERS,
+  checkOptions, optionLabel, personNameKey, tierFromTicketType, normalizeTier, tierLabel,
 } from "./rsvp.js";
 
 /** "attendee" | "staff": rows saved before `source` existed are the attendee's. */
@@ -110,7 +111,7 @@ function planAttendeeAdditions({ existing, body, who, staff, name, now, rules })
   let warning = "";
   if (!check.ok) {
     if (body.allowOutsidePass !== true) return { status: 400, code: "outside_pass", field: "options", invalid: check.invalid, error: check.error };
-    warning = `Includes what the ${TIER_LABELS[existing.tier] || "pass"} doesn't cover on those days: ${check.invalid.map(optionLabel).join(", ")}.`;
+    warning = `Includes what the ${tierLabel(existing.tier) || "pass"} doesn't cover on those days: ${check.invalid.map(optionLabel).join(", ")}.`;
   }
   const gone = before.filter((k) => !added.includes(k));
   const fresh = added.filter((k) => !before.includes(k));
@@ -137,7 +138,7 @@ function planAttendeeAdditions({ existing, body, who, staff, name, now, rules })
  * Plan a staff RSVP save.
  * @param {object} o
  * @param {object|null} o.existing   the person's current (listed, not a possible duplicate) RSVP, or null
- * @param {object} o.person          { name, firstName?, lastName?, email, pass: { ticketId, type } | null,
+ * @param {object} o.person          { name, firstName?, lastName?, email, pass: { ticketId, type } | null, speaker?: a speaker (type),
  *                                     cxo?: their pass's CxO Breakfast (true / false), extra?: options they keep (extraOptionsFor) }
  * @param {object} o.body            { days, options, dietary, dietaryOther, accessibility, tier?, allowOutsidePass?, basedOn? }
  *                                   (an RSVP the attendee sent: only `options` is read, see planAttendeeAdditions)
@@ -149,7 +150,12 @@ function planAttendeeAdditions({ existing, body, who, staff, name, now, rules })
 export function planStaffRsvp({ existing = null, person = {}, body = {}, staff = {}, now = new Date() }) {
   const who = cleanText(staff.name).slice(0, 120) || "Staff";
   const name = cleanText(person.name).slice(0, 160) || [person.firstName, person.lastName].filter(Boolean).join(" ");
-  const rules = { cxo: typeof person.cxo === "boolean" ? person.cxo : undefined, extra: Array.isArray(person.extra) ? person.extra : [] };
+  // A speaker (their type, or a speaker's pass) gets the CxO Breakfasts on any pass unless their pass's switch says No.
+  const speaker = !!person.speaker || (!!person.pass && isSpeakerPass(person.pass));
+  const rules = {
+    cxo: typeof person.cxo === "boolean" ? person.cxo : speaker ? true : undefined,
+    extra: Array.isArray(person.extra) ? person.extra : [],
+  };
 
   if (existing) {
     if (existing.spam || existing.mergedInto) return { status: 404, error: "RSVP not found", code: "missing" };
@@ -167,7 +173,7 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
   let tier;
   let tierVerified;
   if (existing) {
-    tier = existing.tier;
+    tier = normalizeTier(existing.tier);
     tierVerified = !!existing.tierVerified;
     const picked = cleanText(body.tier).toLowerCase();
     if (!tierVerified && picked && TIERS.includes(picked)) tier = picked;
@@ -190,7 +196,7 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
       return { status: 400, code: "outside_pass", field: "options", invalid: check.invalid, error: check.error };
     }
     options = v.options;
-    warning = `Includes what the ${TIER_LABELS[tier] || "pass"} doesn't cover on those days: ${check.invalid.map(optionLabel).join(", ")}.`;
+    warning = `Includes what the ${tierLabel(tier) || "pass"} doesn't cover on those days: ${check.invalid.map(optionLabel).join(", ")}.`;
   }
 
   const staffFields = {
@@ -203,7 +209,7 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
 
   if (existing) {
     const set = { ...staffFields };
-    if (tier !== existing.tier) set.tier = tier; // only ever an unverified pass (a ticket's pass can't be changed here)
+    if (tier !== existing.tier) set.tier = tier; // an unverified pass, or an old "speaker" row now "power" (a ticket's pass can't be changed here)
     return {
       create: false, id: String(existing._id), set, warning,
       audit: { action: "rsvp_staff_edit", detail: `${name || "RSVP"}: ${summary({ ...v, options })}${warning ? " · outside the pass" : ""}` },
@@ -222,7 +228,8 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
     key, firstName, lastName, name: [firstName, lastName].filter(Boolean).join(" ") || name, nameKey,
     email: cleanText(person.email).toLowerCase().slice(0, MAX_LENGTH.email),
     ticketId, ticketVerified: !!ticketId,
-    kind: ticketId ? (tier === "speaker" ? "speaker" : "ticket") : "none",
+    // A speaker (their person type) is matched as one, whatever the pass.
+    kind: speaker ? "speaker" : ticketId ? "ticket" : "none",
     tier, tierVerified, chosenTier: "", detectedTier: "", matchedSpeaker: "",
     page: "admin", userAgent: "", submissions: 0, spam: false, spamReason: "",
     ...staffFields, staffOverride: false,
