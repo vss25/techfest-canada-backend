@@ -8,7 +8,9 @@ import { SALES_INBOX } from "./brochureDownloads.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
-import { speakerPassEmailFor, logoPng, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
+import { logoPng, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
+import { passEmailFor } from "./passEmail.js";
+import { loadTemplate } from "./emailTemplates.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -238,7 +240,7 @@ export async function sendFormSubmissionEmail({ to, subject, html, text, replyTo
 
 export async function sendSpeakerPassEmail({ to, pass, cc = [], copy = {} }) {
   if (!to?.length || !pass?.ticketId) throw new Error("Missing email or ticket");
-  const { subject, html, text, attachments } = await speakerPassEmailFor(pass, { inline: false, copy });
+  const { subject, html, text, attachments } = await passEmailFor(pass, { inline: false, copy });
   const { data, error } = await resend.emails.send({
     from: SPEAKER_PASS_FROM,
     to,
@@ -278,8 +280,11 @@ export async function sendTicketEmail({ email, name, firstName, ticketId, tier, 
       cxoBreakfast,
     });
 
+    // Staff's wording (Admin › Purchase email); the built-in email when there's none or it can't be read.
+    const { copy: template } = await loadTemplate("purchase");
+
     // The TTFC logo goes inline (cid:), like the Speaker Pass email; without it the header falls back to text.
-    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast, logoSrc: `cid:${TICKET_LOGO_CID}` });
+    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast, logoSrc: `cid:${TICKET_LOGO_CID}`, template });
 
     await resend.emails.send({
       from: "TechFest Canada <tickets@thetechfestival.com>",

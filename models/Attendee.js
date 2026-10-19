@@ -114,7 +114,9 @@ const attendeeSchema = new mongoose.Schema(
     runOfShow: { type: mongoose.Schema.Types.Mixed },
     // More addresses that get the same Speaker Pass email (e.g. the speaker and their assistant).
     alsoTo: { type: [String], default: undefined },
-    // A staff-issued pass (services/issuedPasses.js): { label, rsvp, copy: { subject, headline, message }, issuedBy, issuedAt }.
+    // A staff-issued pass (services/issuedPasses.js): { label, rsvp, copy: { subject, headline, message, …every field of the
+    // pass email }, issuedBy, issuedAt }. A speaker's pass (promo SPEAKER) keeps its own email wording here too: label (the
+    // name on the pass) and copy (services/passEmailCopy.js); one pass's wording beats the email template.
     issuedPass: { type: mongoose.Schema.Types.Mixed },
     speakerContact: { type: String },
     // Calendar invites for their sessions (sent with the pass email).
