@@ -7,6 +7,7 @@ import { buildPass, isConfigured } from "../services/walletPass.js";
 import { verifyTicketSig } from "../services/walletLink.js";
 import { displayName } from "../services/attendeeDetails.js";
 import { escapeHtml } from "../services/ticketInfo.js";
+import { signedInWithoutPassword } from "../services/signInMethod.js";
 
 /* =========================================================
    GET /api/wallet/pass/:ticketId
@@ -82,7 +83,8 @@ router.get("/pass/:ticketId", async (req, res) => {
 
       let owner = user;
       let ticket = user.tickets.find((t) => t.ticketId === ticketId);
-      if (!ticket && user.role === "admin") {
+      // Staff may fetch anyone's pass, but only with a password sign-in (like the admin panel).
+      if (!ticket && user.role === "admin" && !signedInWithoutPassword(decoded)) {
         owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
         ticket = owner?.tickets.find((t) => t.ticketId === ticketId);
       }

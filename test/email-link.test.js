@@ -193,13 +193,13 @@ test("no-ticket email names the address, links to tickets and escapes", () => {
 });
 
 /* ---------- router ---------- */
-test("sign-in links only go to emails tied to a ticket", () => {
-  assert.equal(linkDecision(null, 0), "no-ticket");
-  assert.equal(linkDecision({ tickets: [] }, 0), "no-ticket");          // account, no ticket
+test("sign-in links go to every account and to guest ticket emails; strangers get the no-ticket email", () => {
+  assert.equal(linkDecision(null, 0), "no-ticket");                      // stranger: no account, no ticket
+  assert.equal(linkDecision({ tickets: [] }, 0), "signin");              // account, no ticket
   assert.equal(linkDecision({ tickets: [{ ticketId: "T1" }] }, 0), "signin");
   assert.equal(linkDecision(null, 1), "signin");                         // guest checkout
   assert.equal(linkDecision({ tickets: [] }, 2), "signin");              // account + guest tickets
-  assert.equal(linkDecision({ role: "Admin", tickets: [{}] }, 1), "staff");
+  assert.equal(linkDecision({ role: "Admin", tickets: [{}] }, 1), "signin"); // staff too
 });
 
 test("the router builds without a Resend key and exposes both routes", () => {

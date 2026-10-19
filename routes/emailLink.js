@@ -9,6 +9,8 @@ import {
   linkDecision,
 } from "../services/emailLink.js";
 import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
+import { isStaff } from "../services/teamRoles.js";
+import { VIA_EMAIL } from "../services/signInMethod.js";
 
 /* =========================================================
    "Email me a sign-in link" — mounted at /api/auth
@@ -18,6 +20,12 @@ import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
    The email holds a link to ${FRONTEND_URL}/app-login?token=… (which
    opens ttfc://login?token=… or signs in on the website) and a 6-digit
    code for typing into the app. Pure parts: services/emailLink.js.
+
+   Everyone with an account can sign in this way, staff and volunteers
+   included (they can also use the apps' staff sign-in with a password).
+   The token says `via: "email"`: it works everywhere in the apps, door
+   check-in and moderation included, but not in the admin panel
+   (requireAdmin wants a password token, services/signInMethod.js).
 ========================================================= */
 
 // Render sits behind a proxy, so req.ip is the proxy; use the client's address
@@ -26,10 +34,6 @@ import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 // server.js trusts one proxy hop, so req.ip is the visitor (a client-sent
 // X-Forwarded-For can't be used to dodge the limits).
 const clientIp = (req) => String(req.ip || "unknown");
-
-// Staff accounts can reach the admin panel, so they always sign in with their password.
-const STAFF_ONLY_PASSWORD = "Staff accounts sign in with their password.";
-const isStaff = (user) => !!user && String(user.role || "").toLowerCase() === "admin";
 
 const TOO_MANY = "Too many sign-in emails. Please wait 15 minutes and try again.";
 const TOO_MANY_TRIES = "Too many attempts. Please wait 15 minutes and try again.";
@@ -51,6 +55,10 @@ async function accountFor(email) {
     user = new User({ name: guests[0].name || "TTFC attendee", email, provider: "ticket", tickets: [] });
     created = true;
   }
+  // Staff accounts just sign in. Passes staff issue can carry a staff member's own email
+  // (e.g. Speaker Passes), so guest tickets are never moved onto a staff account here; their
+  // own ticket can still be linked with claim-ticket.
+  if (isStaff(user)) return { user, created };
   const claim = [];
   for (const a of guests) {
     // A ticket someone else has already linked to their own account stays with them.
@@ -92,10 +100,10 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       const { user, guests } = await lookup(email);
       const base = frontendBase();
 
-      // Same answer as always (no account enumeration). Links only go to emails tied to a
-      // ticket; staff get nothing, accounts without a ticket get the "no ticket" email.
+      // Same answer as always (no account enumeration). Every account gets a link + code
+      // (staff, volunteers and ticketless accounts too), so does an email a guest ticket was
+      // bought with; an email with neither gets the "no ticket" email.
       const decision = linkDecision(user, guests.length);
-      if (decision === "staff") return res.json({ sent: true });
 
       if (decision === "no-ticket") {
         send("no-ticket", { email, ticketsUrl: `${base}/tickets` })
@@ -171,12 +179,10 @@ export function createEmailLinkRouter({ send = defaultSend } = {}) {
       );
       if (!claimed) return res.status(400).json({ error: messageFor("used") });
 
-      const { user: existing } = await lookup(claimed.email);
-      if (isStaff(existing)) return res.status(400).json({ error: STAFF_ONLY_PASSWORD });
       const { user, created } = await accountFor(claimed.email);
-      // A link sent before the ticket rule doesn't sign a ticketless account in.
-      if (!user || linkDecision(user) !== "signin") return res.status(400).json({ error: "We couldn't find a TTFC ticket for this email." });
-      res.json({ token: signAppToken(user), created });
+      // The account or guest ticket went away after the email was sent.
+      if (!user) return res.status(400).json({ error: "We couldn't find a TTFC account or ticket for this email." });
+      res.json({ token: signAppToken(user, { via: VIA_EMAIL }), created });
     } catch (err) {
       console.error("EMAIL LINK VERIFY ERROR:", err);
       res.status(500).json({ error: "Something went wrong. Please try again." });
