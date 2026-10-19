@@ -118,18 +118,17 @@ async function call(method, url, { token, body } = {}) {
   return { status: r.status, body: json };
 }
 const d = (s) => new Date(`2026-${s}T12:00:00Z`);
-const RETIRED = /Speaker Pass|All Access Pass|Exhibitor Pass/i;
+const RETIRED = /All[- ]Access Pass|Exhibitor Pass/i;
 
-/* ---------- 1. The migration ---------- */
+/* ---------- 1. Pass names: the migration ---------- */
 
-test("migration: speakers' passes become Power Passes, the speaker type and breakfasts stay; idempotent", { skip }, async () => {
+test("migration: exhibitor passes named Connect Pass, All Access gone, issued Speaker Passes named so; tiers untouched; once", { skip }, async () => {
   const { User, Attendee, Rsvp, EmailTemplate, AppContent, AdminAudit } = M;
-  const { migrateFourPassesOnce, MIGRATION_KEY } = await import("../services/fourPasses.js");
+  const { migratePassNamesOnce, MIGRATION_KEY } = await import("../services/passNames.js");
   const { effectiveTypes, passKind } = await import("../services/teamRoles.js");
   const { autoCxo, ticketsWithCxo } = await import("../services/cxoBreakfast.js");
 
   const lee = await User.create({ name: "Lee Speaker", email: "lee.speaker@example.com", tickets: [{ ticketId: "lee000000001", type: "speaker", purchaseDate: d("10-10") }] });
-  const ann = await User.create({ name: "Ann Apex", email: "ann.apex@example.com", tickets: [{ ticketId: "ann000000001", type: "apex", stripeSessionId: "cs_ann" }] });
   await Attendee.create([
     { name: "Lee Speaker", email: "", ticketId: "lee000000001", ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-lee", claimedBy: lee._id },
     { name: "Kai Speaker", email: "", ticketId: "kai000000001", ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-kai" },
@@ -138,116 +137,184 @@ test("migration: speakers' passes become Power Passes, the speaker type and brea
     { name: "Eve Exhibitor", email: "eve.exhibitor@example.com", ticketId: "eve000000001", ticketType: "connect", promoCode: "EXHIBITOR",
       issuedPass: { label: "Exhibitor Pass", rsvp: true, booth: { booth: "B7" }, copy: { message: "Your Exhibitor Pass and manual." } } },
     { name: "Gus Guest", email: "gus.guest@example.com", ticketId: "gus000000001", ticketType: "power", stripeSessionId: "cs_gus" },
+    { name: "Vin Vip", email: "vin.vip@example.com", ticketId: "vin000000001", ticketType: "apex", promoCode: "ISSUED", issuedPass: { label: "VIP Guest Pass", rsvp: true } },
+    { name: "Pat Power", email: "pat.power@example.com", ticketId: "pat000000001", ticketType: "power", promoCode: "ISSUED",
+      issuedPass: { label: "All Access Pass", rsvp: true, copy: { headline: "Your ALL ACCESS PASS" } } },
   ]);
   await EmailTemplate.create([
-    { key: "speaker-pass", subject: "{firstName}, your Speaker Pass and run of show", message: "Speaker Passes go out today." },
+    { key: "speaker-pass", subject: "{firstName}, your Speaker Pass and run of show", message: "All Access Passes go out today." },
     { key: "exhibitor-pass", subject: "Your Exhibitor Pass", headline: "Welcome" },
   ]);
   await Rsvp.create({ key: "t:kai000000001", firstName: "Kai", lastName: "Speaker", name: "Kai Speaker", nameKey: "kai speaker", ticketId: "KAI000000001",
     ticketVerified: true, kind: "speaker", tier: "speaker", tierVerified: true, chosenTier: "speaker", detectedTier: "speaker",
     days: ["day1"], options: ["cxo_d1", "awards"] });
 
-  const out = await migrateFourPassesOnce({ User, Attendee, Rsvp, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } });
-  assert.deepEqual(
-    [out.passesToPower, out.accountTickets, out.accountsToPower, out.labelsCleared, out.passCopiesRenamed, out.templatesRenamed, out.rsvpsToPower],
-    [3, 1, 1, 2, 2, 2, 1]);
-  // Nothing is "speaker" any more, and every speaker's pass carries the marker.
-  assert.equal(await Attendee.countDocuments({ ticketType: /speaker/i }), 0);
-  assert.equal(await User.countDocuments({ "tickets.type": /speaker/i }), 0);
-  const kai = await Attendee.findOne({ ticketId: "kai000000001" }).lean();
-  assert.deepEqual([kai.ticketType, kai.speakerPass, kai.promoCode, kai.email], ["power", true, "SPEAKER", ""]);
+  const out = await migratePassNamesOnce({ Attendee, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } });
+  assert.deepEqual([out.exhibitorLabels, out.speakerLabels, out.otherLabels, out.passCopiesRenamed, out.templatesRenamed], [1, 1, 1, 3, 2]);
+  const pat = await Attendee.findOne({ ticketId: "pat000000001" }).lean();
+  assert.deepEqual([pat.ticketType, pat.issuedPass.label, pat.issuedPass.copy.headline], ["power", "", "Your POWER PASS"]);
+  // No tier changes: Speaker Passes stay "speaker" (on passes, accounts and RSVPs).
+  assert.equal(await Attendee.countDocuments({ ticketType: "speaker" }), 3);
+  assert.equal(await User.countDocuments({ "tickets.type": "speaker" }), 1);
   const ida = await Attendee.findOne({ ticketId: "ida000000001" }).lean();
-  assert.deepEqual([ida.ticketType, ida.speakerPass, ida.issuedPass.label, ida.issuedPass.copy.subject, ida.issuedPass.copy.message],
-    ["power", true, "", "{firstName}, your Power Pass", "Your Power Pass is below."]);
+  assert.deepEqual([ida.ticketType, ida.issuedPass.label, ida.issuedPass.copy.subject, ida.issuedPass.copy.message],
+    ["speaker", "", "{firstName}, your Speaker Pass", "Your Speaker Pass is below."]);   // its old name was All Access Pass
   const eve = await Attendee.findOne({ ticketId: "eve000000001" }).lean();
-  assert.deepEqual([eve.ticketType, eve.speakerPass, eve.issuedPass.label, eve.issuedPass.copy.message], ["connect", undefined, "", "Your Connect Pass and manual."]);
-  assert.equal((await Attendee.findOne({ ticketId: "gus000000001" }).lean()).speakerPass, undefined); // a bought pass is untouched
+  assert.deepEqual([eve.ticketType, eve.issuedPass.label, eve.issuedPass.copy.message], ["connect", "", "Your Connect Pass and manual."]);
+  assert.equal((await Attendee.findOne({ ticketId: "vin000000001" }).lean()).issuedPass.label, "VIP Guest Pass"); // staff's own name stays
   const t = await EmailTemplate.find({}).sort({ key: 1 }).lean();
-  assert.deepEqual(t.map((x) => [x.key, x.subject]), [["exhibitor-pass", "Your Connect Pass"], ["speaker-pass", "{firstName}, your Power Pass and run of show"]]);
-  assert.equal(t[1].message, "Power Passes go out today.");
+  assert.deepEqual(t.map((x) => [x.key, x.subject]), [["exhibitor-pass", "Your Connect Pass"], ["speaker-pass", "{firstName}, your Speaker Pass and run of show"]]);
+  assert.equal(t[1].message, "Speaker Passes go out today.");   // the Speaker passes template: the Speaker Pass's old name
   const r = await Rsvp.findOne({ key: "t:kai000000001" }).lean();
-  assert.deepEqual([r.tier, r.chosenTier, r.detectedTier, r.kind, r.options], ["power", "power", "power", "speaker", ["cxo_d1", "awards"]]);
-
-  // The speaker type is kept (from the pass), and so are the CxO Breakfasts.
+  assert.deepEqual([r.tier, r.kind, r.options], ["speaker", "speaker", ["cxo_d1", "awards"]]);
+  // The speaker type and the CxO Breakfasts come with the Speaker Pass, as before.
   const leeAfter = await User.findById(lee._id).lean();
-  assert.deepEqual([leeAfter.tickets[0].type, leeAfter.tickets[0].speakerPass], ["power", true]);
   assert.ok(effectiveTypes(leeAfter).includes("speaker"));
-  assert.equal(passKind(kai), "speaker");
-  assert.equal(autoCxo(kai.ticketType, [], { speakerPass: true }), true);
+  assert.equal(passKind(await Attendee.findOne({ ticketId: "kai000000001" }).lean()), "speaker");
+  assert.equal(autoCxo("speaker"), true);
   assert.equal(ticketsWithCxo(leeAfter.tickets, { types: effectiveTypes(leeAfter) })[0].cxoBreakfast, true);
-  assert.equal(ticketsWithCxo((await User.findById(ann._id).lean()).tickets, { types: [] })[0].type, "apex");
-
   // Counts only in the audit row and the AppContent record.
-  const audit = await AdminAudit.findOne({ action: "four_passes_migration" }).lean();
-  assert.match(audit.detail, /^Four passes only: 3 passes and 1 account tickets/);
-  assert.doesNotMatch(audit.detail, /Kai|Lee|Ida|Eve|example\.com/);
+  const audit = await AdminAudit.findOne({ action: "pass_names_migration" }).lean();
+  assert.match(audit.detail, /^Pass names: 1 exhibitor passes now "Connect Pass", 1 issued Speaker Passes now "Speaker Pass"/);
+  assert.doesNotMatch(audit.detail, /Kai|Lee|Ida|Eve|Pat|example\.com/);
   assert.ok(await AppContent.exists({ key: MIGRATION_KEY }));
   // Runs once.
-  assert.equal(await migrateFourPassesOnce({ User, Attendee, Rsvp, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } }), null);
+  assert.equal(await migratePassNamesOnce({ Attendee, EmailTemplate, AppContent, AdminAudit, log: { log() {}, error() {} } }), null);
 });
 
-test("after the migration: RSVP lookup, /auth/me and check-in say Power Pass, keep the speaker and their breakfasts", { skip }, async () => {
+test("Speaker Pass everywhere: RSVP lookup and options, /auth/me, check-in and Wallet; never All Access or Exhibitor Pass", { skip }, async () => {
   const { User } = M;
-  // RSVP page: Kai (on the speaker list) with his ticket ID.
+  // RSVP page: Kai (on the speaker list) with his ticket ID: Power's options and both CxO Breakfasts, no Apex extras.
   const look = await call("POST", "/api/rsvp/lookup", { body: { firstName: "Kai", lastName: "Speaker", ticketId: "KAI000000001" } });
   assert.equal(look.status, 200);
-  assert.deepEqual([look.body.kind, look.body.tier, look.body.tierLabel, look.body.verified, look.body.cxoBreakfast], ["speaker", "power", "Power Pass", true, true]);
-  assert.ok(look.body.allowedOptions.includes("cxo_d1") && look.body.allowedOptions.includes("gala"));
+  assert.deepEqual([look.body.kind, look.body.tier, look.body.tierLabel, look.body.verified, look.body.cxoBreakfast], ["speaker", "speaker", "Speaker Pass", true, true]);
+  assert.ok(look.body.allowedOptions.includes("cxo_d1") && look.body.allowedOptions.includes("cxo_d2") && look.body.allowedOptions.includes("gala"));
   assert.ok(!look.body.allowedOptions.includes("meetings") && !look.body.allowedOptions.includes("lounge"));
   assert.doesNotMatch(JSON.stringify(look.body), RETIRED);
   const opts = await call("GET", "/api/rsvp/options");
-  assert.deepEqual(opts.body.tiers.map((x) => x.key), ["connect", "influence", "power", "apex"]);
+  assert.deepEqual(opts.body.tiers.map((x) => [x.key, x.label, x.sold]),
+    [["connect", "Connect Pass", true], ["influence", "Influence Pass", true], ["power", "Power Pass", true], ["apex", "Apex Pass", true], ["speaker", "Speaker Pass", false]]);
   assert.doesNotMatch(JSON.stringify(opts.body), RETIRED);
 
-  // The app's /auth/me: the ticket is a Power Pass, a speaker's, with the breakfasts; the person is a speaker.
+  // The app's /auth/me: tickets[].type "speaker", the breakfasts; no speakerPass field; the person is a speaker.
   const lee = await User.findOne({ email: "lee.speaker@example.com" });
   const me = await call("GET", "/api/auth/me", { token: tokenFor(lee) });
   assert.equal(me.status, 200);
-  assert.deepEqual(me.body.tickets.map((x) => [x.type, x.speakerPass, x.cxoBreakfast]), [["power", true, true]]);
+  assert.deepEqual(me.body.tickets.map((x) => [x.type, x.cxoBreakfast, "speakerPass" in x]), [["speaker", true, false]]);
   assert.ok(me.body.types.includes("speaker"));
   assert.doesNotMatch(JSON.stringify(me.body.tickets), RETIRED);
 
-  // Door check-in (staff): Power Pass, and the scanner can show "Speaker".
+  // Door check-in (staff): "Speaker Pass".
   const staff = await User.create({ name: "Sid Scanner", email: "sid.scanner@example.com", role: "admin", staffRole: "staff" });
   const scan = await call("POST", "/api/checkin/scan", { token: tokenFor(staff), body: { ticketId: "TECHFEST:kai000000001" } });
-  assert.deepEqual([scan.status, scan.body.status, scan.body.ticketType, scan.body.passName, scan.body.speaker], [200, "success", "power", "Power Pass", true]);
-  // Apple Wallet: the same pass name.
+  assert.deepEqual([scan.status, scan.body.status, scan.body.ticketType, scan.body.passName, scan.body.speaker], [200, "success", "speaker", "Speaker Pass", true]);
   const { passContent } = await import("../services/walletPass.js");
-  const pass = passContent({ ticketId: "kai000000001", tier: "power", name: "Kai Speaker" });
-  assert.equal(pass.secondary.find((f) => f.key === "pass").value, "Power Pass");
-  assert.equal(passContent({ ticketId: "x", tier: "speaker", name: "Old" }).secondary[0].value, "Power Pass");
+  const pass = passContent({ ticketId: "kai000000001", tier: "speaker", name: "Kai Speaker" });
+  assert.equal(pass.secondary.find((f) => f.key === "pass").value, "Speaker Pass");
   assert.doesNotMatch(JSON.stringify(pass), RETIRED);
 });
 
-test("a speaker's Power Pass upgrades to Apex at the price difference; Power's sold count is left alone", { skip }, async () => {
-  const { User, TicketInventory } = M;
-  await TicketInventory.create([{ tier: "power", total: 10, sold: 2, price: 1099 }, { tier: "apex", total: 10, sold: 1, price: 1599 }]);
-  const lee = await User.findOne({ email: "lee.speaker@example.com" });
-  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=lee000000001&tier=apex", { token: tokenFor(lee) });
-  assert.equal(q.status, 200, JSON.stringify(q.body));
-  assert.deepEqual([q.body.fromTier, q.body.toTier, q.body.difference], ["power", "apex", 500]);
-  assert.doesNotMatch(JSON.stringify(q.body), RETIRED);
-  // Stripe says it's paid (a signed test event, built here): the ticket becomes Apex, still a speaker's.
+/* Pass upgrades (Oct 19 2026, the organiser: "Don't offer upgrades to Apex for anyone who is marked as speakers.
+   In fact, don't offer upgrades at all."): off unless staff turn on flag.upgrades; speakers never. */
+async function setUpgrades(on) {
+  await M.AppContent.updateOne({ key: "flag.upgrades" }, { $set: { value: on, updatedBy: "test" } }, { upsert: true });
+  (await import("../services/liveSwitches.js")).forgetSwitches();
+}
+const soldCounts = async () => Object.fromEntries((await M.TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
+async function paidWebhook(id, user, ticketId, email) {
+  // Stripe says it's paid (a signed test event, built here; nothing reaches Stripe).
   const { default: Stripe } = await import("stripe");
-  const payload = JSON.stringify({ id: "evt_up", type: "checkout.session.completed", data: { object: {
-    id: "cs_up_lee", customer_details: { email: "lee.speaker@example.com", name: "Lee Speaker" },
-    metadata: { type: "upgrade", tier: "apex", userId: String(lee._id), upgradeFrom: "lee000000001", fromTier: "power" },
+  const payload = JSON.stringify({ id: `evt_${id}`, type: "checkout.session.completed", data: { object: {
+    id, customer_details: { email, name: user.name },
+    metadata: { type: "upgrade", tier: "apex", userId: String(user._id), upgradeFrom: ticketId, fromTier: "power" },
   } } });
   const header = new Stripe("sk_test_dummy").webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET });
-  const r = await realFetch(`${base}/api/webhook/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: payload });
+  return realFetch(`${base}/api/webhook/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: payload });
+}
+const OFF = { code: "upgrades_off", error: "Pass upgrades aren't available." };
+const SPEAKER = { code: "speaker_pass", error: "Speakers' passes can't be upgraded." };
+
+test("pass upgrades are off by default: the quote and the upgrade checkout refuse with upgrades_off", { skip }, async () => {
+  const { User, TicketInventory } = M;
+  await TicketInventory.create([{ tier: "power", total: 10, sold: 2, price: 1099 }, { tier: "apex", total: 10, sold: 1, price: 1599 }]);
+  const pat = await User.create({ name: "Pat Power", email: "pat.power@example.com", tickets: [{ ticketId: "pat000000001", type: "power", stripeSessionId: "cs_pat" }] });
+  // No switch saved at all = off, signed in or not.
+  for (const token of [tokenFor(pat), undefined]) {
+    const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token });
+    assert.deepEqual([q.status, q.body], [403, OFF]);
+  }
+  const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(pat), body: { tier: "apex", upgradeFrom: "pat000000001", client: "ios" } });
+  assert.deepEqual([c.status, c.body], [403, OFF]);
+  // Saved as off: the same.
+  await setUpgrades(false);
+  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token: tokenFor(pat) });
+  assert.deepEqual([q.status, q.body], [403, OFF]);
+  // The public app content says so (the website and the apps hide every offer).
+  const { CONTENT_KEYS } = await import("../services/adminHelpers.js");
+  assert.equal(CONTENT_KEYS["flag.upgrades"], false);
+  assert.deepEqual(await soldCounts(), { power: 2, apex: 1 });
+});
+
+test("switch on: a Power Pass upgrades to Apex at the price difference (quote, checkout past the gate, paid webhook)", { skip }, async () => {
+  const { User } = M;
+  await setUpgrades(true);
+  const pat = await User.findOne({ email: "pat.power@example.com" });
+  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token: tokenFor(pat) });
+  assert.equal(q.status, 200, JSON.stringify(q.body));
+  assert.deepEqual([q.body.fromTier, q.body.toTier, q.body.difference], ["power", "apex", 500]);
+  // The checkout gets past every check and reaches Stripe (no key in tests, so it stops there; never a 403).
+  const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(pat), body: { tier: "apex", upgradeFrom: "pat000000001", client: "ios" } });
+  assert.equal(c.status, 500, JSON.stringify(c.body));
+  assert.match(c.body.error, /STRIPE_SECRET_KEY/);
+  const r = await paidWebhook("cs_up_pat", pat, "pat000000001", "pat.power@example.com");
+  assert.equal(r.status, 200);
+  const t = (await User.findById(pat._id).lean()).tickets[0];
+  assert.deepEqual([t.type, t.upgradedFrom], ["apex", "power"]);
+  assert.deepEqual(await soldCounts(), { power: 1, apex: 2 });
+  await setUpgrades(false);
+});
+
+test("Speaker Passes and speakers (tier speaker, promo SPEAKER or speaker type) are never upgraded, even with the switch on; an upgrade already paid still goes through", { skip }, async () => {
+  const { User } = M;
+  const lee = await User.findOne({ email: "lee.speaker@example.com" });   // a Speaker Pass on his account
+  // A bought Power Pass whose holder staff made a speaker (person type).
+  const sky = await User.create({ name: "Sky Speaker", email: "sky.speaker@example.com", types: ["speaker"],
+    tickets: [{ ticketId: "sky000000001", type: "power", stripeSessionId: "cs_sky" }] });
+  // A Speaker Pass whose holder's automatic speaker type staff switched off: the tier alone says so.
+  const ula = await User.create({ name: "Ula Tier", email: "ula.tier@example.com", typesOff: ["speaker"],
+    tickets: [{ ticketId: "ula000000001", type: "speaker" }] });
+  const { isSpeakersPass } = await import("../routes/payments.js");
+  assert.equal(isSpeakersPass(ula, ula.tickets[0]), true);
+  assert.equal(isSpeakersPass({ types: [] }, { type: "power", promoCode: "SPEAKER" }), true);   // Admin › Speaker passes
+  assert.equal(isSpeakersPass({ types: ["speaker"] }, { type: "connect" }), true);
+  assert.equal(isSpeakersPass({ types: [] }, { type: "power" }), false);
+  await setUpgrades(true);
+  for (const [u, id] of [[lee, "lee000000001"], [sky, "sky000000001"], [ula, "ula000000001"]]) {
+    const q = await call("GET", `/api/payments/upgrade-quote?ticketId=${id}&tier=apex`, { token: tokenFor(u) });
+    assert.deepEqual([q.status, q.body], [403, SPEAKER]);
+    const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(u), body: { tier: "apex", upgradeFrom: id, client: "android" } });
+    assert.deepEqual([c.status, c.body], [403, SPEAKER]);
+  }
+  // Off: the switch answers first.
+  await setUpgrades(false);
+  const off = await call("GET", "/api/payments/upgrade-quote?ticketId=lee000000001&tier=apex", { token: tokenFor(lee) });
+  assert.deepEqual([off.status, off.body], [403, OFF]);
+
+  // An upgrade paid before the change: the webhook finishes it as before. The ticket becomes Apex; nothing is
+  // given back to the inventory (the Speaker Pass never took a seat).
+  const before = await soldCounts();
+  const r = await paidWebhook("cs_up_lee", lee, "lee000000001", "lee.speaker@example.com");
   assert.equal(r.status, 200);
   const t = (await User.findById(lee._id).lean()).tickets[0];
-  assert.deepEqual([t.type, t.upgradedFrom, t.speakerPass], ["apex", "power", true]);
-  const inv = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
-  assert.deepEqual([inv.power, inv.apex], [2, 2]);
-  // The purchase email went to the stub only, and says Apex Pass.
+  assert.deepEqual([t.type, t.upgradedFrom], ["apex", "speaker"]);
+  const after = await soldCounts();
+  assert.deepEqual([after.power, after.apex], [before.power, before.apex + 1]);
+  // The purchase email went to the stub only, says Apex Pass and offers no upgrade.
   const mail = sent.find((m) => (m.to || []).includes?.("lee.speaker@example.com") || m.to === "lee.speaker@example.com");
   assert.ok(mail, "upgrade email built");
   assert.match(mail.subject, /Apex Pass/);
   assert.doesNotMatch(`${mail.subject}${mail.html}${mail.text}`, RETIRED);
-  // From now on it counts like any sold Apex Pass (the recount agrees with the webhook).
-  const { isIssuedSpeakerPass } = await import("../services/teamRoles.js");
-  assert.equal(isIssuedSpeakerPass(t), false);
+  assert.doesNotMatch(`${mail.subject}${mail.html}${mail.text}`, /upgrade/i);
 });
 
 /* ---------- 2. Edits ---------- */
@@ -316,7 +383,7 @@ test("edit: names, email, phone, company follow to every record; sign-in email n
   assert.equal("rsvpEmailMark" in me.body, false);
 });
 
-test("edit: person types (account: App › People rules), pass-only Speaker switch, VIP and Exhibitor", { skip }, async () => {
+test("edit: person types (account: App › People rules); a pass-only person's types need an account", { skip }, async () => {
   await staffAccounts();
   const { User, Attendee } = M;
   const val = await User.create({ name: "Val Vendor", email: "val.vendor@example.com", tickets: [{ ticketId: "val000000001", type: "influence", promoCode: "COMP" }] });
@@ -328,19 +395,19 @@ test("edit: person types (account: App › People rules), pass-only Speaker swit
   assert.deepEqual((await User.findById(val._id).lean()).types, ["speaker", "vendor"]);
   const p = (await call("GET", `/api/console/people/${id}`, { token: staffTok })).body.person;
   assert.deepEqual([p.types, p.pass.tierLabel, p.pass.cxoBreakfast], [["speaker", "vendor"], "Influence Pass", true]); // a speaker: the breakfasts
-  // A pass-only speaker switched off and on (saved on the passes).
+  // A pass-only person: their types need an account (Speaker comes with a Speaker Pass, Exhibitor is its switch).
   const kaiId = await idOf("kai000000001");
-  const off = await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { speaker: false } });
-  assert.equal(off.status, 200, JSON.stringify(off.body));
-  assert.equal((await Attendee.findOne({ ticketId: "kai000000001" }).lean()).speakerPass, false);
-  assert.ok(!(await call("GET", `/api/console/people/${kaiId}`, { token: staffTok })).body.person.types.includes("speaker"));
-  await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { speaker: true } });
+  const kai = await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { types: ["vendor"] } });
+  assert.deepEqual([kai.status, kai.body.field], [409, "types"]);
   assert.ok((await call("GET", `/api/console/people/${kaiId}`, { token: staffTok })).body.person.types.includes("speaker"));
-  // Types for a pass-only person need an account.
-  assert.equal((await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { types: ["vendor"] } })).status, 409);
+  assert.equal((await Attendee.findOne({ ticketId: "kai000000001" }).lean()).exhibitor, undefined);
+  const ex = await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { exhibitor: true } });
+  assert.equal(ex.status, 200, JSON.stringify(ex.body));
+  assert.equal((await Attendee.findOne({ ticketId: "kai000000001" }).lean()).exhibitor, true);
+  await call("PATCH", `/api/console/people/${kaiId}`, { token: staffTok, body: { exhibitor: false } });
 });
 
-test("pass changes: between the four (management, inventory like an upgrade, RSVP follows), manual value for passes paid outside Stripe", { skip }, async () => {
+test("pass changes: the four or the Speaker Pass (management, inventory like an upgrade, RSVP follows), manual value outside Stripe", { skip }, async () => {
   await staffAccounts();
   const { User, Attendee, Rsvp, TicketInventory, AdminAudit } = M;
   await TicketInventory.create([{ tier: "connect", total: 10, sold: 5, price: 849 }, { tier: "influence", total: 10, sold: 3, price: 949 }]);
@@ -349,9 +416,9 @@ test("pass changes: between the four (management, inventory like an upgrade, RSV
   await Rsvp.create({ key: "t:cyy000000001", firstName: "Cy", lastName: "Change", name: "Cy Change", nameKey: "cy change", ticketId: "CYY000000001",
     ticketVerified: true, kind: "ticket", tier: "connect", tierVerified: true, days: ["day1"], options: ["sessions_d1"] });
   const id = await idOf("cy.change");
-  // Staff can't; only the four.
+  // Staff can't; only the four and the Speaker Pass.
   assert.equal((await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: staffTok, body: { tier: "influence" } })).status, 403);
-  assert.equal((await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: mgmtTok, body: { tier: "speaker" } })).status, 400);
+  assert.equal((await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: mgmtTok, body: { tier: "gold" } })).status, 400);
   const up = await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: mgmtTok, body: { tier: "influence" } });
   assert.equal(up.status, 200, JSON.stringify(up.body));
   assert.equal((await User.findById(cy._id).lean()).tickets[0].type, "influence");
@@ -359,13 +426,20 @@ test("pass changes: between the four (management, inventory like an upgrade, RSV
   const inv = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
   assert.deepEqual([inv.connect, inv.influence], [4, 4]);
   assert.match((await AdminAudit.findOne({ action: "pass_tier" }).lean()).detail, /Connect Pass → Influence Pass \(no charge; inventory connect −1, influence \+1\)/);
-  // A speaker's pass never took a seat: changing it moves no inventory.
-  const kaiId = await idOf("kai000000001");
-  await call("PATCH", `/api/console/people/${kaiId}/passes/kai000000001`, { token: mgmtTok, body: { tier: "apex" } });
-  const inv2 = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
-  assert.deepEqual([inv2.power, inv2.apex], [inv.power, inv.apex]);
-  assert.equal((await Attendee.findOne({ ticketId: "kai000000001" }).lean()).ticketType, "apex");
-  await call("PATCH", `/api/console/people/${kaiId}/passes/kai000000001`, { token: mgmtTok, body: { tier: "power" } });
+  // To the internal Speaker Pass: no inventory row, so only Influence gives its seat back; Cy is a speaker now,
+  // with the breakfasts. And back again.
+  const sp = await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: mgmtTok, body: { tier: "speaker" } });
+  assert.equal(sp.status, 200, JSON.stringify(sp.body));
+  const spPass = sp.body.person.passes.find((x) => x.ticketId === "cyy000000001");
+  assert.deepEqual([spPass.label, spPass.tier, spPass.cxoBreakfast, sp.body.person.types.includes("speaker")], ["Speaker Pass", "speaker", true, true]);
+  assert.equal((await User.findById(cy._id).lean()).tickets[0].type, "speaker");
+  assert.equal((await Rsvp.findOne({ key: "t:cyy000000001" }).lean()).tier, "speaker");
+  let inv2 = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
+  assert.deepEqual([inv2.connect, inv2.influence], [4, 3]);
+  assert.match((await AdminAudit.findOne({ action: "pass_tier" }).sort({ at: -1 }).lean()).detail, /Influence Pass → Speaker Pass \(no charge; inventory influence −1\)/);
+  await call("PATCH", `/api/console/people/${id}/passes/cyy000000001`, { token: mgmtTok, body: { tier: "influence" } });
+  inv2 = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
+  assert.deepEqual([inv2.connect, inv2.influence], [4, 4]);
 
   // Manual value: management only, never for a Stripe-paid pass.
   assert.equal((await call("PATCH", `/api/console/people/${id}/passes/cyy000000002`, { token: mgmtTok, body: { manualValue: 500 } })).status, 409);

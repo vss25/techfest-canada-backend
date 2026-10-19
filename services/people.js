@@ -7,8 +7,8 @@
      - User: app and website accounts, their tickets, person types
        and staff / volunteer roles
      - Attendee: guest purchases, complimentary passes (COMP),
-       speakers' passes (SPEAKER, Power Passes since Oct 19 2026),
-       issued passes (ISSUED) and exhibitor passes (EXHIBITOR, Connect)
+       Speaker Passes (SPEAKER), issued passes (ISSUED) and exhibitor
+       passes (EXHIBITOR, Connect Passes)
      - Rsvp: the website /rsvp answers and staff-entered RSVPs
      - Sanity `speaker` docs (the public speaker list)
      - Company: each company's default logo
@@ -40,13 +40,14 @@
    link keeps working when a guest pass is later claimed by an
    account (the profile answers with the person's current id).
 
-   Passes are strictly four (Oct 19 2026): every pass shows as Connect,
-   Influence, Power or Apex. A speaker's pass is a Power Pass and the
-   person is a speaker by type (services/teamRoles.js isSpeakerPass);
-   an exhibitor pass is a Connect Pass.
+   Passes (Oct 19 2026): the four on sale (Connect, Influence, Power,
+   Apex) and the internal Speaker Pass (tier "speaker", never sold or
+   listed; holding one makes someone a speaker). "All Access" is the
+   Power Pass; an exhibitor pass is a Connect Pass, named so.
 
    Filters (Oct 19 2026, the organiser's list): Attendee Type (the six
-   types), Pass Type (Connect, Influence, Power, Apex), Ticket Value
+   types), Pass Type (Connect, Influence, Power, Apex, and the internal
+   Speaker Pass, "Speaker (internal)"), Ticket Value
    After Payment (below / above 100 CAD), RSVP Status (Confirmed by
    Individual / by Staff / Unconfirmed), Is Exhibitor?, RSVP Email
    Sent? and VIP?. Each is worked out below (ticketValue, rsvpEmail,
@@ -55,11 +56,11 @@
 ========================================================= */
 
 import {
-  effectiveTypes, autoTypes, holdsPass, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isSpeakerPass, isIssuedSpeakerPass, isVip, isVipPass, legacyVip,
+  effectiveTypes, autoTypes, holdsPass, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isSpeakerPass, isVip, isVipPass, legacyVip,
   PERSON_TYPES, EXHIBITOR_PROMO, TYPE_LABELS,
 } from "./teamRoles.js";
 import { normalizeTicketId, guestName, guestWork } from "./ticketAccess.js";
-import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, PASS_TIERS, optionLabel, extraOptionsFor } from "./rsvp.js";
+import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, TIERS, optionLabel, extraOptionsFor } from "./rsvp.js";
 import { csvCell } from "./brochureDownloads.js";
 import { companyKey, companyDTO, domainOfUrl } from "./companies.js";
 import { rsvpStatusOf, splitName, RSVP_STATUS_LABELS } from "./rsvpStaff.js";
@@ -115,13 +116,16 @@ const ISSUED_PROMOS = new Set(["ISSUED", "EXHIBITOR"]);
 
 const STAFF_PROMOS = new Set(["COMP", "ISSUED", "EXHIBITOR", "SPEAKER"]);
 const EMAILED_PROMOS = new Set(["ISSUED", "EXHIBITOR", "SPEAKER"]); // passes the admin panel emails out
+/** A Speaker Pass staff made (Admin › Speaker passes, Issue passes): one bought through checkout and changed to
+    the Speaker Pass by management keeps its Stripe payment, so it stays "paid" with its Stripe value. */
+const staffSpeakerPass = (t) => isSpeakerPass(t) && !t?.stripeSessionId;
 const PLACEHOLDER = /@ticket\.thetechfestival\.com$/i;
 const isBooth = (id) => /^BOOTH-/i.test(String(id || ""));
 const realEmail = (e) => {
   const s = String(e || "").trim().toLowerCase();
   return s && !PLACEHOLDER.test(s) ? s : "";
 };
-const TIER_RANK = { apex: 4, power: 3, influence: 2, connect: 1 };
+const TIER_RANK = { speaker: 5, apex: 4, power: 3, influence: 2, connect: 1 };
 const STATUS_RANK = { paid: 0, complimentary: 0, issued: 1, pending: 2, refunded: 3 };
 const ms = (d) => {
   const n = d ? new Date(d).getTime() : 0;
@@ -139,7 +143,7 @@ const ms = (d) => {
  */
 export function passStatus(t, refunds = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
-  const speakerPass = isIssuedSpeakerPass(t);
+  const speakerPass = staffSpeakerPass(t);
   const r = t?.stripeSessionId && refunds ? refunds.get(t.stripeSessionId) : null;
   if (r && r.total > 0 && r.refunded >= r.total) return "refunded";
   if (STAFF_PROMOS.has(promo) || speakerPass) {
@@ -150,9 +154,9 @@ export function passStatus(t, refunds = null) {
   return "paid";
 }
 
-/** The pass a ticket is: always one of the four ("Connect Pass" … "Apex Pass"; an old "speaker" ticket is a Power Pass). */
+/** The pass a ticket is, by its tier: "Connect Pass" … "Apex Pass", or "Speaker Pass" (internal). Never a printed label. */
 const passLabel = (type) => TIER_LABELS[tierFromTicketType(type)] || "Pass";
-const RETIRED_LABEL = /^\s*(speaker|all access|exhibitor)\s+pass\s*$/i;
+const RETIRED_LABEL = /^\s*(all[- ]access|exhibitor)\s+pass\s*$/i;
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
 /** A user ticket and / or the guest record of the same ticket → one pass record. */
@@ -171,8 +175,6 @@ function ticketRecord({ user = null, t = null, a = null }) {
     label: passLabel(type),
     // The name staff printed on an issued pass, if any (the pass itself is still one of the four); the retired names never.
     printedLabel: RETIRED_LABEL.test(String(a?.issuedPass?.label || "")) ? "" : String(a?.issuedPass?.label || "").trim().slice(0, 60),
-    // A speaker's pass: the account's ticket says so, else the pass row (services/teamRoles.js).
-    speakerPass: typeof t?.speakerPass === "boolean" ? t.speakerPass : isSpeakerPass(a || {}) || isSpeakerPass(t || {}),
     manualValue,
     manualValueNote: manualValue !== undefined ? String(manualFrom?.manualValueNote || "") : "",
     manualValueBy: manualValue !== undefined ? String(manualFrom?.manualValueBy || "") : "",
@@ -224,10 +226,9 @@ export function ticketValue(t, stripe = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
   // Paid outside Stripe: what management typed. (A pass with a Stripe session always takes Stripe's value.)
   if (!t?.stripeSessionId && num(t?.manualValue) !== undefined) return Math.round(t.manualValue * 100) / 100;
-  const extra = stripe?.upgrades?.get(t?.norm || normalizeTicketId(t?.ticketId)) || 0;
-  // Staff-made passes cost nothing; a paid upgrade of one (a speaker's Power Pass to Apex) is what was paid.
-  if (STAFF_PROMOS.has(promo) || isIssuedSpeakerPass(t) || (isSpeakerPass(t) && !t?.stripeSessionId)) return Math.round(extra * 100) / 100;
+  if (STAFF_PROMOS.has(promo) || staffSpeakerPass(t)) return 0;
   if (!stripe || !t?.stripeSessionId) return null;
+  const extra = stripe.upgrades?.get(t.norm || normalizeTicketId(t.ticketId)) || 0;
   const share = Math.max(1, stripe.shared?.get(t.stripeSessionId) || 1);
   if (stripe.paid?.has(t.stripeSessionId)) return Math.round((stripe.paid.get(t.stripeSessionId) / share + extra) * 100) / 100;
   if (stripe.free?.has(t.stripeSessionId)) return Math.round(extra * 100) / 100;
@@ -239,7 +240,7 @@ export function ticketValue(t, stripe = null) {
 export function valueSource(t) {
   if (t?.stripeSessionId) return "stripe";
   if (num(t?.manualValue) !== undefined) return "manual";
-  if (STAFF_PROMOS.has(String(t?.promoCode || "").toUpperCase()) || isIssuedSpeakerPass(t)) return "staff";
+  if (STAFF_PROMOS.has(String(t?.promoCode || "").toUpperCase()) || isSpeakerPass(t)) return "staff";
   return "unknown";
 }
 
@@ -439,8 +440,6 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
 function typesOf(p, exIdx) {
   const u = p.user;
   const off = new Set(storedTypes(u?.typesOff));
-  // A pass-only person whose passes staff all switched to "not a speaker" (Attendee.speakerPass false).
-  if (!u && p.attendees.length && p.attendees.every((a) => a.speakerPass === false)) off.add("speaker");
   const stored = new Set(storedTypes(u?.types));
   const on = new Set(u ? effectiveTypes(u, { exhibitor: exIdx.boothFor(u) !== null }) : []);
   // Unclaimed passes found for them, and the speaker list.
@@ -488,7 +487,7 @@ function rsvpEmailOf(p, remindedAt) {
       const hadButton = typeof a.passEmailRsvp === "boolean" ? a.passEmailRsvp
         : speakerPass ? sentAt >= SPEAKER_RSVP_LINK_FROM
           : ISSUED_PROMOS.has(promo) ? a.issuedPass?.rsvp !== false : false;
-      if (hadButton) add(sentAt, speakerPass ? "Speaker's pass email" : promo === "EXHIBITOR" ? "Exhibitor's pass email" : "Pass email");
+      if (hadButton) add(sentAt, speakerPass ? "Speaker Pass email" : promo === "EXHIBITOR" ? "Exhibitor's pass email" : "Pass email");
     }
     if (speakerPass && a.speakerNudgedAt) add(a.speakerNudgedAt, "Speaker reminder");
   }
@@ -535,10 +534,10 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
   const email = realEmail(u?.email) || [...p.emails][0] || realEmail(rsvp?.email) || "";
 
   const types = typesOf(p, exIdx);
-  // CxO Breakfast per pass: staff's switch, else automatic (Apex / a speaker's pass, or a speaker-type person).
+  // CxO Breakfast per pass: staff's switch, else automatic (Apex / Speaker Pass, or a speaker-type person).
   for (const t of tickets) {
-    t.cxoAuto = autoCxo(t.type, types, { speakerPass: t.speakerPass });
-    t.cxo = effectiveCxo({ ticketType: t.type, types, override: t.cxoOverride, speakerPass: t.speakerPass });
+    t.cxoAuto = autoCxo(t.type, types);
+    t.cxo = effectiveCxo({ ticketType: t.type, types, override: t.cxoOverride });
   }
   const phone = fromPasses((d) => String(d.phone || "").trim());
   const exhibitorAuto = u ? exIdx.boothFor(u) !== null : false;
@@ -582,12 +581,11 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
 
 /* ---------- What the admin panel gets ---------- */
 
-/* `label` / `tierLabel`: always one of the four ("Connect Pass" … "Apex Pass"). `speakerPass`: a speaker's pass
-   (the person's Speaker type comes from it). `valueSource`: stripe | manual | staff | unknown. */
+/* `label` / `tierLabel`: the pass by its tier ("Connect Pass" … "Apex Pass", "Speaker Pass" for the internal one).
+   `valueSource`: stripe | manual | staff | unknown. */
 const passOut = (t) => (t ? {
   ticketId: t.ticketId, label: t.label, tier: t.tier, tierLabel: TIER_LABELS[t.tier] || "", status: t.status,
   statusLabel: PASS_STATUS_LABELS[t.status] || t.status, key: t.key, source: t.source,
-  speakerPass: !!t.speakerPass,
   // "CxO Breakfast included" for this pass: the effective value, staff's switch (null = automatic) and the automatic value.
   cxoBreakfast: !!t.cxo, cxoOverride: typeof t.cxoOverride === "boolean" ? t.cxoOverride : null, cxoAuto: !!t.cxoAuto,
   valueBand: valueBand(t.value), valueSource: valueSource(t),
@@ -638,7 +636,7 @@ export function personRow(p) {
 
 const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
 
-/** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex;
+/** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
     ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar). */
 export function filterPeople(people, query = {}) {
@@ -653,7 +651,7 @@ export function filterPeople(people, query = {}) {
   return people.filter((p) => {
     if (words.length && !words.every((w) => p.search.includes(w))) return false;
     if (type === "none" ? p.types.length : PERSON_TYPES.includes(type) && !p.types.includes(type)) return false;
-    if (PASS_TIERS.includes(pass) && p.primary?.tier !== pass) return false;
+    if (TIERS.includes(pass) && p.primary?.tier !== pass) return false;
     if (VALUE_BANDS.includes(value) && bandOf(p) !== value) return false;
     if (PASS_STATUSES.includes(status) && (p.primary?.status || "none") !== status) return false;
     const rs = rsvpStatusOf(p.rsvp).status;
@@ -813,7 +811,7 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
     canEditExhibitor: canEdit,
     canEditVip: canEdit,
     canEditCxo: canEdit && hasPass,
-    // Change a pass between the four, and the ticket value of a pass paid outside Stripe: management.
+    // Change a pass (the four, or the internal Speaker Pass), and the ticket value of a pass paid outside Stripe: management.
     canEditPass: canEdit && management && hasPass,
     canEditValue: canEdit && management && hasPass,
     canEditRsvpEmail: canEdit,
@@ -861,8 +859,6 @@ export function personDetail(p, { management = false, cmsLogos = [], staffId = "
       // The App › People type editor's view: stored types, switched-off types, the automatic ones and whether they hold a pass.
       types: storedTypes(p.user.types), typesOff: storedTypes(p.user.typesOff), autoTypes: p.autoTypes || [], holdsPass: !!p.holdsPass,
     } : null,
-    // A pass-only person's Speaker switch: true when their passes say so (speakerPass), false when staff switched it off.
-    passSpeaker: p.user ? null : p.attendees.some((a) => isSpeakerPass(a)),
     companyRecord: companyDTO(p.companyDoc),
     suggestedDomain: suggestDomain(p, cmsLogos),
     specialEvents: specialEvents(p.rsvp),

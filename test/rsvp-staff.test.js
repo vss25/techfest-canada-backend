@@ -23,15 +23,9 @@ test("staff create: keyed by the ticket like /rsvp would, pass from the ticket, 
   assert.equal(d.passLimitOverride, false);
   assert.equal(plan.audit.action, "rsvp_staff_create");
   assert.match(plan.audit.detail, /Jane Doe: Day 1 & Day 2; Networking Luncheon \(Day 1\), Gala/);
-  // A speaker's pass (a Power Pass, or an old "speaker" ticket): matched as a speaker, Power with the breakfasts.
+  // A Speaker Pass: speaker, everything a speaker gets.
   const spk = planStaffRsvp({ person: { ...PERSON, pass: { ticketId: "SPK1", type: "speaker" } }, body: { days: ["day1"], options: ["cxo_d1", "awards"] }, staff: STAFF });
-  assert.deepEqual([spk.doc.kind, spk.doc.tier, spk.doc.tierVerified, spk.doc.options], ["speaker", "power", true, ["cxo_d1", "awards"]]);
-  const pow = planStaffRsvp({ person: { ...PERSON, pass: { ticketId: "SPK2", type: "power", speakerPass: true } }, body: { days: ["day1"], options: ["cxo_d1"] }, staff: STAFF });
-  assert.deepEqual([pow.doc.kind, pow.doc.tier, pow.doc.options], ["speaker", "power", ["cxo_d1"]]);
-  // The speaker type on someone else's pass does the same; their pass's switch saying No still wins.
-  const typed = planStaffRsvp({ person: { ...PERSON, speaker: true }, body: { days: ["day1"], options: ["cxo_d1"] }, staff: STAFF });
-  assert.deepEqual([typed.doc.kind, typed.doc.tier, typed.doc.options], ["speaker", "power", ["cxo_d1"]]);
-  assert.equal(planStaffRsvp({ person: { ...PERSON, speaker: true, cxo: false }, body: { days: ["day1"], options: ["cxo_d1"] }, staff: STAFF }).code, "outside_pass");
+  assert.deepEqual([spk.doc.kind, spk.doc.tier, spk.doc.tierVerified], ["speaker", "speaker", true]);
 });
 
 test("staff create without a pass: staff choose it, unverified, keyed by the name", () => {

@@ -15,7 +15,7 @@ import { makeAgendaCache } from "../services/points.js";
 import { stripeSessions } from "../services/stripeSales.js";
 import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import TicketInventory from "../models/TicketInventory.js";
-import { storedTypes, PERSON_TYPES, isSpeakerPass, isIssuedSpeakerPass } from "../services/teamRoles.js";
+import { storedTypes, PERSON_TYPES, isSpeakerPass } from "../services/teamRoles.js";
 import { typesEdit } from "../services/appRights.js";
 import { cleanCxoSwitch, cxoLabel, effectiveCxo } from "../services/cxoBreakfast.js";
 import { deletePerson, emailHash, personDeletionScope, planPersonDeletion } from "../services/accountDeletion.js";
@@ -25,7 +25,7 @@ import {
 import { sendSequentially } from "../services/profileRequest.js";
 import { cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
 import {
-  LIVE_RSVPS, SANITY_PROJECT, PASS_TIERS, TIER_LABELS, checkOptions, optionLabel, personNameKey, rsvpDetail, rsvpRow, rsvpOptionsPayload,
+  LIVE_RSVPS, SANITY_PROJECT, TIERS, TIER_LABELS, checkOptions, optionLabel, personNameKey, rsvpDetail, rsvpRow, rsvpOptionsPayload,
 } from "../services/rsvp.js";
 import { planStaffRsvp, splitName } from "../services/rsvpStaff.js";
 import {
@@ -53,9 +53,9 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
                             agenda (sessions saved in the app + RSVP special events), company,
                             contactCard (their app contact details, read only)
      PATCH  /:id            { firstName?, lastName? (or name), email? (management), phone?, linkedinUrl?, company?, jobTitle?,
-                              types?, typesOff? (accounts), speaker? (pass-only), exhibitor?, vip?, rsvpEmailSent? (true | false | null) }
+                              types?, typesOff? (accounts), exhibitor?, vip?, rsvpEmailSent? (true | false | null) }
                             every record they're made of follows: the account, their passes, their RSVP rows
-     PATCH  /:id/passes/:ticketId  { cxoBreakfast?: true | false | null (automatic), tier? (management: the four),
+     PATCH  /:id/passes/:ticketId  { cxoBreakfast?: true | false | null (automatic), tier? (management: the four or speaker),
                               manualValue?: CAD | null, manualValueNote? (management; passes paid outside Stripe) }
      GET    /:id/delete-plan  (management) exactly what Delete person removes, with counts, and what stays
      DELETE /:id            { confirmName } (management) deletes them from the database (services/accountDeletion.js)
@@ -72,10 +72,12 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    services/logoStore.js. Every change is audited; nothing here emails
    anyone except POST /reminder (the RSVP reminder, management, after a
    confirmation), and listing never creates an account or any other record.
-   Passes are strictly four (Oct 19 2026): a speaker's pass is a Power Pass
-   (the person is a speaker by type), an exhibitor pass a Connect Pass.
+   Passes (Oct 19 2026): Connect, Influence, Power, Apex and the internal
+   Speaker Pass (holding one makes someone a speaker); an exhibitor pass is
+   a Connect Pass, named so; "All Access" is the Power Pass.
 ========================================================= */
 
+const n = (r) => r?.modifiedCount ?? 0;
 const clean = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -124,10 +126,10 @@ const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manual
 const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
   "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
   "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId tickets.cxoBreakfast",
-  "tickets.speakerPass tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
+  "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
   "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip cxoBreakfast",
-  "speakerPass rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
+  "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 async function loadDirectory() {
@@ -326,7 +328,7 @@ const passIsTheirs = (details, name) => {
  *   email (management)                   the account's sign-in email (unique), and the same address on their passes / RSVPs
  *   phone, company, jobTitle, linkedinUrl  the account and their own passes' checkout details (the Tickets page edit)
  *   types, typesOff                      an account's person types (the App › People rules: staff / volunteer = management)
- *   speaker (pass-only people)           true / false on every pass of theirs (Attendee.speakerPass)
+ *   (Speaker comes with a Speaker Pass: change their pass to it, PATCH /:id/passes/:ticketId { tier: "speaker" })
  *   exhibitor, vip                       the switches (as before)
  *   rsvpEmailSent                        true / false (staff's mark for an email sent outside the panel) | null (from our records)
  * Staff accounts: management only. Audited `person_edit` (and `person_email` for a sign-in change).
@@ -369,10 +371,6 @@ router.patch("/:id", wrap(async (req, res) => {
     if (typeof b.vip !== "boolean") return res.status(400).json({ error: "VIP must be Yes or No", field: "vip" });
     want.vip = b.vip;
   }
-  if (b.speaker !== undefined) {
-    if (typeof b.speaker !== "boolean") return res.status(400).json({ error: "Speaker must be Yes or No", field: "speaker" });
-    want.speaker = b.speaker;
-  }
   if (b.rsvpEmailSent !== undefined) {
     if (![true, false, null].includes(b.rsvpEmailSent)) return res.status(400).json({ error: "RSVP email sent must be Yes, No or automatic", field: "rsvpEmailSent" });
     want.rsvpEmailSent = b.rsvpEmailSent;
@@ -382,14 +380,13 @@ router.patch("/:id", wrap(async (req, res) => {
   if (info.where === "none") return res.status(409).json({ error: info.reason });
   if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
   if (typesAsked && !p.user) {
-    return res.status(409).json({ error: "Their types live on an app account. Without one, Speaker and Exhibitor are switched on their passes; the other types need an account first.", field: "types" });
+    return res.status(409).json({ error: "Their types live on an app account. Without one, Exhibitor is switched on their passes and Speaker comes with a Speaker Pass; the other types need an account first.", field: "types" });
   }
-  if (want.speaker !== undefined && p.user) return res.status(400).json({ error: "Change an account's Speaker type with its types", field: "speaker" });
 
   const changed = [];
   const notes = [];
   const yn = (v) => (v ? "Yes" : "No");
-  const note = (k, from, to) => changed.push(["exhibitor", "vip", "speaker"].includes(k) ? `${k === "vip" ? "VIP" : k} ${yn(from)} → ${yn(to)}` : k);
+  const note = (k, from, to) => changed.push(["exhibitor", "vip"].includes(k) ? `${k === "vip" ? "VIP" : k} ${yn(from)} → ${yn(to)}` : k);
   const attIds = p.attendees.map((a) => a._id);
   const oldName = p.name === "No name" ? "" : p.name;
   const oldEmail = String(p.email || "").toLowerCase();
@@ -409,7 +406,7 @@ router.patch("/:id", wrap(async (req, res) => {
       if (await User.exists({ email: want.email, _id: { $ne: p.user._id } })) return res.status(409).json({ error: "Another account already uses that email", field: "email" });
     }
   } else if (want.email === "" && p.attendees.some((a) => !isSpeakerPass(a))) {
-    // Only a speaker's pass can wait for an email (staff add it in Admin › Speaker passes).
+    // Only a Speaker Pass can wait for an email (staff add it in Admin › Speaker passes).
     return res.status(400).json({ error: "This pass needs an email address", field: "email" });
   }
 
@@ -505,7 +502,6 @@ router.patch("/:id", wrap(async (req, res) => {
       const from = String(a.email || "").toLowerCase();
       if (from !== want.email && (from === String(emailChange?.from || oldEmail).toLowerCase() || (!p.user && !from))) { a.email = want.email; dirty = true; }
     }
-    if (!p.user && want.speaker !== undefined && isSpeakerPass(a) !== want.speaker) { a.speakerPass = want.speaker; dirty = true; }
     if (!p.user && want.rsvpEmailSent !== undefined) {
       if (want.rsvpEmailSent === null) { a.rsvpEmailMark = undefined; a.rsvpEmailMarkBy = undefined; a.rsvpEmailMarkAt = undefined; }
       else { a.rsvpEmailMark = want.rsvpEmailSent; a.rsvpEmailMarkBy = staffName; a.rsvpEmailMarkAt = new Date(); }
@@ -517,7 +513,6 @@ router.patch("/:id", wrap(async (req, res) => {
     if (want.name && want.name !== oldName) note("name");
     if (want.email !== undefined && want.email !== oldEmail) { note("email"); emailChange = { from: oldEmail, to: want.email }; }
     for (const k of ["phone", "company", "jobTitle", "linkedinUrl"]) if (want[k] !== undefined && want[k] !== (p[k] || "")) note(k);
-    if (want.speaker !== undefined && want.speaker !== p.types.includes("speaker")) note("speaker", p.types.includes("speaker"), want.speaker);
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {
       // On: their passes say so (and none of them says No any more). Off: every pass says No, an exhibitor pass included.
       if (want.exhibitor) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { exhibitor: true } });
@@ -546,7 +541,7 @@ router.patch("/:id", wrap(async (req, res) => {
     if (Object.keys(set).length) { await Rsvp.updateOne({ _id: r0._id }, { $set: set }); rsvpsTouched++; }
   }
 
-  if (want.exhibitor !== undefined || want.vip !== undefined || want.speaker !== undefined || typesAsked) clearExhibitorCache();
+  if (want.exhibitor !== undefined || want.vip !== undefined || typesAsked) clearExhibitorCache();
   if (changed.length) {
     const where = [passesTouched ? `${passesTouched} pass record(s)` : "", rsvpsTouched ? `${rsvpsTouched} RSVP(s)` : ""].filter(Boolean).join(", ");
     await audit(req, "person_edit", "person", p.id, `${want.name || p.name}: ${changed.join(", ")}${notes.length ? ` | ${notes.join("; ")}` : ""}${where ? ` (also ${where})` : ""}`);
@@ -562,10 +557,11 @@ router.patch("/:id", wrap(async (req, res) => {
 
 /* One pass of theirs: PATCH /:id/passes/:ticketId, any of
      cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (staff; audited pass_cxo_breakfast)
-     tier: connect | influence | power | apex            change the pass between the four (management): no charge, the
-                                                         account ticket, its pass row and its RSVP rows follow, and the
-                                                         inventory counts move like a paid upgrade (old −1, new +1; a
-                                                         speaker's or a hidden pass never counted). Audited pass_tier.
+     tier: connect | influence | power | apex | speaker  change the pass (management): one of the four or the internal
+                                                         Speaker Pass (which makes them a speaker); no charge; the account
+                                                         ticket, its pass row and its RSVP rows follow, and the inventory
+                                                         counts move like a paid upgrade (old −1, new +1; the Speaker Pass
+                                                         has no inventory, a hidden pass never counted). Audited pass_tier.
      manualValue: number (CAD before HST) | null, manualValueNote?
                                                          ticket value after payment for a pass paid outside Stripe
                                                          (management; a Stripe-paid pass keeps Stripe's). Audited pass_value.
@@ -603,7 +599,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   if (b.tier !== undefined) {
     if (!management) return res.status(403).json({ error: "Only management can change a pass", field: "tier" });
     tier = clean(b.tier, 20).toLowerCase();
-    if (!PASS_TIERS.includes(tier)) return res.status(400).json({ error: "The pass must be Connect, Influence, Power or Apex", field: "tier" });
+    if (!TIERS.includes(tier)) return res.status(400).json({ error: "The pass must be Connect, Influence, Power, Apex or the Speaker Pass", field: "tier" });
   }
   let value;
   if (b.manualValue !== undefined) {
@@ -620,7 +616,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   if (cxo !== undefined) {
     const before = cxoLabel(t.cxoOverride, t.cxo);
     await writeTicket(cxo === null ? {} : { cxoBreakfast: cxo }, cxo === null ? { cxoBreakfast: 1 } : {});
-    const after = cxoLabel(cxo ?? undefined, effectiveCxo({ ticketType: tier || t.type, types: p.types, override: cxo ?? undefined, speakerPass: t.speakerPass }));
+    const after = cxoLabel(cxo ?? undefined, effectiveCxo({ ticketType: tier || t.type, types: p.types, override: cxo ?? undefined }));
     await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
     did = true;
   }
@@ -636,15 +632,19 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
       const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { cxo: rules.speaker ? true : rules.cxo, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
       if (!check.ok) warnings.push(`Their RSVP has ${check.invalid.map(optionLabel).join(", ")}, which the ${TIER_LABELS[tier]} doesn't include. It stays: staff never take away what they chose.`);
     }
-    // Inventory, the way a paid upgrade moves it (routes/webhook.js): a speaker's pass and a hidden one never took a seat.
-    let moved = "not counted in the inventory";
-    if (!t.hidden && !isIssuedSpeakerPass(t)) {
+    // Inventory, the way a paid upgrade moves it (routes/webhook.js). The Speaker Pass has no inventory row
+    // (never sold), and a hidden pass never counted.
+    const moves = [];
+    if (!t.hidden) {
       const from = String(t.type || "").toLowerCase();
-      await TicketInventory.updateOne({ tier: from, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
-      const to = await TicketInventory.findOneAndUpdate({ tier }, { $inc: { sold: 1 } }, { new: true }).lean();
-      moved = `inventory ${from} −1, ${tier} +1`;
-      if (to && to.total > 0 && to.sold > to.total) warnings.push(`${TIER_LABELS[tier]} is now over its allocation (${to.sold} of ${to.total}). Change the allocation in Tickets › Inventory if that's right.`);
+      if (from !== "speaker" && n(await TicketInventory.updateOne({ tier: from, sold: { $gt: 0 } }, { $inc: { sold: -1 } }))) moves.push(`${from} −1`);
+      const to = tier === "speaker" ? null : await TicketInventory.findOneAndUpdate({ tier }, { $inc: { sold: 1 } }, { new: true }).lean();
+      if (to) {
+        moves.push(`${tier} +1`);
+        if (to.total > 0 && to.sold > to.total) warnings.push(`${TIER_LABELS[tier]} is now over its allocation (${to.sold} of ${to.total}). Change the allocation in Tickets › Inventory if that's right.`);
+      }
     }
+    const moved = moves.length ? `inventory ${moves.join(", ")}` : "inventory unchanged";
     await audit(req, "pass_tier", "ticket", t.ticketId, `${p.name} · ${t.ticketId.toUpperCase()}: ${t.label} → ${TIER_LABELS[tier]} (no charge; ${moved})`);
     did = true;
   }

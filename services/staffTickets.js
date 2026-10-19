@@ -1,13 +1,9 @@
 import { orgFromEmail } from "./attendeeDetails.js";
-import { isIssuedSpeakerPass } from "./teamRoles.js";
 /* Staff view of every ticket (account tickets + guest purchases), duplicate
    detection and real sales numbers. Pure functions, unit-tested.
 
    "Hidden" tickets are only hidden from staff lists and analytics: the
    owner's ticket stays valid in the app, on the website and at the door. */
-
-/** A ticket's tier key; the old "speaker" type is a Power Pass (its row keeps speakerPass: true). */
-const tierOf = (type) => { const k = String(type || "").toLowerCase(); return k === "speaker" ? "power" : k; };
 
 const fold = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -21,7 +17,6 @@ const profileDates = (d) => ({
 export function collectTickets(users = [], guests = []) {
   const rows = [];
   const onAccounts = new Set();
-  const guestOf = new Map((guests || []).filter((g) => g?.ticketId).map((g) => [g.ticketId, g]));
   for (const u of users) {
     for (const t of u.tickets || []) {
       if (!t?.ticketId) continue;
@@ -29,10 +24,8 @@ export function collectTickets(users = [], guests = []) {
       rows.push({
         key: `u:${u._id}:${t.ticketId}`, source: "account", ownerId: String(u._id),
         name: u.name || "", email: String(u.email || "").toLowerCase(), ticketId: t.ticketId,
-        tier: tierOf(t.type), purchaseDate: t.purchaseDate || null,
+        tier: String(t.type || "").toLowerCase(), purchaseDate: t.purchaseDate || null,
         checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff, promoCode: t.promoCode || "",
-        // A speaker's pass (a Power Pass since Oct 19 2026): never sold, left out of sales and inventory.
-        speakerPass: !t.stripeSessionId && (isIssuedSpeakerPass(t) || isIssuedSpeakerPass(guestOf.get(t.ticketId))),
         details: t.details || null, emailOrg: orgFromEmail(u.email), ...profileDates(t.details),
       });
     }
@@ -42,9 +35,8 @@ export function collectTickets(users = [], guests = []) {
     rows.push({
       key: `g:${g.ticketId}`, source: "guest", ownerId: "",
       name: g.name || "", email: String(g.email || "").toLowerCase(), ticketId: g.ticketId,
-      tier: tierOf(g.ticketType), purchaseDate: g.purchaseDate || null,
+      tier: String(g.ticketType || "").toLowerCase(), purchaseDate: g.purchaseDate || null,
       checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff, promoCode: g.promoCode || "",
-      speakerPass: isIssuedSpeakerPass(g),
       details: g.details || null, emailOrg: orgFromEmail(g.email), ...profileDates(g.details),
     });
   }
@@ -53,16 +45,12 @@ export function collectTickets(users = [], guests = []) {
 
 export const personKey = (r) => r.email || `name:${fold(r.name)}`;
 
-/** A speaker's pass: never sold, never a duplicate, not in sales or the inventory counts.
-    (`tier` "speaker" is a row from before Oct 19 2026, when they became Power Passes.) */
-export const isSpeakerRow = (r) => !!r?.speakerPass || r?.tier === "speaker";
-
 /** Visible tickets that repeat a person (same email): every one except their most recent.
-    A speaker's pass is never a duplicate of a ticket the speaker bought (or the other way round). */
+    A Speaker Pass is never a duplicate of a ticket the speaker bought (or the other way round). */
 export function duplicateKeys(rows) {
   const byPerson = new Map();
   for (const r of rows) {
-    if (r.hidden || isSpeakerRow(r)) continue;
+    if (r.hidden || r.tier === "speaker") continue;
     const k = personKey(r);
     if (!byPerson.has(k)) byPerson.set(k, []);
     byPerson.get(k).push(r);
@@ -118,9 +106,9 @@ export function makeBuckets(range, now = new Date(), dates = []) {
 }
 
 /** Real sales from ticket purchase dates (hidden tickets excluded). Revenue uses tier list prices.
-    Speakers' passes are never sold, so they aren't sales. */
+    Speaker Passes are never sold, so they aren't sales. */
 export function salesSummary(allRows, prices = {}, { range = "month", now = new Date() } = {}) {
-  const rows = allRows.filter((r) => !isSpeakerRow(r));
+  const rows = allRows.filter((r) => r.tier !== "speaker");
   const live = rows.filter((r) => !r.hidden);
   const price = (t) => Number(prices[t] || 0);
   const byTier = {};
@@ -157,12 +145,11 @@ export function salesSummary(allRows, prices = {}, { range = "month", now = new 
 }
 
 /** What each tier's "sold" counter should be: visible pass tickets per tier,
-    plus paid booth orders (booths have no ticket records). Speakers' passes (Power Passes
-    since Oct 19 2026) never took a seat from the inventory, so they don't count. Pure. */
+    plus paid booth orders (booths have no ticket records). Pure. */
 export function recountSold(rows, boothCounts = {}) {
   const sold = {};
   for (const r of rows) {
-    if (r.hidden || !r.tier || isSpeakerRow(r)) continue;
+    if (r.hidden || !r.tier) continue;
     sold[r.tier] = (sold[r.tier] || 0) + 1;
   }
   for (const [tier, n] of Object.entries(boothCounts)) sold[tier] = (sold[tier] || 0) + n;

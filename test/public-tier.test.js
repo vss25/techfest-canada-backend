@@ -28,11 +28,10 @@ test("userCard: tier hidden from others except speakers / exhibitors; own card k
   assert.equal(userCard(apex).tier, "");
   assert.equal(userCard(apex, { self: true }).tier, "Apex Pass");
   assert.equal(userCard({ ...apex, tickets: [{ type: "connect" }, { type: "speaker" }] }).tier, "Speaker");
-  // A speaker's Power Pass (the marker): others see Speaker, they see their Power Pass.
-  const spk = { ...apex, tickets: [{ ticketId: "t2", type: "power", speakerPass: true }] };
+  // A Speaker Pass: others see the type, "Speaker"; they see their own pass, "Speaker Pass".
+  const spk = { ...apex, tickets: [{ ticketId: "t2", type: "speaker" }] };
   assert.equal(userCard(spk).tier, "Speaker");
-  assert.equal(userCard(spk, { self: true }).tier, "Power Pass");
-  assert.equal(userCard({ ...apex, tickets: [{ type: "speaker" }] }, { self: true }).tier, "Power Pass");
+  assert.equal(userCard(spk, { self: true }).tier, "Speaker Pass");
   // Exhibitor by a claimed exhibitor pass (index) or the promo on their own ticket.
   const idx = exhibitorIndex([{ claimedBy: "u1", ticketId: "x1", issuedPass: { booth: { booth: "B7" } } }]);
   assert.equal(userCard(apex, { exhibitors: idx }).tier, "Exhibitor");
@@ -62,7 +61,7 @@ test("buildDirectory: app users and guests show only Speaker / Exhibitor", () =>
     { _id: "g1", name: "Gina Guest", email: "g@x.com", ticketId: "y1", ticketType: "power", purchaseDate: "2026-09-01" },
     { _id: "g2", name: "Eli Exhibit", email: "e@x.com", ticketId: "y2", ticketType: "connect", promoCode: "EXHIBITOR", purchaseDate: "2026-09-01" },
     { _id: "g3", name: "Spe Guest", email: "sg@x.com", ticketId: "y3", ticketType: "speaker", purchaseDate: "2026-09-01" },
-    { _id: "g4", name: "Pow Speaker", email: "ps@x.com", ticketId: "y4", ticketType: "power", promoCode: "SPEAKER", speakerPass: true, purchaseDate: "2026-09-01" },
+    { _id: "g4", name: "Pow Speaker", email: "ps@x.com", ticketId: "y4", ticketType: "speaker", promoCode: "SPEAKER", purchaseDate: "2026-09-01" },
   ];
   const dir = buildDirectory(users, guests, {});
   const tier = (name) => dir.find((p) => p.name === name).tier;

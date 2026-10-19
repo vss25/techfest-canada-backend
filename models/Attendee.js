@@ -6,12 +6,12 @@ const attendeeSchema = new mongoose.Schema(
       type: String,
       required: true
     },
-    // Required for every pass except a speaker's (Admin → Speaker passes), which is created before
+    // Required for every pass except a Speaker Pass (Admin → Speaker passes), which is created before
     // staff have the speaker's email (they add it in the admin panel, then send the pass).
     email: {
       type: String,
       required: function () {
-        return !(this.speakerPass === true || this.promoCode === "SPEAKER" || this.ticketType === "speaker");
+        return !(this.ticketType === "speaker" || this.promoCode === "SPEAKER");
       },
       lowercase: true
     },
@@ -78,12 +78,8 @@ const attendeeSchema = new mongoose.Schema(
     // An account that claims this pass is a VIP too, unless staff set User.vip on the account.
     vip: { type: Boolean },
     // "CxO Breakfast included" for this pass (services/cxoBreakfast.js): true / false = staff's choice,
-    // unset = automatic (Apex, and speakers on any pass).
+    // unset = automatic (Apex and Speaker Passes, and speakers on any pass).
     cxoBreakfast: { type: Boolean },
-    // A speaker's pass (Oct 19 2026: speakers hold Power Passes). true makes the holder a speaker
-    // (services/teamRoles.js isSpeakerPass; promo SPEAKER and the old ticket type "speaker" count when
-    // unset); false = staff switched the speaker type off for this pass-only person (Admin → People).
-    speakerPass: { type: Boolean },
     // Ticket value after payment typed by management for a pass paid outside Stripe (invoice, bank
     // transfer), CAD before HST. Unset = worked out (Stripe, or 0 for staff-made passes). Admin → People.
     manualValue: { type: Number },
@@ -97,7 +93,7 @@ const attendeeSchema = new mongoose.Schema(
     rsvpEmailMarkAt: { type: Date },
     // Staff-set logo for this person only; "" = their company's default (models/Company.js).
     companyLogoUrl: { type: String, default: "" },
-    // A speaker's pass (Admin → Speaker passes, promo SPEAKER): the Sanity speaker document it was made for.
+    // Speaker Pass (ticketType "speaker", promo SPEAKER): the Sanity speaker document it was made for.
     // One pass per speaker; the sync keys on this.
     speakerId: {
       type: String,

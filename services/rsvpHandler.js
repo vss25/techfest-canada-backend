@@ -9,8 +9,7 @@
      1. Ticket ID + last name → that ticket's pass, verified. The ticket is
         found and the name checked exactly as the app's ticket sign-in does,
         and every try comes out of the same per-ticket budget (ticketGuesses).
-     2. First AND last name on the public speaker list → speaker: their Power Pass
-        (or the Apex Pass they gave the ticket of) with the CxO Breakfasts.
+     2. First AND last name on the public speaker list → speaker (everything).
         The typed name is matched, not the ticket's: "Chris Golden" on the list
         is a speaker even when his ticket says "Christopher Golden". With a
         verified ticket, the typed last name must be its holder's too.
@@ -36,10 +35,9 @@
    (`staffAdded`) stay on the row.
 
    CxO Breakfasts (services/cxoBreakfast.js): offered by the verified pass's
-   "CxO Breakfast included" (staff's switch, else Apex / a speaker's pass /
-   a speaker-type holder) and to anyone matched as a speaker, plus any
-   breakfast already on their RSVP. The lookup tells the page with
-   `cxoBreakfast` (verified tickets and speakers) and `keepOptions`.
+   "CxO Breakfast included" (staff's switch, else Apex / Speaker Pass / a
+   speaker-type holder), plus any breakfast already on their RSVP. The lookup
+   tells the page with `cxoBreakfast` and `keepOptions` (verified tickets only).
 ========================================================= */
 
 import { makeLimiter, ticketGuesses, ticketGuessKey, normalizeTicketId } from "./ticketAccess.js";
@@ -47,7 +45,7 @@ import { cleanText, isHoneypotFilled, botReason } from "./brochureDownloads.js";
 import {
   cleanLookup, foldName, personNameKey, matchSpeaker, matchHolder, tierFromTicketType, fullNameMatches, lastNameIs,
   validateRsvp, resolvePass, checkOptions, rsvpKeys, rsvpOptionsPayload, newEditToken, hashEditToken, planRsvpMerge,
-  optionLabel, extraOptionsFor, allowedExperiences, tierLabel, speakerTier, normalizeTier, EXPERIENCE_KEYS, DAY_KEYS,
+  optionLabel, extraOptionsFor, allowedExperiences, TIER_LABELS, EXPERIENCE_KEYS, DAY_KEYS,
 } from "./rsvp.js";
 import { effectiveCxo } from "./cxoBreakfast.js";
 
@@ -112,15 +110,9 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
     const speaker = both && (!ticket || ticket.holderLastMatch) ? matchSpeaker(await getSpeakers(), q.firstName, q.lastName) : "";
     // `verified` here means the server settles the pass (the page locks it). The speaker list
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
-    // The verified pass's CxO Breakfast (services/cxoBreakfast.js): staff's switch, else Apex / a speaker's pass / speaker type.
-    const cxoOf = (tier, types = ticket?.types) => (ticket ? effectiveCxo({ ticketType: tier, types, override: ticket.cxoOverride }) : undefined);
-    if (speaker) {
-      // A speaker holds a Power Pass (the Apex Pass when that's the ticket they gave) and, being a speaker,
-      // the CxO Breakfasts: unless staff switched them off on the ticket they gave.
-      const tier = speakerTier(ticket ? tierFromTicketType(ticket.type) : "");
-      const cxoBreakfast = ticket ? cxoOf(tier, [...new Set([...(ticket.types || []), "speaker"])]) : true;
-      return { kind: "speaker", tier, verified: true, displayName: speaker, ticket, cxoBreakfast };
-    }
+    // The verified pass's CxO Breakfast (services/cxoBreakfast.js): staff's switch, else Apex / Speaker Pass / speaker type.
+    const cxoOf = (tier) => (ticket ? effectiveCxo({ ticketType: tier, types: ticket.types, override: ticket.cxoOverride }) : undefined);
+    if (speaker) return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket, cxoBreakfast: cxoOf("speaker") };
     if (ticket) {
       const tier = tierFromTicketType(ticket.type);
       return { kind: "ticket", tier, verified: true, displayName: q.firstName, ticket, cxoBreakfast: cxoOf(tier) };
@@ -134,12 +126,8 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
   };
 }
 
-/** The CxO Breakfast rules for a lookup result: the verified pass's switch / rule (a speaker's, matched
-    by name, even without a ticket) and the breakfasts they keep. */
-export const lookupRules = (r, keepOptions = []) => ({
-  cxo: r?.ticket || r?.kind === "speaker" ? (typeof r.cxoBreakfast === "boolean" ? r.cxoBreakfast : undefined) : undefined,
-  extra: r?.ticket ? [...keepOptions] : [],
-});
+/** The CxO Breakfast rules for a lookup result: the verified pass's switch / rule and the breakfasts they keep. */
+export const lookupRules = (r, keepOptions = []) => ({ cxo: r?.ticket ? r.cxoBreakfast : undefined, extra: r?.ticket ? [...keepOptions] : [] });
 
 /** What the browser is told. `allowedOptions`: every experience this person may pick (any day; the page
     keeps the days they come), worked out by allowedExperiences, the same rule POST /api/rsvp checks with.
@@ -149,12 +137,12 @@ export function publicLookup(r, q = {}, { keepOptions = [] } = {}) {
   const out = { kind: r.kind, verified: !!r.verified };
   if (r.tier) {
     out.tier = r.tier;
-    out.tierLabel = tierLabel(r.tier);
+    out.tierLabel = TIER_LABELS[r.tier] || "";
     out.allowedOptions = allowedExperiences(r.tier, DAY_KEYS, lookupRules(r, keepOptions));
   }
   if (r.displayName) out.displayName = cleanText(r.displayName).slice(0, 80);
   if (q.ticketId) out.ticketMatched = !!r.ticket;
-  if ((r.ticket || r.kind === "speaker") && typeof r.cxoBreakfast === "boolean") {
+  if (r.ticket && typeof r.cxoBreakfast === "boolean") {
     out.cxoBreakfast = r.cxoBreakfast;
     out.keepOptions = [...keepOptions];
   }
@@ -358,11 +346,10 @@ export function makeRsvpHandlers({
           if (!keys.ticket && (own.ticketVerified || own.tierVerified)) {
             // Saved with a verified ticket, changed without it: the pass stays as it was.
             for (const k of PASS_FIELDS) delete set[k];
-            // A speaker's RSVP keeps the speaker's CxO Breakfasts.
-            const again = checkOptions(own.tier, v.days, v.options, { cxo: own.kind === "speaker" ? true : undefined, extra: extraOptionsFor([own]) });
+            const again = checkOptions(own.tier, v.days, v.options, { extra: extraOptionsFor([own]) });
             if (!again.ok) return { invalid: again };
             set.options = again.options;
-            return update(own, set, { kind: own.kind, tier: normalizeTier(own.tier), tierVerified: !!own.tierVerified });
+            return update(own, set, { kind: own.kind, tier: own.tier, tierVerified: !!own.tierVerified });
           }
           if (keys.ticket) { set.key = keys.ticket; set.duplicateOf = ""; } // now proven by its ticket too
           return update(own, set, pass);
@@ -408,7 +395,7 @@ export function makeRsvpHandlers({
       }
       return res.status(201).json({
         ...OK, updated: result.updated, editToken: result.token,
-        kind: final.kind, tier: final.tier, tierLabel: tierLabel(final.tier), tierVerified: !!final.tierVerified,
+        kind: final.kind, tier: final.tier, tierLabel: TIER_LABELS[final.tier], tierVerified: !!final.tierVerified,
       });
     } catch (err) {
       log.error?.("RSVP SUBMIT ERROR:", err);

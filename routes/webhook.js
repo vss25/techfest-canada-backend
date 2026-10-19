@@ -12,7 +12,7 @@ import { sendResetPasswordEmail } from "../services/emailService.js";
 import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
 import { effectiveCxo, cxoOverride } from "../services/cxoBreakfast.js";
-import { effectiveTypes, isIssuedSpeakerPass } from "../services/teamRoles.js";
+import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
 
 const router = express.Router();
 
@@ -136,9 +136,8 @@ router.post("/stripe", async (req, res) => {
         const ticketId = session.metadata.upgradeFrom;
         const user = userId ? await User.findById(userId) : null;
         const ticket = user?.tickets?.find((t) => t.ticketId === ticketId);
-        // A speaker's pass (a Power Pass we issued) never took a seat from the inventory, so there's none to give back.
-        const speakerSeatless = !!ticket && isIssuedSpeakerPass(ticket);
-        if (fromTier && !speakerSeatless) {
+        // A Speaker Pass (internal, never sold) never took a seat from the inventory: none to give back.
+        if (fromTier && !(ticket && isSpeakerPass(ticket))) {
           await TicketInventory.updateOne({ tier: fromTier, sold: { $gt: 0 } }, { $inc: { sold: -1 } });
         }
         if (ticket) {

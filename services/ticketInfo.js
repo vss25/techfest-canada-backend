@@ -35,7 +35,7 @@ export const APP_COMING_SOON = {
 };
 
 const BASE = ["2x Day Conference Access", "Expo Floor Access", "Networking Breaks"];
-/** The CxO Breakfasts line. Apex includes them, and speakers get them on any pass; Power doesn't since Oct 19 2026.
+/** The CxO Breakfasts line. Apex and Speaker Passes include them (and speakers on any pass); Power doesn't since Oct 19 2026.
     A single pass can have them switched on or off by staff (services/cxoBreakfast.js). */
 export const CXO_INCLUSION = "2x CxO Breakfasts";
 
@@ -53,8 +53,16 @@ export const PASS_INCLUSIONS = {
     "1x Gala Dinner & Networking Reception", "1x Awards Night", "Expo Floor Access", "Networking Breaks",
   ],
 };
-// Retired tier keys that still exist on old tickets. (The old "speaker" key reads as "power", see tierKey.)
+// Retired tier keys that still exist on old tickets.
 PASS_INCLUSIONS.vip = PASS_INCLUSIONS.apex;
+/** The VIP Lounge speakers get (not the Apex Scotch & Cocktail Lounge). */
+export const VIP_LOUNGE_INCLUSION = "VIP Lounge Access (both days)";
+// Speaker Pass (internal, staff-issued, never sold or listed, Oct 19 2026): the Power Pass, plus both CxO
+// Breakfasts and the VIP Lounge. None of the Apex extras (meetings, preferential seating, the Scotch lounge).
+PASS_INCLUSIONS.speaker = [
+  "2x Day Conference Access", CXO_INCLUSION, "2x Luncheons",
+  "1x Gala Dinner & Networking Reception", "1x Awards Night", VIP_LOUNGE_INCLUSION, "Expo Floor Access", "Networking Breaks",
+];
 
 /* The tagline and the paragraph each pass card carries on the website
    (Tickets.jsx PASS_META). Repeated in the confirmation email so the
@@ -82,10 +90,10 @@ export const blurbFor = (tier) => PASS_BLURB[tierKey(tier)] || "";
 
 export const isBoothId = (ticketId) => /^BOOTH-/i.test(String(ticketId || ""));
 
-/** A tier as a key; the old "speaker" ticket type is a Power Pass (Oct 19 2026: the passes are strictly four). */
+/** A tier as a key; the text "All Access" is the Power Pass (Oct 19 2026: "All Access Pass = Power Pass only"). */
 export function tierKey(tier) {
   const k = String(tier || "").trim().toLowerCase();
-  return k === "speaker" ? "power" : k;
+  return /^all[- ]?access( pass)?$/.test(k) ? "power" : k;
 }
 
 /**
@@ -113,7 +121,8 @@ export function displayPassName(tier, ticketId) {
   return passName(k) || "Delegate Pass";
 }
 
-export const hasLounge = (tier) => inclusionsFor(tier).some((f) => /lounge/i.test(f));
+/** The 19+ Private Scotch & Cocktail Lounge (Apex). The speakers' VIP Lounge isn't it. */
+export const hasLounge = (tier) => inclusionsFor(tier).some((f) => /scotch/i.test(f));
 
 /** Practical tips printed on the PDF and in the email. */
 export function knowBeforeYouGo(tier) {

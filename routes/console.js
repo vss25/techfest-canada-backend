@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
@@ -53,7 +54,7 @@ import Rsvp from "../models/Rsvp.js";
 import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "../services/rsvp.js";
 import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import {
-  SPEAKER_SCOPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
+  SPEAKER_TYPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
   readyToSend, SAMPLE_SPEAKER, manualSpeakerPassDoc, validateSpeakerEmails, passRecipients,
 } from "../services/speakerPasses.js";
 import { DEFAULT_COPY } from "../services/speakerPassEmail.js";
@@ -401,6 +402,7 @@ router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) return res.status(400).json({ error: "Unknown key" });
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
+  forgetSwitches();   // polls, Q&A and pass upgrades follow at once on this server
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
   res.json({ ok: true });
 });
@@ -610,7 +612,7 @@ router.post("/kill-switch", requireManagement, async (req, res) => {
 async function allTicketRows() {
   const [users, guests] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode speakerPass stripeSessionId details").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode details").lean(),
   ]);
   return collectTickets(users, guests);
 }
@@ -1071,10 +1073,10 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
   res.status(201).json({ ticketId: attendee.ticketId, name, email, tier, lastName: name.split(" ").slice(-1)[0] });
 });
 
-/* ---------- Speakers' passes (Admin → Speaker passes) ----------
-   A Power Pass marked as a speaker's (promo SPEAKER, speakerPass: true; never sold or counted
-   in the inventory) for every speaker on the website, made from the Sanity speaker list with
-   no email (services/speakerPasses.js). Being a speaker adds the CxO Breakfasts and the VIP Lounge.
+/* ---------- Speaker Passes ----------
+   The internal Speaker Pass (ticketType "speaker", never sold or listed; Power + both CxO Breakfasts +
+   the VIP Lounge) for every speaker on the website, made from the Sanity speaker list with no email
+   (services/speakerPasses.js).
    Staff add each speaker's email, preview the pass email, then management sends it.
    Nothing is ever emailed without a send click; send-all needs { confirm: "SEND" }. */
 
@@ -1114,6 +1116,9 @@ function sendOptions(body = {}, template) {
   }
   return { ok: true, copy, template: template.copy, draft: body.draft === true, to, cc };
 }
+// Speaker Passes made here (Sanity speakers, manual adds). One staff issued in Issue passes (promo ISSUED) has
+// its own list and email there, so it isn't listed, synced or sent from here too.
+const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE, promoCode: { $ne: "ISSUED" } };
 
 /** A speaker's email wording: this send's, then the pass's own (Attendee.issuedPass), then the template. */
 const speakerCopy = (a, opts) => mergeCopy(opts.copy, opts.draft ? {} : ownCopy(a), opts.template);
@@ -1149,7 +1154,7 @@ async function sendSpeakerPass(a, opts = {}) {
   await sendSpeakerPassEmail({ to, pass: row, cc, copy: speakerCopy(a, opts) });
   let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
-    // The speakers' pass email always has the RSVP button (People › "RSVP email sent").
+    // The Speaker Pass email always has the RSVP button (People › "RSVP email sent").
     { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", "), passEmailRsvp: true }, $inc: { passEmailSentCount: 1 } },
     { new: true },
   ).select(SPEAKER_PASS_FIELDS).lean();
@@ -1464,7 +1469,7 @@ router.post("/speaker-passes/:id/send", requireManagement, async (req, res) => {
 });
 
 /* ---------- Nudges: a reminder to RSVP ----------
-   The speakers' pass email again (same pass, run of show and RSVP button) with nudge wording
+   The Speaker Pass email again (same pass, run of show and RSVP button) with nudge wording
    (services/speakerWebsite.js NUDGE_COPY, editable per send) and the usual cc. No calendar
    invites. Speakers who have RSVP'd are always skipped. */
 

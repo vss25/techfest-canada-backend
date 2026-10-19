@@ -1,7 +1,7 @@
 /* Complimentary tickets: staff-issued passes for speakers, guests and App Review.
    Pure validation here; routes/console.js stores the Attendee. */
 
-// The four passes (Oct 19 2026: "The pass types are strictly four"); Discover and Session are retired.
+// The four passes on sale (Oct 19 2026); Discover and Session are retired. Speaker Passes come from Admin › Speaker passes.
 export const COMP_TIERS = ["connect", "influence", "power", "apex"];
 export const COMP_PROMO = "COMP";
 

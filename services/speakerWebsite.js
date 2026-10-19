@@ -194,7 +194,7 @@ export async function loadWebsite({ fetchImpl = globalThis.fetch, fresh = false 
 export const NUDGE_COPY = Object.freeze({
   subject: "{firstName}, a quick reminder: please RSVP for TTFC 2026",
   headline: "A quick reminder from TTFC 2026.",
-  message: "We haven't had your RSVP yet. Please let us know which days and events you'll join: the RSVP button is below, with your Power Pass.\n\nIf you've already replied, thank you, and please ignore this email.",
+  message: "We haven't had your RSVP yet. Please let us know which days and events you'll join: the RSVP button is below, with your Speaker Pass.\n\nIf you've already replied, thank you, and please ignore this email.",
 });
 
 /** The wording for a nudge: the defaults, with anything staff typed taking over. */
