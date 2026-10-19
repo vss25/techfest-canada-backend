@@ -35,13 +35,26 @@ export const holdsExhibitorPass = (tickets) => (Array.isArray(tickets) ? tickets
      (User.types set by staff ∪ automatic types) − User.typesOff
    Automatic: staff (role admin), volunteer (role volunteer), speaker (a Speaker
    Pass), exhibitor (an exhibitor pass). Attendee is automatic for anyone holding
-   a pass or ticket who has no other type; staff can also add it by hand (so a VIP
-   with a pass only gets the attendee column when staff say so). typesOff is the
-   only way to take an automatic type away from one person (e.g. show a speaker
-   as VIP only). `role` stays the sign-in / admin panel switch. */
+   a pass or ticket who has no other type; staff can also add it by hand. typesOff
+   is the only way to take an automatic type away from one person. `role` stays
+   the sign-in / admin panel switch.
 
-export const PERSON_TYPES = ["attendee", "speaker", "exhibitor", "vip", "staff", "vendor", "volunteer"];
-/** Badge priority: `kind` is the first of these someone has. */
+   VIP is not a type (since Oct 19 2026): it's a yes / no flag staff set
+   (User.vip on an account, Attendee.vip on a pass, see isVip below). It gives no
+   rights of its own; the apps still get kind "vip" (badge priority below) so no
+   app release is needed. Stored "vip" types are moved to the flag on start
+   (services/vipFlag.js). */
+
+export const PERSON_TYPES = ["attendee", "speaker", "exhibitor", "staff", "vendor", "volunteer"];
+/** Values older documents may still hold in User.types / typesOff (moved to User.vip on start). Read, never written. */
+export const LEGACY_TYPES = ["vip"];
+/** What the User model accepts in types / typesOff, so a document saved before the move still validates. */
+export const STORED_TYPE_VALUES = [...PERSON_TYPES, ...LEGACY_TYPES];
+/** How the admin panel and the CSV name each type. */
+export const TYPE_LABELS = Object.freeze({
+  attendee: "Delegate", speaker: "Speaker", exhibitor: "Exhibitor", staff: "Organizer", vendor: "Vendor", volunteer: "Volunteer",
+});
+/** Badge priority: `kind` is the first of these someone has ("vip" comes from the VIP flag). */
 export const KIND_PRIORITY = ["staff", "volunteer", "vip", "speaker", "exhibitor", "vendor"];
 /** Types other attendees may see on a card (attendee is everyone, so it isn't shown). Same order as KIND_PRIORITY. */
 export const PUBLIC_TYPES = KIND_PRIORITY;
@@ -85,6 +98,29 @@ export function effectiveTypes(user, { exhibitor = false } = {}) {
   return PERSON_TYPES.filter((t) => on.has(t));
 }
 
+/* ================= VIP (a flag, not a type) =================
+   Account: User.vip true / false is staff's choice; unset = VIP when a pass of
+   theirs says so (Attendee.vip true: claimed by them or one of their tickets), or,
+   until services/vipFlag.js has run, a stored "vip" type. Pass-only people:
+   Attendee.vip true on any of their passes. The same pattern as exhibitor
+   (types / typesOff on an account, Attendee.exhibitor on a pass). */
+
+/** A stored "vip" type that wasn't switched off (documents from before the flag). */
+export const legacyVip = (u) => {
+  const has = (k) => (Array.isArray(u?.[k]) ? u[k] : []).some((t) => String(t ?? "").trim().toLowerCase() === "vip");
+  return has("types") && !has("typesOff");
+};
+
+/** Is this account a VIP? `vipPass`: a pass of theirs has Attendee.vip true. */
+export function isVip(user, { vipPass = false } = {}) {
+  if (!user) return false;
+  if (typeof user.vip === "boolean") return user.vip;
+  return legacyVip(user) || !!vipPass;
+}
+
+/** Badge types: effective types plus "vip" for a VIP (for kind and publicTypes only, never rights). */
+export const badgeTypes = (types = [], vip = false) => (vip ? [...(types || []), "vip"] : [...(types || [])]);
+
 /** The badge type: staff > volunteer > vip > speaker > exhibitor > vendor > "". */
 export const primaryKind = (types = []) => KIND_PRIORITY.find((t) => (types || []).includes(t)) || "";
 
@@ -95,10 +131,10 @@ const KIND_RANK = Object.fromEntries([...KIND_PRIORITY].reverse().map((k, i) => 
 /** The higher of two kinds (staff > volunteer > vip > speaker > exhibitor > vendor > ""). */
 export const strongerKind = (a = "", b = "") => ((KIND_RANK[b] || 0) > (KIND_RANK[a] || 0) ? b : a);
 
-/** Kind for an account: its primary effective type ("staff" … "vendor", or "").
-    `exhibitor`: an exhibitor pass was found for them (claimed Attendee row). */
-export function cardKind(user, { exhibitor = false } = {}) {
-  return primaryKind(effectiveTypes(user, { exhibitor }));
+/** Kind for an account: its primary badge type ("staff" … "vendor", or "").
+    `exhibitor`: an exhibitor pass was found for them (claimed Attendee row); `vipPass`: a VIP pass. */
+export function cardKind(user, { exhibitor = false, vipPass = false } = {}) {
+  return primaryKind(badgeTypes(effectiveTypes(user, { exhibitor }), isVip(user, { vipPass })));
 }
 
 /** Can use the apps' staff sign-in (password): role admin / volunteer, or the staff / volunteer type. */
@@ -122,12 +158,16 @@ export function passKind(a) {
   return "";
 }
 
+/** Staff marked this pass's holder as a VIP (Attendee.vip). */
+export const isVipPass = (a) => a?.vip === true;
+
 /** Booth on an exhibitor pass ("" when none). */
 export const boothOf = (a) => String(a?.issuedPass?.booth?.booth || "").trim().slice(0, 20);
 
 /** Index of exhibitor passes (Attendee rows) → finds the booth for an account.
-    Matched by the account that claimed the pass, then by ticket ID. */
-export function exhibitorIndex(rows = []) {
+    Matched by the account that claimed the pass, then by ticket ID.
+    `vipRows`: passes staff marked VIP (Attendee.vip true), found the same way (hasVipPass). */
+export function exhibitorIndex(rows = [], { vipRows = [] } = {}) {
   const byUser = new Map();
   const byTicket = new Map();
   for (const a of rows || []) {
@@ -135,7 +175,19 @@ export function exhibitorIndex(rows = []) {
     if (a?.claimedBy && !(byUser.get(String(a.claimedBy)))) byUser.set(String(a.claimedBy), booth);
     if (a?.ticketId) byTicket.set(String(a.ticketId), booth);
   }
+  const vipUsers = new Set();
+  const vipTickets = new Set();
+  for (const a of vipRows || []) {
+    if (a?.claimedBy) vipUsers.add(String(a.claimedBy));
+    if (a?.ticketId) vipTickets.add(String(a.ticketId));
+  }
   return {
+    /** Does this account hold a pass staff marked VIP? */
+    hasVipPass(user) {
+      if (!user) return false;
+      if (vipUsers.has(String(user._id || user.id || ""))) return true;
+      return (Array.isArray(user.tickets) ? user.tickets : []).some((t) => t?.ticketId && vipTickets.has(String(t.ticketId)));
+    },
     /** Booth string for this account ("" = exhibitor without a booth), or null if not an exhibitor. */
     boothFor(user) {
       if (!user) return null;
@@ -170,12 +222,14 @@ export function typesTier(types = []) {
   return "";
 }
 
-/** { types (effective, all), kind, booth } for an account. `index` = exhibitorIndex(). */
+/** { types (effective, all), vip, kind, booth } for an account. `index` = exhibitorIndex().
+    `types` decide rights; `kind` (the badge) also counts the VIP flag. */
 export function typeInfo(user, index = null) {
   const booth = index ? index.boothFor(user) : null;
   const types = effectiveTypes(user, { exhibitor: booth !== null });
-  const kind = primaryKind(types);
-  return { types, kind, booth: kind === "exhibitor" ? booth || "" : "" };
+  const vip = isVip(user, { vipPass: !!index?.hasVipPass?.(user) });
+  const kind = primaryKind(badgeTypes(types, vip));
+  return { types, vip, kind, booth: kind === "exhibitor" ? booth || "" : "" };
 }
 
 /** { kind, booth } for an account's card. */

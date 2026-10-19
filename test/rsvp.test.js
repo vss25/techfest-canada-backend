@@ -26,8 +26,9 @@ const EXPECTED = {
   breaks_d2: ALL,
   lunch_d1: ["influence", "power", "apex", "speaker"],
   lunch_d2: ["influence", "power", "apex", "speaker"],
-  cxo_d1: ["power", "apex", "speaker"],
-  cxo_d2: ["power", "apex", "speaker"],
+  // Oct 19 2026: "There are only 4 passes." Apex and speakers only; Power no longer (per-pass switch: cxoBreakfast).
+  cxo_d1: ["apex", "speaker"],
+  cxo_d2: ["apex", "speaker"],
   gala: ["power", "apex", "speaker"],
   awards: ["power", "apex", "speaker"],
   meetings: ["apex"],
@@ -69,8 +70,15 @@ test("what each pass can choose, by day: every pass is asked about the day itsel
   assert.deepEqual(allowedExperiences("connect", ["day1", "day2"]), ON_THE_DAY);
   assert.deepEqual(allowedExperiences("connect", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2"]);
   assert.deepEqual(allowedExperiences("influence", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "lunch_d2"]);
-  assert.deepEqual(allowedExperiences("power", ["day1"]), ["sessions_d1", "expo_d1", "breaks_d1", "cxo_d1", "lunch_d1", "awards"]);
-  assert.deepEqual(allowedExperiences("power", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "cxo_d2", "lunch_d2", "gala"]);
+  assert.deepEqual(allowedExperiences("power", ["day1"]), ["sessions_d1", "expo_d1", "breaks_d1", "lunch_d1", "awards"]);
+  assert.deepEqual(allowedExperiences("power", ["day2"]), ["sessions_d2", "expo_d2", "breaks_d2", "lunch_d2", "gala"]);
+  // The pass's "CxO Breakfast included" (staff's switch, or a speaker on any pass) decides the breakfasts.
+  assert.deepEqual(allowedExperiences("power", ["day1"], { cxo: true }), ["sessions_d1", "expo_d1", "breaks_d1", "cxo_d1", "lunch_d1", "awards"]);
+  assert.deepEqual(allowedExperiences("apex", ["day2"], { cxo: false }).includes("cxo_d2"), false);
+  assert.deepEqual(allowedExperiences("connect", ["day2"], { cxo: true }), ["sessions_d2", "expo_d2", "breaks_d2", "cxo_d2"]);
+  // A breakfast already on their RSVP stays offered whatever the pass says.
+  assert.deepEqual(allowedExperiences("power", ["day2"], { extra: ["cxo_d2"] }), ["sessions_d2", "expo_d2", "breaks_d2", "cxo_d2", "lunch_d2", "gala"]);
+  assert.deepEqual(allowedExperiences("apex", ["day2"], { cxo: false, extra: ["cxo_d2"] }).includes("cxo_d2"), true);
   assert.deepEqual(allowedExperiences("apex", ["day1", "day2"]), EXPERIENCE_KEYS);
   assert.deepEqual(allowedExperiences("speaker", ["day1", "day2"]), EXPERIENCE_KEYS.filter((k) => k !== "meetings" && k !== "lounge"));
   assert.deepEqual(allowedExperiences("apex", []), ["meetings", "lounge"]);
@@ -305,18 +313,22 @@ function makeWorld() {
 test("lookup: ticket ID + last name is verified; speakers see everything; one name is never enough", async () => {
   const { lookup } = makeWorld();
   const r1 = await lookup(cleanLookup({ firstName: "", lastName: "doe", ticketId: "TECHFEST:ABC123DEF" }));
-  assert.deepEqual(publicLookup(r1, { ticketId: "abc123def" }), { kind: "ticket", verified: true, tier: "power", tierLabel: "Power Pass", ticketMatched: true });
+  // A verified ticket also says whether its pass has the CxO Breakfasts (Power: no) and which ones they keep.
+  assert.deepEqual(publicLookup(r1, { ticketId: "abc123def" }), {
+    kind: "ticket", verified: true, tier: "power", tierLabel: "Power Pass", ticketMatched: true, cxoBreakfast: false, keepOptions: [],
+    allowedOptions: allowedExperiences("power", DAY_KEYS),
+  });
   const r2 = await lookup(cleanLookup({ firstName: "Jane", lastName: "Smith", ticketId: "abc123def" }));
   assert.equal(r2.kind, "none"); // wrong last name, and no Jane Smith holds a ticket
   assert.equal(publicLookup(r2, { ticketId: "abc123def" }).ticketMatched, false);
   const r3 = await lookup(cleanLookup({ firstName: "alan", lastName: "aspuru guzik" }));
-  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Alán Aspuru-Guzik" });
+  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Alán Aspuru-Guzik", allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
   // A speaker with a verified (complimentary Connect) ticket still sees everything.
   const r4 = await lookup(cleanLookup({ firstName: "Chris", lastName: "Golden", ticketId: "spk999xyz" }));
   assert.equal(r4.kind, "speaker");
   assert.equal(r4.ticket.ticketId, "SPK999XYZ");
   const r5 = await lookup(cleanLookup({ firstName: "Jane", lastName: "Doe" }));
-  assert.deepEqual(publicLookup(r5), { kind: "ticket", verified: false, tier: "apex", tierLabel: "Apex Pass", displayName: "Jane" });
+  assert.deepEqual(publicLookup(r5), { kind: "ticket", verified: false, tier: "apex", tierLabel: "Apex Pass", displayName: "Jane", allowedOptions: EXPERIENCE_KEYS });
   const r6 = await lookup(cleanLookup({ firstName: "", lastName: "Doe" }));
   assert.equal(r6.kind, "none");
   const r7 = await lookup(cleanLookup({ firstName: "Sam", lastName: "Lee" }));
@@ -337,7 +349,8 @@ test("lookup: a speaker whose ticket has another form of their first name is sti
   assert.deepEqual([r.kind, r.tier, r.verified, r.displayName], ["speaker", "speaker", true, "Dr. Chris Golden"]);
   assert.deepEqual([r.ticket.ticketId, r.ticket.holderMatch, r.ticket.holderLastMatch], ["CHR111IST222", false, true]);
   assert.deepEqual(publicLookup(r, { ticketId: "chr111ist222" }),
-    { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Dr. Chris Golden", ticketMatched: true });
+    { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Dr. Chris Golden", ticketMatched: true, cxoBreakfast: true, keepOptions: [],
+      allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
   // The full ticket name isn't on the speaker list: the ticket's pass.
   const full = await lookup(cleanLookup({ firstName: "Christopher", lastName: "Golden", ticketId: "chr111ist222" }));
   assert.deepEqual([full.kind, full.tier, full.verified], ["ticket", "connect", true]);
@@ -515,12 +528,15 @@ test("submit: the server's pass wins and options are checked against it", async 
   assert.deepEqual(r1.body.invalid, ["lounge"]);
   assert.equal(store.rows.length, 0);
 
-  const r2 = await run({ ...GOOD, ticketId: "abc123def", tier: "apex", options: ["gala", "cxo_d1"] });
+  // Power no longer includes the CxO Breakfasts (Oct 19 2026).
+  const noCxo = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala", "cxo_d1"] });
+  assert.deepEqual([noCxo.statusCode, noCxo.body.invalid], [400, ["cxo_d1"]]);
+  const r2 = await run({ ...GOOD, ticketId: "abc123def", tier: "apex", options: ["gala", "lunch_d1"] });
   assert.equal(r2.statusCode, 201);
   assert.deepEqual([r2.body.tier, r2.body.tierVerified, r2.body.kind, r2.body.updated], ["power", true, "ticket", false]);
   assert.ok(!("id" in r2.body)); // no row id goes out
   assert.equal(typeof r2.body.editToken, "string");
-  assert.deepEqual(store.rows[0].options, ["cxo_d1", "gala"]);
+  assert.deepEqual(store.rows[0].options, ["lunch_d1", "gala"]);
   assert.equal(store.rows[0].key, "t:abc123def");
   assert.equal(store.rows[0].ticketId, "ABC123DEF");
   assert.equal(store.rows[0].chosenTier, "apex");
@@ -613,15 +629,15 @@ test("submit: a name alone never changes someone's RSVP, and the answer doesn't 
 
 test("submit: re-sending without the ticket ID doesn't count the person twice or lose the verified pass", async () => {
   const { run, store } = submitter();
-  const first = await run({ ...GOOD, ticketId: "abc123def", tier: "power", days: ["day1"], options: ["cxo_d1"], dietary: ["vegan"] });
+  const first = await run({ ...GOOD, ticketId: "abc123def", tier: "power", days: ["day1"], options: ["awards"], dietary: ["vegan"] });
   assert.equal(store.rows[0].key, "t:abc123def");
   // Another device, no ticket ID: kept apart, not counted.
-  const again = await run({ ...GOOD, ticketId: "", tier: "power", days: ["day1"], options: ["cxo_d1"], dietary: ["halal"] });
+  const again = await run({ ...GOOD, ticketId: "", tier: "power", days: ["day1"], options: ["awards"], dietary: ["halal"] });
   assert.equal(again.body.updated, false);
   assert.equal(store.rows.length, 2);
   assert.equal(store.rows[1].duplicateOf, store.rows[0]._id);
   let s = counted(store);
-  assert.deepEqual([s.total, s.counts.day1, s.counts.cxo_d1, s.dietary.vegan, s.dietary.halal, s.tiers.power.total], [1, 1, 1, 1, 0, 1]);
+  assert.deepEqual([s.total, s.counts.day1, s.counts.awards, s.dietary.vegan, s.dietary.halal, s.tiers.power.total], [1, 1, 1, 1, 0, 1]);
 
   // Same browser (its token), no ticket ID: the verified row changes and keeps its pass.
   const mine = await run({ ...GOOD, ticketId: "", tier: "power", days: ["day1"], options: ["lunch_d1"], dietary: ["halal"], editToken: first.body.editToken });
@@ -642,7 +658,7 @@ test("submit: a browser's own possible duplicate, later proven by its ticket, be
   await run({ ...GOOD, tier: "connect", days: ["day2"], options: [] }); // someone (maybe Jane) without a ticket
   const mine = await run({ ...GOOD, tier: "connect", days: ["day1"], options: [] }, "9.9.9.9");
   assert.equal(store.rows[1].duplicateOf, store.rows[0]._id);
-  const proven = await run({ ...GOOD, ticketId: "abc123def", tier: "", days: ["day1"], options: ["cxo_d1"], editToken: mine.body.editToken }, "9.9.9.9");
+  const proven = await run({ ...GOOD, ticketId: "abc123def", tier: "", days: ["day1"], options: ["awards"], editToken: mine.body.editToken }, "9.9.9.9");
   assert.deepEqual([proven.body.updated, proven.body.tierVerified], [true, true]);
   const [other, own] = store.rows;
   assert.deepEqual([own.key, own.duplicateOf, own.tier], ["t:abc123def", "", "power"]);
@@ -656,7 +672,7 @@ test("submit: a ticket-verified RSVP stands in for an earlier name-only one, wit
   // Jane Doe #1, no ticket ID.
   await run({ ...GOOD, email: "first@jane.com", tier: "connect", days: ["day2"], options: [], dietary: ["kosher"] });
   // Jane Doe #2 (or Jane, later) with the ticket, no token.
-  const r = await run({ ...GOOD, email: "second@jane.com", ticketId: "abc123def", tier: "", days: ["day1"], options: ["cxo_d1"], dietary: ["vegan"] });
+  const r = await run({ ...GOOD, email: "second@jane.com", ticketId: "abc123def", tier: "", days: ["day1"], options: ["awards"], dietary: ["vegan"] });
   assert.equal(r.body.updated, false);
   const [one, two] = store.rows;
   assert.deepEqual([one.key, one.email, one.days, one.dietary], ["n:jane doe", "first@jane.com", ["day2"], ["kosher"]]); // untouched
@@ -971,8 +987,8 @@ test("staff resolve: merging keeps the verified row and the newer answers", asyn
   const s = counted(store);
   assert.deepEqual([s.total, s.duplicates, s.counts.gala, s.dietary.kosher], [1, 0, 1, 0]);
   // Her laptop's token still changes it; the phone's row is gone from the list, so its token doesn't.
-  const more = await run({ ...GOOD, ticketId: "", tier: "power", days: ["day1"], options: ["cxo_d1"], editToken: laptop.body.editToken }, "9.9.9.9");
-  assert.deepEqual([more.body.updated, verified.options], [true, ["cxo_d1"]]);
+  const more = await run({ ...GOOD, ticketId: "", tier: "power", days: ["day1"], options: ["awards"], editToken: laptop.body.editToken }, "9.9.9.9");
+  assert.deepEqual([more.body.updated, verified.options], [true, ["awards"]]);
 });
 
 test("staff resolve: a merge picks the newer answers whichever row they are on, and repoints other duplicates", async () => {
@@ -984,10 +1000,10 @@ test("staff resolve: a merge picks the newer answers whichever row they are on, 
   assert.deepEqual([two.duplicateOf, three.duplicateOf], [one._id, one._id]);
   // Sam #1 changes their RSVP afterwards with their token: theirs are now the newer answers.
   await tick();
-  await run({ ...GOOD, firstName: "Sam", lastName: "Ray", tier: "power", days: ["day1"], options: ["cxo_d1"], dietary: ["vegan"], editToken: a.body.editToken });
+  await run({ ...GOOD, firstName: "Sam", lastName: "Ray", tier: "power", days: ["day1"], options: ["awards"], dietary: ["vegan"], editToken: a.body.editToken });
   const r = await resolveRsvpDuplicate(store.resolver, two._id, "merge");
   assert.deepEqual(r.dropped, []);
-  assert.deepEqual([one.tier, one.days, one.options, one.dietary], ["power", ["day1"], ["cxo_d1"], ["vegan"]]); // not rolled back
+  assert.deepEqual([one.tier, one.days, one.options, one.dietary], ["power", ["day1"], ["awards"], ["vegan"]]); // not rolled back
   assert.equal(two.mergedInto, one._id);
   assert.equal(three.duplicateOf, one._id);
 
@@ -1132,12 +1148,21 @@ test("team email: lists pass, days, special events and dietary, all escaped", ()
 
 test("submit: each saved RSVP is passed to notify; a failing email never blocks the RSVP", async () => {
   const sent = [];
-  const { run } = submitter({ requireTicket: true, notify: async (row, o) => { sent.push([row.firstName, o.updated]); throw new Error("mail down"); } });
+  const { run } = submitter({ requireTicket: true, notify: async (row, o) => { sent.push([row, o.updated]); throw new Error("mail down"); } });
   const ok = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] });
   assert.equal(ok.statusCode, 201);
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(sent.length, 1);
   assert.equal(sent[0][1], false);
+  // The team email names the person and their days (it used to get only the pass: "Someone", no days).
+  const [row] = sent[0];
+  assert.equal(row.firstName, "Jane");
+  assert.deepEqual(row.days, ["day1", "day2"]);
+  assert.deepEqual(row.options, ["gala"]);
+  assert.equal(row.tier, "power");
+  assert.equal(row.editTokenHash, undefined);
+  const mail = buildRsvpEmail(row, { updated: false });
+  assert.match(mail.subject, /Jane Doe/);
 });
 
 test("speakers can't RSVP for the pre-matched meetings or the Scotch lounge (Apex only)", () => {

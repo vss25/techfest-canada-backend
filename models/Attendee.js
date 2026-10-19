@@ -72,6 +72,12 @@ const attendeeSchema = new mongoose.Schema(
     // whatever the pass; false = not one, even with an exhibitor pass (no badge or booth in
     // the apps). passKind and loadExhibitors read it, so the account that claims the pass follows.
     exhibitor: { type: Boolean },
+    // VIP switch set by staff in Admin → People (services/teamRoles.js isVip). true = a VIP; unset / false = not.
+    // An account that claims this pass is a VIP too, unless staff set User.vip on the account.
+    vip: { type: Boolean },
+    // "CxO Breakfast included" for this pass (services/cxoBreakfast.js): true / false = staff's choice,
+    // unset = automatic (Apex and Speaker Passes, and speakers on any pass).
+    cxoBreakfast: { type: Boolean },
     // Staff-set logo for this person only; "" = their company's default (models/Company.js).
     companyLogoUrl: { type: String, default: "" },
     // Speaker Pass (ticketType "speaker"): the Sanity speaker document it was made for.
@@ -84,6 +90,8 @@ const attendeeSchema = new mongoose.Schema(
     passEmailSentAt: { type: Date },
     passEmailSentTo: { type: String },
     passEmailSentCount: { type: Number },
+    // Whether the last pass email had the RSVP button (recorded from Oct 19 2026; older sends: unset).
+    passEmailRsvp: { type: Boolean },
     // Speaker run of show (services/runOfShow.js) and who the email address belongs to:
     // "own" (the speaker), "handler" (assistant / office), "team" (TTFC).
     runOfShow: { type: mongoose.Schema.Types.Mixed },

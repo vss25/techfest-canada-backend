@@ -64,4 +64,4 @@ export async function accessOf(user, ctx = null) {
 }
 
 /** Fields of User that rights checks read (select these when loading someone to check). */
-export const RIGHTS_SELECT = "name role tickets types typesOff messagesOff requestsOff banned";
+export const RIGHTS_SELECT = "name role tickets types typesOff vip messagesOff requestsOff banned";

@@ -79,9 +79,10 @@ export function walletButtonHtml(url) {
  * @param {string} [p.logoSrc]   "cid:ttfc-logo" on a real send, a data: URI for a preview.
  *                               Empty renders the wordmark as text, so a caller that
  *                               doesn't attach the logo still gets a valid header.
+ * @param {boolean} [p.cxoBreakfast] this ticket's "CxO Breakfast included" (services/cxoBreakfast.js); unset = the pass's own list
  * @returns {{ subject: string, preheader: string, html: string, text: string }}
  */
-export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "" } = {}) {
+export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "", cxoBreakfast } = {}) {
   const id = String(ticketId || "");
   const booth = isBoothId(id);
   const pass = displayPassName(tier, id);
@@ -90,7 +91,7 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     ? String(name).trim() : (first || "Delegate");
   const wallet = booth ? "" : walletUrl;
   const qr = booth ? "" : qrUrl;
-  const includes = booth ? [] : inclusionsFor(tier);
+  const includes = booth ? [] : inclusionsFor(tier, { cxoBreakfast });
   const tips = booth ? [] : emailTips(tier);
   const cal = googleCalendarUrl();
   const pdfName = `ttfc-pass-${id}.pdf`;

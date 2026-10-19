@@ -5,19 +5,27 @@ import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
 import Company from "../models/Company.js";
 import CompanyLogo from "../models/CompanyLogo.js";
+import CampaignSend from "../models/CampaignSend.js";
+import Subscription from "../models/Subscription.js";
 import { SessionRegistration } from "../models/Social.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
-import { makeLimiter } from "../services/ticketAccess.js";
+import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
-import { stripeRows } from "../services/stripeSales.js";
+import { stripeSessions } from "../services/stripeSales.js";
 import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import { storedTypes, PERSON_TYPES } from "../services/teamRoles.js";
+import { cleanCxoSwitch, cxoLabel, effectiveCxo } from "../services/cxoBreakfast.js";
+import {
+  REMINDER_CAMPAIGN, REMINDER_COOLDOWN_MS, campaignSendStore, makeReminderSender, reminderJob, sendRsvpReminder,
+} from "../services/rsvpReminder.js";
+import { sendSequentially } from "../services/profileRequest.js";
 import { mergeStaffEdit } from "../services/attendeeDetails.js";
 import { LIVE_RSVPS, SANITY_PROJECT, rsvpDetail, rsvpRow, rsvpOptionsPayload } from "../services/rsvp.js";
 import { planStaffRsvp } from "../services/rsvpStaff.js";
 import {
   buildPeople, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv, agendaFor, editInfo,
+  rsvpRulesFor, planPeopleReminders, stripeMaps, REMINDER_SKIP_LABELS,
 } from "../services/people.js";
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
@@ -28,15 +36,21 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    Admin → People (staff only)
    ---------------------------------------------------------
    /api/console/people
-     GET    /               ?q= &type= &pass= &status= &rsvp= &exhibitor= &sort= &dir= &page=
+     GET    /               ?q= &type= &pass= &value= &rsvp= &exhibitor= &rsvpEmail= &vip= &status= &sort= &dir= &page=
                             → { total, page, size, rows, counts, stripe }
      GET    /export         the same view as CSV (management: it holds emails)
+     GET    /reminder       ?(the same filters) → { counts, targets: [{ email, name, tickets, people }], skipped, job, cooldownHours }
+                            who "Send RSVP reminder" would email (Unconfirmed, a usable email, a pass)
+     POST   /reminder       { query: (the filters), confirm: "SEND", expected: n } (management)
+                            → 202 { started, toSend, job }; sent in the background, 600 ms apart
+     GET    /reminder/job   → { job }
      GET    /:id            the profile: person, passes, RSVP (+ catalog for the editor),
                             agenda (sessions saved in the app + RSVP special events), company,
                             contactCard (their app contact details, read only)
-     PATCH  /:id            { name?, email? (management), linkedinUrl?, company?, jobTitle?, exhibitor? }
+     PATCH  /:id            { name?, email? (management), linkedinUrl?, company?, jobTitle?, exhibitor?, vip? }
+     PATCH  /:id/passes/:ticketId  { cxoBreakfast: true | false | null (automatic) }
      PUT    /:id/rsvp       { days, options, dietary, dietaryOther?, accessibility?, tier?,
-                              override?, allowOutsidePass?, basedOn?, rsvpId? }
+                              allowOutsidePass?, basedOn?, rsvpId? } (an RSVP the attendee sent: add only)
    /api/console/companies
      GET    /candidates     ?name= &domain= : logos found on the internet + ours (rate limited)
      POST   /logo           { name, domain?, url? | data?, source?, personId?, forPerson? }
@@ -46,7 +60,8 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    Staff RSVPs and who wins over whom: services/rsvpStaff.js.
    Logo search and safe fetching: services/logoFetch.js; storage:
    services/logoStore.js. Every change is audited; nothing here emails
-   anyone, and listing never creates an account or any other record.
+   anyone except POST /reminder (the RSVP reminder, management, after a
+   confirmation), and listing never creates an account or any other record.
 ========================================================= */
 
 const clean = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -75,43 +90,45 @@ const agendaCache = makeAgendaCache({
   parse: rows, label: "PEOPLE AGENDA", ttlMs: 60 * 1000,
 });
 
-/* ---------- Refunds (Stripe, when configured) ---------- */
-async function loadRefunds() {
-  if (!process.env.STRIPE_SECRET_KEY) return { refunds: null, stripe: "off" };
-  const work = stripeRows(new Stripe(process.env.STRIPE_SECRET_KEY))
-    .then((list) => new Map(list.map((r) => [r.id, { total: r.total, refunded: r.refunded }])));
-  // Never hold the list up: a slow first read carries on in the background and fills stripeRows' cache.
+/* ---------- Refunds and ticket values (Stripe, when configured) ---------- */
+async function loadStripe() {
+  if (!process.env.STRIPE_SECRET_KEY) return { refunds: null, values: null, stripe: "off" };
+  const work = stripeSessions(new Stripe(process.env.STRIPE_SECRET_KEY)).then(stripeMaps);
+  // Never hold the list up: a slow first read carries on in the background and fills stripeSessions' cache.
   const slow = new Promise((resolve) => setTimeout(() => resolve("slow"), 4000));
   try {
     const r = await Promise.race([work, slow]);
-    if (r === "slow") { work.catch((err) => console.error("PEOPLE STRIPE ERROR:", err?.message || err)); return { refunds: null, stripe: "slow" }; }
-    return { refunds: r, stripe: "ok" };
+    if (r === "slow") { work.catch((err) => console.error("PEOPLE STRIPE ERROR:", err?.message || err)); return { refunds: null, values: null, stripe: "slow" }; }
+    return { ...r, stripe: "ok" };
   } catch (err) {
     console.error("PEOPLE STRIPE ERROR:", err?.message || err);
-    return { refunds: null, stripe: "error" };
+    return { refunds: null, values: null, stripe: "error" };
   }
 }
 
 /* ---------- The directory, rebuilt at most every 20 s (and after every change made here) ---------- */
 const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", "company", "jobTitle", "title", "linkedin"];
-const USER_SELECT = ["name email role types typesOff organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
-  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
+const USER_SELECT = ["name email role types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
+  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId tickets.cxoBreakfast",
   ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
-  "stripeSessionId passEmailSentAt issuedPass.label issuedPass.booth exhibitor companyLogoUrl createdAt",
-  ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
+  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip cxoBreakfast",
+  "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 async function loadDirectory() {
-  const [users, attendees, rsvps, companies, speakers, refunds] = await Promise.all([
+  const [users, attendees, rsvps, companies, speakers, stripe, reminders] = await Promise.all([
     User.find({}).select(USER_SELECT).lean(),
     Attendee.find({}).select(ATTENDEE_SELECT).lean(),
     Rsvp.find(LIVE_RSVPS).lean(),
     Company.find({}).lean(),
     speakerCache.get(),
-    loadRefunds(),
+    loadStripe(),
+    CampaignSend.find({ campaign: REMINDER_CAMPAIGN, sentAt: { $ne: null } }).select("email sentAt").lean(),
   ]);
-  const built = buildPeople({ users, attendees, rsvps, speakers: speakers || [], companies, refunds: refunds.refunds });
-  return { ...built, stripe: refunds.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
+  const built = buildPeople({
+    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders,
+  });
+  return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
 }
 
 const DIR_TTL_MS = 20 * 1000;
@@ -172,6 +189,85 @@ router.get("/export", requireManagement, wrap(async (req, res) => {
   res.send(peopleCsv(list, { profileBase: process.env.FRONTEND_URL || "https://www.thetechfestival.com" }));
 }));
 
+/* ---------- "Send RSVP reminder": the Marketing › RSVP reminders email, to the current view ----------
+   Unconfirmed people with a usable email and a pass (services/people.js planPeopleReminders).
+   GET shows exactly who would get it and who's left out; POST sends (management), after the page's
+   confirmation, with the count it showed (`expected`): if the list changed since, nothing is sent. */
+const REMINDER_GAP_MS = 600;
+const REMINDER_MAX = 500; // emails per run; run it again for the rest (anyone reminded is then skipped)
+const reminderRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
+const sendReminder = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
+const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status"];
+const pickFilters = (src = {}) => Object.fromEntries(FILTER_KEYS.filter((k) => typeof src?.[k] === "string" && src[k]).map((k) => [k, String(src[k]).slice(0, 120)]));
+
+async function reminderPlan(query, { fresh = false } = {}) {
+  const d = await directory({ fresh });
+  const list = filterPeople(d.people, query);
+  const [optedOut, sends] = await Promise.all([
+    Subscription.find({ subscribed: false }).select("email").lean(),
+    CampaignSend.find({ campaign: REMINDER_CAMPAIGN }).select("email status sentAt").lean(),
+  ]);
+  return planPeopleReminders(list, { rsvps: d.rsvps, optedOut: optedOut.map((x) => x.email), sends, cooldownMs: REMINDER_COOLDOWN_MS });
+}
+const planOut = (plan) => ({
+  counts: { ...plan.counts, toSend: Math.min(plan.targets.length, REMINDER_MAX), max: REMINDER_MAX },
+  targets: plan.targets.slice(0, REMINDER_MAX).map((t) => ({ email: t.email, name: t.name, tickets: t.tickets.length, people: t.people })),
+  skipped: plan.skipped.slice(0, 1000),
+  skipLabels: REMINDER_SKIP_LABELS,
+  cooldownHours: REMINDER_COOLDOWN_MS / 3600000,
+  job: reminderJob.view(),
+});
+
+router.get("/reminder/job", (req, res) => res.json({ job: reminderJob.view() }));
+
+router.get("/reminder", wrap(async (req, res) => {
+  res.json(planOut(await reminderPlan(pickFilters(req.query), { fresh: req.query.refresh === "1" })));
+}));
+
+router.post("/reminder", requireManagement, wrap(async (req, res) => {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (b.confirm !== "SEND") return res.status(400).json({ error: "Confirm the send first." });
+  if (reminderJob.state.running) return res.status(409).json({ error: "A reminder send is already running. Try again when it finishes.", job: reminderJob.view() });
+  const filters = pickFilters(b.query);
+  const plan = await reminderPlan(filters, { fresh: true });
+  const todo = plan.targets.slice(0, REMINDER_MAX);
+  if (Number(b.expected) !== todo.length) {
+    return res.status(409).json({ code: "changed", error: "The list changed since you checked it. Look at the new count, then send again.", ...planOut(plan) });
+  }
+  if (!todo.length) return res.status(400).json({ error: "Nobody here needs a reminder." });
+  if (!reminderRuns.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of reminder sends. Try again in an hour." });
+  const by = String(req.user.email || req.user._id);
+  reminderJob.start(req.user.name || req.user.email || "", "people", todo.length);
+  const view = Object.entries(filters).map(([k, v]) => `${k}=${v}`).join(" ") || "everyone";
+  await audit(req, "people_rsvp_reminder_start", "campaign", REMINDER_CAMPAIGN,
+    `${todo.length} emails (${plan.counts.people} people) for ${view}; left out ${plan.counts.skipped}, already confirmed ${plan.counts.confirmed}`);
+  res.status(202).json({ started: true, toSend: todo.length, job: reminderJob.view() });
+
+  (async () => {
+    const failures = [];
+    try {
+      await sendSequentially(todo, async (t) => {
+        try {
+          const out = await sendReminder(t, by);
+          if (out === "skipped") reminderJob.state.skipped++; else reminderJob.state.sent++;
+        } catch (err) {
+          reminderJob.state.failed++;
+          failures.push(`${t.email}: ${String(err?.message || err).slice(0, 80)}`);
+          throw err;
+        }
+      }, { delayMs: REMINDER_GAP_MS });
+    } catch (err) {
+      console.error("PEOPLE RSVP REMINDER ERROR:", err?.message || err);
+    } finally {
+      reminderJob.finish();
+      invalidate();
+      const st = reminderJob.state;
+      await audit(req, "people_rsvp_reminder_done", "campaign", REMINDER_CAMPAIGN,
+        `sent ${st.sent}, failed ${st.failed}, skipped ${st.skipped}${failures.length ? ` · ${failures.slice(0, 5).join("; ")}` : ""}`);
+    }
+  })();
+}));
+
 router.get("/:id", wrap(async (req, res) => {
   // A profile is opened to check or change something: at most a few seconds old (an RSVP sent
   // from /rsvp a moment ago shows), where the list can be 20 s old.
@@ -223,12 +319,16 @@ router.patch("/:id", wrap(async (req, res) => {
   if (b.company !== undefined) want.company = cleanCompanyName(b.company);
   if (b.jobTitle !== undefined) want.jobTitle = clean(b.jobTitle, 160);
   if (b.exhibitor !== undefined) want.exhibitor = b.exhibitor === true;
+  if (b.vip !== undefined) {
+    if (typeof b.vip !== "boolean") return res.status(400).json({ error: "VIP must be Yes or No", field: "vip" });
+    want.vip = b.vip;
+  }
   if (!Object.keys(want).length) return res.status(400).json({ error: "Nothing to change" });
   if (info.where === "none") return res.status(409).json({ error: info.reason });
   if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
 
   const changed = [];
-  const note = (k, from, to) => changed.push(k === "exhibitor" ? `exhibitor ${from ? "Yes" : "No"} → ${to ? "Yes" : "No"}` : k);
+  const note = (k, from, to) => changed.push(["exhibitor", "vip"].includes(k) ? `${k === "vip" ? "VIP" : k} ${from ? "Yes" : "No"} → ${to ? "Yes" : "No"}` : k);
   const attIds = p.attendees.map((a) => a._id);
 
   if (p.user) {
@@ -265,7 +365,13 @@ router.patch("/:id", wrap(async (req, res) => {
       }
       note("exhibitor", p.exhibitor, want.exhibitor);
     }
-    if (changed.length) await u.save();
+    if (want.vip !== undefined && (want.vip !== p.vip || typeof u.vip !== "boolean")) {
+      // The VIP switch is the account's (User.vip). Their passes' own VIP marks go back to unset, so nothing contradicts it.
+      u.vip = want.vip;
+      if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, vip: { $exists: true } }, { $unset: { vip: 1 } });
+      if (want.vip !== p.vip) note("vip", p.vip, want.vip);
+    }
+    if (changed.length || u.isModified("vip")) await u.save();
   } else {
     const primaryId = p.primary?.attendeeId || String(p.attendees[0]._id);
     const a = await Attendee.findById(primaryId);
@@ -288,13 +394,49 @@ router.patch("/:id", wrap(async (req, res) => {
       a.exhibitor = want.exhibitor;
       note("exhibitor", p.exhibitor, want.exhibitor);
     }
+    if (want.vip !== undefined && want.vip !== p.vip) {
+      // Every pass of theirs, so the account that later claims any of them is a VIP too.
+      if (want.vip) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { vip: true } });
+      else await Attendee.updateMany({ _id: { $in: attIds } }, { $unset: { vip: 1 } });
+      a.vip = want.vip || undefined;
+      note("vip", p.vip, want.vip);
+    }
     if (changed.length) await a.save();
   }
-  if (want.exhibitor !== undefined) clearExhibitorCache();
+  if (want.exhibitor !== undefined || want.vip !== undefined) clearExhibitorCache();
   if (changed.length) await audit(req, "person_edit", "person", p.id, `${p.name}: ${changed.join(", ")}`);
   invalidate();
   const after = await findPerson(p.id);
   res.json({ ok: true, changed, person: after ? personRow(after) : null });
+}));
+
+/* "CxO Breakfast included" for one pass: true / false = staff's choice, null = automatic
+   (services/cxoBreakfast.js). Saved on the ticket record: the account's ticket (User.tickets) and the
+   Attendee row of the same ticket, whichever exist. Never changes an RSVP. */
+router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
+  const p = await findPerson(req.params.id, { fresh: true });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const info = editInfo(p, { management: isManagement(req.user) });
+  if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  const want = cleanCxoSwitch(b.cxoBreakfast);
+  if (want === undefined) return res.status(400).json({ error: "CxO Breakfast must be Yes, No or automatic", field: "cxoBreakfast" });
+  const norm = normalizeTicketId(req.params.ticketId);
+  const t = p.passList.find((x) => x.norm === norm);
+  if (!t) return res.status(404).json({ error: "Pass not found" });
+  const before = cxoLabel(t.cxoOverride, t.cxo);
+  const op = want === null ? { $unset: { cxoBreakfast: 1 } } : { $set: { cxoBreakfast: want } };
+  if (t.onAccount && p.user) {
+    await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId },
+      want === null ? { $unset: { "tickets.$.cxoBreakfast": 1 } } : { $set: { "tickets.$.cxoBreakfast": want } });
+  }
+  const variants = [...new Set([t.ticketId, norm, norm.toUpperCase()])];
+  await Attendee.updateMany({ ticketId: { $in: variants } }, op);
+  const after = cxoLabel(want ?? undefined, effectiveCxo({ ticketType: t.type, types: p.types, override: want ?? undefined }));
+  await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
+  invalidate();
+  const fresh = await findPerson(p.id);
+  res.json({ ok: true, person: fresh ? personDetail(fresh, { management: isManagement(req.user) }) : null });
 }));
 
 router.put("/:id/rsvp", wrap(async (req, res) => {
@@ -311,6 +453,8 @@ router.put("/:id/rsvp", wrap(async (req, res) => {
     person: {
       name: p.name, firstName: p.firstName, lastName: p.lastName, email: p.email,
       pass: p.primary ? { ticketId: p.primary.ticketId, type: p.primary.type } : null,
+      // CxO Breakfasts: their pass's switch (or the speaker type) and any breakfast already on their RSVP.
+      ...rsvpRulesFor(p),
     },
     body: b,
     staff: { id: req.user._id, name: req.user.name },

@@ -35,13 +35,16 @@ export const APP_COMING_SOON = {
 };
 
 const BASE = ["2x Day Conference Access", "Expo Floor Access", "Networking Breaks"];
+/** The CxO Breakfasts line. Apex and Speaker Passes include them; Power doesn't since Oct 19 2026.
+    A single pass can have them switched on or off by staff (services/cxoBreakfast.js). */
+export const CXO_INCLUSION = "2x CxO Breakfasts";
 
 /** What each pass includes (same wording and order as the website). */
 export const PASS_INCLUSIONS = {
   connect: [...BASE],
   influence: ["2x Day Conference Access", "2x Luncheons", "Expo Floor Access", "Networking Breaks"],
   power: [
-    "2x Day Conference Access", "2x CxO Breakfasts", "2x Luncheons",
+    "2x Day Conference Access", "2x Luncheons",
     "1x Gala Dinner & Networking Reception", "1x Awards Night", "Expo Floor Access", "Networking Breaks",
   ],
   apex: [
@@ -85,9 +88,19 @@ export function tierKey(tier) {
   return String(tier || "").trim().toLowerCase();
 }
 
-/** Inclusions for a tier; unknown/retired tiers get the core conference access. */
-export function inclusionsFor(tier) {
-  return [...(PASS_INCLUSIONS[tierKey(tier)] || BASE)];
+/**
+ * Inclusions for a tier; unknown/retired tiers get the core conference access.
+ * `cxoBreakfast` (one ticket's effective "CxO Breakfast included", services/cxoBreakfast.js):
+ * true adds "2x CxO Breakfasts" (after the conference days), false takes it out; undefined = the tier's own list.
+ */
+export function inclusionsFor(tier, { cxoBreakfast } = {}) {
+  const list = [...(PASS_INCLUSIONS[tierKey(tier)] || BASE)];
+  if (typeof cxoBreakfast !== "boolean") return list;
+  const without = list.filter((f) => f !== CXO_INCLUSION);
+  if (!cxoBreakfast) return without;
+  const at = without.indexOf("2x Day Conference Access");
+  without.splice(at >= 0 ? at + 1 : 0, 0, CXO_INCLUSION);
+  return without;
 }
 
 /** "Apex Pass", "Exhibition Booth — Gold" for booth confirmations. */

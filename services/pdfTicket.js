@@ -290,7 +290,7 @@ export async function generateTicketPDF(ticket = {}) {
   let ly = TOP + 22;
   const items = booth
     ? [passLabel, `Questions about your booth? ${EVENT.supportEmail}`]
-    : inclusionsFor(tier);
+    : inclusionsFor(tier, { cxoBreakfast: ticket.cxoBreakfast });
   const lead = items.length > 8 ? 15.5 : 18;
   for (const it of items) {
     check(COL_L, ly - 0.5);

@@ -8,6 +8,7 @@ import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import { CONTACT_EMAIL, FROM, cleanCopy, speakerPassEmailFor } from "../services/speakerPassEmail.js";
 import { passRecipients, validateSpeakerEmails } from "../services/speakerPasses.js";
 import { LIVE_RSVPS } from "../services/rsvp.js";
+import { cxoLabel } from "../services/cxoBreakfast.js";
 import {
   ISSUED_PROMO, ISSUE_TIERS, ISSUE_TIER_KEYS, defaultIssuedCopy, issuedPassDoc, issuedPassForEmail, issuedPassRow,
   issuedPassUpdate, issuedVariant, validateIssuedPass,
@@ -57,7 +58,7 @@ const KINDS = {
 };
 
 const PASS_FIELDS = "name email alsoTo ticketId ticketType promoCode details issuedPass passEmailSentAt passEmailSentTo " +
-  "passEmailSentCount claimedBy checkedIn purchaseDate createdAt";
+  "passEmailSentCount passEmailRsvp cxoBreakfast claimedBy checkedIn purchaseDate createdAt";
 const isId = (id) => /^[a-f0-9]{24}$/i.test(String(id || ""));
 
 let resendClient = null;
@@ -221,7 +222,8 @@ export function issuedPassRouter(kindName = "issued") {
         if (err?.code !== 11000 || attempt === 2) throw err; // a ticket ID clash (1 in 2^48): try another
       }
     }
-    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>`);
+    const cxoNote = typeof check.value.cxoBreakfast === "boolean" ? `, CxO Breakfast ${check.value.cxoBreakfast ? "Yes" : "No"}` : "";
+    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${cxoNote}`);
     res.status(201).json({ row: issuedPassRow(doc.toObject()) });
   });
 
@@ -231,9 +233,16 @@ export function issuedPassRouter(kindName = "issued") {
     const check = validateIssuedPass(req.body || {}, { partial: true });
     if (!check.ok) return res.status(400).json({ error: check.error });
     const set = issuedPassUpdate(check.value, before);
+    const cxoSame = "cxoBreakfast" in set && (set.cxoBreakfast ?? null) === (typeof before.cxoBreakfast === "boolean" ? before.cxoBreakfast : null);
+    if (cxoSame) { delete set.cxoBreakfast; delete check.value.cxoBreakfast; }
     if (!Object.keys(set).length) return res.json({ row: issuedPassRow(before) });
-    const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SCOPE }, { $set: set }, { new: true }).select(PASS_FIELDS).lean();
-    await audit(req, "edit", a.ticketId, `${a.name}: ${Object.keys(set).join(", ")}`);
+    // "CxO Breakfast included" back to automatic: take staff's value off the pass.
+    const unset = set.cxoBreakfast === null ? { cxoBreakfast: "" } : null;
+    if (unset) delete set.cxoBreakfast;
+    const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SCOPE }, { ...(Object.keys(set).length ? { $set: set } : {}), ...(unset ? { $unset: unset } : {}) }, { new: true }).select(PASS_FIELDS).lean();
+    const fields = [...Object.keys(set).filter((k) => k !== "cxoBreakfast"), ...("cxoBreakfast" in check.value
+      ? [`CxO Breakfast ${cxoLabel(before.cxoBreakfast, issuedPassRow(before).cxoEffective)} → ${cxoLabel(a.cxoBreakfast, issuedPassRow(a).cxoEffective)}`] : [])];
+    await audit(req, "edit", a.ticketId, `${a.name}: ${fields.join(", ")}`);
     res.json({ row: issuedPassRow(a) });
   });
 
@@ -284,8 +293,9 @@ export function issuedPassRouter(kindName = "issued") {
       await audit(req, "send_failed", a.ticketId, `${a.name} → ${to.join(", ")}: ${err?.message || err}`);
       return res.status(502).json({ error: `Couldn't send: ${err?.message || err}` });
     }
+    // passEmailRsvp: whether this email had the RSVP button (People › "RSVP email sent").
     const updated = await Attendee.findOneAndUpdate({ _id: a._id, ...SCOPE },
-      { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", ") }, $inc: { passEmailSentCount: 1 } },
+      { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", "), passEmailRsvp: issuedVariant(a).rsvp }, $inc: { passEmailSentCount: 1 } },
       { new: true }).select(PASS_FIELDS).lean();
     await audit(req, "send", a.ticketId, `${a.name} → ${to.join(", ")}${cc.length ? ` (cc ${cc.join(", ")})` : ""}`);
     res.json({ row: issuedPassRow(updated) });

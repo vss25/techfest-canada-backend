@@ -262,7 +262,7 @@ export function ticketEmailLinks(ticketId) {
   };
 }
 
-export async function sendTicketEmail({ email, name, firstName, ticketId, tier, purchaseDate }) {
+export async function sendTicketEmail({ email, name, firstName, ticketId, tier, purchaseDate, cxoBreakfast }) {
 
   try {
 
@@ -275,9 +275,10 @@ export async function sendTicketEmail({ email, name, firstName, ticketId, tier, 
       tier,
       purchaseDate: purchaseDate || new Date(),
       walletUrl,
+      cxoBreakfast,
     });
 
-    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl });
+    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast });
 
     await resend.emails.send({
       from: "TechFest Canada <tickets@thetechfestival.com>",

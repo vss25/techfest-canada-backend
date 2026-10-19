@@ -255,3 +255,66 @@ export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = r
   if (!data?.id) throw new Error("Resend did not accept the email");
   return data;
 }
+
+/* ---------- Sending, shared by Marketing › RSVP reminders and People ----------
+   Each person is claimed in CampaignSend (campaign REMINDER_CAMPAIGN, one row per
+   email) before the email goes, so two runs at once never email someone twice,
+   and "Send" skips anyone reminded in the last REMINDER_COOLDOWN_MS. The store
+   and the sender are passed in so tests use fakes (never Resend). */
+
+/** CampaignSend as the reminder store: claim / sent / failed. */
+export function campaignSendStore(CampaignSend, { campaign = REMINDER_CAMPAIGN, cooldownMs = REMINDER_COOLDOWN_MS } = {}) {
+  return {
+    /** True when this run may send to `email` now; `force` (a single send) ignores the cool-down. */
+    async claim(email, { name = "", by = "", force = false, now = new Date() } = {}) {
+      const filter = force
+        ? { campaign, email }
+        : { campaign, email, $or: [
+          { status: "failed" },
+          { status: "sent", $or: [{ sentAt: { $lt: new Date(now.getTime() - cooldownMs) } }, { sentAt: null }] },
+        ] };
+      const upd = await CampaignSend.updateOne(filter, { $set: { status: "sending", name, lastTriedAt: now, sentBy: by }, $inc: { attempts: 1 } });
+      if (upd.matchedCount) return true;
+      try {
+        await CampaignSend.create({ campaign, email, name, status: "sending", attempts: 1, lastTriedAt: now, sentBy: by });
+        return true;
+      } catch (err) {
+        if (err?.code === 11000) return false; // reminded recently, or being sent right now
+        throw err;
+      }
+    },
+    async sent(email, { sentAt, resendId = "" }) {
+      await CampaignSend.updateOne({ campaign, email }, { $set: { status: "sent", sentAt, resendId, error: "" }, $inc: { sends: 1 } });
+    },
+    async failed(email, error) {
+      await CampaignSend.updateOne({ campaign, email }, { $set: { status: "failed", error } }).catch(() => {});
+    },
+  };
+}
+
+/**
+ * sendTo(row, by, { force }) → the Date it went, or "skipped" (someone else has it / reminded recently).
+ * Throws when the email service refuses it (recorded as failed). `row`: { email, name, firstName, lastName, tickets }.
+ */
+export function makeReminderSender({ store, send = sendRsvpReminder, now = () => new Date() }) {
+  return async function sendTo(r, by = "", { force = false } = {}) {
+    if (!(await store.claim(r.email, { name: r.name || "", by, force, now: now() }))) return "skipped";
+    try {
+      const data = await send({ to: r.email, row: r });
+      const sentAt = now();
+      await store.sent(r.email, { sentAt, resendId: data?.id || "" });
+      return sentAt;
+    } catch (err) {
+      await store.failed(r.email, String(err?.message || err || "Send failed").slice(0, 300));
+      throw err;
+    }
+  };
+}
+
+/** The one reminder run at a time, whichever page started it ({ running, by, total, sent, failed, skipped, … }). */
+export const reminderJob = {
+  state: { running: false, startedAt: null, finishedAt: null, by: "", from: "", total: 0, sent: 0, failed: 0, skipped: 0 },
+  view() { return { ...this.state }; },
+  start(by, from, total = 0) { this.state = { running: true, startedAt: new Date(), finishedAt: null, by, from, total, sent: 0, failed: 0, skipped: 0 }; },
+  finish() { this.state = { ...this.state, running: false, finishedAt: new Date() }; },
+};

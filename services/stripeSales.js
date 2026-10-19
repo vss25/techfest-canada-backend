@@ -6,7 +6,7 @@
 import { makeBuckets } from "./staffTickets.js";
 
 const TTL = 5 * 60 * 1000;
-let cache = { at: 0, data: null };
+let cache = { at: 0, data: null, free: [] };
 
 /** Which bucket a paid Checkout Session belongs to. Pure. */
 export function categoryOf(meta = {}) {
@@ -40,6 +40,8 @@ export function rowFromSession(s, refundedByIntent = new Map()) {
     discount: (s.total_details?.amount_discount || 0) / 100,
     currency: String(s.currency || "cad").toUpperCase(),
     paymentIntent: typeof s.payment_intent === "string" ? s.payment_intent : "",
+    // A pass upgrade: the ticket it upgraded (Admin → People adds it to that ticket's value).
+    ...(s.metadata?.type === "upgrade" && s.metadata?.upgradeFrom ? { upgradeFrom: String(s.metadata.upgradeFrom) } : {}),
     // What the India Pavilion deposit page sent, so the deposit can be matched to its application
     ...(s.metadata?.type === "pavilion-deposit" ? {
       meta: {
@@ -59,19 +61,27 @@ async function fetchRows(stripe) {
     }
   }
   const rows = [];
+  const free = [];
   for await (const s of stripe.checkout.sessions.list({ limit: 100, status: "complete" })) {
+    // Completed at $0 (a 100% promo code): no payment, but the ticket's value is known (0).
+    if (s.payment_status === "no_payment_required") { free.push(s.id); continue; }
     if (s.payment_status !== "paid") continue;
     rows.push(rowFromSession(s, refunded));
   }
-  return rows;
+  return { rows, free };
+}
+
+/** Paid sessions and the ids of completed $0 ones ({ rows, free }), cached for 5 minutes. `force` refetches. */
+export async function stripeSessions(stripe, { force = false } = {}) {
+  if (!force && cache.data && Date.now() - cache.at < TTL) return { rows: cache.data, free: cache.free };
+  const { rows, free } = await fetchRows(stripe);
+  cache = { at: Date.now(), data: rows, free };
+  return { rows, free };
 }
 
 /** Paid sessions, cached for 5 minutes. `force` refetches. */
 export async function stripeRows(stripe, { force = false } = {}) {
-  if (!force && cache.data && Date.now() - cache.at < TTL) return cache.data;
-  const data = await fetchRows(stripe);
-  cache = { at: Date.now(), data };
-  return data;
+  return (await stripeSessions(stripe, { force })).rows;
 }
 
 const sum = (list) => Math.round(list.reduce((n, r) => n + r.revenue, 0) * 100) / 100;

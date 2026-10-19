@@ -63,13 +63,15 @@ export const RSVP_OPTIONS = [
     description: "Coffee and conversation between sessions." },
   // Each day in the order it happens. `time` is only a fallback: the page shows the start time of the
   // matching agenda session (AGENDA_MATCH below, read from the CMS), so moving a session moves it here.
-  { key: "cxo_d1", kind: "experience", day: "day1", time: "7:55 AM", label: "CxO Breakfast", tiers: POWER_UP,
+  // CxO Breakfasts (Oct 19 2026): Apex and Speaker Passes, plus speakers on any pass and passes staff
+  // switched on (`cxo` in allowedExperiences, services/cxoBreakfast.js). Power no longer includes them.
+  { key: "cxo_d1", kind: "experience", day: "day1", time: "7:55 AM", label: "CxO Breakfast", tiers: APEX_UP,
     description: "Invitation-only breakfast for senior leaders." },
   { key: "lunch_d1", kind: "experience", day: "day1", time: "12:35 PM", label: "Networking Luncheon", tiers: INFLUENCE_UP,
     description: "Seated lunch with fellow delegates." },
   { key: "awards", kind: "experience", day: "day1", time: "5:30 PM", label: "Catalyst Awards Night", tiers: POWER_UP,
     description: "The Catalyst Awards ceremony on the evening of Day 1." },
-  { key: "cxo_d2", kind: "experience", day: "day2", time: "7:55 AM", label: "CxO Breakfast", tiers: POWER_UP,
+  { key: "cxo_d2", kind: "experience", day: "day2", time: "7:55 AM", label: "CxO Breakfast", tiers: APEX_UP,
     description: "Invitation-only breakfast for senior leaders." },
   { key: "lunch_d2", kind: "experience", day: "day2", time: "12:00 PM", label: "Networking Luncheon", tiers: INFLUENCE_UP,
     description: "Seated lunch with fellow delegates." },
@@ -83,6 +85,8 @@ export const RSVP_OPTIONS = [
     description: "A quiet room for conversations over Scotch and cocktails.", note: "19+ only. Bring photo ID." },
 ];
 export const OPTION_KEYS = RSVP_OPTIONS.map((o) => o.key);
+/** The two CxO Breakfasts: offered by pass, the speaker type or staff's per-pass switch (services/cxoBreakfast.js). */
+export const CXO_KEYS = ["cxo_d1", "cxo_d2"];
 export const EXPERIENCE_KEYS = RSVP_OPTIONS.filter((o) => o.kind === "experience").map((o) => o.key);
 const OPTION_BY_KEY = Object.fromEntries(RSVP_OPTIONS.map((o) => [o.key, o]));
 export const optionLabel = (key) => {
@@ -161,26 +165,43 @@ export function rsvpOptionsPayload(times = null) {
   };
 }
 
-/** May someone on `tier` choose `key`? (Ignores days.) */
-export function tierIncludes(tier, key) {
+/** May someone on `tier` choose `key`? (Ignores days.) `cxo`: their pass's CxO Breakfast (true / false), else by tier. */
+export function tierIncludes(tier, key, { cxo } = {}) {
   const o = OPTION_BY_KEY[key];
-  return !!o && o.tiers.includes(tier);
+  if (!o) return false;
+  if (CXO_KEYS.includes(key) && typeof cxo === "boolean") return cxo;
+  return o.tiers.includes(tier);
 }
 
-/** Experiences someone on `tier` coming on `days` can choose, in display order. */
-export function allowedExperiences(tier, days = []) {
+/**
+ * Experiences someone on `tier` coming on `days` can choose, in display order.
+ *   cxo   — their pass's effective "CxO Breakfast included" (true / false); undefined = by tier
+ *   extra — keys they keep whatever the pass says (a CxO Breakfast already on their RSVP, extraOptionsFor)
+ */
+export function allowedExperiences(tier, days = [], { cxo, extra = [] } = {}) {
   const d = new Set(days);
+  const keep = new Set(extra || []);
   return RSVP_OPTIONS
-    .filter((o) => o.kind === "experience" && o.tiers.includes(tier) && (!o.day || d.has(o.day)))
+    .filter((o) => o.kind === "experience" && (tierIncludes(tier, o.key, { cxo }) || keep.has(o.key)) && (!o.day || d.has(o.day)))
     .map((o) => o.key);
 }
 
 /**
- * Check the chosen experiences against the matrix.
+ * CxO Breakfasts already on someone's RSVP rows (theirs or staff's): they keep being offered to them,
+ * so a re-sent RSVP never loses a breakfast the pass change took away (Power, Oct 19 2026).
+ */
+export function extraOptionsFor(rows = []) {
+  const have = new Set();
+  for (const r of rows || []) for (const k of r?.options || []) if (CXO_KEYS.includes(k)) have.add(k);
+  return CXO_KEYS.filter((k) => have.has(k));
+}
+
+/**
+ * Check the chosen experiences against the matrix (`cxo`, `extra`: see allowedExperiences).
  * @returns {{ ok: true, options: string[] } | { ok: false, error: string, invalid: string[] }}
  */
-export function checkOptions(tier, days, options) {
-  const allowed = new Set(allowedExperiences(tier, days));
+export function checkOptions(tier, days, options, { cxo, extra = [] } = {}) {
+  const allowed = new Set(allowedExperiences(tier, days, { cxo, extra }));
   const picked = [...new Set((Array.isArray(options) ? options : []).map((o) => cleanText(o)).filter(Boolean))]
     .filter((k) => !DAY_KEYS.includes(k)); // days travel in `days`
   const invalid = picked.filter((k) => !allowed.has(k));
@@ -634,7 +655,9 @@ export function rsvpRow(d) {
     staffUpdatedBy: d.staffUpdatedBy || "",
     staffUpdatedAt: d.staffUpdatedAt || null,
     staffOverride: !!d.staffOverride,
-    passLimitOverride: d.source === "staff" && !!d.passLimitOverride,
+    // Special events staff added on top of the attendee's own answers (kept when the attendee sends theirs again).
+    staffAdded: Array.isArray(d.staffAdded) ? d.staffAdded : [],
+    passLimitOverride: (d.source === "staff" || (d.staffAdded || []).length > 0) && !!d.passLimitOverride,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -661,6 +684,7 @@ export function rsvpDetail(d) {
     separatedAt: d.separatedAt || null,
     separatedBy: d.separatedBy || "",
     optionLabels: (d.options || []).map(optionLabel),
+    staffAddedLabels: (d.staffAdded || []).map(optionLabel),
     dietaryLabels: (d.dietary || []).map((k) => DIETARY_LABEL[k] || k),
   };
 }
@@ -684,7 +708,8 @@ export function rsvpsCsv(docs) {
       ...OPTION_KEYS.map((k) => (picked.has(k) ? "Yes" : "")),
       (d.dietary || []).map((k) => DIETARY_LABEL[k] || k).join("; "), d.dietaryOther, d.accessibility,
       d.submissions ?? 1, stamp(d.createdAt),
-      d.source === "staff" ? `Staff${d.staffUpdatedBy ? `: ${d.staffUpdatedBy}` : ""}` : "Attendee",
+      d.source === "staff" ? `Staff${d.staffUpdatedBy ? `: ${d.staffUpdatedBy}` : ""}`
+        : (d.staffAdded || []).length ? `Attendee + staff added ${d.staffAdded.map(optionLabel).join(", ")}${d.staffUpdatedBy ? ` (${d.staffUpdatedBy})` : ""}` : "Attendee",
       isDuplicate(d) ? "No: possible duplicate" : "Yes",
     ].map(csvCell).join(",");
   });
@@ -732,14 +757,17 @@ export function planRsvpMerge(keep, dup) {
   const passRow = isVerifiedRow(survivor) ? survivor : newer;
 
   const days = DAY_KEYS.filter((k) => (newer.days || []).includes(k));
-  const allowed = new Set(allowedExperiences(passRow.tier, days));
+  // Seats staff added on top of either row stay; so does a CxO Breakfast either row already had.
+  const staffAdded = EXPERIENCE_KEYS.filter((k) => [...(keep.staffAdded || []), ...(dup.staffAdded || [])].includes(k));
+  const allowed = new Set(allowedExperiences(passRow.tier, days, { extra: [...extraOptionsFor([keep, dup]), ...staffAdded] }));
   // Staff answers saved past the pass's limits on purpose keep them.
   const pastLimits = sourceOf(newer) === "staff" && !!newer.passLimitOverride;
-  const options = EXPERIENCE_KEYS.filter((k) => (newer.options || []).includes(k) && (pastLimits || allowed.has(k)));
+  const options = EXPERIENCE_KEYS.filter((k) => ((newer.options || []).includes(k) && (pastLimits || allowed.has(k))) || staffAdded.includes(k));
   const set = {
     days, options, dietary: [...(newer.dietary || [])], dietaryOther: newer.dietaryOther || "",
     accessibility: newer.accessibility || "",
     email: newer.email || older.email || "",
+    ...(staffAdded.length ? { staffAdded } : {}),
   };
   if (sourceOf(dup) === "staff" || sourceOf(keep) === "staff") {
     // Who set the answers that stay (two RSVPs the attendee sent need nothing more).

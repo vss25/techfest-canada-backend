@@ -256,8 +256,8 @@ test("existing in-person connections keep sharing the account email until that s
   assert.deepEqual(sharedContactFrom(legacy, bo, can), []);
   // Cy hasn't picked: still as before.
   assert.equal(legacyEmail(sharedContactFrom(legacy, cy, can)), "cy@z.org");
-  // A vendor / VIP type without shareContact shares nothing (as before).
-  assert.deepEqual(sharedContactFrom(legacy, cy, rightsFor({ types: ["vip"], tickets: [{ type: "power" }] })), []);
+  // Someone whose types don't allow shareContact shares nothing (as before).
+  assert.deepEqual(sharedContactFrom(legacy, cy, { ...rightsFor({ types: ["vendor"], tickets: [{ type: "power" }] }), shareContact: false }), []);
 });
 
 test("legacyEmail and firstLinkedIn", () => {
