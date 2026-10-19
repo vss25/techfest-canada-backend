@@ -1,0 +1,146 @@
+{
+  "speaker: no run of show": {
+    "subject": "Jane, your Speaker Pass for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "46f3d127b1a9815ac5b9cdfb04c3f82ece3e0b0dc8d229655f9c57cebb18c83c",
+    "text": "7b3dbd2685870986dd202e74222b653e6a366c000369b41d1a6db796faa1109d"
+  },
+  "speaker: run of show": {
+    "subject": "Jane, your Speaker Pass and run of show for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "eeb60616eb890e7fb0b55d3f1c77f49612a0abdb1c4213352045863524e66eac",
+    "text": "4a7e477a51ef66774ecf7e5f520a05e8da33cf546a3a40be036ab05bb2f08d49"
+  },
+  "speaker: via a contact, no logo": {
+    "subject": "Jane, your Speaker Pass and run of show for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "50646ff88dc7ae28f1a1a877a7e6af60ae3b6d86a1c2ef44d8ab76a1543755b9",
+    "text": "3effe0ae8e3846607153034f5cab6459188c5e2acab0918781c10a0ffd036d68"
+  },
+  "speaker: saved wording": {
+    "subject": "Jane, hello",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "68d7d2e8ece5db00cb9149dbf3b01f5c86177f0cd8786d3797f4baeae204aea8",
+    "text": "0b8f48c4e06f80619028d495650ce3b541e3533ba170984975a4433ac1f367b2"
+  },
+  "issued: connect": {
+    "subject": "Sam, your Connect Pass for TTFC 2026",
+    "preheader": "Your Connect Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "7f7850cb3f9cea42237bb6e45eb38975a7e87c49ae0b65f60c59cbfe7750bd8f",
+    "text": "a55b8cc858f3d3cfc4f32e29ac12443b341a13b2cbbfdd9450a9a0c811241744"
+  },
+  "issued: influence, title + company": {
+    "subject": "Sam, your Influence Pass for TTFC 2026",
+    "preheader": "Your Influence Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "8b756d92c5873ff1f760b84bceb44dad892ad4614c70fe611eec1ff3cd8ea264",
+    "text": "3f528251948da7eee0f707b916f4f923260487eb4f1dd20a5dc562aa5da4a1e6"
+  },
+  "issued: power": {
+    "subject": "Sam, your Power Pass for TTFC 2026",
+    "preheader": "Your Power Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "c7252a4eac4347aeb973b954b9021ee3553c78f37d7e6907c85864637a5c195d",
+    "text": "b90a816c8be2b8892cbe1c5a84597b76d8e0607d1d3453fd177b87423b52c5f3"
+  },
+  "issued: apex": {
+    "subject": "Sam, your Apex Pass for TTFC 2026",
+    "preheader": "Your Apex Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "6c021449f0137ce2aeed7183ee185c3caab4470ab461bc8e676d3c183ba2c56c",
+    "text": "f2cc1c314ec5a8297879d6c2bbf6be85b1f1c92ff93037f7aa8520dcebb88a29"
+  },
+  "issued: power with CxO on": {
+    "subject": "Sam, your Power Pass for TTFC 2026",
+    "preheader": "Your Power Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "523b844289cec60054fa9078bd476a972b5b269410e19a5e2654c583ad22bfc9",
+    "text": "dff2e1243abc5c477ee20f4066ac6ee22cdcf6e572062a69078f08592659fb9e"
+  },
+  "issued: apex with CxO off": {
+    "subject": "Sam, your Apex Pass for TTFC 2026",
+    "preheader": "Your Apex Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "703a55228be2be9f56e64976a7b106d4359fdbfb4d0b3662cb22c3e1783e9819",
+    "text": "80fab5c1e2351dc8aec824528c8503675733e460f056c7781d3465d287f458f5"
+  },
+  "issued: no RSVP, own label": {
+    "subject": "Sam, your Influence Pass · Guest for TTFC 2026",
+    "preheader": "Your Influence Pass · Guest for TTFC 2026: ticket ID, check-in QR code inside.",
+    "html": "aab924f377e3a190b52d0a410d58d6c683cc95e18d04ac50d89bda79f11c4fed",
+    "text": "317d77318e3150029ffab238cd56a5570382653a1a1e170fe40cb45d494d4f57"
+  },
+  "issued: a Speaker Pass": {
+    "subject": "Sam, your Speaker Pass for TTFC 2026",
+    "preheader": "Your Speaker Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "dd149b38d50624be6ffffcd323bec7e02fd28f0c8f2bd5aec587b70c1b0030d5",
+    "text": "896c7053f0a878138bf28e29d25ec42700e454783a30a69a19d5f5e304bcd753"
+  },
+  "issued: a Speaker Pass without the CxO Breakfasts": {
+    "subject": "Sam, your Speaker Pass for TTFC 2026",
+    "preheader": "Your Speaker Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "2e37e90f9d2e096e31a9ff3646ccbfc60437031ae6f571ed901a070604e50c32",
+    "text": "1f8dc9b19d50bdaaf4786b279658729bf2ad987ceed9f586c164d5ff05ead4c6"
+  },
+  "issued: saved wording": {
+    "subject": "Your pass, Sam",
+    "preheader": "Your Power Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "cc966df05a8c11ffdb6efbd59ddd8da5ddef3ced0067572f64da4b94201da186",
+    "text": "15fca796d2313f9ab261b5b395c7a39dc88c312894be1efc63a3a1e179dfe23b"
+  },
+  "exhibitor: built-in": {
+    "subject": "Sam, your Connect Pass for TTFC 2026",
+    "preheader": "Your Connect Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "8577407d125e35e65e5e3daa34d9d50bbf6d9a760c9a7d75f5b7517d6ceb40d5",
+    "text": "f556946096f133ec72005f05e161fad05d74631a256db1d6385609fb22469fb2"
+  },
+  "exhibitor: saved template": {
+    "subject": "Sam, your booth pack",
+    "preheader": "Your Connect Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "7c8aa2f29d43c725a60fd4ea02a6841d2d61c92db87b95f001f35face2a4b873",
+    "text": "49e8902fa1a7619a7b8b4ea2410d7d7487f547775f3b70dfc6429f3902239391"
+  },
+  "purchase: connect": {
+    "subject": "You're in — your TTFC 2026 Connect Pass is confirmed 🎟",
+    "preheader": "Connect Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
+    "html": "f30e12fed7e381910254b7b97e6be37c7e30d4324935cc8275ae0492d7a0adc9",
+    "text": "bae0ff14b15429f143d55dccc26deb3dde0361e85e9b64e0e483731f12bafbc4"
+  },
+  "purchase: influence": {
+    "subject": "You're in — your TTFC 2026 Influence Pass is confirmed 🎟",
+    "preheader": "Influence Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
+    "html": "3e381d43af3d6025766d5627bff7b04616887dab8e33d91d36ecd3949d160f05",
+    "text": "06dd7c6a4e4b445d489a9e7f4b7f1bbed3163cfa728a7e0f32e48b4073651960"
+  },
+  "purchase: power": {
+    "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
+    "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
+    "html": "487082d39dc3562f76a4e3dcd68375f71954d053077c7b536ebb0a9271481a09",
+    "text": "d0cddf69ea3d1f0f7e749e1f63a198138842c528144c42d0f16f118690ede481"
+  },
+  "purchase: apex": {
+    "subject": "You're in — your TTFC 2026 Apex Pass is confirmed 🎟",
+    "preheader": "Apex Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
+    "html": "33116096af4698203f8305a9ead0701dc9444d1bf4934e5597351bd4f8eab032",
+    "text": "6056830de4053313bf86178bb517c407efd8af1422b090c7149b7352c79f1218"
+  },
+  "purchase: power with CxO": {
+    "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
+    "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
+    "html": "8b99e2647d50a0bd2e593562b0f178690441df5fdc1ed73d0425f275f358cc3b",
+    "text": "0874125a0fe2a0393ee809aff59c1a9f955ac7f0b784c8d5b6c5fc3aa783414b"
+  },
+  "purchase: apex without CxO": {
+    "subject": "You're in — your TTFC 2026 Apex Pass is confirmed 🎟",
+    "preheader": "Apex Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
+    "html": "28d2acf1893298972f8405990b2f754fb5d7ddc23bf1393a3d7aab652d86680f",
+    "text": "87ba5d2b3c9bd3da970734b0cb5bad5f5dacf22a444ce97a81b57e07bd8ac3a9"
+  },
+  "purchase: guest, no logo": {
+    "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
+    "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
+    "html": "334b31f4f0dee8c195bfc3af6fbcfa864dee6c9b0a4192a6d565ebf07d61d300",
+    "text": "be054a8f15196e95e245fa44609c21cb89622efdd120da6242ba3f5860ba048d"
+  },
+  "purchase: booth": {
+    "subject": "Your TTFC 2026 Exhibition Booth — Gold is confirmed",
+    "preheader": "Exhibition Booth — Gold confirmed for October 26–27, 2026 at The Westin Harbour Castle, Toronto.",
+    "html": "1818fcbb10301bab95d1f08c30feacd2d0aac1cfa452e544d7ad7fca06a83473",
+    "text": "7912512fbbebe0818e512e9ad06a341c57c269d2c0f76bedb691090039a2e46a"
+  }
+}

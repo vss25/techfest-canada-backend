@@ -5,7 +5,7 @@ import Rsvp from "../models/Rsvp.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
-import { CONTACT_EMAIL, FROM, cleanCopy, speakerPassEmailFor } from "../services/speakerPassEmail.js";
+import { CONTACT_EMAIL, FROM } from "../services/speakerPassEmail.js";
 import { passRecipients, validateSpeakerEmails } from "../services/speakerPasses.js";
 import { LIVE_RSVPS } from "../services/rsvp.js";
 import { cxoLabel } from "../services/cxoBreakfast.js";
@@ -18,6 +18,9 @@ import {
   exhibitorBooth, exhibitorCopyFor,
 } from "../services/exhibitorPasses.js";
 import { DEFAULT_MANUAL, buildExhibitorManual, cleanBooth, cleanManual, manualFileName } from "../services/exhibitorManual.js";
+import { passEmailDefaults, passEmailFor, passVariant } from "../services/passEmail.js";
+import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor, mergeCopy, sameAsDefault, tierFor } from "../services/passEmailCopy.js";
+import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 
 /* =========================================================
    Staff-issued passes, two kinds on the same routes:
@@ -28,18 +31,22 @@ import { DEFAULT_MANUAL, buildExhibitorManual, cleanBooth, cleanManual, manualFi
    Staff only; creating, editing, sending and deleting are management only
    and audited. Nothing is emailed without a send click.
 
-   GET    /tiers                 → { tiers: [{ key, label, access, includes, rsvpReason, copy }], cc, defaultTier, defaultLabel }
+   GET    /tiers                 → { tiers: [{ key, label, access, includes, rsvpReason, copy }], cc, defaultTier, defaultLabel,
+                                     fields, sections, placeholders }   (fields: one pass's editable email wording)
    GET    /                      → { rows, counts }
    POST   /preview               → { subject, html, text } for an unsaved pass (same body as POST /)
-   POST   /                      { name, email, tier, title?, company?, label?, rsvp?, subject?, headline?, message?,
-                                   booth?, zone?, passes? } → 201 { row }   (a new ticket ID; not emailed)
+   POST   /                      { name, email, tier, title?, company?, label?, rsvp?, booth?, zone?, passes?,
+                                   + any field of the email (services/passEmailCopy.js, one pass's level) }
+                                   → 201 { row }   (a new ticket ID; not emailed)
    PATCH  /:id                   any of the fields above → { row }
-   GET|POST /:id/preview         → { to, cc, subject, html, text, attachments } (POST: this-send-only to / cc / wording)
+   GET|POST /:id/preview         → { to, cc, subject, html, text, attachments, defaults } (POST: this-send-only to / cc / wording)
+   The email template (every pass of this kind; one pass's own wording beats it), both kinds:
+   GET    /email                 → { copy (saved, per pass type in copy.tiers), defaults: { <tier>: built-in }, fields, sections, … }
+   PUT    /email                 every field, tiers: { <tier>: { passName, access, includes, rsvpText } } → same (management, audited)
+   POST   /email/preview         { tier, ...unsaved template } → { subject, html, text, defaults, attachments } (a made-up pass)
    POST   /:id/send              { to?, cc?, subject?, headline?, message? } → { row }
    DELETE /:id                   → { deleted: true } (not once it's checked in or used in the app)
    Exhibitor passes only:
-   GET    /email                 → { copy (saved), defaults }          the default wording for every exhibitor pass
-   PUT    /email                 { subject, headline, message } → same (management; empty = built-in)
    GET    /manual                → { manual (saved or built-in), defaults, updatedBy, updatedAt }
    PUT    /manual                { manual } → same (management)
    POST   /manual/preview        { manual?, company?, booth?, zone?, passes?, name?, title?, email? } → the PDF
@@ -102,16 +109,28 @@ export function issuedPassRouter(kindName = "issued") {
     }).catch(() => {});
   }
 
-  /** The default wording for this kind of pass (exhibitors: staff's saved email wording over the built-in). */
+  /** This kind's email template (EmailTemplate "issued-pass" / "exhibitor-pass"): every field staff set. */
+  async function template() {
+    const t = await loadTemplate(kindName);
+    if (t.error) throw new Error(`Couldn't read the email wording: ${t.error}`);
+    return t;
+  }
+  /** The built-in subject / headline / message for a pass name. */
+  const builtInCopy = kind.manual ? defaultExhibitorCopy : defaultIssuedCopy;
+
+  /** The default subject / headline / message for this kind of pass: staff's saved template over the built-in. */
   async function copyFor() {
-    if (!kind.manual) return defaultIssuedCopy;
+    if (!kind.manual) {
+      const { subject, headline, message } = (await template()).copy;
+      return (label) => ({ ...defaultIssuedCopy(label), ...compact({ subject, headline, message }) });
+    }
     const t = await EmailTemplate.findOne({ key: EXHIBITOR_TEMPLATE_KEY }).lean();
     return exhibitorCopyFor(t);
   }
 
   /** This send's to / cc / wording, from the body over the pass's saved settings. */
   function sendOptions(body = {}, a) {
-    const copy = { ...(a?.issuedPass?.copy || {}), ...validateIssuedPass(body, { partial: true }).value?.copy };
+    const copy = mergeCopy(cleanFields(body, kindName, { level: "pass" }), a?.issuedPass?.copy);
     let to;
     if (body.to !== undefined) {
       const check = validateSpeakerEmails(body.to);
@@ -127,9 +146,53 @@ export function issuedPassRouter(kindName = "issued") {
     return { ok: true, copy, to, cc };
   }
 
-  async function emailFor(a, copy, inline) {
-    const variant = issuedVariant(a, { copyFor: await copyFor() });
-    return speakerPassEmailFor(issuedPassForEmail(a), { inline, copy, variant });
+  /**
+   * The email for a pass: `copy` (this send + this pass's own wording) over the template (`tpl`: an
+   * unsaved one for Edit email's preview, else the saved one) over the built-in text.
+   * `defaults`: what each of this pass's fields shows when its own is empty.
+   */
+  async function emailFor(a, copy, inline, tpl = null) {
+    const t = tpl || (await template()).copy;
+    const variant = passVariant(a, { copyFor: builtInCopy, template: t });
+    const e = await passEmailFor(issuedPassForEmail(a), { inline, copy: mergeCopy(copy, t), variant });
+    return { ...e, defaults: mergeCopy(t, e.defaults) };
+  }
+
+  /** One pass's own wording from a create / edit body (any field of the email; the pass name is `label`). */
+  const withPassCopy = (value, body = {}) => {
+    const extra = cleanFields(body, kindName, { level: "pass" });
+    if (Object.keys(extra).length) value.copy = { ...(value.copy || {}), ...extra };
+    return value;
+  };
+  /** After a save: wording equal to what the pass shows anyway is no edit (lists keep following the CxO rule). */
+  async function tidyPassCopy(a) {
+    const own = a?.issuedPass?.copy || {};
+    if (!Object.keys(own).length) return a;
+    const { defaults } = await emailFor(a, {}, true);
+    const copy = compact(sameAsDefault(own, [defaults]));
+    if (JSON.stringify(copy) === JSON.stringify(compact(own))) return a;
+    return Attendee.findOneAndUpdate({ _id: a._id, ...SCOPE }, { $set: { "issuedPass.copy": copy } }, { new: true }).select(PASS_FIELDS).lean();
+  }
+
+  /** A made-up pass of one type, for Edit email's preview. */
+  const samplePass = (tier, body = {}) => issuedPassDoc({
+    name: "Jane Doe", emails: [], tier: ISSUE_TIERS[tier] ? tier : kind.defaultTier, title: "Chief Technology Officer", company: "Example Corp",
+    rsvp: body.rsvp !== false, ...(typeof body.cxoBreakfast === "boolean" ? { cxoBreakfast: body.cxoBreakfast } : {}),
+    ...(kind.manual ? { booth: { booth: "07", zone: "Zone A - Harbour Ballroom Foyer", passes: "4" } } : {}),
+  }, { ticketId: "A1B2C3D4E5F6", promo: kind.promo });
+
+  /** Edit email: the saved template, every pass type's built-in text, and the fields by section. */
+  async function templatePayload() {
+    const t = await template();
+    // The subject, headline and message go on every pass type, so they're shown with {passName}.
+    const defaults = Object.fromEntries(ISSUE_TIER_KEYS.map((key) => [key, {
+      ...passEmailDefaults({ variant: passVariant(samplePass(key), { copyFor: builtInCopy }) }), ...builtInCopy("{passName}"),
+    }]));
+    return {
+      copy: t.copy, defaults, fields: fieldsFor(kindName), sections: SECTIONS, placeholders: PLACEHOLDERS.pass,
+      tiers: ISSUE_TIER_KEYS.map((key) => ({ key, label: ISSUE_TIERS[key].label })), defaultTier: kind.defaultTier,
+      updatedBy: t.updatedBy, updatedAt: t.updatedAt,
+    };
   }
 
   /** The manual PDF for a pass (exhibitors only). */
@@ -153,7 +216,30 @@ export function issuedPassRouter(kindName = "issued") {
       cc: DEFAULT_CC(),
       defaultTier: kind.defaultTier,
       defaultLabel: kind.defaultLabel,
+      fields: fieldsFor(kindName, { level: "pass" }), sections: SECTIONS, placeholders: PLACEHOLDERS.pass,
     });
+  });
+
+  router.get("/email", async (req, res) => {
+    res.json(await templatePayload());
+  });
+  // Body: every field of the email (left out or "" = built-in), tiers: { <tier>: { passName, access, includes, rsvpText } }.
+  // Saves the whole template. Management; audited with the fields that changed.
+  router.put("/email", requireManagement, async (req, res) => {
+    const { defaults } = await templatePayload();
+    const named = ISSUE_TIER_KEYS.map((key) => builtInCopy(ISSUE_TIERS[key].label)); // the same wording with the name written in
+    const clean = sameAsDefault(cleanFields(req.body || {}, kindName, { tiers: true }), [...Object.values(defaults), ...named], { tierDefaults: defaults });
+    const { changed } = await saveTemplate(kindName, clean, { by: String(req.user?.name || req.user?.email || "") });
+    await audit(req, "email_template", "", changed.length ? `wording: ${changed.join(", ")}` : "wording unchanged");
+    res.json(await templatePayload());
+  });
+  // Edit email's preview: a made-up pass of `tier` with the unsaved template. Body: { tier, cxoBreakfast?, rsvp?, ...fields, tiers }.
+  router.post("/email/preview", async (req, res) => {
+    const body = req.body || {};
+    const tier = tierFor(body.tier) || kind.defaultTier;
+    const fake = samplePass(tier, body);
+    const { subject, html, text, defaults } = await emailFor(fake, {}, true, compact(cleanFields(body, kindName, { tiers: true })));
+    res.json({ subject, html, text, defaults, attachments: kind.manual ? [{ filename: manualFileName(fake.details?.organisation) }] : [] });
   });
 
   router.get("/", async (req, res) => {
@@ -167,18 +253,6 @@ export function issuedPassRouter(kindName = "issued") {
   });
 
   if (kind.manual) {
-    router.get("/email", async (req, res) => {
-      const t = await EmailTemplate.findOne({ key: EXHIBITOR_TEMPLATE_KEY }).lean();
-      res.json({ copy: { subject: t?.subject || "", headline: t?.headline || "", message: t?.message || "" }, defaults: defaultExhibitorCopy(),
-        updatedBy: t?.updatedBy || "", updatedAt: t?.updatedAt || null });
-    });
-    router.put("/email", requireManagement, async (req, res) => {
-      const c = cleanCopy(req.body || {});
-      const set = { subject: c.subject || "", headline: c.headline || "", message: c.message || "", updatedBy: String(req.user?.name || req.user?.email || "") };
-      const t = await EmailTemplate.findOneAndUpdate({ key: EXHIBITOR_TEMPLATE_KEY }, { $set: set }, { upsert: true, new: true }).lean();
-      await audit(req, "email_template", "", ["subject", "headline", "message"].filter((k) => set[k]).join(", ") || "reset to built-in");
-      res.json({ copy: { subject: t.subject, headline: t.headline, message: t.message }, defaults: defaultExhibitorCopy(), updatedBy: t.updatedBy, updatedAt: t.updatedAt });
-    });
     router.get("/manual", async (req, res) => {
       res.json({ ...(await savedManual()), defaults: DEFAULT_MANUAL });
     });
@@ -201,10 +275,10 @@ export function issuedPassRouter(kindName = "issued") {
   router.post("/preview", async (req, res) => {
     const check = validateIssuedPass(withDefaults({ name: "Jane Doe", email: "", ...req.body }), { partial: false });
     if (!check.ok) return res.status(400).json({ error: check.error });
-    const fake = issuedPassDoc({ ...check.value, emails: [] }, { ticketId: "A1B2C3D4E5F6", promo: kind.promo });
-    const { subject, html, text } = await emailFor(fake, fake.issuedPass.copy, true);
+    const fake = issuedPassDoc({ ...withPassCopy(check.value, req.body), emails: [] }, { ticketId: "A1B2C3D4E5F6", promo: kind.promo });
+    const { subject, html, text, defaults } = await emailFor(fake, fake.issuedPass.copy, true);
     res.json({
-      to: check.value.emails.join(", "), cc: DEFAULT_CC(), subject, html, text,
+      to: check.value.emails.join(", "), cc: DEFAULT_CC(), subject, html, text, defaults,
       attachments: kind.manual ? [{ filename: manualFileName(fake.details?.organisation) }] : [],
     });
   });
@@ -217,15 +291,16 @@ export function issuedPassRouter(kindName = "issued") {
     let doc;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        doc = await Attendee.create(issuedPassDoc(check.value, { by, promo: kind.promo }));
+        doc = await Attendee.create(issuedPassDoc(withPassCopy(check.value, req.body), { by, promo: kind.promo }));
         break;
       } catch (err) {
         if (err?.code !== 11000 || attempt === 2) throw err; // a ticket ID clash (1 in 2^48): try another
       }
     }
     const cxoNote = typeof check.value.cxoBreakfast === "boolean" ? `, CxO Breakfast ${check.value.cxoBreakfast ? "Yes" : "No"}` : "";
-    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${cxoNote}`);
-    res.status(201).json({ row: issuedPassRow(doc.toObject()) });
+    const wording = Object.keys(compact(check.value.copy || {}));
+    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${cxoNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}`);
+    res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
   });
 
   router.patch("/:id", requireManagement, async (req, res) => {
@@ -233,7 +308,7 @@ export function issuedPassRouter(kindName = "issued") {
     if (!before) return res.status(404).json({ error: "Pass not found" });
     const check = validateIssuedPass(req.body || {}, { partial: true });
     if (!check.ok) return res.status(400).json({ error: check.error });
-    const set = issuedPassUpdate(check.value, before);
+    const set = issuedPassUpdate(withPassCopy(check.value, req.body), before);
     const cxoSame = "cxoBreakfast" in set && (set.cxoBreakfast ?? null) === (typeof before.cxoBreakfast === "boolean" ? before.cxoBreakfast : null);
     if (cxoSame) { delete set.cxoBreakfast; delete check.value.cxoBreakfast; }
     if (!Object.keys(set).length) return res.json({ row: issuedPassRow(before) });
@@ -241,10 +316,12 @@ export function issuedPassRouter(kindName = "issued") {
     const unset = set.cxoBreakfast === null ? { cxoBreakfast: "" } : null;
     if (unset) delete set.cxoBreakfast;
     const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SCOPE }, { ...(Object.keys(set).length ? { $set: set } : {}), ...(unset ? { $unset: unset } : {}) }, { new: true }).select(PASS_FIELDS).lean();
-    const fields = [...Object.keys(set).filter((k) => k !== "cxoBreakfast"), ...("cxoBreakfast" in check.value
-      ? [`CxO Breakfast ${cxoLabel(before.cxoBreakfast, issuedPassRow(before).cxoEffective)} → ${cxoLabel(a.cxoBreakfast, issuedPassRow(a).cxoEffective)}`] : [])];
-    await audit(req, "edit", a.ticketId, `${a.name}: ${fields.join(", ")}`);
-    res.json({ row: issuedPassRow(a) });
+    const wording = set["issuedPass.copy"] ? changedFields(before.issuedPass?.copy, set["issuedPass.copy"]) : [];
+    const fields = [...Object.keys(set).filter((k) => k !== "cxoBreakfast" && k !== "issuedPass.copy"), ...("cxoBreakfast" in check.value
+      ? [`CxO Breakfast ${cxoLabel(before.cxoBreakfast, issuedPassRow(before).cxoEffective)} → ${cxoLabel(a.cxoBreakfast, issuedPassRow(a).cxoEffective)}`] : []),
+    ...(wording.length ? [`wording: ${wording.join(", ")}`] : [])];
+    await audit(req, "edit", a.ticketId, `${a.name}: ${fields.join(", ") || "no changes"}`);
+    res.json({ row: issuedPassRow(await tidyPassCopy(a)) });
   });
 
   async function passPreview(req, res) {
@@ -253,9 +330,9 @@ export function issuedPassRouter(kindName = "issued") {
     const opts = sendOptions(req.method === "POST" ? req.body || {} : {}, a);
     if (!opts.ok) return res.status(400).json({ error: opts.error });
     const to = opts.to || passRecipients(a);
-    const { subject, html, text } = await emailFor(a, opts.copy, true);
+    const { subject, html, text, defaults } = await emailFor(a, opts.copy, true);
     res.json({
-      to: to.join(", "), toList: to, cc: opts.cc.filter((e) => !to.includes(e)), subject, html, text,
+      to: to.join(", "), toList: to, cc: opts.cc.filter((e) => !to.includes(e)), subject, html, text, defaults,
       attachments: kind.manual ? [{ filename: manualFileName(exhibitorBooth(a).company) }] : [],
     });
   }

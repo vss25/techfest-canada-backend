@@ -57,11 +57,14 @@ import {
   SPEAKER_TYPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
   readyToSend, SAMPLE_SPEAKER, manualSpeakerPassDoc, validateSpeakerEmails, passRecipients,
 } from "../services/speakerPasses.js";
-import EmailTemplate from "../models/EmailTemplate.js";
-import { DEFAULT_COPY, cleanCopy } from "../services/speakerPassEmail.js";
+import { DEFAULT_COPY } from "../services/speakerPassEmail.js";
 import { validateRunOfShow, validateContact } from "../services/runOfShow.js";
 import { sendSessionInvites } from "../services/speakerInvites.js";
-import { speakerPassEmailFor } from "../services/speakerPassEmail.js";
+import {
+  passEmailFor as speakerPassEmailFor, ownCopy, cleanPassLabel, passEmailDefaults, SAMPLE_RUN_OF_SHOW,
+} from "../services/passEmail.js";
+import { PLACEHOLDERS, SECTIONS, cleanFields, changedFields, compact, fieldsFor, mergeCopy, sameAsDefault } from "../services/passEmailCopy.js";
+import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { loadWebsite, applyWebsite, planWebsiteLinks, nudgeCopy, NUDGE_COPY } from "../services/speakerWebsite.js";
 import { sendSpeakerPassEmail } from "../services/emailService.js";
 
@@ -1079,30 +1082,26 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
 
 const SPEAKER_PASS_FIELDS = "name email alsoTo ticketId ticketType speakerId details passEmailSentAt passEmailSentTo " +
   "passEmailSentCount claimedBy checkedIn createdAt purchaseDate runOfShow speakerContact invitesSentAt invitesSentCount " +
-  "speakerNudgedAt speakerNudgeCount";
+  "speakerNudgedAt speakerNudgeCount issuedPass";
 // Who's copied on speaker emails and invites until staff change it in Edit email (SPEAKER_CC, comma-separated).
 const DEFAULT_SPEAKER_CC = () => String(process.env.SPEAKER_CC ?? "lubna@thetechfestival.com").split(",")
   .map((e) => e.trim().toLowerCase()).filter(Boolean);
-const SPEAKER_TEMPLATE_KEY = "speaker-pass";
-
-/** The saved wording and cc list: { copy: { subject, headline, message } ("" = built-in), cc: [] }. */
+/** The saved wording and cc list: { copy: every field staff set (services/passEmailCopy.js), cc: [] }. */
 async function speakerTemplate() {
-  const t = await EmailTemplate.findOne({ key: SPEAKER_TEMPLATE_KEY }).lean();
-  return {
-    copy: { subject: t?.subject || "", headline: t?.headline || "", message: t?.message || "" },
-    cc: Array.isArray(t?.cc) ? t.cc : DEFAULT_SPEAKER_CC(),
-    updatedAt: t?.updatedAt || null,
-    updatedBy: t?.updatedBy || "",
-  };
+  const t = await loadTemplate("speaker");
+  if (t.error) throw new Error(`Couldn't read the speakers' email wording: ${t.error}`);
+  return { copy: t.copy, cc: t.cc ?? DEFAULT_SPEAKER_CC(), updatedAt: t.updatedAt, updatedBy: t.updatedBy };
 }
 
 /**
- * This send's wording, recipients and cc: the saved template, with anything in `body` taking over
- * (subject / headline / message: "" = built-in; to / cc: "a@x, b@y" or a list).
- * → { ok, copy, to?, cc } | { ok: false, error }
+ * This send's wording, recipients and cc. `copy`: what `body` sets (any field of the email; `label` is
+ * the pass name; "" = the level below), `template`: the saved template, `draft`: the body carries the
+ * pass's whole wording (the per-speaker editor's unsaved edits) instead of adding to its saved one.
+ * (to / cc: "a@x, b@y" or a list.) → { ok, copy, template, draft, to?, cc } | { ok: false, error }
  */
 function sendOptions(body = {}, template) {
-  const copy = { ...template.copy, ...cleanCopy(body) };
+  const copy = cleanFields(body, "speaker", { level: "pass" });
+  if (body.label !== undefined) copy.passName = cleanPassLabel(body.label);
   let to;
   if (body.to !== undefined) {
     const check = validateSpeakerEmails(body.to);
@@ -1115,11 +1114,17 @@ function sendOptions(body = {}, template) {
     if (!check.ok) return { ok: false, error: `Cc: ${check.error}` };
     cc = check.list;
   }
-  return { ok: true, copy, to, cc };
+  return { ok: true, copy, template: template.copy, draft: body.draft === true, to, cc };
 }
 // Speaker Passes made here (Sanity speakers, manual adds). One staff issued in Issue passes (promo ISSUED) has
 // its own list and email there, so it isn't listed, synced or sent from here too.
 const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE, promoCode: { $ne: "ISSUED" } };
+
+/** A speaker's email wording: this send's, then the pass's own (Attendee.issuedPass), then the template. */
+const speakerCopy = (a, opts) => mergeCopy(opts.copy, opts.draft ? {} : ownCopy(a), opts.template);
+/** A nudge: the reminder's subject, headline and message (nudgeCopy), everything else as the pass email. */
+const withoutWording = ({ subject, headline, message, ...rest } = {}) => rest; // eslint-disable-line no-unused-vars
+const nudgeWording = (a, opts) => mergeCopy(nudgeCopy(opts.copy), opts.copy, opts.draft ? {} : withoutWording(ownCopy(a)), withoutWording(opts.template));
 let speakerSendAllRunning = false;
 
 const findSpeakerPass = (id) => (isId(id)
@@ -1146,7 +1151,7 @@ async function sendSpeakerPass(a, opts = {}) {
   const row = speakerPassRow((await livePass(a, opts.site)).doc);
   const to = opts.to?.length ? opts.to : passRecipients(a);
   const cc = (opts.cc ?? DEFAULT_SPEAKER_CC()).filter((e) => !to.includes(e));
-  await sendSpeakerPassEmail({ to, pass: row, cc, copy: opts.copy || {} });
+  await sendSpeakerPassEmail({ to, pass: row, cc, copy: speakerCopy(a, opts) });
   let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
     // The Speaker Pass email always has the RSVP button (People › "RSVP email sent").
@@ -1176,26 +1181,35 @@ async function speakerRsvps(ticketIds) {
   return new Map(docs.map((r) => [String(r.ticketId).toLowerCase(), { at: r.updatedAt || null, days: r.days || [], options: r.options || [] }]));
 }
 
-// The editable wording + cc list. → { template: { subject, headline, message, cc }, defaults, updatedAt, updatedBy }
-router.get("/speaker-passes/template", async (req, res) => {
+/** Edit email: the saved wording, the built-in text (for a speaker with a run of show) and the fields, by section. */
+async function speakerTemplatePayload() {
   const t = await speakerTemplate();
-  res.json({ template: { ...t.copy, cc: t.cc }, defaults: { ...DEFAULT_COPY, cc: DEFAULT_SPEAKER_CC() }, updatedAt: t.updatedAt, updatedBy: t.updatedBy });
+  return {
+    template: { ...t.copy, cc: t.cc },
+    defaults: { ...passEmailDefaults({ runOfShow: SAMPLE_RUN_OF_SHOW }), cc: DEFAULT_SPEAKER_CC() },
+    fields: fieldsFor("speaker"), passFields: fieldsFor("speaker", { level: "pass" }), sections: SECTIONS, placeholders: PLACEHOLDERS.speaker,
+    updatedAt: t.updatedAt, updatedBy: t.updatedBy,
+  };
+}
+
+// The editable wording + cc list. → { template: { ...every field set, cc }, defaults, fields, passFields, sections, placeholders, updatedAt, updatedBy }
+router.get("/speaker-passes/template", async (req, res) => {
+  res.json(await speakerTemplatePayload());
 });
 
-// Body: { subject, headline, message ("" = built-in text), cc: "a@x, b@y" | [] }. Management.
+// Body: every field of the email (services/passEmailCopy.js; a field left out or "" = built-in text), cc: "a@x, b@y" | [].
+// Saves the whole template. Management; audited with the fields that changed.
 router.put("/speaker-passes/template", requireManagement, async (req, res) => {
-  const copy = cleanCopy(req.body || {});
   const check = validateSpeakerEmails(req.body?.cc ?? DEFAULT_SPEAKER_CC(), { max: 10 });
   if (!check.ok) return res.status(400).json({ error: `Cc: ${check.error}` });
   // Saving the built-in text unchanged keeps it "built-in" (so the no-run-of-show wording still applies).
-  for (const k of ["subject", "headline", "message"]) if (copy[k] === DEFAULT_COPY[k]) copy[k] = "";
+  const builtIn = [passEmailDefaults(), passEmailDefaults({ runOfShow: SAMPLE_RUN_OF_SHOW }), DEFAULT_COPY];
+  const clean = sameAsDefault(cleanFields(req.body || {}, "speaker"), builtIn);
   const by = String(req.user?.name || req.user?.email || "");
-  await EmailTemplate.findOneAndUpdate({ key: SPEAKER_TEMPLATE_KEY },
-    { $set: { subject: copy.subject || "", headline: copy.headline || "", message: copy.message || "", cc: check.list, updatedBy: by } },
-    { upsert: true });
-  await audit(req, "speaker_pass_template", "ticket", "", `subject ${copy.subject ? "custom" : "default"}, cc: ${check.list.join(", ") || "nobody"}`);
-  const t = await speakerTemplate();
-  res.json({ template: { ...t.copy, cc: t.cc }, defaults: { ...DEFAULT_COPY, cc: DEFAULT_SPEAKER_CC() }, updatedAt: t.updatedAt, updatedBy: t.updatedBy });
+  const { changed } = await saveTemplate("speaker", clean, { by, extra: { cc: check.list } });
+  await audit(req, "speaker_pass_template", "ticket", "",
+    `${changed.length ? `wording: ${changed.join(", ")}` : "wording unchanged"}; cc: ${check.list.join(", ") || "nobody"}`);
+  res.json(await speakerTemplatePayload());
 });
 
 // Emails the passes picked in the list. Body: { ids: [...], confirm: "SEND", cc?, subject?, headline?, message? }.
@@ -1292,12 +1306,17 @@ router.post("/speaker-passes/sync", requireManagement, async (req, res) => {
   }
 });
 
-// The "Preview email" button: a made-up speaker, nothing personal.
+// The "Preview email" button: a made-up speaker, nothing personal. POST body: wording on top of the saved
+// template; { template: true, ...every field }: Edit email's unsaved template instead of the saved one;
+// withRunOfShow: the sample speaker has a (made-up) run of show. → { to, cc, subject, html, text, defaults }
 async function samplePreview(req, res) {
-  const opts = sendOptions(req.method === "POST" ? { ...req.body, to: undefined } : {}, await speakerTemplate());
+  const body = req.method === "POST" ? req.body || {} : {};
+  const opts = sendOptions({ ...body, to: undefined }, await speakerTemplate());
   if (!opts.ok) return res.status(400).json({ error: opts.error });
-  const { subject, html, text } = await speakerPassEmailFor(SAMPLE_SPEAKER, { inline: true, copy: opts.copy });
-  res.json({ to: "", cc: opts.cc, subject, html, text });
+  const copy = body.template === true ? compact(cleanFields(body, "speaker")) : mergeCopy(opts.copy, opts.template);
+  const sample = body.withRunOfShow ? { ...SAMPLE_SPEAKER, runOfShow: SAMPLE_RUN_OF_SHOW } : SAMPLE_SPEAKER;
+  const { subject, html, text, defaults } = await speakerPassEmailFor(sample, { inline: true, copy });
+  res.json({ to: "", cc: opts.cc, subject, html, text, defaults });
 }
 router.get("/speaker-passes/preview-sample", samplePreview);
 router.post("/speaker-passes/preview-sample", samplePreview);
@@ -1382,10 +1401,44 @@ async function passPreview(req, res) {
   if (!opts.ok) return res.status(400).json({ error: opts.error });
   const row = speakerPassRow((await livePass(a)).doc);
   const to = opts.to || row.emails;
-  const { subject, html, text } = await speakerPassEmailFor(row, { inline: true, copy: opts.copy });
-  res.json({ to: to.join(", "), toList: to, cc: opts.cc.filter((e) => !to.includes(e)), subject, html, text });
+  const { subject, html, text, defaults } = await speakerPassEmailFor(row, { inline: true, copy: speakerCopy(a, opts) });
+  // defaults: what each field shows when this speaker's own is empty (the template, else the built-in text).
+  res.json({ to: to.join(", "), toList: to, cc: opts.cc.filter((e) => !to.includes(e)), subject, html, text, defaults: mergeCopy(opts.template, defaults) });
 }
 router.get("/speaker-passes/:id/preview", passPreview);
+
+/* One speaker's own wording (Attendee.issuedPass, like an issued pass: label = the pass name, copy = every
+   other field), over the template for every send to them, including Send to all. */
+async function speakerCopyPayload(a) {
+  const t = await speakerTemplate();
+  const row = speakerPassRow((await livePass(a)).doc);
+  const defaults = mergeCopy(t.copy, passEmailDefaults({ runOfShow: row.runOfShow }));
+  return { label: String(a.issuedPass?.label || ""), copy: a.issuedPass?.copy || {}, defaults, fields: fieldsFor("speaker", { level: "pass" }), sections: SECTIONS };
+}
+
+// → { label, copy, defaults, fields, sections }
+router.get("/speaker-passes/:id/copy", async (req, res) => {
+  const a = await findSpeakerPass(req.params.id);
+  if (!a) return res.status(404).json({ error: "Speaker pass not found" });
+  res.json(await speakerCopyPayload(a));
+});
+
+// Body: { label, ...every field } (left out or "" = the template / built-in text). Saves this speaker's whole
+// wording. Management; audited with the fields that changed.
+router.put("/speaker-passes/:id/copy", requireManagement, async (req, res) => {
+  const a = await findSpeakerPass(req.params.id);
+  if (!a) return res.status(404).json({ error: "Speaker pass not found" });
+  const { defaults } = await speakerCopyPayload(a);
+  const copy = compact(sameAsDefault(cleanFields(req.body || {}, "speaker", { level: "pass" }), [defaults]));
+  const label = cleanPassLabel(req.body?.label);
+  const before = ownCopy(a);
+  const updated = await Attendee.findOneAndUpdate({ _id: a._id, ...SPEAKER_SCOPE },
+    { $set: { "issuedPass.label": label === defaults.passName ? "" : label, "issuedPass.copy": copy } }, { new: true })
+    .select(SPEAKER_PASS_FIELDS).lean();
+  const changed = changedFields(before, ownCopy(updated));
+  await audit(req, "speaker_pass_copy", "ticket", a.ticketId, `${a.name}: ${changed.length ? changed.join(", ") : "no changes"}`);
+  res.json(await speakerCopyPayload(updated));
+});
 router.post("/speaker-passes/:id/preview", passPreview);
 
 // Emails one speaker their pass (again, if it was sent before). Management only.
@@ -1420,18 +1473,16 @@ router.post("/speaker-passes/:id/send", requireManagement, async (req, res) => {
    (services/speakerWebsite.js NUDGE_COPY, editable per send) and the usual cc. No calendar
    invites. Speakers who have RSVP'd are always skipped. */
 
-/** Wording, To and Cc for a nudge: the nudge defaults (not the pass wording) and the usual cc. */
+/** Wording, To and Cc for a nudge: the nudge's subject, headline and message (not the pass's), and the usual cc. */
 async function nudgeOptions(body = {}) {
-  const t = await speakerTemplate();
-  const opts = sendOptions(body, { ...t, copy: {} });
-  return opts.ok ? { ...opts, copy: nudgeCopy(opts.copy) } : opts;
+  return sendOptions(body, await speakerTemplate());
 }
 
 async function nudgeSpeaker(a, opts) {
   const row = speakerPassRow((await livePass(a, opts.site)).doc);
   const to = opts.to?.length ? opts.to : passRecipients(a);
   const cc = (opts.cc ?? DEFAULT_SPEAKER_CC()).filter((e) => !to.includes(e));
-  await sendSpeakerPassEmail({ to, pass: row, cc, copy: opts.copy });
+  await sendSpeakerPassEmail({ to, pass: row, cc, copy: nudgeWording(a, opts) });
   return Attendee.findOneAndUpdate({ _id: a._id, ...SPEAKER_SCOPE },
     { $set: { speakerNudgedAt: new Date() }, $inc: { speakerNudgeCount: 1 } }, { new: true })
     .select(SPEAKER_PASS_FIELDS).lean();
@@ -1483,7 +1534,7 @@ router.post("/speaker-passes/:id/nudge/preview", async (req, res) => {
   if (!opts.ok) return res.status(400).json({ error: opts.error });
   const row = speakerPassRow((await livePass(a)).doc);
   const to = opts.to || row.emails;
-  const { subject, html, text } = await speakerPassEmailFor(row, { inline: true, copy: opts.copy });
+  const { subject, html, text } = await speakerPassEmailFor(row, { inline: true, copy: nudgeWording(a, opts) });
   res.json({ to: to.join(", "), toList: to, cc: opts.cc.filter((e) => !to.includes(e)), subject, html, text });
 });
 

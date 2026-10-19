@@ -22,12 +22,22 @@
    background style, and every piece of text an explicit light
    colour, so no client has to guess. Matches the Speaker Pass email
    (services/speakerPassEmail.js), which already works this way.
+
+   ── EVERY WORD EDITABLE (Oct 19 2026) ───────────────────────
+   Admin › Tickets & attendees › Purchase email (management) keeps
+   staff's wording in the "purchase-email" EmailTemplate: one value
+   per field, and per pass type for the pass name, tagline, paragraph,
+   what's included and the tips (services/passEmailCopy.js). Anything
+   not changed is the built-in text and markup below, byte for byte.
+   Booth confirmations take only the header, event details, app and
+   footer fields; their subject and wording stay the built-in ones.
 ========================================================= */
 
 import {
-  EVENT, APP_COMING_SOON, inclusionsFor, emailTips, displayPassName, isBoothId,
-  firstNameFor, googleCalendarUrl, taglineFor, blurbFor, escapeHtml as esc,
+  EVENT, APP_COMING_SOON, PASS_INCLUSIONS, inclusionsFor, emailTips, displayPassName, isBoothId,
+  firstNameFor, googleCalendarUrl, taglineFor, blurbFor, tierKey, escapeHtml as esc,
 } from "./ticketInfo.js";
+import { carryPassRules, fieldsFor, fillText, templateFor, textHtml } from "./passEmailCopy.js";
 
 /* Dark palette. `panel` is the body surface, `card` the pass card.
    Text colours are all light — see the note above. */
@@ -68,6 +78,66 @@ export function walletButtonHtml(url) {
 </table>`;
 }
 
+/** The fields a booth confirmation takes from the template (the rest of the email is about a pass). */
+const BOOTH_FIELDS = new Set(fieldsFor("purchase").filter((f) => f.booth).map((f) => f.key));
+
+const isSet = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === "string" && v.length > 0);
+/** A pass type's list as sold (before this ticket's CxO Breakfast switch). Names and lists come from
+    services/ticketInfo.js, so the email agrees with the PDF and the Wallet pass it comes with. */
+const baseInclusions = (tier) => [...(PASS_INCLUSIONS[tierKey(tier)] || inclusionsFor(tier))];
+
+/**
+ * Every field's built-in text for one purchase, placeholders not filled in (the admin editor shows it in grey).
+ * `wallet`: the email has the Apple Wallet button; `named`: the buyer has a first name.
+ */
+export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakfast, wallet = true, named = true } = {}) {
+  const booth = isBoothId(ticketId) || /^booth-/i.test(String(tier || ""));
+  return {
+    subject: booth ? "Your TTFC 2026 {passName} is confirmed" : "You're in — your TTFC 2026 {passName} is confirmed 🎟",
+    preheader: booth
+      ? `{passName} confirmed for ${EVENT.dates} at ${EVENT.venue}, Toronto.`
+      : `{passName} · ${EVENT.dates} · ${EVENT.venue}, Toronto. Your ticket PDF is attached${wallet ? " and it's ready for Apple Wallet" : ""}.`,
+    headerLabel: "Venue",
+    headerVenue: EVENT.venue,
+    headerAddress: EVENT.address,
+    headline: named ? "You're in, {firstName}." : "You're in.",
+    message: booth
+      ? "Your {passName} at The Tech Festival Canada 2026 is confirmed. Your booking reference is below — our team will be in touch about exhibitor logistics."
+      : `Your {passName} for The Tech Festival Canada 2026 is confirmed. Two days of frontier tech, deals and conversations at ${EVENT.venue}, Toronto — we can't wait to see you there.`,
+    passName: displayPassName(tier, ticketId),
+    labelAttendee: booth ? "Booked by" : "Attendee",
+    labelTicketId: booth ? "Booking reference" : "Ticket ID",
+    cardLine: `${EVENT.dates} · ${EVENT.venue}, Toronto`,
+    qrCaption: "Scan at registration",
+    walletCaption: "On iPhone, tap to add your pass — it pops up on your lock screen at the venue.",
+    attachTitle: "Your ticket PDF is attached",
+    attachCaption: booth ? "Keep it for your records." : "Show the QR code on your phone or print it — either works at registration.",
+    includesTitle: "Your {passName} includes",
+    tagline: booth ? "" : taglineFor(tier),
+    blurb: booth ? "" : blurbFor(tier),
+    includes: booth ? [] : inclusionsFor(tier, { cxoBreakfast }),
+    detailsTitle: "Event details",
+    labelWhen: "When",
+    whenText: `Monday–Tuesday, ${EVENT.dates}`,
+    labelWhere: "Where",
+    whereVenue: EVENT.venue,
+    whereAddress: EVENT.address,
+    mapsLink: "Open in Maps",
+    labelDoors: "Doors",
+    doorsText: EVENT.doors,
+    calendarButton: "Add to Google Calendar",
+    tipsTitle: "Know before you go",
+    tips: booth ? [] : emailTips(tier),
+    appEyebrow: "Coming soon to the App Store",
+    appTitle: "The TTFC mobile app",
+    appBody: APP_COMING_SOON.body,
+    helpTitle: "Need a hand?",
+    helpText: `Reply to this email or write to ${EVENT.supportEmail}. Quote your ticket ID {ticketId} so we can find your booking fast.`,
+    contactLine: `${EVENT.websiteLabel} · Office ${EVENT.phone} · Toll free ${EVENT.tollFree}`,
+    footerNote: "You're receiving this because a ticket for The Tech Festival Canada 2026 was purchased with this email address. The Tech Festival Canada · Toronto, Ontario",
+  };
+}
+
 /**
  * @param {object} p
  * @param {string} p.name       attendee full name
@@ -80,33 +150,44 @@ export function walletButtonHtml(url) {
  *                               Empty renders the wordmark as text, so a caller that
  *                               doesn't attach the logo still gets a valid header.
  * @param {boolean} [p.cxoBreakfast] this ticket's "CxO Breakfast included" (services/cxoBreakfast.js); unset = the pass's own list
- * @returns {{ subject: string, preheader: string, html: string, text: string }}
+ * @param {object} [p.template]  staff's wording ("purchase-email" EmailTemplate, services/passEmailCopy.js templateCopy); none = built-in
+ * @returns {{ subject: string, preheader: string, html: string, text: string, defaults: object }}
  */
-export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "", cxoBreakfast } = {}) {
+export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "", cxoBreakfast, template = null } = {}) {
   const id = String(ticketId || "");
   const booth = isBoothId(id);
-  const pass = displayPassName(tier, id);
   const first = firstNameFor({ firstName, name });
   const fullName = String(name || "").trim() && String(name).trim().toLowerCase() !== "guest"
     ? String(name).trim() : (first || "Delegate");
   const wallet = booth ? "" : walletUrl;
   const qr = booth ? "" : qrUrl;
-  const includes = booth ? [] : inclusionsFor(tier, { cxoBreakfast });
-  const tips = booth ? [] : emailTips(tier);
+  const D = purchaseEmailDefaults({ tier, ticketId: id, cxoBreakfast, wallet: !!wallet, named: !!first });
+
+  // Staff's wording for this pass type (booths: only the shared sections), filled in for this buyer.
+  const copy = template ? templateFor(template, tier) : {};
+  const edited = Object.fromEntries(Object.keys(D).map((k) => [k, isSet(copy[k]) && (!booth || BOOTH_FIELDS.has(k))]));
+  const raw = (k) => (edited[k] ? copy[k] : D[k]);
+  const base = { firstName: first || "there", fullName, ticketId: id };
+  const pass = fillText(raw("passName"), base);
+  const vars = { ...base, passName: pass };
+  const t = Object.fromEntries(Object.keys(D).map((k) => [k, Array.isArray(D[k]) ? null : fillText(raw(k), vars)]));
+  const listOf = (k) => (edited[k] && k === "includes"
+    ? carryPassRules(copy.includes, baseInclusions(tier), D.includes)
+    : raw(k)).map((x) => fillText(x, vars));
+  const includes = booth ? [] : listOf("includes");
+  const tips = booth ? [] : listOf("tips");
+  const html = (k, builtIn, opts) => (edited[k] ? textHtml(copy[k], vars, opts) : builtIn);
   const cal = googleCalendarUrl();
   const pdfName = `ttfc-pass-${id}.pdf`;
 
-  const subject = booth
-    ? `Your TTFC 2026 ${pass} is confirmed`
-    : `You're in — your TTFC 2026 ${pass} is confirmed 🎟`;
-  const preheader = booth
-    ? `${pass} confirmed for ${EVENT.dates} at ${EVENT.venue}, Toronto.`
-    : `${pass} · ${EVENT.dates} · ${EVENT.venue}, Toronto. Your ticket PDF is attached${wallet ? " and it's ready for Apple Wallet" : ""}.`;
+  const subject = t.subject;
+  const preheader = t.preheader;
 
-  const greeting = first ? `You're in, ${esc(first)}.` : "You're in.";
-  const intro = booth
+  const greeting = edited.headline ? esc(t.headline) : first ? `You're in, ${esc(first)}.` : "You're in.";
+  const intro = html("message", booth
     ? `Your <strong style="color:${C.white};">${esc(pass)}</strong> at The Tech Festival Canada 2026 is confirmed. Your booking reference is below — our team will be in touch about exhibitor logistics.`
-    : `Your <strong style="color:${C.white};">${esc(pass)}</strong> for The Tech Festival Canada 2026 is confirmed. Two days of frontier tech, deals and conversations at ${esc(EVENT.venue)}, Toronto — we can't wait to see you there.`;
+    : `Your <strong style="color:${C.white};">${esc(pass)}</strong> for The Tech Festival Canada 2026 is confirmed. Two days of frontier tech, deals and conversations at ${esc(EVENT.venue)}, Toronto — we can't wait to see you there.`,
+  { wrap: { passName: (e) => `<strong style="color:${C.white};">${e}</strong>` } });
 
   /* ---------- header: brand logo on the brand's own dark ground ----------
      The logo is the white-wordmark PNG, so the band behind it must stay
@@ -124,7 +205,7 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
                   <img src="${esc(qr)}" width="128" height="128" alt="Ticket QR code ${esc(id)}" style="display:block;width:128px;height:128px;border:0;outline:none;">
                 </td></tr>
               </table>
-              <div style="font-family:${SANS};font-size:11px;line-height:15px;color:${C.muted};margin-top:8px;text-align:center;">Scan at registration</div>
+              <div style="font-family:${SANS};font-size:11px;line-height:15px;color:${C.muted};margin-top:8px;text-align:center;">${esc(t.qrCaption)}</div>
             </td>` : "";
 
   const card = `
@@ -137,15 +218,15 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
           <td class="em-stack" valign="top" style="padding:22px 24px;">
-            ${label(booth ? "Booked by" : "Attendee")}
+            ${label(t.labelAttendee)}
             <div style="font-family:${SANS};font-size:22px;line-height:28px;font-weight:700;color:#ffffff;margin:4px 0 14px;">${esc(fullName)}</div>
             <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
               <td bgcolor="${C.purple}" style="background:${C.purple};background-image:linear-gradient(90deg,${C.purple},${C.pink});border-radius:999px;padding:7px 16px;font-family:${DISPLAY};font-size:12px;line-height:14px;font-weight:800;letter-spacing:1.3px;color:#ffffff;text-transform:uppercase;white-space:nowrap;">${esc(pass)}</td>
             </tr></table>
             <div style="height:16px;line-height:16px;font-size:0;">&nbsp;</div>
-            ${label(booth ? "Booking reference" : "Ticket ID")}
+            ${label(t.labelTicketId)}
             <div style="font-family:${MONO};font-size:18px;line-height:24px;font-weight:700;letter-spacing:1.5px;color:${C.gold};margin-top:3px;">${esc(id)}</div>
-            <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.text};margin-top:12px;">${esc(EVENT.dates)} · ${esc(EVENT.venue)}, Toronto</div>
+            <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.text};margin-top:12px;">${esc(t.cardLine)}</div>
           </td>${qrCell}
         </tr>
       </table>
@@ -157,7 +238,7 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
   const walletBlock = wallet ? `
 <tr><td class="em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:22px 32px 4px;" align="center">
   ${walletButtonHtml(wallet)}
-  <div style="font-family:${SANS};font-size:12px;line-height:17px;color:${C.muted};margin-top:8px;text-align:center;">On iPhone, tap to add your pass — it pops up on your lock screen at the venue.</div>
+  <div style="font-family:${SANS};font-size:12px;line-height:17px;color:${C.muted};margin-top:8px;text-align:center;">${html("walletCaption", esc(t.walletCaption))}</div>
 </td></tr>` : "";
 
   const attachBlock = `
@@ -166,8 +247,8 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     <tr>
       <td width="34" valign="top" style="padding:16px 0 16px 14px;font-size:22px;line-height:24px;">📎</td>
       <td style="padding:16px 18px 16px 10px;font-family:${SANS};font-size:14px;line-height:21px;color:${C.text};">
-        <strong style="color:${C.white};">Your ticket PDF is attached</strong> (${esc(pdfName)}).
-        ${booth ? "Keep it for your records." : "Show the QR code on your phone or print it — either works at registration."}
+        <strong style="color:${C.white};">${esc(t.attachTitle)}</strong> (${esc(pdfName)}).
+        ${html("attachCaption", esc(t.attachCaption))}
       </td>
     </tr>
   </table>
@@ -177,15 +258,15 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
   /* Same tagline and paragraph the pass card carries on the website, so the
      email restates the promise the buyer actually bought on. Both are blank
      for tiers without published copy, and the block simply omits them. */
-  const tagline = booth ? "" : taglineFor(tier);
-  const blurb = booth ? "" : blurbFor(tier);
+  const tagline = booth ? "" : t.tagline;
+  const blurb = booth ? "" : t.blurb;
   const passCopy = `${tagline ? `
   <div style="font-family:${SANS};font-size:16px;line-height:23px;font-weight:700;color:#ffffff;margin:0 0 8px;">${esc(tagline)}</div>` : ""}${blurb ? `
-  <div style="font-family:${SANS};font-size:14px;line-height:22px;color:${C.text};margin:0 0 20px;">${esc(blurb)}</div>` : ""}`;
+  <div style="font-family:${SANS};font-size:14px;line-height:22px;color:${C.text};margin:0 0 20px;">${html("blurb", esc(blurb))}</div>` : ""}`;
 
   const includesBlock = includes.length ? `
 <tr><td class="em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:26px 32px 4px;">
-  ${sectionTitle(`Your ${pass} includes`)}
+  ${sectionTitle(t.includesTitle)}
   ${passCopy}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
     ${includes.map((f) => `<tr>
@@ -203,26 +284,26 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
   const detailsBlock = `
 <tr><td class="em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:22px 32px 4px;">
   <div style="height:1px;line-height:1px;font-size:0;background:${C.hair};margin:0 0 22px;">&nbsp;</div>
-  ${sectionTitle("Event details")}
+  ${sectionTitle(t.detailsTitle)}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-    ${row("When", `<strong style="color:${C.white};">Monday–Tuesday, ${esc(EVENT.dates)}</strong>`)}
-    ${row("Where", `<strong style="color:${C.white};">${esc(EVENT.venue)}</strong><br>${esc(EVENT.address)}<br><a href="${esc(EVENT.mapsUrl)}" target="_blank" style="color:${C.gold};text-decoration:underline;">Open in Maps</a>`)}
-    ${row("Doors", esc(EVENT.doors))}
+    ${row(t.labelWhen, `<strong style="color:${C.white};">${esc(t.whenText)}</strong>`)}
+    ${row(t.labelWhere, `<strong style="color:${C.white};">${esc(t.whereVenue)}</strong><br>${esc(t.whereAddress)}<br><a href="${esc(EVENT.mapsUrl)}" target="_blank" style="color:${C.gold};text-decoration:underline;">${esc(t.mapsLink)}</a>`)}
+    ${row(t.labelDoors, html("doorsText", esc(t.doorsText)))}
   </table>
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 4px;">
     <tr><td bgcolor="${C.soft}" style="background:${C.soft};border:2px solid ${C.purple};border-radius:10px;">
-      <a href="${esc(cal)}" target="_blank" style="display:inline-block;padding:10px 20px;font-family:${SANS};font-size:14px;line-height:18px;font-weight:700;color:#ffffff;text-decoration:none;">&#128197;&nbsp; Add to Google Calendar</a>
+      <a href="${esc(cal)}" target="_blank" style="display:inline-block;padding:10px 20px;font-family:${SANS};font-size:14px;line-height:18px;font-weight:700;color:#ffffff;text-decoration:none;">&#128197;&nbsp; ${esc(t.calendarButton)}</a>
     </td></tr>
   </table>
 </td></tr>`;
 
   const tipsBlock = tips.length ? `
 <tr><td class="em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:22px 32px 4px;">
-  ${sectionTitle("Know before you go")}
+  ${sectionTitle(t.tipsTitle)}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-    ${tips.map((t) => `<tr>
+    ${tips.map((x) => `<tr>
       <td width="20" valign="top" style="padding:0 0 9px;font-family:${SANS};font-size:15px;line-height:21px;color:${C.pink};">&#9679;</td>
-      <td style="padding:0 0 9px;font-family:${SANS};font-size:14px;line-height:21px;color:${C.text};">${esc(t)}</td>
+      <td style="padding:0 0 9px;font-family:${SANS};font-size:14px;line-height:21px;color:${C.text};">${esc(x)}</td>
     </tr>`).join("")}
   </table>
 </td></tr>` : "";
@@ -238,15 +319,23 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
         </tr></table>
       </td>
       <td valign="middle" style="padding:18px 20px 18px 14px;">
-        ${label("Coming soon to the App Store", C.gold)}
-        <div style="font-family:${DISPLAY};font-size:15px;line-height:21px;font-weight:800;color:#ffffff;margin:3px 0 4px;letter-spacing:0.5px;">The TTFC mobile app</div>
-        <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.text};">${esc(APP_COMING_SOON.body)}</div>
+        ${label(t.appEyebrow, C.gold)}
+        <div style="font-family:${DISPLAY};font-size:15px;line-height:21px;font-weight:800;color:#ffffff;margin:3px 0 4px;letter-spacing:0.5px;">${esc(t.appTitle)}</div>
+        <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.text};">${html("appBody", esc(t.appBody))}</div>
       </td>
     </tr>
   </table>
 </td></tr>`;
 
-  const html = `<!DOCTYPE html>
+  const helpLink = "color:#ffffff;text-decoration:underline;";
+  const helpText = html("helpText",
+    `Reply to this email or write to <a href="mailto:${EVENT.supportEmail}" style="${helpLink}">${EVENT.supportEmail}</a>. Quote your ticket ID <span style="font-family:${MONO};color:${C.gold};">${esc(id)}</span> so we can find your booking fast.`,
+    { links: helpLink, wrap: { ticketId: (e) => `<span style="font-family:${MONO};color:${C.gold};">${e}</span>` } });
+  const contactLine = html("contactLine", `<a href="${EVENT.website}" target="_blank" style="color:#ffffff;text-decoration:none;font-weight:600;">${EVENT.websiteLabel}</a>
+      &nbsp;·&nbsp; <span style="white-space:nowrap;">Office ${EVENT.phone}</span> &nbsp;·&nbsp; <span style="white-space:nowrap;">Toll free ${EVENT.tollFree}</span>`,
+  { links: helpLink });
+
+  const out = `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8">
@@ -283,10 +372,10 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     <td valign="middle" class="em-logo em-stack">${logoBlock}</td>
     <td valign="middle" align="right" width="230" class="em-stack em-head-addr" style="font-family:${SANS};text-align:right;">
       <!-- The logo already carries the dates; the header adds where. -->
-      <div style="font-size:11px;line-height:15px;font-weight:700;letter-spacing:1.4px;color:${C.gold};text-transform:uppercase;">Venue</div>
+      <div style="font-size:11px;line-height:15px;font-weight:700;letter-spacing:1.4px;color:${C.gold};text-transform:uppercase;">${esc(t.headerLabel)}</div>
       <a href="${esc(EVENT.mapsUrl)}" target="_blank" style="color:#ffffff;text-decoration:none;">
-        <span style="display:block;font-size:14px;line-height:19px;font-weight:700;color:#ffffff;margin-top:6px;">${esc(EVENT.venue)}</span>
-        <span style="display:block;font-size:12px;line-height:17px;color:#c9b8f2;margin-top:2px;">${esc(EVENT.address)}</span>
+        <span style="display:block;font-size:14px;line-height:19px;font-weight:700;color:#ffffff;margin-top:6px;">${esc(t.headerVenue)}</span>
+        <span style="display:block;font-size:12px;line-height:17px;color:#c9b8f2;margin-top:2px;">${esc(t.headerAddress)}</span>
       </a>
     </td>
   </tr></table>
@@ -310,16 +399,15 @@ ${appBlock}
 
 <!-- help footer -->
 <tr><td bgcolor="${C.bg}" class="em-pad" style="background:${C.bg};padding:28px 32px;">
-  <div style="font-family:${SANS};font-size:15px;line-height:22px;font-weight:700;color:#ffffff;margin:0 0 6px;">Need a hand?</div>
-  <div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.text};margin:0 0 16px;">Reply to this email or write to <a href="mailto:${EVENT.supportEmail}" style="color:#ffffff;text-decoration:underline;">${EVENT.supportEmail}</a>. Quote your ticket ID <span style="font-family:${MONO};color:${C.gold};">${esc(id)}</span> so we can find your booking fast.</div>
+  <div style="font-family:${SANS};font-size:15px;line-height:22px;font-weight:700;color:#ffffff;margin:0 0 6px;">${esc(t.helpTitle)}</div>
+  <div style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.text};margin:0 0 16px;">${helpText}</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
     <td style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.muted};">
-      <a href="${EVENT.website}" target="_blank" style="color:#ffffff;text-decoration:none;font-weight:600;">${EVENT.websiteLabel}</a>
-      &nbsp;·&nbsp; <span style="white-space:nowrap;">Office ${EVENT.phone}</span> &nbsp;·&nbsp; <span style="white-space:nowrap;">Toll free ${EVENT.tollFree}</span>
+      ${contactLine}
     </td>
   </tr></table>
   <div style="height:1px;line-height:1px;font-size:0;background:${C.hair};margin:18px 0 14px;">&nbsp;</div>
-  <div style="font-family:${SANS};font-size:11px;line-height:16px;color:${C.dim};">You're receiving this because a ticket for The Tech Festival Canada 2026 was purchased with this email address. The Tech Festival Canada · Toronto, Ontario</div>
+  <div style="font-family:${SANS};font-size:11px;line-height:16px;color:${C.dim};">${html("footerNote", "You're receiving this because a ticket for The Tech Festival Canada 2026 was purchased with this email address. The Tech Festival Canada · Toronto, Ontario")}</div>
 </td></tr>
 
 </table>
@@ -329,41 +417,44 @@ ${appBlock}
 </html>`;
 
   /* ---------- plain text ---------- */
+  const pad = (k, n) => `${k}:`.padEnd(n);
   const lines = [
-    first ? `You're in, ${first}.` : "You're in.",
+    edited.headline ? t.headline : first ? `You're in, ${first}.` : "You're in.",
     "",
-    booth
+    edited.message ? t.message : booth
       ? `Your ${pass} at The Tech Festival Canada 2026 is confirmed.`
       : `Your ${pass} for The Tech Festival Canada 2026 is confirmed.`,
     "",
-    `${booth ? "Booked by" : "Attendee"}: ${fullName}`,
+    `${t.labelAttendee}: ${fullName}`,
     `Pass: ${pass}`,
-    `${booth ? "Booking reference" : "Ticket ID"}: ${id}`,
+    `${t.labelTicketId}: ${id}`,
     "",
-    `Your ticket PDF is attached (${pdfName}).${booth ? "" : " Show its QR code on your phone or printed at registration."}`,
+    edited.attachTitle || edited.attachCaption
+      ? `${t.attachTitle} (${pdfName}).${booth ? "" : ` ${t.attachCaption}`}`
+      : `Your ticket PDF is attached (${pdfName}).${booth ? "" : " Show its QR code on your phone or printed at registration."}`,
     ...(wallet ? ["", `Add to Apple Wallet: ${wallet}`] : []),
     ...(includes.length
-      ? ["", `YOUR ${pass.toUpperCase()} INCLUDES`,
+      ? ["", t.includesTitle.toUpperCase(),
          ...(tagline ? [`  ${tagline}`] : []),
          ...(blurb ? [`  ${blurb}`, ""] : []),
          ...includes.map((f) => `  - ${f}`)]
       : []),
     "",
-    "EVENT DETAILS",
-    `  When:  Monday–Tuesday, ${EVENT.dates}`,
-    `  Where: ${EVENT.venue}, ${EVENT.address}`,
-    `  Doors: ${EVENT.doors}`,
-    `  Add to Google Calendar: ${cal}`,
-    ...(tips.length ? ["", "KNOW BEFORE YOU GO", ...tips.map((t) => `  - ${t}`)] : []),
+    t.detailsTitle.toUpperCase(),
+    `  ${pad(t.labelWhen, 7)}${t.whenText}`,
+    `  ${pad(t.labelWhere, 7)}${t.whereVenue}, ${t.whereAddress}`,
+    `  ${pad(t.labelDoors, 7)}${t.doorsText}`,
+    `  ${t.calendarButton}: ${cal}`,
+    ...(tips.length ? ["", t.tipsTitle.toUpperCase(), ...tips.map((x) => `  - ${x}`)] : []),
     "",
-    APP_COMING_SOON.title.toUpperCase(),
-    `  ${APP_COMING_SOON.body}`,
+    edited.appTitle || edited.appEyebrow ? `${t.appTitle} — ${t.appEyebrow}`.toUpperCase() : APP_COMING_SOON.title.toUpperCase(),
+    `  ${t.appBody}`,
     "",
-    `Questions? Reply to this email or write to ${EVENT.supportEmail}.`,
-    `${EVENT.website} · ${EVENT.phone} · Toll free ${EVENT.tollFree}`,
+    edited.helpTitle || edited.helpText ? `${t.helpTitle} ${t.helpText}` : `Questions? Reply to this email or write to ${EVENT.supportEmail}.`,
+    edited.contactLine ? t.contactLine : `${EVENT.website} · ${EVENT.phone} · Toll free ${EVENT.tollFree}`,
     "",
-    "The Tech Festival Canada · Toronto, Ontario",
+    edited.footerNote ? t.footerNote : "The Tech Festival Canada · Toronto, Ontario",
   ];
 
-  return { subject, preheader, html, text: lines.join("\n") };
+  return { subject, preheader, html: out, text: lines.join("\n"), defaults: D };
 }
