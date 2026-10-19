@@ -3,9 +3,8 @@
    ---------------------------------------------------------
    An issued pass (services/issuedPasses.js) for someone on an
    exhibitor's booth, stored under promo code EXHIBITOR: a Connect
-   Pass (Oct 19 2026: the passes are strictly four, so it's named
-   "Connect Pass", not "Exhibitor Pass"; being an exhibitor is their
-   type, "Is Exhibitor? Yes"). The same pass email, with the
+   Pass, named "Connect Pass" (Oct 19 2026: never "Exhibitor Pass";
+   being an exhibitor is their type, "Is Exhibitor? Yes"). The same pass email, with the
    Exhibitor Manual & return form attached as a PDF
    (services/exhibitorManual.js) filled in with their booth.
    Staff can change the email's default wording ("exhibitor-pass"

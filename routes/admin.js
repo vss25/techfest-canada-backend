@@ -116,7 +116,7 @@ router.get(
       const [inventory, users, guests] = await Promise.all([
         TicketInventory.find().lean(),
         User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode speakerPass stripeSessionId").lean(),
+        Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode").lean(),
       ]);
       const prices = Object.fromEntries(inventory.map((t) => [t.tier, t.price || 0]));
       const summary = salesSummary(collectTickets(users, guests), prices, { range });
@@ -320,7 +320,7 @@ router.post(
         ticket.checkedIn = true;
         await user.save();
 
-        // `type`: one of the four passes (an old "speaker" ticket is a Power Pass); `speaker`: a speaker's pass.
+        // `type`: the pass (connect | influence | power | apex | speaker), `passName` its name, `speaker`: a Speaker Pass.
         res.json({
           success: true,
           name: user.name,

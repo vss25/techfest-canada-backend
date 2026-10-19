@@ -9,15 +9,14 @@ export function threadKey(a, b) {
   return `${x}:${y}`;
 }
 
-const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5 };
+const TIER_RANK = { discover: 1, connect: 2, influence: 3, power: 4, apex: 5, vip: 5, speaker: 6 };
 
-/** Highest ticket tier key a user holds ("" when none). An old "speaker" ticket is a Power Pass. */
+/** Highest ticket tier key a user holds ("" when none). */
 export function bestTierKey(user) {
   const tickets = Array.isArray(user?.tickets) ? user.tickets : [];
   let best = "";
   for (const t of tickets) {
-    let k = String(t?.type || "").toLowerCase();
-    if (k === "speaker") k = "power";
+    const k = String(t?.type || "").toLowerCase();
     if ((TIER_RANK[k] || 0) > (TIER_RANK[best] || 0)) best = k;
   }
   return best;
@@ -30,7 +29,7 @@ export function tierName(key) {
     case "influence": return "Influence Pass";
     case "power": return "Power Pass";
     case "apex": case "vip": return "Apex Pass";
-    case "speaker": return "Power Pass"; // speakers' passes before Oct 19 2026
+    case "speaker": return "Speaker Pass"; // the internal Speaker Pass (their own card only)
     default: return "";
   }
 }

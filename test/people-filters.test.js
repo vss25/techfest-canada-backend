@@ -147,7 +147,7 @@ test("RSVP status: Confirmed by Individual, Confirmed by Staff, Unconfirmed", ()
 test("RSVP email sent: pass emails with the RSVP button, speaker reminders and RSVP reminders; nothing guessed", () => {
   const { people } = buildPeople(world());
   const sent = (n) => personRow(by(people, n)).rsvpEmail;
-  assert.deepEqual([sent("Kai Speaker").sent, sent("Kai Speaker").via], [true, ["Speaker's pass email"]]);
+  assert.deepEqual([sent("Kai Speaker").sent, sent("Kai Speaker").via], [true, ["Speaker Pass email"]]);
   assert.equal(sent("Lea Early").sent, false); // sent before the Speaker Pass email had the RSVP button
   assert.ok(d("10-12T01:30:00") < SPEAKER_RSVP_LINK_FROM);
   assert.equal(sent("Max Norsvp").sent, false); // issued pass emailed without the RSVP button

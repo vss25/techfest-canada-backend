@@ -113,7 +113,6 @@ export async function deleteAccount(userId) {
       await Attendee.create({
         name: user.name || "Guest", email: user.email, ticketId: t.ticketId, ticketType: t.type,
         purchaseDate: t.purchaseDate, checkedIn: !!t.checkedIn, checkedInAt: t.checkedInAt,
-        ...(typeof t.speakerPass === "boolean" ? { speakerPass: t.speakerPass } : {}),
         directoryHidden: true,
       });
     }

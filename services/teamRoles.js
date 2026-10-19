@@ -29,23 +29,13 @@ export const EXHIBITOR_PROMO = "EXHIBITOR";
 // Same value as SPEAKER_PROMO in services/speakerPasses.js (Admin › Speaker passes).
 export const SPEAKER_PROMO = "SPEAKER";
 
-/* Speakers' passes (Oct 19 2026: "There is no 'speaker pass'. The pass types are strictly four"):
-   a speaker's pass is a Power Pass (tier "power") with `speakerPass: true` on the ticket record
-   (Attendee.speakerPass, User.tickets[].speakerPass). The marker is what makes its holder a
-   speaker automatically (autoTypes, passKind), like an exhibitor pass makes an exhibitor; the
-   tier only says which of the four passes it is. Records from before the change (ticket type
-   "speaker", fixed on start by services/fourPasses.js) and Admin › Speaker passes rows (promo
-   SPEAKER) count too. true / false on the record is the answer when set. */
+/** A Speaker Pass: the internal fifth pass (tier "speaker", Oct 19 2026: never sold or listed on the website),
+    from Admin › Speaker passes (promo SPEAKER) or Issue passes. Holding one makes someone a speaker
+    automatically (autoTypes, passKind), like an exhibitor pass makes an exhibitor. */
 export function isSpeakerPass(rec) {
-  if (typeof rec?.speakerPass === "boolean") return rec.speakerPass;
   return String(rec?.type || rec?.ticketType || "").trim().toLowerCase() === "speaker"
     || String(rec?.promoCode || "").toUpperCase() === SPEAKER_PROMO;
 }
-
-/** A speaker's pass we issued (never sold: no Stripe checkout, no paid upgrade): it takes no seat from the
-    inventory, isn't a sale and is worth 0. A bought pass whose holder staff marked as a speaker stays a sale,
-    and so does a speaker's pass they paid to upgrade (Power → Apex: the Apex seat is taken). */
-export const isIssuedSpeakerPass = (rec) => isSpeakerPass(rec) && !rec?.stripeSessionId && !rec?.upgradedFrom;
 
 export const holdsSpeakerPass = (tickets) => (Array.isArray(tickets) ? tickets : []).some(isSpeakerPass);
 export const holdsExhibitorPass = (tickets) => (Array.isArray(tickets) ? tickets : []).some((t) => String(t?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO);
@@ -54,8 +44,8 @@ export const holdsExhibitorPass = (tickets) => (Array.isArray(tickets) ? tickets
    What someone is at TTFC, for the app rights matrix (services/appRights.js)
    and the badges on their card. Effective types =
      (User.types set by staff ∪ automatic types) − User.typesOff
-   Automatic: staff (role admin), volunteer (role volunteer), speaker (a pass
-   issued to a speaker: isSpeakerPass), exhibitor (an exhibitor pass). Attendee is automatic for anyone holding
+   Automatic: staff (role admin), volunteer (role volunteer), speaker (a Speaker
+   Pass: isSpeakerPass), exhibitor (an exhibitor pass). Attendee is automatic for anyone holding
    a pass or ticket who has no other type; staff can also add it by hand. typesOff
    is the only way to take an automatic type away from one person. `role` stays
    the sign-in / admin panel switch.

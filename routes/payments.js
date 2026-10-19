@@ -208,15 +208,14 @@ function cleanMetadata(obj) {
 //
 // Oct 19 2026, the organiser: "Don't offer upgrades to Apex for anyone who is marked as
 // speakers. In fact, don't offer upgrades at all." So upgrades are refused unless staff turn
-// on Admin › App text & switches › Pass upgrades (flag.upgrades, default off), and a speaker's
-// pass (tier "speaker", or the speakerPass marker) or anyone of the speaker type never upgrades,
+// on Admin › App text & switches › Pass upgrades (flag.upgrades, default off), and a Speaker
+// Pass (tier "speaker", or promo SPEAKER) or anyone of the speaker type never upgrades,
 // even with it on. An upgrade already paid is still finished by the webhook.
 export const UPGRADES_OFF = Object.freeze({ status: 403, code: "upgrades_off", error: "Pass upgrades aren't available." });
 export const SPEAKER_NO_UPGRADE = Object.freeze({ status: 403, code: "speaker_pass", error: "Speakers' passes can't be upgraded." });
 
-/** Pure: whether this ticket of this account is a speaker's (never upgraded): a pass on the "speaker" tier,
-    one isSpeakerPass recognises (marker, promo SPEAKER), or anyone of the speaker type. Not the marker alone.
-    Exported for tests. */
+/** Pure: whether this ticket of this account is a speaker's (never upgraded): a Speaker Pass (tier "speaker",
+    or promo SPEAKER: isSpeakerPass) or anyone of the speaker type. Exported for tests. */
 export function isSpeakersPass(buyer, ticket) {
   const user = typeof buyer?.toObject === "function" ? buyer.toObject() : buyer;
   const tier = String(ticket?.type || ticket?.ticketType || "").trim().toLowerCase();
@@ -242,7 +241,7 @@ async function resolveUpgrade(buyer, ticketId, toTier) {
   if (!buyer) return { status: 401, error: "Sign in to upgrade your pass." };
   const ticket = (buyer.tickets || []).find((t) => t.ticketId === String(ticketId || "").trim());
   if (!ticket) return { status: 404, error: "That ticket isn't on your account." };
-  // A speaker's pass is a Power Pass since Oct 19 2026 (the passes are strictly four), and it's never upgraded.
+  // A Speaker Pass (the internal fifth pass), or anyone who's a speaker, is never upgraded.
   if (isSpeakersPass(buyer, ticket)) return SPEAKER_NO_UPGRADE;
   if (ticket.checkedIn) return { status: 409, error: "This pass has already been used at the door; upgrade at the registration desk." };
   await applyDuePrices();

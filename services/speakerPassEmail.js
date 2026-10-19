@@ -1,10 +1,6 @@
 /* =========================================================
-   Speakers' pass email — HTML + plain text
+   Speaker Pass email — HTML + plain text
    ---------------------------------------------------------
-   Since Oct 19 2026 a speaker's pass is a Power Pass (the passes are
-   strictly four; "speaker" is their person type), so the email says
-   "Power Pass" and still lists what speakers get: the CxO Breakfasts
-   and the VIP Lounge on top of the Power Pass.
    A personal welcome with the speaker's pass: name, title,
    company, dates, venue, ticket ID and the check-in QR code
    (TECHFEST:<ticketId>), what the pass includes and a personal
@@ -45,25 +41,29 @@ const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial
 const SERIF = "Georgia,'Times New Roman',Times,serif";
 const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
-/** What a speaker's Power Pass includes, being a speaker (email + plain text). */
+/** What a Speaker Pass includes (email + plain text), Oct 19 2026: everything in the Power Pass, plus both
+    CxO Breakfasts and the VIP Lounge. None of the Apex extras (meetings, preferential seating, the Scotch lounge). */
 export const SPEAKER_INCLUDES = [
-  ["All-Access, Both Days", "Every keynote, stage and the expo floor"],
-  ["CxO Breakfasts & Luncheons", "Every one, on both days"],
+  ["2× Day Conference Access", "Every keynote, panel and stage, and the expo floor, both days"],
+  ["2× CxO Breakfasts", "Senior-leader breakfasts, both mornings"],
+  ["2× Luncheons", "The networking lunch on both days"],
   ["The Gala Dinner", "Dinner and networking reception on Day 2"],
   ["Catalyst Awards Night", "Celebrating Canada's frontier tech on Day 1"],
-  ["The VIP Lounge", "A quiet space to prepare and connect"],
+  ["VIP Lounge Access (both days)", "A quiet space to prepare and connect"],
 ];
+/** The Speaker Pass's access line ("All Access" is the Power Pass's own name, so not this). */
+export const SPEAKER_ACCESS = "Power + CxO Breakfasts & VIP Lounge";
 
 /** Why speakers should RSVP (shown above the button and in the plain text). */
 export const RSVP_REASON = "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.";
 
 /**
- * What changes between pass emails. A speaker's Power Pass is the default; staff-issued passes
+ * What changes between pass emails. The Speaker Pass is the default; staff-issued passes
  * (services/issuedPasses.js) pass their own: label, access line, what's included, whether
  * there's an RSVP button, and the built-in wording ({firstName}/{fullName} filled in).
  */
 export const SPEAKER_VARIANT = Object.freeze({
-  label: SPEAKER_PASS_LABEL, access: "All Access · Speaker", includes: null, rsvp: true, rsvpReason: null,
+  label: "Speaker Pass", access: SPEAKER_ACCESS, includes: null, rsvp: true, rsvpReason: null,
 });
 
 export const qrPayload = (ticketId) => `TECHFEST:${String(ticketId || "").trim()}`;
@@ -108,7 +108,7 @@ export async function speakerPassAttachments(ticketId) {
   return {
     srcs: { qrSrc: `cid:${QR_CID}`, logoSrc: `cid:${LOGO_CID}` },
     attachments: [
-      { filename: "ttfc-pass-qr.png", content: qr.toString("base64"), content_type: "image/png", content_id: QR_CID },
+      { filename: "ttfc-speaker-pass-qr.png", content: qr.toString("base64"), content_type: "image/png", content_id: QR_CID },
       { filename: "ttfc-2026.png", content: logoPng().toString("base64"), content_type: "image/png", content_id: LOGO_CID },
     ],
   };
@@ -143,7 +143,7 @@ function button(href, label) {
 }
 
 /** The pass card: a badge-style ticket that reads well in every client. */
-function passCard({ name, title, company, id, qrSrc, logoSrc, label = SPEAKER_PASS_LABEL, access = "All Access" }) {
+function passCard({ name, title, company, id, qrSrc, logoSrc, label = "Speaker Pass", access = SPEAKER_ACCESS }) {
   const role = [title, company].filter(Boolean);
   const detail = (label, value, extra = "") => `
             <tr><td style="padding:0 0 14px;">
@@ -331,9 +331,9 @@ export function runOfShowText({ name, runOfShow }) {
  * are filled in per speaker. An empty field means the built-in text below.
  */
 export const DEFAULT_COPY = Object.freeze({
-  subject: "{firstName}, your Power Pass and run of show for TTFC 2026",
+  subject: "{firstName}, your Speaker Pass and run of show for TTFC 2026",
   headline: "We're delighted to have you speaking at TTFC 2026.",
-  message: `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Power Pass is below, followed by your run of show.`,
+  message: `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below, followed by your run of show.`,
 });
 export const COPY_LIMITS = Object.freeze({ subject: 200, headline: 200, message: 3000 });
 
@@ -369,14 +369,14 @@ export function buildSpeakerPassEmail({ name, title = "", company = "", ticketId
   const fill = (s) => fillCopy(s, { firstName: first, fullName });
   const subject = copy.subject ? fill(copy.subject)
     : !isSpeaker ? fill(v.subject)
-    : hasRos ? `${first}, your Power Pass and run of show for TTFC 2026` : `${first}, your Power Pass for TTFC 2026`;
+    : hasRos ? `${first}, your Speaker Pass and run of show for TTFC 2026` : `${first}, your Speaker Pass for TTFC 2026`;
   const headline = copy.headline ? fill(copy.headline) : isSpeaker ? DEFAULT_COPY.headline : fill(v.headline);
   const message = copy.message ? fill(copy.message)
     : !isSpeaker ? fill(v.message)
-    : `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Power Pass is below${hasRos ? ", followed by your run of show" : ""}.`;
+    : `The conversations that shape Canada's frontier tech happen because people like you take the stage. We look forward to welcoming you to Toronto on ${EVENT.dates}. Your personal Speaker Pass is below${hasRos ? ", followed by your run of show" : ""}.`;
   const messageHtml = message.split(/\n\s*\n/).map((p, i) => `<div style="font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:${i ? "14px" : "0"} 0 0;">${esc(p).replace(/\n/g, "<br>")}</div>`).join("");
   const preheader = isSpeaker
-    ? `We're delighted to have you speaking at TTFC 2026. Your Power Pass, ticket ID and personal RSVP link are inside.`
+    ? `We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.`
     : `Your ${v.label} for TTFC 2026: ticket ID, check-in QR code${v.rsvp ? " and personal RSVP link" : ""} inside.`;
 
   const includes = includeList.map(([head, sub]) => `

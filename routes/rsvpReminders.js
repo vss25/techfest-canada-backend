@@ -50,7 +50,7 @@ async function audit(req, action, detail = "") {
 async function currentRows() {
   const [users, guests, optedOut, rsvps, sends] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email jobTitle organization banned tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType promoCode speakerPass details hiddenByStaff purchaseDate").lean(),
+    Attendee.find({}).select("name email ticketId ticketType details hiddenByStaff purchaseDate").lean(),
     Subscription.find({ subscribed: false }).select("email").lean(),
     Rsvp.find({ spam: { $ne: true } }).select("ticketId firstName lastName spam").lean(),
     CampaignSend.find({ campaign: REMINDER_CAMPAIGN }).select("email status sentAt error sends").lean(),

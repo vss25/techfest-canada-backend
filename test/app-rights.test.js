@@ -453,9 +453,7 @@ test("typeCandidates: a query per type, null for unknown ones", () => {
   assert.deepEqual(typeCandidates("vendor"), { types: "vendor" });
   assert.deepEqual(typeCandidates("staff"), { $or: [{ role: "admin" }, { types: "staff" }] });
   assert.deepEqual(typeCandidates("volunteer"), { $or: [{ role: "volunteer" }, { types: "volunteer" }] });
-  // The type, a speaker's pass (the marker, Power Passes since Oct 19 2026) or the old "speaker" ticket type.
-  assert.equal(typeCandidates("speaker").$or.length, 3);
-  assert.deepEqual(typeCandidates("speaker").$or[1], { "tickets.speakerPass": true });
+  assert.equal(typeCandidates("speaker").$or.length, 2);
   assert.deepEqual(typeCandidates("exhibitor"), {});
   assert.deepEqual(typeCandidates("attendee"), {});
   assert.equal(typeCandidates("minister"), null);

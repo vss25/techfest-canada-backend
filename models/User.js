@@ -48,11 +48,6 @@ const ticketSchema = new mongoose.Schema({
   cxoBreakfast: {
     type: Boolean
   },
-  // A speaker's pass (a Power Pass since Oct 19 2026): makes the account a speaker automatically
-  // (services/teamRoles.js isSpeakerPass). Copied from the Attendee row when the pass is claimed.
-  speakerPass: {
-    type: Boolean
-  },
   // Ticket value after payment typed by management for a pass paid outside Stripe (CAD before HST).
   manualValue: { type: Number },
   manualValueNote: { type: String },
