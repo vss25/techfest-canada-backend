@@ -37,7 +37,7 @@ export const RIGHT_LABELS = {
   comment: "Comment",
   startDiscussions: "Start discussions",
   createGroups: "Create groups",
-  shareContact: "Share contact details on badge scan",
+  shareContact: "Share contact details",
   deleteAnyPost: "Delete any post",
   moderate: "Moderate content",
   checkIn: "Check people in",

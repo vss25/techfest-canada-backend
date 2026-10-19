@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { PERSON_TYPES } from "../services/teamRoles.js";
+import { CONTACT_KINDS } from "../services/contactCard.js";
 
 const ticketSchema = new mongoose.Schema({
   ticketId: {
@@ -114,6 +115,16 @@ const userSchema = new mongoose.Schema(
     objectives:   { type: [String], default: [] },        // what they want from TTFC
     availabilitySlots: { type: [String], default: [] },   // when they're free to meet
     meetingSpot:  { type: String, default: "" },
+    // Contact card (services/contactCard.js): the ways people can reach them, ≤ 12, in their order.
+    // `account: true` = the sign-in email (value never stored, read from `email`). Shared per
+    // connection (SocialConnection fromShare / toShare). Unset contactCardSavedAt = never saved:
+    // the card is then worked out from email + linkedinUrl.
+    contactItems: { type: [{ _id: false, id: String, kind: { type: String, enum: CONTACT_KINDS }, label: String,
+                             value: String, shareByDefault: Boolean, account: Boolean }], default: [] },
+    contactCardSavedAt: { type: Date },
+    // What people who scan their connect QR get (item ids, set from the QR sheet). Unset = their
+    // share-by-default items. Copied onto the connection at scan time if they hadn't picked for it.
+    contactQrShare: { type: [String], default: undefined },
     // When they last opened each tab's activity (likes, comments, mentions, replies).
     activitySeen: { feed: { type: Date }, discussions: { type: Date } },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)

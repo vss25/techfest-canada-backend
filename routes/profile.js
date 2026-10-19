@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile, mirrorProfileToTickets, consentPatch } from "../services/onboardingProfile.js";
+import { syncLinkedInItem } from "../services/contactCard.js";
 
 /* =========================================================
    ATTENDEE PROFILE — GET / PATCH /api/profile
@@ -90,7 +91,10 @@ router.patch("/", async (req, res) => {
     if (!user) return;
     const patch = { ...sanitizeProfilePatch(req.body), ...consentPatch(req.body, user) };
     if (!Object.keys(patch).length) return res.status(400).json({ error: "No editable fields supplied" });
+    // The profile LinkedIn is also the first LinkedIn item on a saved contact card.
+    const cardItems = patch.linkedinUrl !== undefined && patch.linkedinUrl !== user.linkedinUrl ? syncLinkedInItem(user, patch.linkedinUrl) : null;
     Object.assign(user, patch);
+    if (cardItems) user.contactItems = cardItems;
     // Finishing the app's profile steps: copy the answers onto their tickets
     // (gaps only) so the admin panel's ticket list and export show them.
     if (user.appOnboarded) {
