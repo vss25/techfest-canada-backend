@@ -22,6 +22,7 @@ import {
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
 import { prepareLogo, storeLogo, chooseStore, decodeLogoDataUrl } from "../services/logoStore.js";
+import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/contactCard.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -31,7 +32,8 @@ import { prepareLogo, storeLogo, chooseStore, decodeLogoDataUrl } from "../servi
                             → { total, page, size, rows, counts, stripe }
      GET    /export         the same view as CSV (management: it holds emails)
      GET    /:id            the profile: person, passes, RSVP (+ catalog for the editor),
-                            agenda (sessions saved in the app + RSVP special events), company
+                            agenda (sessions saved in the app + RSVP special events), company,
+                            contactCard (their app contact details, read only)
      PATCH  /:id            { name?, email? (management), linkedinUrl?, company?, jobTitle?, exhibitor? }
      PUT    /:id/rsvp       { days, options, dietary, dietaryOther?, accessibility?, tier?,
                               override?, allowOutsidePass?, basedOn?, rsvpId? }
@@ -175,10 +177,11 @@ router.get("/:id", wrap(async (req, res) => {
   // from /rsvp a moment ago shows), where the list can be 20 s old.
   const p = await findPerson(req.params.id, { maxAgeMs: 3000 });
   if (!p) return res.status(404).json({ error: "Person not found" });
-  const [regs, agenda, cmsLogos] = await Promise.all([
+  const [regs, agenda, cmsLogos, card] = await Promise.all([
     p.user ? SessionRegistration.find({ userId: p.user._id }).select("sessionId").lean() : Promise.resolve([]),
     agendaCache.get(),
     cmsLogoCache.get(),
+    p.user ? User.findById(p.user._id).select(CONTACT_SELECT).lean() : Promise.resolve(null),
   ]);
   const person = personDetail(p, { management: isManagement(req.user), cmsLogos: cmsLogos || [] });
   res.json({
@@ -190,6 +193,8 @@ router.get("/:id", wrap(async (req, res) => {
     agenda: { sessions: agendaFor(regs.map((r) => r.sessionId), agenda), agendaReadable: !!agenda, specialEvents: person.specialEvents },
     catalog: rsvpOptionsPayload(),
     logoStore: chooseStore(),
+    // Their app contact card, read only: [{ kind, label, value, shareByDefault }] (each person picks what they share).
+    contactCard: contactItemsFor(card).map((it) => ({ kind: it.kind, label: it.label, value: it.value, shareByDefault: it.shareByDefault })),
   });
 }));
 
@@ -235,7 +240,12 @@ router.patch("/:id", wrap(async (req, res) => {
       if (await User.exists({ email: want.email, _id: { $ne: u._id } })) return res.status(409).json({ error: "Another account already uses that email", field: "email" });
       note("email"); u.email = want.email;
     }
-    if (want.linkedinUrl !== undefined && want.linkedinUrl !== (u.linkedinUrl || "")) { note("linkedinUrl"); u.linkedinUrl = want.linkedinUrl; }
+    if (want.linkedinUrl !== undefined && want.linkedinUrl !== (u.linkedinUrl || "")) {
+      note("linkedinUrl");
+      const cardItems = syncLinkedInItem(u, want.linkedinUrl);   // also the first LinkedIn on their contact card
+      u.linkedinUrl = want.linkedinUrl;
+      if (cardItems) u.contactItems = cardItems;
+    }
     if (want.company !== undefined && want.company !== (u.organization || "")) { note("company"); u.organization = want.company; }
     if (want.jobTitle !== undefined && want.jobTitle !== (u.jobTitle || "")) { note("jobTitle"); u.jobTitle = want.jobTitle; }
     if (want.exhibitor !== undefined && want.exhibitor !== p.exhibitor) {

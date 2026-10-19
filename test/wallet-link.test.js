@@ -80,6 +80,9 @@ test("link: someone else's ticket is refused; staff may fetch any", async () => 
   assert.equal(staff.status, 200);
   assert.equal(verifyTicketSig("0f0f0f0f0f0f", new URL(staff.body.url).searchParams.get("sig"), LINK_SECRET), true);
   assert.equal((await getLink("999999999999", bearer("c".repeat(24)))).status, 404, "unknown ticket, even for staff");
+  // Staff signed in by email link or pass ID only see their own (as for /pass).
+  const viaEmail = { Authorization: `Bearer ${jwt.sign({ id: "c".repeat(24), via: "email" }, SECRET)}` };
+  assert.equal((await getLink("0f0f0f0f0f0f", viaEmail)).status, 404);
 });
 
 test("link: 503 while Apple Wallet isn't set up (after the ticket check)", async () => {

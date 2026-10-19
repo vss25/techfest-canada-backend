@@ -56,6 +56,12 @@ const socialConnectionSchema = new Schema({
   kind:       { type: String, enum: ["online", "inPerson"], default: "online" },
   note:       { type: String, default: "", maxlength: 300 },
   respondedAt: Date,
+  /** Contact card item ids each side shares (services/contactCard.js), resolved live against
+      that person's current items. Unset = that side never picked (defaults apply in person). */
+  fromShare:   { type: [String], default: undefined },
+  fromShareAt: Date,
+  toShare:     { type: [String], default: undefined },
+  toShareAt:   Date,
 }, { timestamps: true });
 socialConnectionSchema.index({ fromUserId: 1, toUserId: 1 }, { unique: true });
 

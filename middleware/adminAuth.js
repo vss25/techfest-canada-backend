@@ -2,7 +2,14 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { RIGHT_ERRORS } from "../services/appRights.js";
 import { accessOf } from "../services/rightsStore.js";
+import { signedInWithoutPassword, PASSWORD_REQUIRED, PASSWORD_REQUIRED_CODE } from "../services/signInMethod.js";
 
+/* The admin panel and every staff-only API behind it (console, cms, people,
+   promos, admin, campaigns, leads, …). Password tokens only: staff who signed
+   in to an app with an emailed code (or a pass ID) get 403 PASSWORD_REQUIRED,
+   with `code` so the panel can send them to its sign-in page. Tokens without
+   a `via` claim (older tokens, password, Google) work as before. In-app staff
+   features don't use this guard (requireCheckIn, social/community rights). */
 export async function requireAdmin(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
@@ -15,6 +22,9 @@ export async function requireAdmin(req, res, next) {
     if (!user || user.role !== "admin") {
       return res.status(403).json({ error: "Admin only" });
     }
+    if (signedInWithoutPassword(decoded)) {
+      return res.status(403).json({ error: PASSWORD_REQUIRED, code: PASSWORD_REQUIRED_CODE });
+    }
 
     req.user = user;
     next();
@@ -26,7 +36,8 @@ export async function requireAdmin(req, res, next) {
 /* Door check-in (POST /api/checkin/scan): anyone whose types give them the
    checkIn right in the App rights matrix (volunteers and staff by default;
    staff accounts always, services/appRights.js). Everything else staff-only
-   keeps requireAdmin, so volunteers never reach the admin panel. */
+   keeps requireAdmin, so volunteers never reach the admin panel. Any sign-in
+   works here, the emailed code included (services/signInMethod.js). */
 export async function requireCheckIn(req, res, next) {
   let user;
   try {

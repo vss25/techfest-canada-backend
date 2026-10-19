@@ -4,7 +4,8 @@ import crypto from "crypto";
    "Email me a sign-in link" — pure helpers
    ---------------------------------------------------------
    POST /api/auth/email-link sends a one-time link + 6-digit code
-   to the email a ticket was bought with. Only SHA-256 hashes of
+   to any account's email, or one a ticket was bought with
+   (linkDecision below). Only SHA-256 hashes of
    the token and code are stored (models/SignInRequest.js); the
    request expires after 15 minutes, works once, and allows five
    wrong codes before it locks. routes/emailLink.js wires this to
@@ -159,13 +160,13 @@ export function emailRegex(email) {
 }
 
 /**
- * Which email a sign-in request gets. Links only go to emails tied to a ticket: an account
- * holding at least one ticket, or a guest ticket bought with this email. Staff never get one
- * (they sign in with their password). Everyone else gets the "no ticket" email.
- * @returns {"staff"|"signin"|"no-ticket"}
+ * Which email a sign-in request gets. Every existing account gets a link + code, whatever its
+ * role and whether or not it holds a ticket (attendees, staff, volunteers, vendors…); so does
+ * an email a guest ticket was bought with (the account is made on verify). Only an email with
+ * neither gets the "no ticket" email: no accounts for strangers. Tokens from it carry
+ * `via: "email"`, which the admin panel refuses (services/signInMethod.js).
+ * @returns {"signin"|"no-ticket"}
  */
 export function linkDecision(user, guestCount = 0) {
-  if (user && String(user.role || "").toLowerCase() === "admin") return "staff";
-  const owned = Array.isArray(user?.tickets) ? user.tickets.length : 0;
-  return owned > 0 || guestCount > 0 ? "signin" : "no-ticket";
+  return !!user || guestCount > 0 ? "signin" : "no-ticket";
 }

@@ -4,8 +4,11 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
 import { isTeam, isVolunteer } from "../services/teamRoles.js";
+import { tokenClaims, cleanVia, VIA_TICKET } from "../services/signInMethod.js";
 
-const teamPasswordOnly = (u) => (isVolunteer(u) ? "Volunteer accounts sign in with their password." : "Staff accounts sign in with their password.");
+const teamPasswordOnly = (u) => (isVolunteer(u)
+  ? "Volunteer accounts sign in with a code sent to their email or their password."
+  : "Staff accounts sign in with a code sent to their email or their password.");
 
 /* =========================================================
    Mounted at /api/auth alongside routes/auth.js (website auth):
@@ -22,19 +25,26 @@ const limiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
 const APP_TOKEN_TTL = "30d";
 const NO_MATCH = "That ticket ID and last name don't match a TTFC ticket.";
 
-function sign(user, expiresIn = APP_TOKEN_TTL) {
-  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn });
+/** 30-day app JWT. `via`: how they signed in ("email" | "ticket"; none = password),
+    see services/signInMethod.js. The admin panel only takes password tokens. */
+function sign(user, { via, expiresIn = APP_TOKEN_TTL } = {}) {
+  return jwt.sign(tokenClaims(user, via), process.env.JWT_SECRET, { expiresIn });
 }
 
-async function userFromToken(req) {
+async function sessionFromToken(req) {
   const h = req.headers.authorization;
   if (!h) return null;
   try {
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
-    return await User.findById(decoded.id);
+    const user = await User.findById(decoded.id);
+    return user ? { user, decoded } : null;
   } catch {
     return null;
   }
+}
+
+async function userFromToken(req) {
+  return (await sessionFromToken(req))?.user || null;
 }
 
 /** Finds a ticket in users' tickets first, then guest Attendee records. */
@@ -99,11 +109,11 @@ router.post("/ticket-login", async (req, res) => {
     if (found.kind === "user") {
       // The name on the ticket itself also counts, so changing your profile name can't lock you out.
       if (!(await ticketNameMatches(found, lastName))) return res.status(401).json({ error: NO_MATCH });
-      // Staff accounts reach the admin panel and volunteers can check tickets in:
-      // they always sign in with their password.
+      // Staff accounts reach the admin panel and volunteers can check tickets in: a ticket ID
+      // never opens them. They sign in with an emailed code or their password.
       if (isTeam(found.owner)) return res.status(400).json({ error: teamPasswordOnly(found.owner) });
       limiter.reset(key);
-      return res.json({ token: sign(found.owner), created: false });
+      return res.json({ token: sign(found.owner, { via: VIA_TICKET }), created: false });
     }
 
     const a = found.attendee;
@@ -130,7 +140,7 @@ router.post("/ticket-login", async (req, res) => {
     if (!a.claimedBy) { a.claimedBy = user._id; await a.save(); }
 
     limiter.reset(key);
-    res.json({ token: sign(user), created });
+    res.json({ token: sign(user, { via: VIA_TICKET }), created });
   } catch (err) {
     console.error("TICKET LOGIN ERROR:", err);
     res.status(500).json({ error: "Server error" });
@@ -194,10 +204,11 @@ router.post("/claim-ticket", async (req, res) => {
 });
 
 /* ---------- Keep the app signed in (sliding 30-day token) ---------- */
+// Keeps how they signed in: a refreshed email or pass-ID token never becomes a password token.
 router.post("/refresh", async (req, res) => {
-  const me = await userFromToken(req);
-  if (!me) return res.status(401).json({ error: "Invalid token" });
-  res.json({ token: sign(me) });
+  const session = await sessionFromToken(req);
+  if (!session) return res.status(401).json({ error: "Invalid token" });
+  res.json({ token: sign(session.user, { via: cleanVia(session.decoded.via) }) });
 });
 
 export default router;

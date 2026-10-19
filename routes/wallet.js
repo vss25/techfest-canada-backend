@@ -7,12 +7,13 @@ import { buildPass, isConfigured } from "../services/walletPass.js";
 import { verifyTicketSig, walletPassUrl } from "../services/walletLink.js";
 import { displayName } from "../services/attendeeDetails.js";
 import { escapeHtml } from "../services/ticketInfo.js";
+import { signedInWithoutPassword } from "../services/signInMethod.js";
 
 /* =========================================================
    GET /api/wallet/pass/:ticketId
      Either   Authorization: Bearer <user token>  (iOS app / website;
-              the ticket must be on the caller's account, staff may
-              fetch any)
+              the ticket must be on the caller's account, staff
+              signed in with a password may fetch any)
      or       ?sig=<hmac>  — the signed link in the ticket email/PDF,
               for guests without an account (services/walletLink.js)
    → application/vnd.apple.pkpass. 503 until the Pass Type ID cert
@@ -62,8 +63,8 @@ async function findTicket(ticketId) {
   return null;
 }
 
-/** Bearer caller → { owner, ticket } when the ticket is on their account (staff:
-    on any account), else { status, error }. Shared by /pass and /link. */
+/** Bearer caller → { owner, ticket } when the ticket is on their account (staff
+    signed in with a password: on any account), else { status, error }. Shared by /pass and /link. */
 async function ticketForCaller(req, ticketId) {
   const h = req.headers.authorization;
   if (!h) return { status: 401, error: "Unauthorized" };
@@ -76,7 +77,8 @@ async function ticketForCaller(req, ticketId) {
 
   let owner = user;
   let ticket = user.tickets.find((t) => t.ticketId === ticketId);
-  if (!ticket && user.role === "admin") {
+  // Staff may fetch anyone's pass, but only with a password sign-in (like the admin panel).
+  if (!ticket && user.role === "admin" && !signedInWithoutPassword(decoded)) {
     owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
     ticket = owner?.tickets.find((t) => t.ticketId === ticketId);
   }
