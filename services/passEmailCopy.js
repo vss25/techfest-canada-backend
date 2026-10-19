@@ -88,7 +88,7 @@ const PASS_FIELDS = [
   f("cardFooter", "pass", "Bottom line of the pass", "line", 120),
   f("qrTextNote", "pass", "QR line in the plain-text version", "line", 200),
   f("includesTitle", "includes", "Section title", "line", 80),
-  f("includes", "includes", "What's included", "pairs", 20, { tier: true, hint: "Add, remove, reorder or reword. Empty = the pass's own list (and the CxO Breakfast rule)." }),
+  f("includes", "includes", "What's included", "pairs", 20, { tier: true, hint: "Add, remove, reorder or reword. Empty = the pass's own list (with its meals and events switched on or off for that pass)." }),
   f("rosTitle", "dayplan", "Sessions title", "line", 80, { only: ["speaker"] }),
   f("rosStage", "dayplan", "Stage", "line", 120, { only: ["speaker"] }),
   f("rosMicUp", "dayplan", "Mic fitting reminder", "text", 300, { only: ["speaker"], hint: "Their mic-fitting times are added after it." }),
@@ -144,7 +144,7 @@ const PURCHASE_FIELDS = [
   f("includesTitle", "includes", "Section title", "line", 80),
   f("tagline", "includes", "Tagline", "line", 200, { tier: true }),
   f("blurb", "includes", "Paragraph", "text", 1200, { tier: true }),
-  f("includes", "includes", "What's included", "list", 20, { tier: true, hint: "Add, remove, reorder or reword. Empty = the pass's own list (and the CxO Breakfast rule)." }),
+  f("includes", "includes", "What's included", "list", 20, { tier: true, hint: "Add, remove, reorder or reword. Empty = the pass's own list (with its meals and events switched on or off for that pass)." }),
   f("detailsTitle", "details", "Section title", "line", 80, { booth: true }),
   f("labelWhen", "details", "When label", "line", 40, { booth: true }),
   f("whenText", "details", "When", "line", 160, { booth: true }),
@@ -317,16 +317,21 @@ export function templateFor(copy = {}, tier = "") {
 /* ---------- a template's list for a pass type, with this pass's own rules ---------- */
 
 const headOf = (row) => (Array.isArray(row) ? row[0] : row);
-// Rows that are "the same thing" whatever the wording: the CxO Breakfasts, the VIP Lounge, else the same heading.
+// Rows that are "the same thing" whatever the wording: the pass extras (CxO Breakfasts, luncheons, the Gala
+// Dinner, the Awards Night: services/passExtras.js), the VIP Lounge, else the same heading.
 const family = (row) => {
   const h = String(headOf(row) || "").toLowerCase();
-  return /cxo breakfast/.test(h) ? "cxo" : /vip lounge/.test(h) ? "lounge" : `=${h.trim()}`;
+  return /cxo breakfast/.test(h) ? "cxo" : /vip lounge/.test(h) ? "lounge" : /lunch/.test(h) ? "lunch"
+    : /\bgala\b/.test(h) ? "gala" : /\bawards?\b/.test(h) ? "awards" : `=${h.trim()}`;
 };
+/** The pass extra a row of a pass's list is ("cxo" | "lunch" | "gala" | "awards"), else "". */
+export const extraOfRow = (row) => { const f = family(row); return ["cxo", "lunch", "gala", "awards"].includes(f) ? f : ""; };
 
 /**
  * A template's list for a pass type, with what this pass changes on top of its type's list carried
- * over: rows the pass gained (the CxO Breakfasts switched on for one person) are added after the row
- * they follow, rows it lost (switched off) are taken out. `base`: the type's built-in list; `own`:
+ * over: rows the pass gained (a pass extra switched on for one person: the CxO Breakfasts, the luncheons,
+ * the Gala Dinner, the Awards Night) are added after the row they follow, rows it lost (switched off)
+ * are taken out. `base`: the type's built-in list; `own`:
  * this pass's built-in list. Works for [heading, detail] rows and plain lines.
  */
 export function carryPassRules(list = [], base = [], own = []) {

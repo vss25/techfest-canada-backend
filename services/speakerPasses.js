@@ -21,6 +21,7 @@
 
 import crypto from "crypto";
 import { SANITY_PROJECT, fullNameMatches } from "./rsvp.js";
+import { extrasOverride } from "./passExtras.js";
 
 export const SPEAKER_TYPE = "speaker";
 export const SPEAKER_PROMO = "SPEAKER";
@@ -197,6 +198,8 @@ export function speakerPassRow(a) {
     nudgeCount: Number(a.speakerNudgeCount) || 0,
     // Made by hand ("manual:<name>"), not from a speaker on the website.
     manual: String(a.speakerId || "").startsWith("manual:"),
+    // Staff's pass extras on this pass (Admin › People), when there are any: a "No" takes that meal or event off their email.
+    ...(Object.keys(extrasOverride(a)).length ? { extras: extrasOverride(a) } : {}),
   };
 }
 

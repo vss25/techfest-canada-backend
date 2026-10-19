@@ -176,7 +176,8 @@ test("a breakfast already on an attendee's RSVP is kept and still offered; the R
   assert.equal((await w.submit({ ...who("Ed", "Early", "POW000000003"), options: ["cxo_d2"] })).statusCode, 400);
   // Someone who never RSVP'd with a Power Pass doesn't see it (an RSVP link sent but never opened).
   assert.ok(!(await w.look(who("Pam", "Power", "POW000000001"))).allowedOptions.includes("cxo_d1"));
-  assert.deepEqual(extraOptionsFor([{ options: ["cxo_d2", "gala"] }, { options: ["cxo_d1"] }]), ["cxo_d1", "cxo_d2"]);
+  // Every pass extra on an RSVP is kept (Oct 19 2026: the luncheons, Gala and Awards too), in display order.
+  assert.deepEqual(extraOptionsFor([{ options: ["cxo_d2", "gala"] }, { options: ["cxo_d1"] }]), ["cxo_d1", "cxo_d2", "gala"]);
   // The public options list says Apex and speakers.
   const cxo = rsvpOptionsPayload().options.find((o) => o.key === "cxo_d1");
   assert.deepEqual(cxo.tiers, ["apex", "speaker"]);
@@ -220,7 +221,7 @@ test("Admin → People: CxO Breakfast per pass (automatic or staff's switch), in
   assert.deepEqual(cxo("Pia Guest"), [true, false, true]);
   const det = personDetail(people.find((x) => x.name === "Oscar Override"));
   assert.deepEqual([det.passes[0].cxoBreakfast, det.passes[0].cxoOverride, det.passes[0].cxoAuto, det.edit.canEditCxo], [true, true, false, true]);
-  assert.deepEqual(det.rsvpRules, { cxo: true, keep: [] });
+  assert.deepEqual(det.rsvpRules, { cxo: true, extras: { cxo: true, lunch: true, gala: true, awards: true }, keep: [] });
   assert.equal(personRow(people.find((x) => x.name === "Abe Off")).cxoBreakfast, false);
   const i = PEOPLE_CSV_HEAD.indexOf("CxO Breakfast");
   const lines = peopleCsv(people).replace(/^﻿/, "").split("\n").slice(1);

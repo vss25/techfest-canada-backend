@@ -17,7 +17,7 @@ import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { storedTypes, PERSON_TYPES, isSpeakerPass } from "../services/teamRoles.js";
 import { typesEdit } from "../services/appRights.js";
-import { cleanCxoSwitch, cxoLabel, effectiveCxo } from "../services/cxoBreakfast.js";
+import { EXTRAS, EXTRA_FIELDS, cleanExtras, effectiveExtras, extraLabel, extrasMeta, extrasWrite } from "../services/passExtras.js";
 import { deletePerson, emailHash, personDeletionScope, planPersonDeletion } from "../services/accountDeletion.js";
 import {
   REMINDER_CAMPAIGN, REMINDER_COOLDOWN_MS, campaignSendStore, makeReminderSender, reminderJob, sendRsvpReminder,
@@ -30,7 +30,7 @@ import {
 import { planStaffRsvp, splitName } from "../services/rsvpStaff.js";
 import {
   buildPeople, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv, agendaFor, editInfo, namesMatch,
-  rsvpRulesFor, planPeopleReminders, stripeMaps, REMINDER_SKIP_LABELS,
+  rsvpRulesFor, planPeopleReminders, stripeMaps, eligibleCounts, REMINDER_SKIP_LABELS,
 } from "../services/people.js";
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
@@ -55,8 +55,11 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
      PATCH  /:id            { firstName?, lastName? (or name), email? (management), phone?, linkedinUrl?, company?, jobTitle?,
                               types?, typesOff? (accounts), exhibitor?, vip?, rsvpEmailSent? (true | false | null) }
                             every record they're made of follows: the account, their passes, their RSVP rows
-     PATCH  /:id/passes/:ticketId  { cxoBreakfast?: true | false | null (automatic), tier? (management: the four or speaker),
+     PATCH  /:id/passes/:ticketId  { extras?: { cxo?, lunch?, gala?, awards? } (each true | false | null = automatic),
+                              cxoBreakfast?: true | false | null (the CxO Breakfasts, as before), tier? (management: the four or speaker),
                               manualValue?: CAD | null, manualValueNote? (management; passes paid outside Stripe) }
+     GET    /eligible       who is eligible for each pass extra (Leads › RSVPs headcounts):
+                            { byExtra: { cxo, lunch, gala, awards }, byOption: { cxo_d1, …, awards }, passes, extras: [meta] }
      GET    /:id/delete-plan  (management) exactly what Delete person removes, with counts, and what stays
      DELETE /:id            { confirmName } (management) deletes them from the database (services/accountDeletion.js)
      PUT    /:id/rsvp       { days, options, dietary, dietaryOther?, accessibility?, tier?,
@@ -78,6 +81,8 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
 ========================================================= */
 
 const n = (r) => r?.modifiedCount ?? 0;
+/** The audit action for each pass extra's switch (the CxO Breakfasts' is the one it always was). */
+const EXTRA_AUDIT = { cxo: "pass_cxo_breakfast", lunch: "pass_luncheons", gala: "pass_gala_dinner", awards: "pass_awards_night" };
 const clean = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -125,10 +130,11 @@ const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", 
 const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
 const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
   "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
-  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId tickets.cxoBreakfast",
+  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
+  ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
   "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
-  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip cxoBreakfast",
+  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip", ...EXTRA_FIELDS,
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
@@ -283,6 +289,13 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
         `sent ${st.sent}, failed ${st.failed}, skipped ${st.skipped}${failures.length ? ` · ${failures.slice(0, 5).join("; ")}` : ""}`);
     }
   })();
+}));
+
+/* Who is eligible for each pass extra: every pass (not hidden, not a booth) whose extra is Yes, by staff's
+   switch or automatically (services/people.js eligibleCounts). Leads › RSVPs shows it on the headcounts. */
+router.get("/eligible", wrap(async (req, res) => {
+  const d = await directory({ fresh: req.query.refresh === "1" });
+  res.json({ ...eligibleCounts(d.people), extras: extrasMeta(), builtAt: d.builtAt });
 }));
 
 router.get("/:id", wrap(async (req, res) => {
@@ -556,7 +569,10 @@ router.patch("/:id", wrap(async (req, res) => {
 }));
 
 /* One pass of theirs: PATCH /:id/passes/:ticketId, any of
-     cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (staff; audited pass_cxo_breakfast)
+     extras: { cxo?, lunch?, gala?, awards? }            the pass extras (services/passExtras.js), each true | false |
+                                                         null (automatic); staff. Each change is audited: pass_cxo_breakfast,
+                                                         pass_luncheons, pass_gala_dinner, pass_awards_night
+     cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (the same as extras.cxo)
      tier: connect | influence | power | apex | speaker  change the pass (management): one of the four or the internal
                                                          Speaker Pass (which makes them a speaker); no charge; the account
                                                          ticket, its pass row and its RSVP rows follow, and the inventory
@@ -566,7 +582,8 @@ router.patch("/:id", wrap(async (req, res) => {
                                                          ticket value after payment for a pass paid outside Stripe
                                                          (management; a Stripe-paid pass keeps Stripe's). Audited pass_value.
    Saved on the ticket record: the account's ticket (User.tickets) and the Attendee row of the same ticket,
-   whichever exist. Never changes what they chose in their RSVP. */
+   whichever exist. Never changes what they chose in their RSVP: an extra switched to No is no longer offered,
+   but one already on their RSVP stays (services/rsvp.js extraOptionsFor). */
 router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   const p = await findPerson(req.params.id, { fresh: true });
   if (!p) return res.status(404).json({ error: "Person not found" });
@@ -590,11 +607,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   const warnings = [];
 
   // Validate first.
-  let cxo;
-  if (b.cxoBreakfast !== undefined) {
-    cxo = cleanCxoSwitch(b.cxoBreakfast);
-    if (cxo === undefined) return res.status(400).json({ error: "CxO Breakfast must be Yes, No or automatic", field: "cxoBreakfast" });
-  }
+  const extrasIn = cleanExtras(b);
+  if (!extrasIn.ok) return res.status(400).json({ error: extrasIn.error, field: extrasIn.field });
+  const extrasAsked = extrasIn.value; // { <key>: true | false | null } for the extras sent
   let tier;
   if (b.tier !== undefined) {
     if (!management) return res.status(403).json({ error: "Only management can change a pass", field: "tier" });
@@ -611,15 +626,26 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
       if (!Number.isFinite(value) || value < 0 || value > 100000) return res.status(400).json({ error: "Enter the amount paid in CAD, before HST (0 to 100,000)", field: "manualValue" });
     }
   }
-  if (cxo === undefined && tier === undefined && value === undefined) return res.status(400).json({ error: "Nothing to change" });
+  if (!Object.keys(extrasAsked).length && tier === undefined && value === undefined) return res.status(400).json({ error: "Nothing to change" });
 
-  if (cxo !== undefined) {
-    const before = cxoLabel(t.cxoOverride, t.cxo);
-    await writeTicket(cxo === null ? {} : { cxoBreakfast: cxo }, cxo === null ? { cxoBreakfast: 1 } : {});
-    const after = cxoLabel(cxo ?? undefined, effectiveCxo({ ticketType: tier || t.type, types: p.types, override: cxo ?? undefined }));
-    await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
+  // The pass extras: only the ones that change are written, each audited like "CxO Breakfast included" always was.
+  const overrideNow = t.extrasOverride || {};
+  const changedExtras = Object.fromEntries(Object.entries(extrasAsked).filter(([k, v]) => (v ?? null) !== (typeof overrideNow[k] === "boolean" ? overrideNow[k] : null)));
+  if (Object.keys(changedExtras).length) {
+    const { set, unset } = extrasWrite(changedExtras);
+    await writeTicket(set, unset);
+    const overrideAfter = { ...overrideNow };
+    for (const [k, v] of Object.entries(changedExtras)) { if (v === null) delete overrideAfter[k]; else overrideAfter[k] = v; }
+    const effectiveAfter = effectiveExtras({ ticketType: tier || t.type, types: p.types, override: overrideAfter });
+    for (const x of EXTRAS.filter((e) => e.key in changedExtras)) {
+      const before = extraLabel(overrideNow[x.key], t.extras?.[x.key]);
+      const after = extraLabel(overrideAfter[x.key], effectiveAfter[x.key]);
+      const what = x.key === "cxo" ? "CxO Breakfast" : x.label; // the CxO line reads as it always has
+      await audit(req, EXTRA_AUDIT[x.key], "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: ${what} ${before} → ${after}`);
+    }
     did = true;
   }
+  if (Object.keys(extrasAsked).length) did = true;
   if (tier !== undefined && tier !== t.tier) {
     if (t.onAccount && p.user) await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId }, { $set: { "tickets.$.type": tier } });
     await Attendee.updateMany({ ticketId: { $in: variants } }, { $set: { ticketType: tier } });
@@ -629,7 +655,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     const rsvp = await Rsvp.findOne({ ...rsvpFilter, ...LIVE_RSVPS }).lean();
     if (rsvp) {
       const rules = rsvpRulesFor(p);
-      const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { cxo: rules.speaker ? true : rules.cxo, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
+      // The new pass's extras: staff's switches on this pass, else the new pass's rules.
+      const extras = effectiveExtras({ ticketType: tier, types: p.types, override: t.extrasOverride || {} });
+      const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { extras, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
       if (!check.ok) warnings.push(`Their RSVP has ${check.invalid.map(optionLabel).join(", ")}, which the ${TIER_LABELS[tier]} doesn't include. It stays: staff never take away what they chose.`);
     }
     // Inventory, the way a paid upgrade moves it (routes/webhook.js). The Speaker Pass has no inventory row

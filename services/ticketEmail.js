@@ -82,7 +82,7 @@ export function walletButtonHtml(url) {
 const BOOTH_FIELDS = new Set(fieldsFor("purchase").filter((f) => f.booth).map((f) => f.key));
 
 const isSet = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === "string" && v.length > 0);
-/** A pass type's list as sold (before this ticket's CxO Breakfast switch). Names and lists come from
+/** A pass type's list as sold (before this ticket's pass extras: CxO Breakfasts, luncheons, Gala, Awards). Names and lists come from
     services/ticketInfo.js, so the email agrees with the PDF and the Wallet pass it comes with. */
 const baseInclusions = (tier) => [...(PASS_INCLUSIONS[tierKey(tier)] || inclusionsFor(tier))];
 
@@ -90,7 +90,7 @@ const baseInclusions = (tier) => [...(PASS_INCLUSIONS[tierKey(tier)] || inclusio
  * Every field's built-in text for one purchase, placeholders not filled in (the admin editor shows it in grey).
  * `wallet`: the email has the Apple Wallet button; `named`: the buyer has a first name.
  */
-export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakfast, wallet = true, named = true } = {}) {
+export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakfast, extras, wallet = true, named = true } = {}) {
   const booth = isBoothId(ticketId) || /^booth-/i.test(String(tier || ""));
   return {
     subject: booth ? "Your TTFC 2026 {passName} is confirmed" : "You're in — your TTFC 2026 {passName} is confirmed 🎟",
@@ -115,7 +115,7 @@ export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakf
     includesTitle: "Your {passName} includes",
     tagline: booth ? "" : taglineFor(tier),
     blurb: booth ? "" : blurbFor(tier),
-    includes: booth ? [] : inclusionsFor(tier, { cxoBreakfast }),
+    includes: booth ? [] : inclusionsFor(tier, { cxoBreakfast, extras }),
     detailsTitle: "Event details",
     labelWhen: "When",
     whenText: `Monday–Tuesday, ${EVENT.dates}`,
@@ -150,10 +150,12 @@ export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakf
  *                               Empty renders the wordmark as text, so a caller that
  *                               doesn't attach the logo still gets a valid header.
  * @param {boolean} [p.cxoBreakfast] this ticket's "CxO Breakfast included" (services/cxoBreakfast.js); unset = the pass's own list
+ * @param {object} [p.extras]   this ticket's effective pass extras ({ cxo, lunch, gala, awards }: true / false,
+ *                              services/passExtras.js); a missing one = the pass's own list
  * @param {object} [p.template]  staff's wording ("purchase-email" EmailTemplate, services/passEmailCopy.js templateCopy); none = built-in
  * @returns {{ subject: string, preheader: string, html: string, text: string, defaults: object }}
  */
-export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "", cxoBreakfast, template = null } = {}) {
+export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", logoSrc = "", cxoBreakfast, extras, template = null } = {}) {
   const id = String(ticketId || "");
   const booth = isBoothId(id);
   const first = firstNameFor({ firstName, name });
@@ -161,7 +163,7 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     ? String(name).trim() : (first || "Delegate");
   const wallet = booth ? "" : walletUrl;
   const qr = booth ? "" : qrUrl;
-  const D = purchaseEmailDefaults({ tier, ticketId: id, cxoBreakfast, wallet: !!wallet, named: !!first });
+  const D = purchaseEmailDefaults({ tier, ticketId: id, cxoBreakfast, extras, wallet: !!wallet, named: !!first });
 
   // Staff's wording for this pass type (booths: only the shared sections), filled in for this buyer.
   const copy = template ? templateFor(template, tier) : {};

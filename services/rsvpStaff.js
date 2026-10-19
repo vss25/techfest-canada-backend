@@ -19,8 +19,8 @@
         note stay theirs. `basedOn` (the updatedAt staff saw) refuses
         a save over a change made since (409 "changed").
    The pass's limits apply (checkOptions: what the pass includes on
-   the chosen days, its CxO Breakfast switch and any breakfast already
-   on their RSVP); `allowOutsidePass: true` lets staff include more for
+   the chosen days, its pass extras switched on or off by staff and any
+   extra already on their RSVP); `allowOutsidePass: true` lets staff include more for
    anyone (staff override), saved with passLimitOverride and returned
    as a warning. Staff changes never email anyone; routes/people.js
    writes them to the audit log. Pure, unit-tested
@@ -138,7 +138,8 @@ function planAttendeeAdditions({ existing, body, who, staff, name, now, rules })
  * @param {object} o
  * @param {object|null} o.existing   the person's current (listed, not a possible duplicate) RSVP, or null
  * @param {object} o.person          { name, firstName?, lastName?, email, pass: { ticketId, type } | null,
- *                                     cxo?: their pass's CxO Breakfast (true / false), extra?: options they keep (extraOptionsFor) }
+ *                                     extras?: their pass's effective extras ({ cxo, lunch, gala, awards }: true / false,
+ *                                     services/passExtras.js), cxo?: the CxO Breakfasts alone, extra?: options they keep (extraOptionsFor) }
  * @param {object} o.body            { days, options, dietary, dietaryOther, accessibility, tier?, allowOutsidePass?, basedOn? }
  *                                   (an RSVP the attendee sent: only `options` is read, see planAttendeeAdditions)
  * @param {object} o.staff           { id, name }
@@ -149,7 +150,11 @@ function planAttendeeAdditions({ existing, body, who, staff, name, now, rules })
 export function planStaffRsvp({ existing = null, person = {}, body = {}, staff = {}, now = new Date() }) {
   const who = cleanText(staff.name).slice(0, 120) || "Staff";
   const name = cleanText(person.name).slice(0, 160) || [person.firstName, person.lastName].filter(Boolean).join(" ");
-  const rules = { cxo: typeof person.cxo === "boolean" ? person.cxo : undefined, extra: Array.isArray(person.extra) ? person.extra : [] };
+  const rules = {
+    cxo: typeof person.cxo === "boolean" ? person.cxo : undefined,
+    extras: person.extras && typeof person.extras === "object" ? person.extras : undefined,
+    extra: Array.isArray(person.extra) ? person.extra : [],
+  };
 
   if (existing) {
     if (existing.spam || existing.mergedInto) return { status: 404, error: "RSVP not found", code: "missing" };

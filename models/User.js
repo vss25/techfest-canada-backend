@@ -48,6 +48,10 @@ const ticketSchema = new mongoose.Schema({
   cxoBreakfast: {
     type: Boolean
   },
+  // The other pass extras (services/passExtras.js), the same way: true / false = staff's choice, unset = automatic.
+  luncheons: { type: Boolean },   // Networking Luncheons (automatic: Influence and up)
+  galaDinner: { type: Boolean },  // Gala Dinner & Networking Reception (automatic: Power, Apex, Speaker Pass)
+  awardsNight: { type: Boolean }, // Catalyst Awards Night (automatic: Power, Apex, Speaker Pass)
   // Ticket value after payment typed by management for a pass paid outside Stripe (CAD before HST).
   manualValue: { type: Number },
   manualValueNote: { type: String },

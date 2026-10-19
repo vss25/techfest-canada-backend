@@ -90,6 +90,16 @@ export const OPTION_KEYS = RSVP_OPTIONS.map((o) => o.key);
 /** The two CxO Breakfasts: offered by pass, the speaker type or staff's per-pass switch (services/cxoBreakfast.js). */
 export const CXO_KEYS = ["cxo_d1", "cxo_d2"];
 export const EXPERIENCE_KEYS = RSVP_OPTIONS.filter((o) => o.kind === "experience").map((o) => o.key);
+/** The meals and events staff can switch per pass (services/passExtras.js: Automatic / Yes / No), and the
+    RSVP options each one is. Automatic follows `tiers` above (CxO Breakfasts: also anyone of the speaker type). */
+export const EXTRA_OPTIONS = Object.freeze({
+  cxo: Object.freeze([...CXO_KEYS]), lunch: Object.freeze(["lunch_d1", "lunch_d2"]), gala: Object.freeze(["gala"]), awards: Object.freeze(["awards"]),
+});
+export const EXTRA_KEYS = Object.freeze(Object.keys(EXTRA_OPTIONS));
+/** Every RSVP option a pass extra decides, in display order. */
+export const EXTRA_OPTION_KEYS = EXPERIENCE_KEYS.filter((k) => EXTRA_KEYS.some((x) => EXTRA_OPTIONS[x].includes(k)));
+/** "lunch_d2" → "lunch"; "" when the option isn't a pass extra. */
+export const extraForOption = (key) => EXTRA_KEYS.find((x) => EXTRA_OPTIONS[x].includes(key)) || "";
 const OPTION_BY_KEY = Object.fromEntries(RSVP_OPTIONS.map((o) => [o.key, o]));
 export const optionLabel = (key) => {
   const o = OPTION_BY_KEY[key];
@@ -167,43 +177,51 @@ export function rsvpOptionsPayload(times = null) {
   };
 }
 
-/** May someone on `tier` choose `key`? (Ignores days.) `cxo`: their pass's CxO Breakfast (true / false), else by tier. */
-export function tierIncludes(tier, key, { cxo } = {}) {
+/**
+ * May someone on `tier` choose `key`? (Ignores days.) `extras`: their pass's effective extras
+ * ({ cxo, lunch, gala, awards }: true / false, services/passExtras.js), which decide those options;
+ * one that isn't a boolean goes by tier. `cxo`: the CxO Breakfasts alone (older callers), when `extras.cxo` isn't set.
+ */
+export function tierIncludes(tier, key, { cxo, extras } = {}) {
   const o = OPTION_BY_KEY[key];
   if (!o) return false;
-  if (CXO_KEYS.includes(key) && typeof cxo === "boolean") return cxo;
+  const x = extraForOption(key);
+  const v = !x ? undefined : typeof extras?.[x] === "boolean" ? extras[x] : x === "cxo" ? cxo : undefined;
+  if (typeof v === "boolean") return v;
   return o.tiers.includes(tier);
 }
 
 /**
  * Experiences someone on `tier` coming on `days` can choose, in display order.
- *   cxo   — their pass's effective "CxO Breakfast included" (true / false); undefined = by tier
- *   extra — keys they keep whatever the pass says (a CxO Breakfast already on their RSVP, extraOptionsFor)
+ *   extras — their pass's effective extras (true / false each, services/passExtras.js); a missing one = by tier
+ *   cxo    — the CxO Breakfasts alone (true / false), for callers without `extras`
+ *   extra  — keys they keep whatever the pass says (an extra already on their RSVP, extraOptionsFor)
  */
-export function allowedExperiences(tier, days = [], { cxo, extra = [] } = {}) {
+export function allowedExperiences(tier, days = [], { cxo, extras, extra = [] } = {}) {
   const d = new Set(days);
   const keep = new Set(extra || []);
   return RSVP_OPTIONS
-    .filter((o) => o.kind === "experience" && (tierIncludes(tier, o.key, { cxo }) || keep.has(o.key)) && (!o.day || d.has(o.day)))
+    .filter((o) => o.kind === "experience" && (tierIncludes(tier, o.key, { cxo, extras }) || keep.has(o.key)) && (!o.day || d.has(o.day)))
     .map((o) => o.key);
 }
 
 /**
- * CxO Breakfasts already on someone's RSVP rows (theirs or staff's): they keep being offered to them,
- * so a re-sent RSVP never loses a breakfast the pass change took away (Power, Oct 19 2026).
+ * Pass extras (CxO Breakfasts, luncheons, the Gala Dinner, the Awards Night) already on someone's RSVP rows
+ * (theirs or staff's): they keep being offered to them, so a re-sent RSVP never loses one that a pass change
+ * or staff's "No" took away. We never change an RSVP the attendee made.
  */
 export function extraOptionsFor(rows = []) {
   const have = new Set();
-  for (const r of rows || []) for (const k of r?.options || []) if (CXO_KEYS.includes(k)) have.add(k);
-  return CXO_KEYS.filter((k) => have.has(k));
+  for (const r of rows || []) for (const k of r?.options || []) if (EXTRA_OPTION_KEYS.includes(k)) have.add(k);
+  return EXTRA_OPTION_KEYS.filter((k) => have.has(k));
 }
 
 /**
- * Check the chosen experiences against the matrix (`cxo`, `extra`: see allowedExperiences).
+ * Check the chosen experiences against the matrix (`extras`, `cxo`, `extra`: see allowedExperiences).
  * @returns {{ ok: true, options: string[] } | { ok: false, error: string, invalid: string[] }}
  */
-export function checkOptions(tier, days, options, { cxo, extra = [] } = {}) {
-  const allowed = new Set(allowedExperiences(tier, days, { cxo, extra }));
+export function checkOptions(tier, days, options, { cxo, extras, extra = [] } = {}) {
+  const allowed = new Set(allowedExperiences(tier, days, { cxo, extras, extra }));
   const picked = [...new Set((Array.isArray(options) ? options : []).map((o) => cleanText(o)).filter(Boolean))]
     .filter((k) => !DAY_KEYS.includes(k)); // days travel in `days`
   const invalid = picked.filter((k) => !allowed.has(k));
@@ -760,7 +778,7 @@ export function planRsvpMerge(keep, dup) {
   const passRow = isVerifiedRow(survivor) ? survivor : newer;
 
   const days = DAY_KEYS.filter((k) => (newer.days || []).includes(k));
-  // Seats staff added on top of either row stay; so does a CxO Breakfast either row already had.
+  // Seats staff added on top of either row stay; so does a pass extra (a breakfast, luncheon, the Gala…) either row already had.
   const staffAdded = EXPERIENCE_KEYS.filter((k) => [...(keep.staffAdded || []), ...(dup.staffAdded || [])].includes(k));
   const allowed = new Set(allowedExperiences(passRow.tier, days, { extra: [...extraOptionsFor([keep, dup]), ...staffAdded] }));
   // Staff answers saved past the pass's limits on purpose keep them.

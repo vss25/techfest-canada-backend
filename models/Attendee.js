@@ -80,6 +80,10 @@ const attendeeSchema = new mongoose.Schema(
     // "CxO Breakfast included" for this pass (services/cxoBreakfast.js): true / false = staff's choice,
     // unset = automatic (Apex and Speaker Passes, and speakers on any pass).
     cxoBreakfast: { type: Boolean },
+    // The other pass extras (services/passExtras.js), the same way: true / false = staff's choice, unset = automatic.
+    luncheons: { type: Boolean },   // Networking Luncheons (automatic: Influence and up)
+    galaDinner: { type: Boolean },  // Gala Dinner & Networking Reception (automatic: Power, Apex, Speaker Pass)
+    awardsNight: { type: Boolean }, // Catalyst Awards Night (automatic: Power, Apex, Speaker Pass)
     // Ticket value after payment typed by management for a pass paid outside Stripe (invoice, bank
     // transfer), CAD before HST. Unset = worked out (Stripe, or 0 for staff-made passes). Admin → People.
     manualValue: { type: Number },

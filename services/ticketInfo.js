@@ -96,19 +96,32 @@ export function tierKey(tier) {
   return /^all[- ]?access( pass)?$/.test(k) ? "power" : k;
 }
 
+/** The ticket's line for each pass extra (services/passExtras.js), in the order a pass lists them. */
+export const EXTRA_INCLUSIONS = Object.freeze({
+  cxo: CXO_INCLUSION, lunch: "2x Luncheons", gala: "1x Gala Dinner & Networking Reception", awards: "1x Awards Night",
+});
+const EXTRA_ORDER = ["cxo", "lunch", "gala", "awards"];
+
 /**
  * Inclusions for a tier; unknown/retired tiers get the core conference access.
- * `cxoBreakfast` (one ticket's effective "CxO Breakfast included", services/cxoBreakfast.js):
- * true adds "2x CxO Breakfasts" (after the conference days), false takes it out; undefined = the tier's own list.
+ * `extras` (one ticket's effective pass extras, services/passExtras.js: { cxo, lunch, gala, awards }):
+ * true adds that line (after the conference days and the extras before it), false takes it out; one
+ * that isn't a boolean keeps the tier's own list. `cxoBreakfast`: the CxO Breakfasts alone (older callers).
  */
-export function inclusionsFor(tier, { cxoBreakfast } = {}) {
-  const list = [...(PASS_INCLUSIONS[tierKey(tier)] || BASE)];
-  if (typeof cxoBreakfast !== "boolean") return list;
-  const without = list.filter((f) => f !== CXO_INCLUSION);
-  if (!cxoBreakfast) return without;
-  const at = without.indexOf("2x Day Conference Access");
-  without.splice(at >= 0 ? at + 1 : 0, 0, CXO_INCLUSION);
-  return without;
+export function inclusionsFor(tier, { cxoBreakfast, extras } = {}) {
+  const want = { ...(extras || {}) };
+  if (typeof want.cxo !== "boolean" && typeof cxoBreakfast === "boolean") want.cxo = cxoBreakfast;
+  let list = [...(PASS_INCLUSIONS[tierKey(tier)] || BASE)];
+  for (const x of EXTRA_ORDER) {
+    if (typeof want[x] !== "boolean") continue;
+    const line = EXTRA_INCLUSIONS[x];
+    if (!want[x]) { list = list.filter((f) => f !== line); continue; }
+    if (list.includes(line)) continue;
+    const before = EXTRA_ORDER.slice(0, EXTRA_ORDER.indexOf(x)).map((k) => list.indexOf(EXTRA_INCLUSIONS[k])).filter((i) => i >= 0);
+    const conf = list.indexOf("2x Day Conference Access");
+    list.splice(before.length ? Math.max(...before) + 1 : conf >= 0 ? conf + 1 : 0, 0, line);
+  }
+  return list;
 }
 
 /** "Apex Pass", "Exhibition Booth — Gold" for booth confirmations. */

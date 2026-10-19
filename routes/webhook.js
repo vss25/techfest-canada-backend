@@ -11,7 +11,7 @@ import { detailsFromMetadata, displayName } from "../services/attendeeDetails.js
 import { sendResetPasswordEmail } from "../services/emailService.js";
 import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
-import { effectiveCxo, cxoOverride } from "../services/cxoBreakfast.js";
+import { effectiveExtras, extrasOverride, EXTRA_SELECT } from "../services/passExtras.js";
 import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
 
 const router = express.Router();
@@ -147,9 +147,10 @@ router.post("/stripe", async (req, res) => {
           await Attendee.updateMany({ ticketId }, { $set: { ticketType: tier } });
           console.log("⬆️ Ticket upgraded:", ticketId, fromTier, "→", tier);
           if (email || user.email) {
-            // The upgraded pass's CxO Breakfasts: staff's switch on this ticket if set, else the new pass's rule.
-            const cxoBreakfast = await Attendee.findOne({ ticketId }).select("cxoBreakfast").lean()
-              .then((a) => effectiveCxo({ ticketType: tier, types: effectiveTypes(user), override: cxoOverride(ticket, a) }))
+            // The upgraded pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switches on this ticket
+            // where set, else the new pass's rules (services/passExtras.js).
+            const extras = await Attendee.findOne({ ticketId }).select(EXTRA_SELECT).lean()
+              .then((a) => effectiveExtras({ ticketType: tier, types: effectiveTypes(user), override: extrasOverride(ticket, a) }))
               .catch(() => undefined);
             await sendTicketEmail({
               email: email || user.email,
@@ -158,7 +159,8 @@ router.post("/stripe", async (req, res) => {
               ticketId,
               tier,
               purchaseDate: ticket.purchaseDate,
-              cxoBreakfast,
+              cxoBreakfast: extras?.cxo,
+              extras,
             });
           }
         } else {
@@ -166,7 +168,7 @@ router.post("/stripe", async (req, res) => {
         }
       } else if (!isBooth) {
         const ticketId = crypto.randomBytes(6).toString("hex");
-        // A speaker buying a pass gets the CxO Breakfasts with it (services/cxoBreakfast.js); else the pass's rule.
+        // A speaker buying a pass gets the CxO Breakfasts with it (services/passExtras.js); else the pass's rules.
         let buyerTypes = [];
 
         // If user purchased while logged in → attach ticket to account
@@ -220,7 +222,8 @@ router.post("/stripe", async (req, res) => {
             firstName: details?.firstName,
             ticketId,
             tier,
-            cxoBreakfast: effectiveCxo({ ticketType: tier, types: buyerTypes }),
+            cxoBreakfast: effectiveExtras({ ticketType: tier, types: buyerTypes }).cxo,
+            extras: effectiveExtras({ ticketType: tier, types: buyerTypes }),
           });
 
           console.log("📧 Ticket email sent to:", email);

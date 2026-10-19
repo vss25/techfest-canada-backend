@@ -29,17 +29,30 @@ import {
 } from "./speakerPassEmail.js";
 import { speakerFirstName } from "./speakerPasses.js";
 import { ANCHORS, ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween, needsMicUp } from "./runOfShow.js";
-import { ISSUE_TIERS, defaultIssuedCopy, issuedVariant } from "./issuedPasses.js";
+import { ISSUE_TIERS, defaultIssuedCopy, includesWithExtras, issuedVariant, rsvpReasonFor } from "./issuedPasses.js";
+import { EXTRA_KEYS, autoExtras, effectiveExtras } from "./passExtras.js";
 import { carryPassRules, fillText, mergeCopy, textHtml, tierFor } from "./passEmailCopy.js";
 
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const SERIF = "Georgia,'Times New Roman',Times,serif";
 const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
-/** The Speaker Pass email (Admin › Speaker passes): its name, access line, list and RSVP reason. */
-export const speakerVariant = () => ({
-  ...SPEAKER_VARIANT, includes: SPEAKER_INCLUDES.map((r) => [...r]), rsvpReason: SPEAKER_VARIANT.rsvpReason || RSVP_REASON,
-});
+/**
+ * The Speaker Pass email (Admin › Speaker passes): its name, access line, list and RSVP reason.
+ * `override`: staff's pass extras on this speaker's pass (services/passExtras.js extrasOverride); the Speaker
+ * Pass includes all four, so a "No" takes that one out of the list and the RSVP reason.
+ */
+export function speakerVariant(override = {}) {
+  const extras = effectiveExtras({ ticketType: "speaker", override });
+  const auto = autoExtras("speaker");
+  const changed = EXTRA_KEYS.some((x) => extras[x] !== auto[x]);
+  return {
+    ...SPEAKER_VARIANT,
+    includes: changed ? includesWithExtras(SPEAKER_INCLUDES, extras).map((r) => [...r]) : SPEAKER_INCLUDES.map((r) => [...r]),
+    rsvpReason: changed ? rsvpReasonFor("speaker", extras) : SPEAKER_VARIANT.rsvpReason || RSVP_REASON,
+    extras,
+  };
+}
 
 /**
  * The pass-type settings of an issued or exhibitor pass for the email: issuedVariant
@@ -89,11 +102,12 @@ const anchorOf = (day, id) => (ANCHORS[day] || []).find((a, i) => (i < DAY_ANCHO
 
 /**
  * Every field's built-in text for one pass, placeholders not filled in (what the admin editor shows in grey).
- * `variant`: an issued / exhibitor pass's (passVariant); none = the speakers' email.
+ * `variant`: an issued / exhibitor pass's (passVariant); none = the speakers' email, with `extras` (staff's
+ * switches on that speaker's pass, services/passExtras.js) taking a meal or event off its list.
  */
-export function passEmailDefaults({ variant = null, runOfShow = null } = {}) {
+export function passEmailDefaults({ variant = null, runOfShow = null, extras = {} } = {}) {
   const isSpeaker = !variant;
-  const v = isSpeaker ? speakerVariant() : variant;
+  const v = isSpeaker ? speakerVariant(extras) : variant;
   const hasRos = !!runOfShow?.sessions?.length;
   const reg = anchorOf(1, "Reg");
   const breakfast = anchorOf(1, "Breakfast");
@@ -392,10 +406,11 @@ const isSet = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === "string" &&
  * @param {object} [p.copy]     staff's wording, every level already merged (services/passEmailCopy.js mergeCopy):
  *                              any field set here replaces the built-in text
  * @param {object} [p.variant]  an issued / exhibitor pass (passVariant); none = the speakers' Speaker Pass email
+ * @param {object} [p.extras]   the speakers' email: staff's pass extras on their pass (services/passExtras.js extrasOverride)
  * @returns {{ subject, preheader, html, text, defaults }} `defaults`: the built-in text of every field for this pass
  */
-export function buildPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {}, variant = null } = {}) {
-  const D = passEmailDefaults({ variant, runOfShow });
+export function buildPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {}, variant = null, extras = {} } = {}) {
+  const D = passEmailDefaults({ variant, runOfShow, extras });
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
   const id = displayTicketId(ticketId);
@@ -598,7 +613,10 @@ ${runOfShowHtml({ name: fullName, runOfShow }, t, h, edited)}
  * inline-CID images and their Resend attachments (a real send).
  */
 export async function passEmailFor(pass, { inline = true, copy = {}, variant = null } = {}) {
-  const base = { name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "", copy, variant };
+  const base = {
+    name: pass.name, title: pass.title, company: pass.company, ticketId: pass.ticketId, runOfShow: pass.runOfShow || null, contact: pass.contact || "", copy, variant,
+    extras: pass.extras || {},
+  };
   if (inline) return { ...buildPassEmail({ ...base, ...(await inlineImageSrcs(pass.ticketId)) }), attachments: [] };
   const { srcs, attachments } = await speakerPassAttachments(pass.ticketId);
   return { ...buildPassEmail({ ...base, ...srcs }), attachments };

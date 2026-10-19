@@ -16,11 +16,14 @@
                 they disagree.
    On top of that, an RSVP that already has a CxO Breakfast keeps it
    (services/rsvp.js extraOptionsFor): we never change an RSVP.
+   Since Oct 19 2026 this is one of four pass extras (CxO Breakfasts,
+   luncheons, the Gala Dinner, the Awards Night: services/passExtras.js);
+   these are the CxO Breakfasts' own names for it, kept for callers.
    Pure, unit-tested (test/cxo-breakfast.test.js).
 ========================================================= */
 
-import { tierFromTicketType, CXO_KEYS } from "./rsvp.js";
-import { normalizeTicketId } from "./ticketAccess.js";
+import { CXO_KEYS } from "./rsvp.js";
+import { autoExtras, cleanExtraSwitch, extraLabel, ticketsWithExtras } from "./passExtras.js";
 
 export { CXO_KEYS };
 
@@ -31,11 +34,7 @@ export function cxoOverride(...records) {
 }
 
 /** Automatic: an Apex or Speaker Pass, or a speaker-type holder. Booths never. */
-export function autoCxo(ticketType, types = []) {
-  if (/^booth/i.test(String(ticketType || ""))) return false;
-  const tier = tierFromTicketType(ticketType);
-  return tier === "apex" || tier === "speaker" || (Array.isArray(types) && types.includes("speaker"));
-}
+export const autoCxo = (ticketType, types = []) => autoExtras(ticketType, types).cxo;
 
 /** Effective value for one pass: staff's switch when set, else automatic. */
 export function effectiveCxo({ ticketType = "", types = [], override } = {}) {
@@ -43,29 +42,13 @@ export function effectiveCxo({ ticketType = "", types = [], override } = {}) {
 }
 
 /** `cxoBreakfast` body value → true | false | null (automatic), or undefined when it isn't one of those. */
-export function cleanCxoSwitch(v) {
-  if (v === true || v === false || v === null) return v;
-  if (v === "auto" || v === "automatic" || v === "") return null;
-  return undefined;
-}
+export const cleanCxoSwitch = cleanExtraSwitch;
 
 /** "Yes" / "No" / "automatic (Yes)" for audit lines. */
-export const cxoLabel = (override, effective) => (typeof override === "boolean" ? (override ? "Yes" : "No") : `automatic (${effective ? "Yes" : "No"})`);
+export const cxoLabel = extraLabel;
 
 /**
- * The signed-in person's tickets (GET /api/auth/me) with `cxoBreakfast: true|false` on each,
- * the effective value. `types`: their effective person types; `attendees`: Attendee rows for
- * those ticket IDs ({ ticketId, cxoBreakfast }) whose switch applies when the account ticket has none.
- * `type` is as stored: connect | influence | power | apex | speaker (the internal Speaker Pass), or a booth.
+ * The signed-in person's tickets (GET /api/auth/me) with `cxoBreakfast: true|false` on each (the
+ * effective value) and `inclusions` (services/passExtras.js ticketsWithExtras, which this is).
  */
-export function ticketsWithCxo(tickets = [], { types = [], attendees = [] } = {}) {
-  const byTicket = new Map();
-  for (const a of attendees || []) if (a?.ticketId && typeof a.cxoBreakfast === "boolean") byTicket.set(normalizeTicketId(a.ticketId), a);
-  return (Array.isArray(tickets) ? tickets : []).map((t) => {
-    // Staff's manual ticket value (Admin → People) stays out of the person's own app.
-    const { cxoBreakfast: stored, manualValue, manualValueNote, manualValueBy, manualValueAt, ...rest } = t || {};
-    const override = cxoOverride({ cxoBreakfast: stored }, byTicket.get(normalizeTicketId(t?.ticketId)));
-    const booth = /^BOOTH-/i.test(String(t?.ticketId || ""));
-    return { ...rest, cxoBreakfast: !booth && effectiveCxo({ ticketType: t?.type, types, override }) };
-  });
-}
+export const ticketsWithCxo = ticketsWithExtras;
