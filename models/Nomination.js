@@ -64,6 +64,8 @@ const nominationSchema = new mongoose.Schema({
 // Helpful compound index for admin queries
 nominationSchema.index({ status: 1, createdAt: -1 });
 nominationSchema.index({ nomineeEmail: 1 });
+// Admin search: a nominator's email, exactly (services/adminSearchSources.js).
+nominationSchema.index({ nominatorEmail: 1 });
 nominationSchema.index({ resendId: 1 }, { unique: true, sparse: true });
  
 export default mongoose.model("Nomination", nominationSchema);

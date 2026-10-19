@@ -60,14 +60,18 @@ import {
   PERSON_TYPES, EXHIBITOR_PROMO, TYPE_LABELS,
 } from "./teamRoles.js";
 import { normalizeTicketId, guestName, guestWork } from "./ticketAccess.js";
-import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, TIERS, optionLabel, extraOptionsFor } from "./rsvp.js";
+import {
+  personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, TIERS, optionLabel, extraOptionsFor, EXTRA_OPTION_KEYS, extraForOption,
+} from "./rsvp.js";
 import { csvCell } from "./brochureDownloads.js";
 import { companyKey, companyDTO, domainOfUrl } from "./companies.js";
 import { rsvpStatusOf, splitName, RSVP_STATUS_LABELS } from "./rsvpStaff.js";
 import { workDomain } from "./attendeeDetails.js";
-import { cxoOverride, autoCxo, effectiveCxo } from "./cxoBreakfast.js";
+import { cxoOverride } from "./cxoBreakfast.js";
+import { EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
 import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
+import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -198,6 +202,8 @@ function ticketRecord({ user = null, t = null, a = null }) {
     details: t?.details || a?.details || null,
     // "CxO Breakfast included": staff's switch on this pass (true / false), undefined = automatic.
     cxoOverride: override,
+    // Every pass extra staff switched on this pass (services/passExtras.js): { cxo?, lunch?, gala?, awards? }.
+    extrasOverride: extrasOverride(t, a),
     onAccount: !!t,
     hasAttendee: !!a,
   };
@@ -289,9 +295,10 @@ function passNames(a) {
  * @param {object} [o.stripe]   ticket values from Stripe: { paid: Map(session → CAD before HST, after promo and refunds),
  *                              free: Set($0 sessions), upgrades: Map(normalised ticket ID → CAD) }; null = not read
  * @param {Array} [o.reminders] RSVP reminder sends [{ email, sentAt }] (CampaignSend "rsvp-reminder-2026")
+ * @param {Array} [o.attending] "I'm attending" email sends [{ email, status, sentAt, sends }] (CampaignSend "attending-2026")
  * @returns {{ people: object[], byId: Map<string, object> }}  internal person records (see personRow / personDetail)
  */
-export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [] } = {}) {
+export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [] } = {}) {
   const people = [];
   const alias = new Map();
   const byTicket = new Map();
@@ -336,6 +343,8 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     const prev = p.tickets.get(norm);
     if (!prev || (t && prev.source !== "account")) p.tickets.set(norm, ticketRecord({ user: p.user, t, a: a || attByTicket.get(norm) || null }));
     byTicket.set(norm, p);
+    // "t-<ticket ID>": Admin › Ticket records opens the profile of whoever holds a ticket.
+    if (!alias.has(`t-${norm}`)) alias.set(`t-${norm}`, p);
   };
 
   // 1. Accounts and their tickets.
@@ -430,7 +439,7 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     const at = r?.sentAt ? new Date(r.sentAt) : null;
     if (e && at && (!remindedAt.has(e) || remindedAt.get(e) < at)) remindedAt.set(e, at);
   }
-  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt };
+  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending) };
   for (const p of people) Object.assign(p, summarize(p, ctx));
   return { people, byId: alias };
 }
@@ -502,7 +511,7 @@ function rsvpEmailOf(p, remindedAt) {
   return { sent: true, at: mark.at || auto.at, via: ["Marked by staff", ...auto.via], mark, auto };
 }
 
-function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
+function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx }) {
   const u = p.user;
   const tickets = [...p.tickets.values()].map((t) => ({ ...t, status: passStatus(t, refunds), value: ticketValue(t, stripe) }));
   const primary = primaryPass(tickets);
@@ -534,10 +543,13 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
   const email = realEmail(u?.email) || [...p.emails][0] || realEmail(rsvp?.email) || "";
 
   const types = typesOf(p, exIdx);
-  // CxO Breakfast per pass: staff's switch, else automatic (Apex / Speaker Pass, or a speaker-type person).
+  // Pass extras per pass (CxO Breakfasts, luncheons, Gala, Awards): staff's switch, else automatic (the pass's
+  // rules; the CxO Breakfasts also for a speaker-type person). `cxo` / `cxoAuto`: the CxO Breakfasts on their own.
   for (const t of tickets) {
-    t.cxoAuto = autoCxo(t.type, types);
-    t.cxo = effectiveCxo({ ticketType: t.type, types, override: t.cxoOverride });
+    t.extrasAuto = autoExtras(t.type, types);
+    t.extras = effectiveExtras({ ticketType: t.type, types, override: t.extrasOverride });
+    t.cxoAuto = t.extrasAuto.cxo;
+    t.cxo = t.extras.cxo;
   }
   const phone = fromPasses((d) => String(d.phone || "").trim());
   const exhibitorAuto = u ? exIdx.boothFor(u) !== null : false;
@@ -575,6 +587,8 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
     photoUrl,
     ...vipOf(p),
     rsvpEmail: rsvpEmailOf(p, remindedAt),
+    // The "I'm attending" email to any of their addresses (services/attendingNudge.js: opens, clicks and posts aren't tracked).
+    attending: attendingStatusOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], attendingIdx),
     search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...p.emails].filter(Boolean).join(" ")),
   };
 }
@@ -588,6 +602,8 @@ const passOut = (t) => (t ? {
   statusLabel: PASS_STATUS_LABELS[t.status] || t.status, key: t.key, source: t.source,
   // "CxO Breakfast included" for this pass: the effective value, staff's switch (null = automatic) and the automatic value.
   cxoBreakfast: !!t.cxo, cxoOverride: typeof t.cxoOverride === "boolean" ? t.cxoOverride : null, cxoAuto: !!t.cxoAuto,
+  // Every pass extra, the same way: { <cxo|lunch|gala|awards>: { override: true | false | null, auto, included } }.
+  extras: extrasView(t.extrasOverride || {}, t.extrasAuto || {}, t.extras || {}),
   valueBand: valueBand(t.value), valueSource: valueSource(t),
 } : null);
 
@@ -626,6 +642,10 @@ export function personRow(p) {
     vipFrom: p.vipFrom,
     exhibitor: p.exhibitor,
     exhibitorPass: p.exhibitorPass,
+    // "I'm attending" email: { status: none | sent | failed | sending, label, sentAt, nudges }.
+    attending: p.attending
+      ? { status: p.attending.status, label: p.attending.label, sentAt: p.attending.sentAt, nudges: p.attending.nudges }
+      : { status: "none", label: "Not sent", sentAt: null, nudges: 0 },
     linkedinUrl: p.linkedinUrl,
     hasAccount: !!p.user,
     userId: p.user ? String(p.user._id) : "",
@@ -638,7 +658,8 @@ const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
 
 /** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
-    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar). */
+    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar);
+    ?attending= yes (the "I'm attending" email went) | no (not sent, failed or unconfirmed). */
 export function filterPeople(people, query = {}) {
   const q = fold(String(query.q || "").trim()).slice(0, 100);
   const type = String(query.type || "").toLowerCase();
@@ -646,7 +667,10 @@ export function filterPeople(people, query = {}) {
   const status = String(query.status || "").toLowerCase();
   const rsvp = String(query.rsvp || "").toLowerCase();
   const value = String(query.value || "").toLowerCase();
-  const flags = { exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase() };
+  const flags = {
+    exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase(),
+    attending: String(query.attending || "").toLowerCase(),
+  };
   const words = q ? q.split(/\s+/).filter(Boolean) : [];
   return people.filter((p) => {
     if (words.length && !words.every((w) => p.search.includes(w))) return false;
@@ -657,11 +681,12 @@ export function filterPeople(people, query = {}) {
     const rs = rsvpStatusOf(p.rsvp).status;
     if (rsvp === "any" ? rs === "none" : RSVP_STATUSES.includes(rsvp) && rs !== rsvp) return false;
     if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.rsvpEmail.sent, flags.rsvpEmail) || !yesNo(p.vip, flags.vip)) return false;
+    if (!yesNo(p.attending?.status === "sent", flags.attending)) return false;
     return true;
   });
 }
 
-export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip"];
+export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip", "attending"];
 const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), "en", { sensitivity: "base" });
 
 /** Sorted copy. Blanks go last whichever way; ties by name. */
@@ -679,6 +704,7 @@ export function sortPeople(people, sort = "name", dir = "asc") {
     rsvpEmail: (p) => (p.rsvpEmail.sent ? ms(p.rsvpEmail.at) : null),
     exhibitor: (p) => (p.exhibitor ? 0 : 1),
     vip: (p) => (p.vip ? 0 : 1),
+    attending: (p) => (p.attending?.status === "sent" ? ms(p.attending.sentAt) : null),
   }[s];
   return [...people].sort((a, b) => {
     const ka = key(a);
@@ -697,7 +723,8 @@ export function peopleCounts(people) {
   const byStatus = Object.fromEntries(PASS_STATUSES.map((s) => [s, 0]));
   const byRsvp = Object.fromEntries(RSVP_STATUSES.map((s) => [s, 0]));
   const byValue = { below: 0, above: 0, unknown: 0, none: 0 };
-  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0;
+  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0;
+  const extras = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
   for (const p of people) {
     if (!p.types.length) byType.none += 1;
     for (const t of p.types) byType[t] += 1;
@@ -707,9 +734,29 @@ export function peopleCounts(people) {
     if (p.exhibitor) exhibitors += 1;
     if (p.vip) vips += 1;
     if (p.rsvpEmail.sent) rsvpEmailSent += 1;
+    if (p.attending?.status === "sent") attendingSent += 1;
     if (p.primary?.cxo) cxo += 1;
+    for (const x of EXTRA_KEYS) if (p.primary?.extras?.[x]) extras[x] += 1;
   }
-  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, cxo };
+  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, attendingSent, cxo, extras };
+}
+
+/**
+ * Who is eligible for each pass extra (Leads › RSVPs headcounts): every pass (not hidden, not a booth) whose
+ * extra is Yes, by staff's switch or automatically. → { byExtra: { cxo, lunch, gala, awards }, byOption:
+ * { cxo_d1, cxo_d2, lunch_d1, lunch_d2, gala, awards }, passes } (`passes`: every pass counted).
+ */
+export function eligibleCounts(people = []) {
+  const byExtra = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
+  let passes = 0;
+  for (const p of people) {
+    for (const t of p.passList || []) {
+      if (t.hidden || isBooth(t.ticketId)) continue;
+      passes += 1;
+      for (const x of EXTRA_KEYS) if (t.extras?.[x]) byExtra[x] += 1;
+    }
+  }
+  return { byExtra, byOption: Object.fromEntries(EXTRA_OPTION_KEYS.map((k) => [k, byExtra[extraForOption(k)]])), passes };
 }
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d.key, d.label]));
 const GENERIC = /^(sessions|expo|breaks)_d\d$/; // what every pass includes on a day they come
@@ -717,10 +764,15 @@ const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 1
 
 export const PEOPLE_CSV_HEAD = [
   "Name", "Email", "Types", "VIP", "Company", "Job title", "Pass", "Ticket ID", "Pass status",
-  "Ticket value after payment (CAD before HST)", "Ticket value", "Ticket value from", "CxO Breakfast", "Passes",
+  "Ticket value after payment (CAD before HST)", "Ticket value", "Ticket value from", "CxO Breakfast",
+  "Networking Luncheons", "Gala Dinner & Networking Reception", "Catalyst Awards Night", "Extras set by staff", "Passes",
   "RSVP", "RSVP set by", "RSVP updated (UTC)", "Days", "Special events", "Added by staff",
   "RSVP email sent", "RSVP email last sent (UTC)", "Exhibitor", "LinkedIn", "Company logo", "Profile",
 ];
+
+/** "Gala Dinner & Networking Reception: Yes; Networking Luncheons: No": the extras staff switched on one pass. */
+const extrasSetText = (t) => EXTRAS.filter((x) => typeof t.extrasOverride?.[x.key] === "boolean")
+  .map((x) => `${x.label}: ${t.extrasOverride[x.key] ? "Yes" : "No"}`).join("; ");
 
 /** Spreadsheet of the directory view (management, like the RSVP export: it holds emails). */
 export function peopleCsv(people, { profileBase = "" } = {}) {
@@ -734,6 +786,8 @@ export function peopleCsv(people, { profileBase = "" } = {}) {
       v === null || v === undefined ? "" : v.toFixed(2), VALUE_BAND_LABELS[bandOf(p)],
       p.primary ? VALUE_SOURCE_LABELS[valueSource(p.primary)] : "",
       p.primary ? (p.primary.cxo ? "Yes" : "No") : "",
+      ...["lunch", "gala", "awards"].map((x) => (p.primary ? (p.primary.extras?.[x] ? "Yes" : "No") : "")),
+      p.primary ? extrasSetText(p.primary) : "",
       p.passList.filter((t) => !t.hidden).length,
       RSVP_STATUS_LABELS[r.status], r.status === "staff" ? r.by : r.status === "attendee" ? "Attendee" : "", stamp(r.at),
       r.days.map((d) => DAY_LABEL[d] || d).join(" & "),
@@ -811,6 +865,8 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
     canEditExhibitor: canEdit,
     canEditVip: canEdit,
     canEditCxo: canEdit && hasPass,
+    // The pass extras (CxO Breakfasts, luncheons, Gala, Awards) per pass: anyone who can edit them.
+    canEditExtras: canEdit && hasPass,
     // Change a pass (the four, or the internal Speaker Pass), and the ticket value of a pass paid outside Stripe: management.
     canEditPass: canEdit && management && hasPass,
     canEditValue: canEdit && management && hasPass,
@@ -826,11 +882,13 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
   };
 }
 
-/** CxO Breakfast rules for this person's RSVP: their main pass's switch (or, with no pass, the speaker type)
-    and any breakfast already on their RSVPs. → { cxo: true | false | undefined, extra: [keys] } */
+/** Pass extras rules for this person's RSVP: their main pass's extras (staff's switches, else automatic; with
+    no pass, the speaker type gives the CxO Breakfasts) and any extra already on their RSVPs (never taken away).
+    → { cxo: true | false | undefined, extras: { cxo, lunch, gala, awards } | undefined, extra: [keys], speaker } */
 export function rsvpRulesFor(p) {
   const cxo = p.primary ? !!p.primary.cxo : p.types.includes("speaker") ? true : undefined;
-  return { cxo, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]), speaker: p.types.includes("speaker") };
+  const extras = p.primary ? { ...p.primary.extras } : cxo ? { cxo: true } : undefined;
+  return { cxo, extras, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]), speaker: p.types.includes("speaker") };
 }
 
 /** Everything for the profile page (the route adds the agenda, the RSVPs in full and the company).
@@ -842,7 +900,8 @@ export function personDetail(p, { management = false, cmsLogos = [], staffId = "
     firstName: p.firstName,
     lastName: p.lastName,
     phone: p.phone || "",
-    rsvpRules: { cxo: rules.cxo ?? null, keep: rules.extra },
+    // The RSVP editor's rules: `extras` per pass extra true / false (null = by the pass picked), `keep`: extras on their RSVP.
+    rsvpRules: { cxo: rules.cxo ?? null, extras: Object.fromEntries(EXTRA_KEYS.map((x) => [x, typeof rules.extras?.[x] === "boolean" ? rules.extras[x] : null])), keep: rules.extra },
     passes: p.passList.map((t) => ({
       ...passOut(t), hidden: t.hidden, checkedIn: t.checkedIn, purchaseDate: t.purchaseDate, promoCode: t.promoCode,
       claimed: t.claimed, booth: t.booth, exhibitorPass: t.exhibitorPass, printedLabel: t.printedLabel || "",

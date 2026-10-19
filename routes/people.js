@@ -17,7 +17,7 @@ import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { storedTypes, PERSON_TYPES, isSpeakerPass } from "../services/teamRoles.js";
 import { typesEdit } from "../services/appRights.js";
-import { cleanCxoSwitch, cxoLabel, effectiveCxo } from "../services/cxoBreakfast.js";
+import { EXTRAS, EXTRA_FIELDS, cleanExtras, effectiveExtras, extraLabel, extrasMeta, extrasWrite } from "../services/passExtras.js";
 import { deletePerson, emailHash, personDeletionScope, planPersonDeletion } from "../services/accountDeletion.js";
 import {
   REMINDER_CAMPAIGN, REMINDER_COOLDOWN_MS, campaignSendStore, makeReminderSender, reminderJob, sendRsvpReminder,
@@ -30,12 +30,18 @@ import {
 import { planStaffRsvp, splitName } from "../services/rsvpStaff.js";
 import {
   buildPeople, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv, agendaFor, editInfo, namesMatch,
-  rsvpRulesFor, planPeopleReminders, stripeMaps, REMINDER_SKIP_LABELS,
+  rsvpRulesFor, planPeopleReminders, stripeMaps, eligibleCounts, REMINDER_SKIP_LABELS,
 } from "../services/people.js";
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
 import { prepareLogo, storeLogo, chooseStore, decodeLogoDataUrl } from "../services/logoStore.js";
 import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/contactCard.js";
+import { usableEmail } from "../services/attendingCampaign.js";
+import { sendAttendingEmail } from "../services/attendingEmail.js";
+import {
+  ATTENDING_CAMPAIGN, ATTENDING_TRACKING, NUDGE_COOLDOWN_DAYS, NUDGE_COOLDOWN_MS, NUDGE_MAX, NUDGE_SKIP_LABELS, attendingJob, planAttendingNudges,
+} from "../services/attendingNudge.js";
+import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -49,14 +55,25 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
      POST   /reminder       { query: (the filters), confirm: "SEND", expected: n } (management)
                             → 202 { started, toSend, job }; sent in the background, 600 ms apart
      GET    /reminder/job   → { job }
+     GET    /nudge          ?(the same filters) → { counts, targets, skipped, skipLabels, cooldownDays, tracking, job }
+                            who "Send LinkedIn nudge" (the "I'm attending" email) would email, and who's left out and why
+     POST   /nudge          { query, confirm: "SEND", expected: n } (management) → 202 { started, toSend, job }
+     GET    /nudge/job      → { job }
+     POST   /:id/reminder   the RSVP reminder to this one person (staff and management; the 20-hour cool-down applies)
+                            → { sent, email, sentAt } | 409 { code: <skip reason>, error }
+     POST   /:id/nudge      the "I'm attending" email to this one person (staff and management; the 3-day cool-down)
+                            → { sent, email, sentAt } | 409 { code: <skip reason>, error }
      GET    /:id            the profile: person, passes, RSVP (+ catalog for the editor),
                             agenda (sessions saved in the app + RSVP special events), company,
                             contactCard (their app contact details, read only)
      PATCH  /:id            { firstName?, lastName? (or name), email? (management), phone?, linkedinUrl?, company?, jobTitle?,
                               types?, typesOff? (accounts), exhibitor?, vip?, rsvpEmailSent? (true | false | null) }
                             every record they're made of follows: the account, their passes, their RSVP rows
-     PATCH  /:id/passes/:ticketId  { cxoBreakfast?: true | false | null (automatic), tier? (management: the four or speaker),
+     PATCH  /:id/passes/:ticketId  { extras?: { cxo?, lunch?, gala?, awards? } (each true | false | null = automatic),
+                              cxoBreakfast?: true | false | null (the CxO Breakfasts, as before), tier? (management: the four or speaker),
                               manualValue?: CAD | null, manualValueNote? (management; passes paid outside Stripe) }
+     GET    /eligible       who is eligible for each pass extra (Leads › RSVPs headcounts):
+                            { byExtra: { cxo, lunch, gala, awards }, byOption: { cxo_d1, …, awards }, passes, extras: [meta] }
      GET    /:id/delete-plan  (management) exactly what Delete person removes, with counts, and what stays
      DELETE /:id            { confirmName } (management) deletes them from the database (services/accountDeletion.js)
      PUT    /:id/rsvp       { days, options, dietary, dietaryOther?, accessibility?, tier?,
@@ -70,14 +87,19 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    Staff RSVPs and who wins over whom: services/rsvpStaff.js.
    Logo search and safe fetching: services/logoFetch.js; storage:
    services/logoStore.js. Every change is audited; nothing here emails
-   anyone except POST /reminder (the RSVP reminder, management, after a
-   confirmation), and listing never creates an account or any other record.
+   anyone except the RSVP reminder and the "I'm attending" LinkedIn nudge:
+   to a filtered view (POST /reminder, POST /nudge: management, after a
+   confirmation with the count), or to one person from their profile
+   (POST /:id/reminder, POST /:id/nudge: staff too, Oct 19 2026, rate-limited,
+   with the same cool-downs). Listing never creates an account or any other record.
    Passes (Oct 19 2026): Connect, Influence, Power, Apex and the internal
    Speaker Pass (holding one makes someone a speaker); an exhibitor pass is
    a Connect Pass, named so; "All Access" is the Power Pass.
 ========================================================= */
 
 const n = (r) => r?.modifiedCount ?? 0;
+/** The audit action for each pass extra's switch (the CxO Breakfasts' is the one it always was). */
+const EXTRA_AUDIT = { cxo: "pass_cxo_breakfast", lunch: "pass_luncheons", gala: "pass_gala_dinner", awards: "pass_awards_night" };
 const clean = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -125,15 +147,16 @@ const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", 
 const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
 const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
   "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
-  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId tickets.cxoBreakfast",
+  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
+  ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
   "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
-  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip cxoBreakfast",
+  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip", ...EXTRA_FIELDS,
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 async function loadDirectory() {
-  const [users, attendees, rsvps, companies, speakers, stripe, reminders] = await Promise.all([
+  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending] = await Promise.all([
     User.find({}).select(USER_SELECT).lean(),
     Attendee.find({}).select(ATTENDEE_SELECT).lean(),
     Rsvp.find(LIVE_RSVPS).lean(),
@@ -141,16 +164,18 @@ async function loadDirectory() {
     speakerCache.get(),
     loadStripe(),
     CampaignSend.find({ campaign: REMINDER_CAMPAIGN, sentAt: { $ne: null } }).select("email sentAt").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt sends").lean(),
   ]);
   const built = buildPeople({
-    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders,
+    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending,
   });
   return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
 }
 
 const DIR_TTL_MS = 20 * 1000;
 let dir = { at: 0, data: null, pending: null, gen: 0 };
-async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
+/** The directory (also read by the admin search, routes/console.js /search). */
+export async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   if (!fresh && dir.data && Date.now() - dir.at < maxAgeMs) return dir.data;
   if (dir.pending && !fresh) return dir.pending;
   const gen = dir.gen;
@@ -165,7 +190,9 @@ async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
 const invalidate = () => { dir = { at: 0, data: null, pending: null, gen: dir.gen + 1 }; };
 
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
-  const key = String(id || "").slice(0, 80);
+  const raw = String(id || "").slice(0, 80);
+  const key = raw.startsWith("t-") ? `t-${normalizeTicketId(raw.slice(2))}` : raw; // t-<ticket ID>: from Ticket records
+
   let d = await directory({ fresh, maxAgeMs });
   let p = d.byId.get(key);
   if (!p && !fresh) { d = await directory({ fresh: true }); p = d.byId.get(key); }
@@ -214,7 +241,7 @@ const REMINDER_GAP_MS = 600;
 const REMINDER_MAX = 500; // emails per run; run it again for the rest (anyone reminded is then skipped)
 const reminderRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
 const sendReminder = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
-const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status"];
+const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status", "attending"];
 const pickFilters = (src = {}) => Object.fromEntries(FILTER_KEYS.filter((k) => typeof src?.[k] === "string" && src[k]).map((k) => [k, String(src[k]).slice(0, 120)]));
 
 async function reminderPlan(query, { fresh = false } = {}) {
@@ -285,6 +312,95 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
   })();
 }));
 
+/* ---------- "Send LinkedIn nudge": the "I'm attending" email, to the current view (management) ----------
+   The Marketing › I'm attending campaign email, unchanged: their personal /attending link to make the image
+   and post it on LinkedIn. Same confirm, count and skip list as the RSVP reminder above (services/attendingNudge.js
+   planAttendingNudges): no pass, no email, suspended, unsubscribed, unconfirmed send, emailed in the last 3 days.
+   Opens, clicks and posts aren't tracked, so "already posted" can't be known. Sends are recorded in the
+   campaign's CampaignSend rows, so its "send to everyone" skips anyone nudged. */
+const nudgeRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
+const singleSends = makeLimiter(SINGLE_SEND_LIMIT); // one-person reminders and nudges from a profile, per staff member
+const sendNudge = makeReminderSender({
+  store: campaignSendStore(CampaignSend, { campaign: ATTENDING_CAMPAIGN, cooldownMs: NUDGE_COOLDOWN_MS }),
+  send: ({ to, row }) => sendAttendingEmail({ to, recipient: row }),
+});
+
+async function nudgePlan(query, { fresh = false } = {}) {
+  const d = await directory({ fresh });
+  const list = filterPeople(d.people, query);
+  const [optedOut, sends] = await Promise.all([
+    Subscription.find({ subscribed: false }).select("email").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt").lean(),
+  ]);
+  return planAttendingNudges(list, { optedOut: optedOut.map((x) => x.email), sends, cooldownMs: NUDGE_COOLDOWN_MS });
+}
+const nudgeOut = (plan) => ({
+  counts: { ...plan.counts, toSend: Math.min(plan.targets.length, NUDGE_MAX), max: NUDGE_MAX },
+  targets: plan.targets.slice(0, NUDGE_MAX).map((t) => ({ email: t.email, name: t.name, people: t.people })),
+  skipped: plan.skipped.slice(0, 1000),
+  skipLabels: NUDGE_SKIP_LABELS,
+  cooldownDays: NUDGE_COOLDOWN_DAYS,
+  tracking: ATTENDING_TRACKING,
+  job: attendingJob.view(),
+});
+
+router.get("/nudge/job", (req, res) => res.json({ job: attendingJob.view() }));
+
+router.get("/nudge", wrap(async (req, res) => {
+  res.json(nudgeOut(await nudgePlan(pickFilters(req.query), { fresh: req.query.refresh === "1" })));
+}));
+
+router.post("/nudge", requireManagement, wrap(async (req, res) => {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (b.confirm !== "SEND") return res.status(400).json({ error: "Confirm the send first." });
+  if (attendingJob.state.running) return res.status(409).json({ error: "An \"I'm attending\" send is already running. Try again when it finishes.", job: attendingJob.view() });
+  const filters = pickFilters(b.query);
+  const plan = await nudgePlan(filters, { fresh: true });
+  const todo = plan.targets.slice(0, NUDGE_MAX);
+  if (Number(b.expected) !== todo.length) {
+    return res.status(409).json({ code: "changed", error: "The list changed since you checked it. Look at the new count, then send again.", ...nudgeOut(plan) });
+  }
+  if (!todo.length) return res.status(400).json({ error: "Nobody here can be nudged right now." });
+  if (!nudgeRuns.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of nudge sends. Try again in an hour." });
+  const by = String(req.user.email || req.user._id);
+  attendingJob.start(req.user.name || req.user.email || "", "people", todo.length);
+  const view = Object.entries(filters).map(([k, v]) => `${k}=${v}`).join(" ") || "everyone";
+  await audit(req, "people_attending_nudge_start", "campaign", ATTENDING_CAMPAIGN,
+    `${todo.length} emails (${plan.counts.people} people) for ${view}; left out ${plan.counts.skipped}`);
+  res.status(202).json({ started: true, toSend: todo.length, job: attendingJob.view() });
+
+  (async () => {
+    const failures = [];
+    try {
+      await sendSequentially(todo, async (t) => {
+        try {
+          const out = await sendNudge(t, by);
+          if (out === "skipped") attendingJob.state.skipped++; else attendingJob.state.sent++;
+        } catch (err) {
+          attendingJob.state.failed++;
+          failures.push(`${t.email}: ${String(err?.message || err).slice(0, 80)}`);
+          throw err;
+        }
+      }, { delayMs: REMINDER_GAP_MS });
+    } catch (err) {
+      console.error("PEOPLE ATTENDING NUDGE ERROR:", err?.message || err);
+    } finally {
+      attendingJob.finish();
+      invalidate();
+      const st = attendingJob.state;
+      await audit(req, "people_attending_nudge_done", "campaign", ATTENDING_CAMPAIGN,
+        `sent ${st.sent}, failed ${st.failed}, skipped ${st.skipped}${failures.length ? ` · ${failures.slice(0, 5).join("; ")}` : ""}`);
+    }
+  })();
+}));
+
+/* Who is eligible for each pass extra: every pass (not hidden, not a booth) whose extra is Yes, by staff's
+   switch or automatically (services/people.js eligibleCounts). Leads › RSVPs shows it on the headcounts. */
+router.get("/eligible", wrap(async (req, res) => {
+  const d = await directory({ fresh: req.query.refresh === "1" });
+  res.json({ ...eligibleCounts(d.people), extras: extrasMeta(), builtAt: d.builtAt });
+}));
+
 router.get("/:id", wrap(async (req, res) => {
   // A profile is opened to check or change something: at most a few seconds old (an RSVP sent
   // from /rsvp a moment ago shows), where the list can be 20 s old.
@@ -297,6 +413,7 @@ router.get("/:id", wrap(async (req, res) => {
     p.user ? User.findById(p.user._id).select(CONTACT_SELECT).lean() : Promise.resolve(null),
   ]);
   const person = personDetail(p, { management: isManagement(req.user), cmsLogos: cmsLogos || [], staffId: req.user._id });
+  const outreach = await outreachFor(p);
   res.json({
     canonicalId: p.id,
     person,
@@ -308,8 +425,82 @@ router.get("/:id", wrap(async (req, res) => {
     logoStore: chooseStore(),
     // Their app contact card, read only: [{ kind, label, value, shareByDefault }] (each person picks what they share).
     contactCard: contactItemsFor(card).map((it) => ({ kind: it.kind, label: it.label, value: it.value, shareByDefault: it.shareByDefault })),
+    outreach,
   });
 }));
+
+/* ---------- One person: the RSVP reminder and the LinkedIn nudge from their profile ----------
+   Staff and management (the organiser, Oct 19 2026: staff may send a single reminder or nudge),
+   the same emails, cool-downs and skip rules as the sends to a view above, one person per request,
+   SINGLE_SEND_LIMIT an hour each, every send audited with who sent it. */
+
+/** May each email go to this person now? → { reminder: plan, nudge: plan } for just them. */
+async function singlePlans(p) {
+  const d = await directory();
+  const email = usableEmail(p.email);
+  const [optedOut, reminded, attending] = email ? await Promise.all([
+    Subscription.find({ email, subscribed: false }).select("email").lean(),
+    CampaignSend.find({ campaign: REMINDER_CAMPAIGN, email }).select("email status sentAt").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN, email }).select("email status sentAt").lean(),
+  ]) : [[], [], []];
+  const out = optedOut.map((x) => x.email);
+  return {
+    reminder: planPeopleReminders([p], { rsvps: d.rsvps, optedOut: out, sends: reminded, cooldownMs: REMINDER_COOLDOWN_MS }),
+    nudge: planAttendingNudges([p], { optedOut: out, sends: attending, cooldownMs: NUDGE_COOLDOWN_MS }),
+    lastReminder: reminded.find((r) => r.sentAt)?.sentAt || null,
+  };
+}
+/** { canSend, reason, label } from a one-person plan. */
+const verdict = (plan, labels) => {
+  if (plan.targets.length) return { canSend: true, reason: "", label: "" };
+  if (plan.counts.confirmed) return { canSend: false, reason: "confirmed", label: labels.confirmed };
+  const s = plan.skipped[0];
+  return { canSend: false, reason: s?.reason || "unknown", label: s?.label || "Can't be sent right now" };
+};
+
+/** The profile's Emails card. */
+async function outreachFor(p) {
+  const { reminder, nudge, lastReminder } = await singlePlans(p);
+  return {
+    rsvpReminder: { ...verdict(reminder, REMINDER_SKIP_LABELS), lastSentAt: lastReminder, cooldownHours: REMINDER_COOLDOWN_MS / 3600000, running: !!reminderJob.state.running },
+    attending: {
+      ...(p.attending || { status: "none", sentAt: null, nudges: 0 }), ...verdict(nudge, NUDGE_SKIP_LABELS),
+      cooldownDays: NUDGE_COOLDOWN_DAYS, tracking: ATTENDING_TRACKING, running: !!attendingJob.state.running,
+    },
+  };
+}
+
+/** One person, one email: `kind` "reminder" (RSVP reminder) or "nudge" ("I'm attending"). */
+const sendOne = (kind) => wrap(async (req, res) => {
+  const reminder = kind === "reminder";
+  const p = await findPerson(req.params.id, { maxAgeMs: 3000 });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const job = reminder ? reminderJob : attendingJob;
+  if (job.state.running) return res.status(409).json({ code: "running", error: "A send to many people is running. Try again when it finishes." });
+  const plans = await singlePlans(p);
+  const plan = reminder ? plans.reminder : plans.nudge;
+  const v = verdict(plan, reminder ? REMINDER_SKIP_LABELS : NUDGE_SKIP_LABELS);
+  if (!v.canSend) return res.status(409).json({ code: v.reason, error: v.label });
+  if (!singleSends.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of single sends in an hour. Try again later." });
+  const t = plan.targets[0];
+  const by = String(req.user.email || req.user._id);
+  const note = staffNote(isManagement(req.user));
+  const action = reminder ? "people_rsvp_reminder_one" : "people_attending_nudge_one";
+  try {
+    const sentAt = await (reminder ? sendReminder : sendNudge)(t, by);
+    if (sentAt === "skipped") {
+      return res.status(409).json({ code: "skipped", error: reminder ? "They were reminded very recently, or someone is sending to them right now." : "They were emailed very recently, or someone is sending to them right now." });
+    }
+    await audit(req, action, "person", p.id, `${p.name} <${t.email}>${note}`);
+    invalidate();
+    return res.json({ sent: true, email: t.email, sentAt });
+  } catch (err) {
+    await audit(req, `${action}_failed`, "person", p.id, `${p.name} <${t.email}>${note}: ${String(err?.message || err).slice(0, 200)}`);
+    return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
+  }
+});
+router.post("/:id/reminder", sendOne("reminder"));
+router.post("/:id/nudge", sendOne("nudge"));
 
 const LINK = /^https?:\/\/[^\s<>"]+$/i;
 const PHONE = /^[+()\d][\d\s().+-]{5,24}$/;
@@ -556,7 +747,10 @@ router.patch("/:id", wrap(async (req, res) => {
 }));
 
 /* One pass of theirs: PATCH /:id/passes/:ticketId, any of
-     cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (staff; audited pass_cxo_breakfast)
+     extras: { cxo?, lunch?, gala?, awards? }            the pass extras (services/passExtras.js), each true | false |
+                                                         null (automatic); staff. Each change is audited: pass_cxo_breakfast,
+                                                         pass_luncheons, pass_gala_dinner, pass_awards_night
+     cxoBreakfast: true | false | null (automatic)       "CxO Breakfast included" (the same as extras.cxo)
      tier: connect | influence | power | apex | speaker  change the pass (management): one of the four or the internal
                                                          Speaker Pass (which makes them a speaker); no charge; the account
                                                          ticket, its pass row and its RSVP rows follow, and the inventory
@@ -566,7 +760,8 @@ router.patch("/:id", wrap(async (req, res) => {
                                                          ticket value after payment for a pass paid outside Stripe
                                                          (management; a Stripe-paid pass keeps Stripe's). Audited pass_value.
    Saved on the ticket record: the account's ticket (User.tickets) and the Attendee row of the same ticket,
-   whichever exist. Never changes what they chose in their RSVP. */
+   whichever exist. Never changes what they chose in their RSVP: an extra switched to No is no longer offered,
+   but one already on their RSVP stays (services/rsvp.js extraOptionsFor). */
 router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   const p = await findPerson(req.params.id, { fresh: true });
   if (!p) return res.status(404).json({ error: "Person not found" });
@@ -590,11 +785,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   const warnings = [];
 
   // Validate first.
-  let cxo;
-  if (b.cxoBreakfast !== undefined) {
-    cxo = cleanCxoSwitch(b.cxoBreakfast);
-    if (cxo === undefined) return res.status(400).json({ error: "CxO Breakfast must be Yes, No or automatic", field: "cxoBreakfast" });
-  }
+  const extrasIn = cleanExtras(b);
+  if (!extrasIn.ok) return res.status(400).json({ error: extrasIn.error, field: extrasIn.field });
+  const extrasAsked = extrasIn.value; // { <key>: true | false | null } for the extras sent
   let tier;
   if (b.tier !== undefined) {
     if (!management) return res.status(403).json({ error: "Only management can change a pass", field: "tier" });
@@ -611,15 +804,26 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
       if (!Number.isFinite(value) || value < 0 || value > 100000) return res.status(400).json({ error: "Enter the amount paid in CAD, before HST (0 to 100,000)", field: "manualValue" });
     }
   }
-  if (cxo === undefined && tier === undefined && value === undefined) return res.status(400).json({ error: "Nothing to change" });
+  if (!Object.keys(extrasAsked).length && tier === undefined && value === undefined) return res.status(400).json({ error: "Nothing to change" });
 
-  if (cxo !== undefined) {
-    const before = cxoLabel(t.cxoOverride, t.cxo);
-    await writeTicket(cxo === null ? {} : { cxoBreakfast: cxo }, cxo === null ? { cxoBreakfast: 1 } : {});
-    const after = cxoLabel(cxo ?? undefined, effectiveCxo({ ticketType: tier || t.type, types: p.types, override: cxo ?? undefined }));
-    await audit(req, "pass_cxo_breakfast", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: CxO Breakfast ${before} → ${after}`);
+  // The pass extras: only the ones that change are written, each audited like "CxO Breakfast included" always was.
+  const overrideNow = t.extrasOverride || {};
+  const changedExtras = Object.fromEntries(Object.entries(extrasAsked).filter(([k, v]) => (v ?? null) !== (typeof overrideNow[k] === "boolean" ? overrideNow[k] : null)));
+  if (Object.keys(changedExtras).length) {
+    const { set, unset } = extrasWrite(changedExtras);
+    await writeTicket(set, unset);
+    const overrideAfter = { ...overrideNow };
+    for (const [k, v] of Object.entries(changedExtras)) { if (v === null) delete overrideAfter[k]; else overrideAfter[k] = v; }
+    const effectiveAfter = effectiveExtras({ ticketType: tier || t.type, types: p.types, override: overrideAfter });
+    for (const x of EXTRAS.filter((e) => e.key in changedExtras)) {
+      const before = extraLabel(overrideNow[x.key], t.extras?.[x.key]);
+      const after = extraLabel(overrideAfter[x.key], effectiveAfter[x.key]);
+      const what = x.key === "cxo" ? "CxO Breakfast" : x.label; // the CxO line reads as it always has
+      await audit(req, EXTRA_AUDIT[x.key], "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: ${what} ${before} → ${after}`);
+    }
     did = true;
   }
+  if (Object.keys(extrasAsked).length) did = true;
   if (tier !== undefined && tier !== t.tier) {
     if (t.onAccount && p.user) await User.updateOne({ _id: p.user._id, "tickets.ticketId": t.ticketId }, { $set: { "tickets.$.type": tier } });
     await Attendee.updateMany({ ticketId: { $in: variants } }, { $set: { ticketType: tier } });
@@ -629,7 +833,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     const rsvp = await Rsvp.findOne({ ...rsvpFilter, ...LIVE_RSVPS }).lean();
     if (rsvp) {
       const rules = rsvpRulesFor(p);
-      const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { cxo: rules.speaker ? true : rules.cxo, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
+      // The new pass's extras: staff's switches on this pass, else the new pass's rules.
+      const extras = effectiveExtras({ ticketType: tier, types: p.types, override: t.extrasOverride || {} });
+      const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { extras, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
       if (!check.ok) warnings.push(`Their RSVP has ${check.invalid.map(optionLabel).join(", ")}, which the ${TIER_LABELS[tier]} doesn't include. It stays: staff never take away what they chose.`);
     }
     // Inventory, the way a paid upgrade moves it (routes/webhook.js). The Speaker Pass has no inventory row

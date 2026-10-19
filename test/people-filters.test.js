@@ -315,7 +315,9 @@ test("reminder sending: claimed once per address, stubbed sender only, failures 
 
 test("RSVP rules for staff: the main pass's CxO switch, the speaker type without a pass, breakfasts already chosen", () => {
   const { people } = buildPeople(world());
-  assert.deepEqual(rsvpRulesFor(by(people, "Ava Paid")), { cxo: false, extra: [], speaker: false });
-  assert.deepEqual(rsvpRulesFor(by(people, "Kai Speaker")), { cxo: true, extra: [], speaker: true });
-  assert.deepEqual(rsvpRulesFor(by(people, "Gus Nopass")), { cxo: undefined, extra: [], speaker: false });
+  // `extras`: every pass extra of the main pass (Oct 19 2026: luncheons, Gala, Awards next to the CxO Breakfasts).
+  const connect = { cxo: false, lunch: false, gala: false, awards: false };
+  assert.deepEqual(rsvpRulesFor(by(people, "Ava Paid")), { cxo: false, extras: connect, extra: [], speaker: false });
+  assert.deepEqual(rsvpRulesFor(by(people, "Kai Speaker")), { cxo: true, extras: { cxo: true, lunch: true, gala: true, awards: true }, extra: [], speaker: true });
+  assert.deepEqual(rsvpRulesFor(by(people, "Gus Nopass")), { cxo: undefined, extras: undefined, extra: [], speaker: false });
 });

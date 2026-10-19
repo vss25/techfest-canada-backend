@@ -21,7 +21,7 @@ import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
    GET  /          → { copy (saved, per pass type in copy.tiers), defaults: { <tier>: built-in }, fields, sections,
                        placeholders, tiers: [{ key, label }], updatedBy, updatedAt }
    PUT  /          every field + tiers: { <tier>: { passName, tagline, blurb, includes, tips } } → same (management)
-   POST /preview   { tier ("connect" | … | "booth"), cxoBreakfast?, ...unsaved template } → { subject, html, text, defaults }
+   POST /preview   { tier ("connect" | … | "booth"), cxoBreakfast?, extras?, ...unsaved template } → { subject, html, text, defaults }
                    (a made-up buyer, Jane Doe; the real builder)
 ========================================================= */
 
@@ -81,6 +81,8 @@ router.post("/preview", async (req, res) => {
     walletUrl: "#add-to-apple-wallet", qrUrl: await sampleQr(),
     logoSrc: `data:image/png;base64,${logoPng().toString("base64")}`,
     ...(typeof body.cxoBreakfast === "boolean" ? { cxoBreakfast: body.cxoBreakfast } : {}),
+    // A pass with its extras switched on or off (services/passExtras.js): { cxo?, lunch?, gala?, awards? } true / false.
+    ...(body.extras && typeof body.extras === "object" ? { extras: Object.fromEntries(Object.entries(body.extras).filter(([, v]) => typeof v === "boolean")) } : {}),
     template,
   });
   res.json({ subject: e.subject, preheader: e.preheader, html: e.html, text: e.text, defaults: e.defaults });

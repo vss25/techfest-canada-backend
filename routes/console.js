@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { contentAccess, contentEditRefusal } from "../services/staffPowers.js";
 import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
@@ -67,6 +68,10 @@ import { PLACEHOLDERS, SECTIONS, cleanFields, changedFields, compact, fieldsFor,
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { loadWebsite, applyWebsite, planWebsiteLinks, nudgeCopy, NUDGE_COPY } from "../services/speakerWebsite.js";
 import { sendSpeakerPassEmail } from "../services/emailService.js";
+import { runSearch } from "../services/adminSearch.js";
+import { makeSearchSources } from "../services/adminSearchSources.js";
+import { makeLimiter } from "../services/ticketAccess.js";
+import { directory as peopleDirectory } from "./people.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -83,6 +88,34 @@ router.get("/me", (req, res) => {
   res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
              staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user) });
 });
+
+/* ---------- Global search (the panel's top bar and ⌘K / Ctrl-K) ----------
+   GET /search?q=  or  POST /search { q }  (the panel posts, so search terms stay out of URLs and logs)
+   → { query: { text, exact: "" | "email" | "ticket" }, tooShort, minChars, groups: [{ key, label, items: [{ type, id,
+       title, subtitle, link, badges?, exact?, meta? }], total, more, seeAll? }], failed: [{ key, label, reason }], tookMs }
+   Same rights as the pages: every staff member sees what their pages show; Staff accounts and amounts paid only
+   management (volunteers never get here: requireAdmin). At most 5 per group. 120 searches a minute per staff member;
+   each source has 5 s (services/adminSearch.js), and a failed one only leaves its own groups out. Never logged
+   with the terms. Matching and groups: services/adminSearch.js; what's read: services/adminSearchSources.js. */
+const searchSources = makeSearchSources({ directory: () => peopleDirectory() });
+const searchLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });
+async function globalSearch(req, res) {
+  if (!searchLimiter.hit(String(req.user._id))) {
+    return res.status(429).json({ error: "That's a lot of searches. Wait a few seconds and try again.", code: "rate_limited" });
+  }
+  const q = req.method === "POST" ? req.body?.q : req.query.q;
+  const management = isManagement(req.user);
+  try {
+    const out = await runSearch({ q, viewer: { management, isManagement }, sources: searchSources });
+    res.set("Cache-Control", "no-store");
+    res.json(out);
+  } catch (err) {
+    console.error(`ADMIN SEARCH ERROR (${err?.name || "Error"})`);
+    res.status(500).json({ error: "Search isn't working right now. Try again." });
+  }
+}
+router.get("/search", globalSearch);
+router.post("/search", globalSearch);
 
 const isId = (s) => mongoose.isValidObjectId(String(s || ""));
 const rx = (q) => new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -388,19 +421,27 @@ router.patch("/reports/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- App texts & switches ---------- */
+/* ---------- App texts & switches ----------
+   Everyone on the console reads them. `managementOnly`: only management may change it (ticket sales on / off
+   and its message, pass upgrades, the guest offer); `locked`: nobody may switch it on (the guest offer:
+   promotions are banned). Both are refused here with 403 (services/staffPowers.js), whatever the panel shows. */
 router.get("/app-content", async (req, res) => {
   const rows = await AppContent.find({}).lean();
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
   res.json(Object.entries(CONTENT_KEYS).map(([key, def]) => ({
     key, default: def, value: byKey[key] ? byKey[key].value : def,
-    updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null,
+    updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null, ...contentAccess(key),
   })));
 });
 
 router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) return res.status(400).json({ error: "Unknown key" });
+  const refusal = contentEditRefusal(c[0], c[1], { management: isManagement(req.user) });
+  if (refusal) {
+    await audit(req, "edit_app_text_refused", "content", c[0], `${refusal.code}: ${String(c[1]).slice(0, 80)}`);
+    return res.status(refusal.status).json({ error: refusal.error, code: refusal.code });
+  }
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
   forgetSwitches();   // polls, Q&A and pass upgrades follow at once on this server
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
@@ -437,8 +478,9 @@ router.put("/app-rights", requireManagement, async (req, res) => {
   res.json({ ...(await appRightsPayload(req)), changed: changes });
 });
 
-/* ---------- Broadcast: an official post everyone sees + a notification ---------- */
-router.post("/broadcast", async (req, res) => {
+/* ---------- Broadcast: an official post everyone sees + a notification ----------
+   Management only since Oct 19 2026 (a push to every phone); staff keep personal notifications (/notify). */
+router.post("/broadcast", requireManagement, async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   if (!body) return res.status(400).json({ error: "body required" });
   const post = await SocialPost.create({
@@ -1082,7 +1124,7 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
 
 const SPEAKER_PASS_FIELDS = "name email alsoTo ticketId ticketType speakerId details passEmailSentAt passEmailSentTo " +
   "passEmailSentCount claimedBy checkedIn createdAt purchaseDate runOfShow speakerContact invitesSentAt invitesSentCount " +
-  "speakerNudgedAt speakerNudgeCount issuedPass";
+  "speakerNudgedAt speakerNudgeCount issuedPass cxoBreakfast luncheons galaDinner awardsNight";
 // Who's copied on speaker emails and invites until staff change it in Edit email (SPEAKER_CC, comma-separated).
 const DEFAULT_SPEAKER_CC = () => String(process.env.SPEAKER_CC ?? "lubna@thetechfestival.com").split(",")
   .map((e) => e.trim().toLowerCase()).filter(Boolean);

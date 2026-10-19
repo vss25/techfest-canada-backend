@@ -10,6 +10,7 @@ import { makeAgendaCache } from "../services/points.js";
 import { sendFormSubmissionEmail } from "../services/emailService.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
 import { cxoOverride } from "../services/cxoBreakfast.js";
+import { extrasOverride, EXTRA_SELECT } from "../services/passExtras.js";
 import { effectiveTypes, passKind } from "../services/teamRoles.js";
 
 /* =========================================================
@@ -17,7 +18,9 @@ import { effectiveTypes, passKind } from "../services/teamRoles.js";
    GET  /api/rsvp/options   passes, days, experiences per pass, dietary list
    POST /api/rsvp/lookup    { firstName, lastName, ticketId?, _hp }
                             → { kind: ticket|speaker|none, tier?, verified, displayName?, ticketMatched?,
-                                cxoBreakfast?, keepOptions? (verified tickets only) }
+                                cxoBreakfast?, keepOptions? (verified tickets only), allowedOptions? }
+                            `allowedOptions`: what this person may pick (their pass, and with a verified ticket the
+                            pass extras staff switched on or off for it, plus any extra already on their RSVP)
    POST /api/rsvp           { firstName, lastName, email?, ticketId?, tier, days, options,
                               dietary, dietaryOther, accessibility?, page?, editToken?, _hp, elapsedMs }
                             → { success, updated, editToken, kind, tier, tierLabel, tierVerified }
@@ -32,25 +35,26 @@ const router = express.Router();
 
 /** Ticket ID + last name, checked exactly as the app's ticket sign-in does (routes/ticketAuth.js).
     `names`: who the ticket is for, so the lookup can check the first name too (never sent out).
-    `types` (the holder's person types) and `cxoOverride` (staff's "CxO Breakfast included" on this
-    ticket) decide whether the CxO Breakfasts are offered (services/cxoBreakfast.js). */
+    `types` (the holder's person types) and `extras` (staff's pass extras on this ticket: CxO Breakfasts,
+    luncheons, Gala Dinner, Awards Night) decide which of those are offered (services/passExtras.js);
+    `cxoOverride` is the CxO Breakfasts' switch alone (kept for older callers). */
 async function verifyTicket(ticketId, lastName) {
   const found = await findTicket(ticketId);
   if (!found) return null;
   if (found.kind === "user") {
     if (!(await ticketNameMatches(found, lastName))) return null;
-    const original = await Attendee.findOne({ ticketId: found.ticketId }).select("name details.firstName details.lastName cxoBreakfast").lean();
+    const original = await Attendee.findOne({ ticketId: found.ticketId }).select(`name details.firstName details.lastName ${EXTRA_SELECT}`).lean();
     const names = [...ticketPersonNames(found.owner.name, found.ticket.details), ...(original ? ticketPersonNames(original.name, original.details) : [])];
     return {
       ticketId: found.ticketId, type: found.ticket.type, names,
-      types: effectiveTypes(found.owner), cxoOverride: cxoOverride(found.ticket, original),
+      types: effectiveTypes(found.owner), cxoOverride: cxoOverride(found.ticket, original), extras: extrasOverride(found.ticket, original),
     };
   }
   const a = found.attendee;
   const ok = lastNameMatches(a.name, lastName) || (a.details?.lastName && lastNameMatches(a.details.lastName, lastName));
   return ok ? {
     ticketId: a.ticketId, type: a.ticketType, names: ticketPersonNames(a.name, a.details),
-    types: passKind(a) === "speaker" ? ["speaker"] : [], cxoOverride: cxoOverride(a),
+    types: passKind(a) === "speaker" ? ["speaker"] : [], cxoOverride: cxoOverride(a), extras: extrasOverride(a),
   } : null;
 }
 

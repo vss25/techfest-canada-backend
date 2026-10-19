@@ -17,7 +17,9 @@ import crypto from "crypto";
 import { EVENT } from "./ticketInfo.js";
 import { cleanCopy } from "./speakerPassEmail.js";
 import { passRecipients, passStatus, validateSpeakerEmails } from "./speakerPasses.js";
-import { effectiveCxo, cleanCxoSwitch } from "./cxoBreakfast.js";
+import { effectiveCxo } from "./cxoBreakfast.js";
+import { EXTRAS, EXTRA_KEYS, autoExtras, cleanExtras, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
+import { extraOfRow } from "./passEmailCopy.js";
 import { tierKey } from "./ticketInfo.js";
 
 export const ISSUED_PROMO = "ISSUED";
@@ -68,13 +70,48 @@ export const ISSUE_TIERS = Object.freeze({
 });
 export const ISSUE_TIER_KEYS = Object.keys(ISSUE_TIERS);
 
+/** The email's row for each pass extra (services/passExtras.js), and the order a pass lists them in. */
+export const EXTRA_ROWS = Object.freeze({ cxo: CXO, gala: POWER[0], awards: POWER[1], lunch: LUNCH[0] });
+const ROW_ORDER = ["cxo", "gala", "awards", "lunch"];
+
+/**
+ * A pass's inclusions with its extras switched on or off (`extras`: { cxo, lunch, gala, awards }, true / false;
+ * a missing one leaves its row as it is). A row for an extra that's false comes out (whatever its wording:
+ * the Speaker Pass says "The Gala Dinner"); one that's true and missing goes in after the extras before it,
+ * else after the Apex extras. `rows`: the wording of the rows that go in.
+ */
+export function includesWithExtras(includes = [], extras = {}, { rows = EXTRA_ROWS } = {}) {
+  let list = [...includes];
+  for (const x of ROW_ORDER) {
+    if (typeof extras?.[x] !== "boolean") continue;
+    if (!extras[x]) { list = list.filter((row) => extraOfRow(row) !== x); continue; }
+    if (list.some((row) => extraOfRow(row) === x)) continue;
+    const before = ROW_ORDER.slice(0, ROW_ORDER.indexOf(x)).map((k) => list.findLastIndex((row) => extraOfRow(row) === k)).filter((i) => i >= 0);
+    const firstPlain = list.findIndex((row) => !APEX.some((a) => a[0] === row[0]));
+    list.splice(before.length ? Math.max(...before) + 1 : firstPlain < 0 ? list.length : firstPlain, 0, rows[x]);
+  }
+  return list;
+}
+
 /** A tier's inclusions with the CxO Breakfasts on or off (after the Apex extras, before the rest). */
-export function includesWithCxo(includes = [], cxo = false) {
-  const rest = includes.filter((row) => row[0] !== CXO[0]);
-  if (!cxo) return rest;
-  const at = rest.findIndex((row) => !APEX.some((x) => x[0] === row[0]));
-  rest.splice(at < 0 ? rest.length : at, 0, CXO);
-  return rest;
+export const includesWithCxo = (includes = [], cxo = false) => includesWithExtras(includes, { cxo: !!cxo });
+
+/**
+ * Why to RSVP, for a pass with these extras (`extras`: effective, every key a boolean). The same words as the
+ * built-in reasons above: "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards
+ * Night, so we can save your seat and plan catering." An Apex Pass adds its business meetings.
+ */
+export function rsvpReasonFor(tier, extras = {}) {
+  const apex = tierKey(tier) === "apex" || tierKey(tier) === "vip";
+  const plural = [extras.cxo && "CxO breakfasts", extras.lunch && "luncheons"].filter(Boolean);
+  const parts = [
+    ...plural.map((p, i) => (i ? p : `the ${p}`)),
+    ...(extras.gala ? ["the Gala Dinner"] : []), ...(extras.awards ? ["the Catalyst Awards Night"] : []),
+    ...(apex ? ["your business meetings"] : []),
+  ];
+  if (!parts.length) return "Let us know which days you're coming, so we can plan.";
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `RSVP for ${list}, so we can save your seat${apex ? "" : " and plan catering"}.`;
 }
 
 /** The built-in wording for a pass ({firstName} / {fullName} are filled in per person). */
@@ -115,11 +152,13 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
   // "All Access Pass" and "Exhibitor Pass" are never printed (Oct 19 2026): the tier's own name is.
   if ("label" in body) value.label = printedLabel(clean(body.label, 40));
   if ("rsvp" in body) value.rsvp = body.rsvp !== false;
-  // "CxO Breakfast included": true / false, or null = automatic (Apex and Speaker Passes).
-  if ("cxoBreakfast" in body) {
-    const c = cleanCxoSwitch(body.cxoBreakfast);
-    if (c === undefined) return { ok: false, error: "CxO Breakfast must be Yes, No or automatic." };
-    value.cxoBreakfast = c;
+  // The pass extras (services/passExtras.js): `extras: { cxo, lunch, gala, awards }` and the older
+  // `cxoBreakfast`, each true / false or null = automatic. Kept under their stored names (cxoBreakfast,
+  // luncheons, galaDinner, awardsNight).
+  if ("cxoBreakfast" in body || "extras" in body) {
+    const x = cleanExtras({ cxoBreakfast: body.cxoBreakfast, extras: body.extras });
+    if (!x.ok) return { ok: false, error: `${x.error}.` };
+    for (const e of EXTRAS) if (e.key in x.value) value[e.field] = x.value[e.key];
   }
   // Exhibitor passes: the booth they're on (filled into the Exhibitor Manual).
   if (["booth", "zone", "passes"].some((k) => k in body)) {
@@ -154,7 +193,7 @@ export function issuedPassDoc(v, { ticketId = newIssuedTicketId(), by = "", now 
       label: v.label || "", rsvp: v.rsvp !== false, copy: v.copy || {}, issuedBy: by, issuedAt: now,
       ...(v.booth ? { booth: { booth: "", zone: "", passes: "", ...v.booth } } : {}),
     },
-    ...(typeof v.cxoBreakfast === "boolean" ? { cxoBreakfast: v.cxoBreakfast } : {}),
+    ...Object.fromEntries(EXTRAS.filter((e) => typeof v[e.field] === "boolean").map((e) => [e.field, v[e.field]])),
   };
 }
 
@@ -173,7 +212,7 @@ export function issuedPassUpdate(v, before) {
   if ("company" in v) set["details.organisation"] = v.company;
   if ("label" in v) set["issuedPass.label"] = v.label;
   if ("rsvp" in v) set["issuedPass.rsvp"] = v.rsvp;
-  if ("cxoBreakfast" in v) set.cxoBreakfast = v.cxoBreakfast; // null = automatic (the route $unsets it)
+  for (const e of EXTRAS) if (e.field in v) set[e.field] = v[e.field]; // null = automatic (the route $unsets it)
   if (v.copy) set["issuedPass.copy"] = { ...(before?.issuedPass?.copy || {}), ...v.copy };
   if (v.booth) set["issuedPass.booth"] = { booth: "", zone: "", passes: "", ...(before?.issuedPass?.booth || {}), ...v.booth };
   return set;
@@ -195,11 +234,11 @@ export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
   const key = ISSUE_TIERS[t] ? t : "influence";
   const tier = ISSUE_TIERS[key];
   const label = printedLabel(a?.issuedPass?.label) || tier.label;
-  // The pass's CxO Breakfasts: staff's switch on this pass, else the pass's own rule (Apex, Speaker Pass).
-  const cxo = effectiveCxo({ ticketType: key, override: a?.cxoBreakfast });
-  const asSold = effectiveCxo({ ticketType: key });
-  const rsvpReason = cxo === asSold ? tier.rsvpReason : (cxo ? tier.rsvpReasonCxo : tier.rsvpReasonNoCxo) || tier.rsvpReason;
-  return { label, access: tier.access, includes: includesWithCxo(tier.includes, cxo), rsvp: a?.issuedPass?.rsvp !== false, rsvpReason, ...copyFor(label) };
+  // The pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switch on this pass, else the pass's own rule.
+  const extras = effectiveExtras({ ticketType: key, override: extrasOverride(a) });
+  const asSold = autoExtras(key);
+  const rsvpReason = EXTRA_KEYS.every((x) => extras[x] === asSold[x]) ? tier.rsvpReason : rsvpReasonFor(key, extras);
+  return { label, access: tier.access, includes: includesWithExtras(tier.includes, extras), rsvp: a?.issuedPass?.rsvp !== false, rsvpReason, extras, ...copyFor(label) };
 }
 
 /** One row for Admin → Issue passes. */
@@ -217,6 +256,8 @@ export function issuedPassRow(a) {
     // "CxO Breakfast included": true / false = staff's switch, null = automatic; cxoEffective = what the pass gets.
     cxoBreakfast: typeof a.cxoBreakfast === "boolean" ? a.cxoBreakfast : null,
     cxoEffective: effectiveCxo({ ticketType: key, override: a.cxoBreakfast }),
+    // Every pass extra: { <cxo|lunch|gala|awards>: { override: true | false | null, auto, included } }.
+    extras: extrasView(extrasOverride(a), autoExtras(key), effectiveExtras({ ticketType: key, override: extrasOverride(a) })),
     copy: a.issuedPass?.copy || {},
     ticketId: a.ticketId,
     email: a.email || "",

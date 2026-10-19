@@ -34,10 +34,12 @@
    ticket) and sets `source` back to "attendee". Seats staff gave on top
    (`staffAdded`) stay on the row.
 
-   CxO Breakfasts (services/cxoBreakfast.js): offered by the verified pass's
-   "CxO Breakfast included" (staff's switch, else Apex / Speaker Pass / a
-   speaker-type holder), plus any breakfast already on their RSVP. The lookup
-   tells the page with `cxoBreakfast` and `keepOptions` (verified tickets only).
+   Pass extras (services/passExtras.js: CxO Breakfasts, luncheons, the Gala
+   Dinner, the Awards Night): offered by the verified pass's switches (staff's
+   Yes / No, else automatic: the pass, and for the breakfasts a speaker-type
+   holder), plus any extra already on their RSVP (never taken away). The lookup
+   tells the page with `allowedOptions`, and for verified tickets `cxoBreakfast`
+   and `keepOptions` (extras kept from their RSVP that the pass doesn't offer).
 ========================================================= */
 
 import { makeLimiter, ticketGuesses, ticketGuessKey, normalizeTicketId } from "./ticketAccess.js";
@@ -47,7 +49,7 @@ import {
   validateRsvp, resolvePass, checkOptions, rsvpKeys, rsvpOptionsPayload, newEditToken, hashEditToken, planRsvpMerge,
   optionLabel, extraOptionsFor, allowedExperiences, TIER_LABELS, EXPERIENCE_KEYS, DAY_KEYS,
 } from "./rsvp.js";
-import { effectiveCxo } from "./cxoBreakfast.js";
+import { effectiveExtras } from "./passExtras.js";
 
 export const FALLBACK_EMAIL = "enquire@thetechfestival.com";
 // Every RSVP limit uses a 15-minute window.
@@ -77,9 +79,11 @@ const canCheckTicket = (q) => !!q.ticketId && foldName(q.lastName).length >= 2;
 
 /**
  * @param {object} deps
- * @param {(ticketId: string, lastName: string) => Promise<{ticketId: string, type: string, names?: Array, types?: string[], cxoOverride?: boolean} | null>} deps.verifyTicket
+ * @param {(ticketId: string, lastName: string) => Promise<{ticketId: string, type: string, names?: Array, types?: string[], extras?: object, cxoOverride?: boolean} | null>} deps.verifyTicket
  *        `names`: who the ticket is for (ticketPersonNames), to check the first name too;
- *        `types`: the holder's effective person types; `cxoOverride`: staff's "CxO Breakfast included" on that ticket
+ *        `types`: the holder's effective person types; `extras`: staff's pass extras on that ticket
+ *        ({ cxo?, lunch?, gala?, awards? }: true / false, services/passExtras.js extrasOverride);
+ *        `cxoOverride`: the CxO Breakfasts' switch alone (used when `extras.cxo` isn't sent)
  * @param {() => Promise<Array>} deps.getHolders    buildHolderIndex() output
  * @param {() => Promise<string[]>} deps.getSpeakers public speaker names
  */
@@ -96,6 +100,7 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
           ticketId: t.ticketId, type: t.type,
           types: Array.isArray(t.types) ? t.types : [],
           cxoOverride: typeof t.cxoOverride === "boolean" ? t.cxoOverride : undefined,
+          extras: { ...(typeof t.cxoOverride === "boolean" ? { cxo: t.cxoOverride } : {}), ...(t.extras && typeof t.extras === "object" ? t.extras : {}) },
           holderMatch: names.some((n) => fullNameMatches(n, q.firstName, q.lastName)),
           // The typed last name is the holder's (the ticket check passed on the account or purchase name).
           holderLastMatch: !names.length || names.some((n) => lastNameIs(n, q.lastName)),
@@ -110,12 +115,17 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
     const speaker = both && (!ticket || ticket.holderLastMatch) ? matchSpeaker(await getSpeakers(), q.firstName, q.lastName) : "";
     // `verified` here means the server settles the pass (the page locks it). The speaker list
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
-    // The verified pass's CxO Breakfast (services/cxoBreakfast.js): staff's switch, else Apex / Speaker Pass / speaker type.
-    const cxoOf = (tier) => (ticket ? effectiveCxo({ ticketType: tier, types: ticket.types, override: ticket.cxoOverride }) : undefined);
-    if (speaker) return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket, cxoBreakfast: cxoOf("speaker") };
+    // The verified pass's extras (services/passExtras.js): staff's switches, else the pass's rules (the CxO
+    // Breakfasts: Apex / Speaker Pass / speaker type).
+    const extrasOf = (tier) => (ticket ? effectiveExtras({ ticketType: tier, types: ticket.types, override: ticket.extras }) : undefined);
+    if (speaker) {
+      const extras = extrasOf("speaker");
+      return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket, cxoBreakfast: extras?.cxo, extras };
+    }
     if (ticket) {
       const tier = tierFromTicketType(ticket.type);
-      return { kind: "ticket", tier, verified: true, displayName: q.firstName, ticket, cxoBreakfast: cxoOf(tier) };
+      const extras = extrasOf(tier);
+      return { kind: "ticket", tier, verified: true, displayName: q.firstName, ticket, cxoBreakfast: extras.cxo, extras };
     }
     // Off on the live site: a pass is only ever shown from a verified ticket ID, never guessed from a name.
     if (both && guessFromName) {
@@ -126,13 +136,15 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
   };
 }
 
-/** The CxO Breakfast rules for a lookup result: the verified pass's switch / rule and the breakfasts they keep. */
-export const lookupRules = (r, keepOptions = []) => ({ cxo: r?.ticket ? r.cxoBreakfast : undefined, extra: r?.ticket ? [...keepOptions] : [] });
+/** The pass extras' rules for a lookup result: the verified pass's switches / rules and the extras they keep. */
+export const lookupRules = (r, keepOptions = []) => ({
+  cxo: r?.ticket ? r.cxoBreakfast : undefined, extras: r?.ticket ? r.extras : undefined, extra: r?.ticket ? [...keepOptions] : [],
+});
 
 /** What the browser is told. `allowedOptions`: every experience this person may pick (any day; the page
     keeps the days they come), worked out by allowedExperiences, the same rule POST /api/rsvp checks with.
-    With a verified ticket also `cxoBreakfast` (their pass's CxO Breakfasts) and `keepOptions` (breakfasts
-    already on their RSVP, offered whatever the pass says). */
+    With a verified ticket also `cxoBreakfast` (their pass's CxO Breakfasts) and `keepOptions` (pass extras
+    already on their RSVP that the pass doesn't offer now, offered all the same). */
 export function publicLookup(r, q = {}, { keepOptions = [] } = {}) {
   const out = { kind: r.kind, verified: !!r.verified };
   if (r.tier) {
@@ -144,7 +156,8 @@ export function publicLookup(r, q = {}, { keepOptions = [] } = {}) {
   if (q.ticketId) out.ticketMatched = !!r.ticket;
   if (r.ticket && typeof r.cxoBreakfast === "boolean") {
     out.cxoBreakfast = r.cxoBreakfast;
-    out.keepOptions = [...keepOptions];
+    const offered = new Set(r.tier ? allowedExperiences(r.tier, DAY_KEYS, lookupRules(r)) : []);
+    out.keepOptions = keepOptions.filter((k) => !offered.has(k));
   }
   return out;
 }
@@ -261,7 +274,7 @@ export function makeRsvpHandlers({
       if (requireTicket && !found.ticket) return res.status(400).json({ success: false, message: "That ticket ID doesn't match your last name.", field: "ticketId" });
       const pass = resolvePass(found, v.tier);
       if (!pass.ok) return res.status(400).json({ success: false, message: pass.error, field: pass.field });
-      // CxO Breakfasts: their pass's switch / rule, plus any breakfast already on their RSVP (never taken away).
+      // Pass extras: their pass's switches / rules, plus any extra already on their RSVP (never taken away).
       const rules = lookupRules(found, found.ticket ? extraOptionsFor(await priorRows(found.ticket, v)) : []);
       const opts = checkOptions(pass.tier, v.days, v.options, rules);
       if (!opts.ok) return res.status(400).json({ success: false, message: opts.error, field: "options", invalid: opts.invalid });

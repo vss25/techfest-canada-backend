@@ -264,7 +264,8 @@ export function ticketEmailLinks(ticketId) {
   };
 }
 
-export async function sendTicketEmail({ email, name, firstName, ticketId, tier, purchaseDate, cxoBreakfast }) {
+// `extras`: the pass's effective extras ({ cxo, lunch, gala, awards }, services/passExtras.js), listed on the PDF and in the email.
+export async function sendTicketEmail({ email, name, firstName, ticketId, tier, purchaseDate, cxoBreakfast, extras }) {
 
   try {
 
@@ -278,13 +279,14 @@ export async function sendTicketEmail({ email, name, firstName, ticketId, tier, 
       purchaseDate: purchaseDate || new Date(),
       walletUrl,
       cxoBreakfast,
+      extras,
     });
 
     // Staff's wording (Admin › Purchase email); the built-in email when there's none or it can't be read.
     const { copy: template } = await loadTemplate("purchase");
 
     // The TTFC logo goes inline (cid:), like the Speaker Pass email; without it the header falls back to text.
-    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast, logoSrc: `cid:${TICKET_LOGO_CID}`, template });
+    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast, extras, logoSrc: `cid:${TICKET_LOGO_CID}`, template });
 
     await resend.emails.send({
       from: "TechFest Canada <tickets@thetechfestival.com>",
