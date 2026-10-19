@@ -68,7 +68,7 @@ export function passContent({ ticketId, tier, name, purchaseDate }) {
       { key: "address", label: "Address", value: "1 Harbour Square, Toronto, ON M5J 1A6" },
       { key: "doors", label: "Doors", value: "Registration opens 8:00 AM on Oct 26 and 8:30 AM on Oct 27." },
       ...(purchaseDate ? [{ key: "purchased", label: "Purchased", value: new Date(purchaseDate).toDateString() }] : []),
-      { key: "support", label: "Help", value: "info@thetechfestival.com · thetechfestival.com" },
+      { key: "support", label: "Help", value: "enquire@thetechfestival.com · thetechfestival.com" },
     ],
     barcode: { message: `TECHFEST:${ticketId}`, format: "PKBarcodeFormatQR", messageEncoding: "iso-8859-1", altText: String(ticketId) },
     relevantDate: "2026-10-26T08:00:00-04:00",

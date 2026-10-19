@@ -36,7 +36,7 @@ async function requireUser(req, res, next) {
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
     const user = await User.findById(decoded.id).select(RIGHTS_SELECT);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
-    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact info@thetechfestival.com." });
+    if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
     req.user = user;
     const rows = await Block.find({ $or: [{ userId: user._id }, { blockedId: user._id }] }).lean();
     req.blocked = new Set(rows.map((r) => String(String(r.userId) === String(user._id) ? r.blockedId : r.userId)));

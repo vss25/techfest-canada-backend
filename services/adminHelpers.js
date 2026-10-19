@@ -55,7 +55,7 @@ export const CONTENT_KEYS = {
   "network.empty": "Scan someone's badge QR when you meet, or open a speaker profile and tap 'Connect'.",
   "schedule.title": "Schedule",
   "ticket.help": "Bought with a different email? Enter the last name and ticket ID from that ticket email.",
-  "support.email": "info@thetechfestival.com",
+  "support.email": "enquire@thetechfestival.com",
   "privacy.notice": "We record how you use the app (screens, taps, searches and interests) to run the event, match you with people and improve TTFC. Staff can review messages to keep the community safe.",
   "community.rules": "Be respectful. There is zero tolerance for harassment, hate, sexual or violent content, spam or scams. Anything that breaks these rules is removed and the account can be suspended. Report or block anyone from the … menu.",
   "flag.show_partners": true,
@@ -88,7 +88,7 @@ export const CONTENT_KEYS = {
   "site.show_agenda": true,
   "flag.pwaPrompt": false,                 // on = the website offers "install the app" (the PWA at /app/)
   "site.hero_tagline": "",
-  "site.contact_email": "info@thetechfestival.com",
+  "site.contact_email": "enquire@thetechfestival.com",
   "site.linkedin_url": "",
   "site.instagram_url": "",
   "site.x_url": "",
