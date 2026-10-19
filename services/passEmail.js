@@ -8,15 +8,12 @@
    text comes from a field staff can change (services/passEmailCopy.js:
    the fields, the template / per-pass levels, cleaning, escaping).
    With nothing edited the email is the built-in one, byte for byte
-   (test/pass-email-copy.test.js compares it with the old builder),
-   apart from three changes on purpose (the organiser, Oct 19 2026):
-     - the speakers' pass is a Speaker Pass (tier "speaker", never sold):
-       Power Pass privileges plus the CxO Breakfasts and the VIP Lounge,
-       so the email names it "Speaker Pass", its access line is
-       SPEAKER_ACCESS and it lists the Power Pass, the CxO Breakfasts and
-       "VIP Lounge Access (both days)";
-     - "All Access" only ever describes the Power Pass: an Apex pass's
-       access line is "Apex" (accessFor).
+   (test/pass-email-copy.test.js compares it with buildSpeakerPassEmail's).
+   The built-in text comes from the same places as before: the Speaker
+   Pass's name, access line, list and RSVP reason from
+   services/speakerPassEmail.js (SPEAKER_VARIANT, SPEAKER_INCLUDES),
+   an issued or exhibitor pass's from services/issuedPasses.js
+   (ISSUE_TIERS, issuedVariant).
 
    Pure builder (buildPassEmail). Images are `src` strings: "cid:…"
    for sending (passEmailFor({ inline: false })), data: URIs for the
@@ -27,45 +24,27 @@
 
 import { EVENT, escapeHtml as esc, tierKey } from "./ticketInfo.js";
 import {
-  C, CONTACT_EMAIL, DEFAULT_COPY, RSVP_REASON, displayTicketId, inlineImageSrcs, personalRsvpUrl, speakerPassAttachments,
+  C, CONTACT_EMAIL, DEFAULT_COPY, RSVP_REASON, SPEAKER_INCLUDES, SPEAKER_VARIANT, displayTicketId, inlineImageSrcs, personalRsvpUrl,
+  speakerPassAttachments,
 } from "./speakerPassEmail.js";
 import { speakerFirstName } from "./speakerPasses.js";
 import { ANCHORS, ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween, needsMicUp } from "./runOfShow.js";
-import { CXO, ISSUE_TIERS, defaultIssuedCopy, includesWithCxo, issuedVariant } from "./issuedPasses.js";
-import { SPEAKER_PASS_NAME, VIP_LOUNGE_LINE, carryPassRules, fillText, mergeCopy, textHtml, tierFor } from "./passEmailCopy.js";
+import { ISSUE_TIERS, defaultIssuedCopy, issuedVariant } from "./issuedPasses.js";
+import { carryPassRules, fillText, mergeCopy, textHtml, tierFor } from "./passEmailCopy.js";
 
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const SERIF = "Georgia,'Times New Roman',Times,serif";
 const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
-/* ---------- the Speaker Pass (tier "speaker") ---------- */
-
-export { SPEAKER_PASS_NAME };
-/** "All Access" is the Power Pass's line only, so the Speaker Pass says what it is. */
-export const SPEAKER_ACCESS = "Speaker · Power + CxO Breakfasts + VIP Lounge";
-export const VIP_LOUNGE = Object.freeze([VIP_LOUNGE_LINE, "A quiet space to prepare and connect"]);
-/** The Speaker Pass includes the Power Pass, the CxO Breakfasts and the VIP Lounge (no Apex extras). */
-export const speakerIncludes = () => [...includesWithCxo(ISSUE_TIERS.power.includes, true), VIP_LOUNGE];
-
-/** The speakers' email (Admin › Speaker passes): what changes from an issued pass's. */
+/** The Speaker Pass email (Admin › Speaker passes): its name, access line, list and RSVP reason. */
 export const speakerVariant = () => ({
-  label: SPEAKER_PASS_NAME, access: SPEAKER_ACCESS, includes: speakerIncludes(), rsvp: true, rsvpReason: RSVP_REASON,
+  ...SPEAKER_VARIANT, includes: SPEAKER_INCLUDES.map((r) => [...r]), rsvpReason: SPEAKER_VARIANT.rsvpReason || RSVP_REASON,
 });
-
-/** A pass type's access line: "All Access" only describes the Power Pass. */
-export function accessFor(tier, access) {
-  const t = tierFor(tier);
-  if (t === "power" || !/all access/i.test(String(access || ""))) return access;
-  if (t === "speaker") return SPEAKER_ACCESS;
-  if (t === "apex") return "Apex";
-  return String(access).replace(/all access\s*[+·]?\s*/i, "").trim() || access;
-}
 
 /**
  * The pass-type settings of an issued or exhibitor pass for the email: issuedVariant
  * (services/issuedPasses.js) with the template's wording for its pass type (`template.tiers.<type>`:
- * passName, access, includes, rsvpText) and the "All Access is Power only" rule.
- * The pass's own name ("Name on the pass") still beats the template's.
+ * passName, access, includes, rsvpText). The pass's own name ("Name on the pass") still beats the template's.
  */
 export function passVariant(a, { copyFor = defaultIssuedCopy, template = {} } = {}) {
   const v = issuedVariant(a, { copyFor });
@@ -78,16 +57,12 @@ export function passVariant(a, { copyFor = defaultIssuedCopy, template = {} } = 
     ...v,
     tier: tierFor(key),
     label,
-    access: tierCopy.access || accessFor(key, v.access),
+    access: tierCopy.access || v.access,
     includes: tierCopy.includes?.length ? carryPassRules(tierCopy.includes, ISSUE_TIERS[key].includes, v.includes) : v.includes,
     rsvpReason: tierCopy.rsvpText || v.rsvpReason,
     ...(label !== v.label ? copyFor(label) : {}),
   };
 }
-
-/** A pass type's built-in "includes" list (what the template editor starts from). */
-export const tierIncludes = (tier) => (tierFor(tier) === "speaker" && !ISSUE_TIERS.speaker
-  ? speakerIncludes() : (ISSUE_TIERS[tierKey(tier)] || ISSUE_TIERS.influence).includes.map((r) => [...r]));
 
 /** "Name on the pass" for a speaker's pass: one line, never a retired name ("All Access Pass", "Exhibitor Pass"). */
 export function cleanPassLabel(raw) {
@@ -638,4 +613,3 @@ export function ownCopy(a) {
 /** Wording layers, highest first (this send, the pass, the template) → what the builder takes. */
 export const passCopy = (...layers) => mergeCopy(...layers);
 
-export { CXO };

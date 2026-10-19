@@ -18,7 +18,7 @@ import {
   exhibitorBooth, exhibitorCopyFor,
 } from "../services/exhibitorPasses.js";
 import { DEFAULT_MANUAL, buildExhibitorManual, cleanBooth, cleanManual, manualFileName } from "../services/exhibitorManual.js";
-import { accessFor, passEmailDefaults, passEmailFor, passVariant } from "../services/passEmail.js";
+import { passEmailDefaults, passEmailFor, passVariant } from "../services/passEmail.js";
 import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor, mergeCopy, sameAsDefault, tierFor } from "../services/passEmailCopy.js";
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 
@@ -212,8 +212,7 @@ export function issuedPassRouter(kindName = "issued") {
   router.get("/tiers", async (req, res) => {
     const cf = await copyFor();
     res.json({
-      // "All Access" only describes the Power Pass (accessFor).
-      tiers: ISSUE_TIER_KEYS.map((key) => ({ key, ...ISSUE_TIERS[key], access: accessFor(key, ISSUE_TIERS[key].access), copy: cf(kind.defaultLabel || ISSUE_TIERS[key].label) })),
+      tiers: ISSUE_TIER_KEYS.map((key) => ({ key, ...ISSUE_TIERS[key], copy: cf(kind.defaultLabel || ISSUE_TIERS[key].label) })),
       cc: DEFAULT_CC(),
       defaultTier: kind.defaultTier,
       defaultLabel: kind.defaultLabel,

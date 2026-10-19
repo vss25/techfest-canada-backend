@@ -8,10 +8,9 @@ import fs from "node:fs";
 import { issuedVariant, issuedPassDoc } from "../services/issuedPasses.js";
 import { exhibitorCopyFor, EXHIBITOR_PROMO, defaultExhibitorCopy } from "../services/exhibitorPasses.js";
 import { buildTicketEmail, purchaseEmailDefaults } from "../services/ticketEmail.js";
-import {
-  SPEAKER_ACCESS, SPEAKER_PASS_NAME, VIP_LOUNGE, accessFor, buildPassEmail, ownCopy, passEmailDefaults, passVariant, speakerIncludes,
-  SAMPLE_RUN_OF_SHOW, cleanPassLabel,
-} from "../services/passEmail.js";
+import { SPEAKER_ACCESS, SPEAKER_INCLUDES } from "../services/speakerPassEmail.js";
+import { ISSUE_TIERS } from "../services/issuedPasses.js";
+import { buildPassEmail, ownCopy, passEmailDefaults, passVariant, SAMPLE_RUN_OF_SHOW, cleanPassLabel } from "../services/passEmail.js";
 import {
   TIERS, carryPassRules, changedFields, cleanFields, compact, fieldsFor, fillText, mergeCopy, sameAsDefault, templateCopy, templateFor,
   templateSet, textHtml,
@@ -19,11 +18,8 @@ import {
 
 /* ---------- the emails with no edits ----------
    The same people, passes and settings the builders rendered before staff could edit every part
-   of them (at f268fb1, claude/four-passes); fixtures/pass-email-baseline.json holds hashes of
-   that output. Changed on purpose since (the organiser, Oct 19 2026), and taken out before
-   comparing: the speakers' pass is a "Speaker Pass" with SPEAKER_ACCESS and its own list
-   (checked on their own below), and "All Access" only describes the Power Pass, so an Apex
-   pass's access line is "Apex" (the old builder was given "Apex" for those). */
+   of them (buildSpeakerPassEmail and buildTicketEmail as on claude/four-passes 38e1c22, the
+   Speaker Pass rework); fixtures/pass-email-baseline.json holds hashes of that output. */
 
 const IMG = { qrSrc: "cid:ttfc-speaker-qr", logoSrc: "cid:ttfc-logo" };
 const SAMPLE_ROS = {
@@ -42,10 +38,8 @@ const pass = (a, copyFor) => (makeVariant = issuedVariant) => ({
   copy: a.issuedPass?.copy || {}, variant: makeVariant(a, copyFor ? { copyFor } : {}),
 });
 const purchase = (args) => ({ kind: "purchase", args: () => args });
-const apex = (args) => ({ ...args, variant: { ...args.variant, access: "Apex" } });
 
-/* kind "speaker": the speakers' email (no variant); "pass": an issued / exhibitor pass; "purchase": buildTicketEmail.
-   `old`: the input the old builder needs to show what's expected now (the Apex access line). */
+/* kind "speaker": the Speaker Pass email (no variant); "pass": an issued / exhibitor pass; "purchase": buildTicketEmail. */
 const SCENARIOS = {
   "speaker: no run of show": { kind: "speaker", args: () => ({ name: "Dr. Jane Doe", title: "Chief AI Officer", company: "Example Corp", ticketId: "a1b2c3d4e5f6", ...IMG }) },
   "speaker: run of show": { kind: "speaker", args: () => ({ name: "Jane Doe", title: "CTO", company: "Example Corp", ticketId: "a1b2c3d4e5f6", runOfShow: SAMPLE_ROS, ...IMG }) },
@@ -54,10 +48,12 @@ const SCENARIOS = {
   "issued: connect": { kind: "pass", args: pass(issued({ tier: "connect" })) },
   "issued: influence, title + company": { kind: "pass", args: pass(issued({ tier: "influence", title: "VP Growth", company: "Example Inc" })) },
   "issued: power": { kind: "pass", args: pass(issued({ tier: "power" })) },
-  "issued: apex": { kind: "pass", args: pass(issued({ tier: "apex" })), old: apex },
+  "issued: apex": { kind: "pass", args: pass(issued({ tier: "apex" })) },
   "issued: power with CxO on": { kind: "pass", args: pass(issued({ tier: "power", cxoBreakfast: true })) },
-  "issued: apex with CxO off": { kind: "pass", args: pass(issued({ tier: "apex", cxoBreakfast: false })), old: apex },
+  "issued: apex with CxO off": { kind: "pass", args: pass(issued({ tier: "apex", cxoBreakfast: false })) },
   "issued: no RSVP, own label": { kind: "pass", args: pass(issued({ tier: "influence", rsvp: false, label: "Influence Pass · Guest" })) },
+  "issued: a Speaker Pass": { kind: "pass", args: pass(issued({ tier: "speaker" })) },
+  "issued: a Speaker Pass without the CxO Breakfasts": { kind: "pass", args: pass(issued({ tier: "speaker", cxoBreakfast: false })) },
   "issued: saved wording": { kind: "pass", args: pass(issued({ tier: "power", copy: { subject: "Your pass, {firstName}", message: "Hello {fullName}." } })) },
   "exhibitor: built-in": { kind: "pass", args: pass(issued({ tier: "connect", company: "Booth Co", booth: { booth: "07", zone: "Zone A", passes: "4" } }, { promoCode: EXHIBITOR_PROMO }), exhibitorCopyFor(null)) },
   "exhibitor: saved template": { kind: "pass", args: pass(issued({ tier: "connect" }, { promoCode: EXHIBITOR_PROMO }), exhibitorCopyFor({ subject: "{firstName}, your booth pack", headline: "", message: "See you at the booth." })) },
@@ -71,21 +67,6 @@ const SCENARIOS = {
   "purchase: booth": purchase({ name: "Jane Doe", firstName: "Jane", ticketId: "BOOTH-GOLD", tier: "booth-gold", walletUrl: "https://api.example.com/w", qrUrl: "https://api.example.com/q", logoSrc: "cid:ttfc-logo" }),
 };
 
-/**
- * The speakers' email with the parts that changed on purpose taken out: the pass name, the access
- * line and the "includes" list (checked on their own). `name` / `access`: what this output says.
- */
-function withoutSpeakerChanges(e, { name, access }) {
-  const out = {};
-  const upper = name.toUpperCase();
-  const swap = (s) => String(s).split(name).join("‹PASS›").split(upper).join("‹PASS›").split(access).join("‹ACCESS›");
-  out.subject = swap(e.subject);
-  out.preheader = swap(e.preheader);
-  out.html = swap(e.html.replace(/<!-- Included -->[\s\S]*?<\/table>\s*<\/td>\s*<\/tr>/, "‹INCLUDES›"));
-  out.text = swap(e.text.replace(/YOUR PASS INCLUDES\n(  - .*\n)+/, "‹INCLUDES›\n"));
-  return out;
-}
-
 const BASELINE = JSON.parse(fs.readFileSync(new URL("./fixtures/pass-email-baseline.json", import.meta.url), "utf8"));
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const render = (sc) => (sc.kind === "purchase" ? buildTicketEmail(sc.args()) : buildPassEmail(sc.kind === "pass" ? sc.args(passVariant) : sc.args()));
@@ -93,8 +74,7 @@ const render = (sc) => (sc.kind === "purchase" ? buildTicketEmail(sc.args()) : b
 test("no edits: every pass email is exactly what it was (subject, preheader, HTML and plain text)", () => {
   assert.equal(Object.keys(SCENARIOS).length, Object.keys(BASELINE).length);
   for (const [name, sc] of Object.entries(SCENARIOS)) {
-    let e = render(sc);
-    if (sc.kind === "speaker") e = withoutSpeakerChanges(e, { name: SPEAKER_PASS_NAME, access: SPEAKER_ACCESS });
+    const e = render(sc);
     const b = BASELINE[name];
     assert.ok(b, name);
     assert.equal(e.subject, b.subject, `${name}: subject`);
@@ -116,32 +96,29 @@ test("an empty template, or empty fields, change nothing", () => {
   }
 });
 
-test("the Speaker Pass by default: its name, its access line and Power + CxO Breakfasts + VIP Lounge (no Apex extras)", () => {
+test("the Speaker Pass by default: its name, its access line and its list (Power + CxO Breakfasts + VIP Lounge, no Apex extras)", () => {
   const e = buildPassEmail({ name: "Jane Doe", ticketId: "a1b2c3", runOfShow: SAMPLE_ROS });
   assert.equal(e.subject, "Jane, your Speaker Pass and run of show for TTFC 2026");
   assert.match(e.html, /SPEAKER PASS/);
   assert.match(e.text, /YOUR SPEAKER PASS/);
-  assert.match(e.text, /Access: {4}Speaker · Power \+ CxO Breakfasts \+ VIP Lounge/);
-  const heads = speakerIncludes().map((r) => r[0]);
-  assert.deepEqual(heads, ["2× CxO Breakfasts", "1× Gala Dinner & Networking Reception", "1× Catalyst Awards Night", "2× Luncheons",
-    "2× Day Conference Access", "Expo Floor Access", "Networking Breaks", "VIP Lounge Access (both days)"]);
-  for (const h of heads) assert.ok(e.text.includes(`  - ${h}:`), h);
+  assert.ok(e.text.includes(`Access:    ${SPEAKER_ACCESS}`));
+  for (const [head] of SPEAKER_INCLUDES) assert.ok(e.text.includes(`  - ${head}:`), head);
   assert.doesNotMatch(e.html + e.text, /Pre-Matched|Preferential Seating|Scotch/);
   // "All Access" only ever describes the Power Pass.
   assert.doesNotMatch(e.html + e.text + e.subject + e.preheader, /all[- ]access/i);
   assert.equal(passEmailDefaults().passName, "Speaker Pass");
+  // An issued Speaker Pass (tier "speaker") is named and listed by its tier.
+  const issuedSpeaker = buildPassEmail({ name: "Sam Example", ticketId: "x", variant: passVariant({ ticketType: "speaker" }) });
+  assert.match(issuedSpeaker.html, /SPEAKER PASS/);
+  assert.match(issuedSpeaker.text, /VIP Lounge Access \(both days\)/);
 });
 
-test('"All Access" only describes the Power Pass: Apex says "Apex", the Speaker Pass says what it is', () => {
-  const apex = buildPassEmail({ name: "Ann Example", ticketId: "x", variant: passVariant({ ticketType: "apex" }) });
-  assert.match(apex.text, /Access: {4}Apex\n/);
-  assert.doesNotMatch(apex.html + apex.text, /all access/i);
-  const power = buildPassEmail({ name: "Pat Example", ticketId: "x", variant: passVariant({ ticketType: "power" }) });
-  assert.match(power.text, /Access: {4}All Access\n/);
-  assert.equal(accessFor("apex", "All Access + Apex"), "Apex");
-  assert.equal(accessFor("speaker", "All Access"), SPEAKER_ACCESS);
-  assert.equal(accessFor("power", "All Access"), "All Access");
-  assert.equal(accessFor("influence", "Conference, Expo & Luncheons"), "Conference, Expo & Luncheons");
+test('"All Access" only describes the Power Pass in the built-in text', () => {
+  for (const key of Object.keys(ISSUE_TIERS)) {
+    const e = buildPassEmail({ name: "Pat Example", ticketId: "x", variant: passVariant({ ticketType: key }) });
+    if (key === "power") assert.match(e.text, /Access: {4}All Access\n/);
+    else assert.doesNotMatch(e.html + e.text, /all[- ]access/i, key);
+  }
 });
 
 /* ---------- every field renders ---------- */
@@ -338,7 +315,6 @@ test("template row ↔ fields: subject / headline / message in their columns, th
   assert.equal(cleanPassLabel("All Access Pass"), "");
   assert.equal(cleanPassLabel("Speaker Pass · Keynote"), "Speaker Pass · Keynote");
   assert.deepEqual(compact({ a: "", b: [], c: "x", tiers: { power: { d: "" } } }), { c: "x" });
-  assert.ok(Array.isArray(VIP_LOUNGE));
 });
 
 test("every field's built-in text is what the email shows (the editor's grey placeholders are true)", () => {

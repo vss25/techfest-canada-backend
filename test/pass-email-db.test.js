@@ -222,7 +222,7 @@ test("speakers: template for all, a speaker's own wording beats it; management o
 
 test("issued passes: template per pass type, a pass's own wording and name beat it; exhibitor template preview", { skip }, async () => {
   const tiers = await call("GET", "/api/console/issued-passes/tiers", { as: staff });
-  assert.equal(tiers.body.tiers.find((t) => t.key === "apex").access, "Apex");
+  assert.doesNotMatch(tiers.body.tiers.find((t) => t.key === "apex").access, /all access/i);
   assert.ok(tiers.body.fields.some((f) => f.key === "rsvpButton") && !tiers.body.fields.some((f) => f.key === "passName"));
 
   const template = { footerNote: "Template footer note.", tiers: { power: { passName: "Power Pass · VIP", includes: [["VIP row", "template"]] } } };

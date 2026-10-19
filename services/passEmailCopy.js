@@ -41,11 +41,7 @@ import { escapeHtml as esc } from "./ticketInfo.js";
 export const TEMPLATE_KEYS = Object.freeze({
   speaker: "speaker-pass", issued: "issued-pass", exhibitor: "exhibitor-pass", purchase: "purchase-email",
 });
-/** The Speaker Pass (tier "speaker", Oct 19 2026): staff-made, never sold; Power Pass privileges plus
-    the CxO Breakfasts and the VIP Lounge. Its built-in name and its extra line in the emails. */
-export const SPEAKER_PASS_NAME = "Speaker Pass";
-export const VIP_LOUNGE_LINE = "VIP Lounge Access (both days)";
-/** Pass types a template can word separately. "speaker": the Speaker Pass. */
+/** Pass types a template can word separately. "speaker": the internal Speaker Pass (staff-made, never sold). */
 export const TIERS = Object.freeze(["connect", "influence", "power", "apex", "speaker"]);
 
 /** Sections in the order the email shows them (the admin editor groups the fields by these). */

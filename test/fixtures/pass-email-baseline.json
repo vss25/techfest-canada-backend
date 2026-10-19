@@ -1,27 +1,27 @@
 {
   "speaker: no run of show": {
-    "subject": "Jane, your ‹PASS› for TTFC 2026",
-    "preheader": "We're delighted to have you speaking at TTFC 2026. Your ‹PASS›, ticket ID and personal RSVP link are inside.",
-    "html": "c468f6f80f92332938910e251aefc6202e82f543fa6479504a9964aa0f6f4941",
-    "text": "9371c3204385843c76cf272f6a9ccaf6db96285e34e21b02f99779c7753d98ff"
+    "subject": "Jane, your Speaker Pass for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "46f3d127b1a9815ac5b9cdfb04c3f82ece3e0b0dc8d229655f9c57cebb18c83c",
+    "text": "7b3dbd2685870986dd202e74222b653e6a366c000369b41d1a6db796faa1109d"
   },
   "speaker: run of show": {
-    "subject": "Jane, your ‹PASS› and run of show for TTFC 2026",
-    "preheader": "We're delighted to have you speaking at TTFC 2026. Your ‹PASS›, ticket ID and personal RSVP link are inside.",
-    "html": "00aede6d66fe66420c1b1260389d33066e5e1c844022a1801b25fa5b52354b63",
-    "text": "93e986ec471c56c952dfd784e0155c85feefb55cd32eaab2ca96617f4c23bafe"
+    "subject": "Jane, your Speaker Pass and run of show for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "eeb60616eb890e7fb0b55d3f1c77f49612a0abdb1c4213352045863524e66eac",
+    "text": "4a7e477a51ef66774ecf7e5f520a05e8da33cf546a3a40be036ab05bb2f08d49"
   },
   "speaker: via a contact, no logo": {
-    "subject": "Jane, your ‹PASS› and run of show for TTFC 2026",
-    "preheader": "We're delighted to have you speaking at TTFC 2026. Your ‹PASS›, ticket ID and personal RSVP link are inside.",
-    "html": "036e382a013b412426030f1bed524020da52e9863eea526c3b81b96e948847bd",
-    "text": "a7ac28cc443e33cf343b94bf06726f3466d2829d0e4954d7864fa1bdc1bde767"
+    "subject": "Jane, your Speaker Pass and run of show for TTFC 2026",
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "50646ff88dc7ae28f1a1a877a7e6af60ae3b6d86a1c2ef44d8ab76a1543755b9",
+    "text": "3effe0ae8e3846607153034f5cab6459188c5e2acab0918781c10a0ffd036d68"
   },
   "speaker: saved wording": {
     "subject": "Jane, hello",
-    "preheader": "We're delighted to have you speaking at TTFC 2026. Your ‹PASS›, ticket ID and personal RSVP link are inside.",
-    "html": "f4b607a558cd92e6800ad57293edfe0d924cc3f9d5e48fa092100dd174f72418",
-    "text": "ff9d2da08bdf142a041afc72cb3bcf468347a7f617a4b5af47f7428ea53927b9"
+    "preheader": "We're delighted to have you speaking at TTFC 2026. Your Speaker Pass, ticket ID and personal RSVP link are inside.",
+    "html": "68d7d2e8ece5db00cb9149dbf3b01f5c86177f0cd8786d3797f4baeae204aea8",
+    "text": "0b8f48c4e06f80619028d495650ce3b541e3533ba170984975a4433ac1f367b2"
   },
   "issued: connect": {
     "subject": "Sam, your Connect Pass for TTFC 2026",
@@ -44,8 +44,8 @@
   "issued: apex": {
     "subject": "Sam, your Apex Pass for TTFC 2026",
     "preheader": "Your Apex Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
-    "html": "af2a8c1a13ff48222b9472fca3fc7bc2f55a657335ae6fb6e2a0de074ad7ace7",
-    "text": "c6e4de8bb936505c7d577734bf0348d25f2ba6583c1db3e90125423d6f9f9c7b"
+    "html": "6c021449f0137ce2aeed7183ee185c3caab4470ab461bc8e676d3c183ba2c56c",
+    "text": "f2cc1c314ec5a8297879d6c2bbf6be85b1f1c92ff93037f7aa8520dcebb88a29"
   },
   "issued: power with CxO on": {
     "subject": "Sam, your Power Pass for TTFC 2026",
@@ -56,14 +56,26 @@
   "issued: apex with CxO off": {
     "subject": "Sam, your Apex Pass for TTFC 2026",
     "preheader": "Your Apex Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
-    "html": "0c353ab56b2e9c539a314df383b2912d0b8ebe8c882fc7aa18033fef5a500fcc",
-    "text": "34583d9b108b2d8232cc597692ad9f4870536c6f6417620e07e39ae2b546e0a6"
+    "html": "703a55228be2be9f56e64976a7b106d4359fdbfb4d0b3662cb22c3e1783e9819",
+    "text": "80fab5c1e2351dc8aec824528c8503675733e460f056c7781d3465d287f458f5"
   },
   "issued: no RSVP, own label": {
     "subject": "Sam, your Influence Pass · Guest for TTFC 2026",
     "preheader": "Your Influence Pass · Guest for TTFC 2026: ticket ID, check-in QR code inside.",
     "html": "aab924f377e3a190b52d0a410d58d6c683cc95e18d04ac50d89bda79f11c4fed",
     "text": "317d77318e3150029ffab238cd56a5570382653a1a1e170fe40cb45d494d4f57"
+  },
+  "issued: a Speaker Pass": {
+    "subject": "Sam, your Speaker Pass for TTFC 2026",
+    "preheader": "Your Speaker Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "dd149b38d50624be6ffffcd323bec7e02fd28f0c8f2bd5aec587b70c1b0030d5",
+    "text": "896c7053f0a878138bf28e29d25ec42700e454783a30a69a19d5f5e304bcd753"
+  },
+  "issued: a Speaker Pass without the CxO Breakfasts": {
+    "subject": "Sam, your Speaker Pass for TTFC 2026",
+    "preheader": "Your Speaker Pass for TTFC 2026: ticket ID, check-in QR code and personal RSVP link inside.",
+    "html": "2e37e90f9d2e096e31a9ff3646ccbfc60437031ae6f571ed901a070604e50c32",
+    "text": "1f8dc9b19d50bdaaf4786b279658729bf2ad987ceed9f586c164d5ff05ead4c6"
   },
   "issued: saved wording": {
     "subject": "Your pass, Sam",
