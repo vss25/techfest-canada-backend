@@ -71,6 +71,7 @@ import { cxoOverride } from "./cxoBreakfast.js";
 import { EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
 import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
+import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -294,9 +295,10 @@ function passNames(a) {
  * @param {object} [o.stripe]   ticket values from Stripe: { paid: Map(session → CAD before HST, after promo and refunds),
  *                              free: Set($0 sessions), upgrades: Map(normalised ticket ID → CAD) }; null = not read
  * @param {Array} [o.reminders] RSVP reminder sends [{ email, sentAt }] (CampaignSend "rsvp-reminder-2026")
+ * @param {Array} [o.attending] "I'm attending" email sends [{ email, status, sentAt, sends }] (CampaignSend "attending-2026")
  * @returns {{ people: object[], byId: Map<string, object> }}  internal person records (see personRow / personDetail)
  */
-export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [] } = {}) {
+export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [] } = {}) {
   const people = [];
   const alias = new Map();
   const byTicket = new Map();
@@ -341,6 +343,8 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     const prev = p.tickets.get(norm);
     if (!prev || (t && prev.source !== "account")) p.tickets.set(norm, ticketRecord({ user: p.user, t, a: a || attByTicket.get(norm) || null }));
     byTicket.set(norm, p);
+    // "t-<ticket ID>": Admin › Ticket records opens the profile of whoever holds a ticket.
+    if (!alias.has(`t-${norm}`)) alias.set(`t-${norm}`, p);
   };
 
   // 1. Accounts and their tickets.
@@ -435,7 +439,7 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     const at = r?.sentAt ? new Date(r.sentAt) : null;
     if (e && at && (!remindedAt.has(e) || remindedAt.get(e) < at)) remindedAt.set(e, at);
   }
-  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt };
+  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending) };
   for (const p of people) Object.assign(p, summarize(p, ctx));
   return { people, byId: alias };
 }
@@ -507,7 +511,7 @@ function rsvpEmailOf(p, remindedAt) {
   return { sent: true, at: mark.at || auto.at, via: ["Marked by staff", ...auto.via], mark, auto };
 }
 
-function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
+function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx }) {
   const u = p.user;
   const tickets = [...p.tickets.values()].map((t) => ({ ...t, status: passStatus(t, refunds), value: ticketValue(t, stripe) }));
   const primary = primaryPass(tickets);
@@ -583,6 +587,8 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
     photoUrl,
     ...vipOf(p),
     rsvpEmail: rsvpEmailOf(p, remindedAt),
+    // The "I'm attending" email to any of their addresses (services/attendingNudge.js: opens, clicks and posts aren't tracked).
+    attending: attendingStatusOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], attendingIdx),
     search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...p.emails].filter(Boolean).join(" ")),
   };
 }
@@ -636,6 +642,10 @@ export function personRow(p) {
     vipFrom: p.vipFrom,
     exhibitor: p.exhibitor,
     exhibitorPass: p.exhibitorPass,
+    // "I'm attending" email: { status: none | sent | failed | sending, label, sentAt, nudges }.
+    attending: p.attending
+      ? { status: p.attending.status, label: p.attending.label, sentAt: p.attending.sentAt, nudges: p.attending.nudges }
+      : { status: "none", label: "Not sent", sentAt: null, nudges: 0 },
     linkedinUrl: p.linkedinUrl,
     hasAccount: !!p.user,
     userId: p.user ? String(p.user._id) : "",
@@ -648,7 +658,8 @@ const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
 
 /** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
-    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar). */
+    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar);
+    ?attending= yes (the "I'm attending" email went) | no (not sent, failed or unconfirmed). */
 export function filterPeople(people, query = {}) {
   const q = fold(String(query.q || "").trim()).slice(0, 100);
   const type = String(query.type || "").toLowerCase();
@@ -656,7 +667,10 @@ export function filterPeople(people, query = {}) {
   const status = String(query.status || "").toLowerCase();
   const rsvp = String(query.rsvp || "").toLowerCase();
   const value = String(query.value || "").toLowerCase();
-  const flags = { exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase() };
+  const flags = {
+    exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase(),
+    attending: String(query.attending || "").toLowerCase(),
+  };
   const words = q ? q.split(/\s+/).filter(Boolean) : [];
   return people.filter((p) => {
     if (words.length && !words.every((w) => p.search.includes(w))) return false;
@@ -667,11 +681,12 @@ export function filterPeople(people, query = {}) {
     const rs = rsvpStatusOf(p.rsvp).status;
     if (rsvp === "any" ? rs === "none" : RSVP_STATUSES.includes(rsvp) && rs !== rsvp) return false;
     if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.rsvpEmail.sent, flags.rsvpEmail) || !yesNo(p.vip, flags.vip)) return false;
+    if (!yesNo(p.attending?.status === "sent", flags.attending)) return false;
     return true;
   });
 }
 
-export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip"];
+export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip", "attending"];
 const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), "en", { sensitivity: "base" });
 
 /** Sorted copy. Blanks go last whichever way; ties by name. */
@@ -689,6 +704,7 @@ export function sortPeople(people, sort = "name", dir = "asc") {
     rsvpEmail: (p) => (p.rsvpEmail.sent ? ms(p.rsvpEmail.at) : null),
     exhibitor: (p) => (p.exhibitor ? 0 : 1),
     vip: (p) => (p.vip ? 0 : 1),
+    attending: (p) => (p.attending?.status === "sent" ? ms(p.attending.sentAt) : null),
   }[s];
   return [...people].sort((a, b) => {
     const ka = key(a);
@@ -707,7 +723,7 @@ export function peopleCounts(people) {
   const byStatus = Object.fromEntries(PASS_STATUSES.map((s) => [s, 0]));
   const byRsvp = Object.fromEntries(RSVP_STATUSES.map((s) => [s, 0]));
   const byValue = { below: 0, above: 0, unknown: 0, none: 0 };
-  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0;
+  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0;
   const extras = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
   for (const p of people) {
     if (!p.types.length) byType.none += 1;
@@ -718,10 +734,11 @@ export function peopleCounts(people) {
     if (p.exhibitor) exhibitors += 1;
     if (p.vip) vips += 1;
     if (p.rsvpEmail.sent) rsvpEmailSent += 1;
+    if (p.attending?.status === "sent") attendingSent += 1;
     if (p.primary?.cxo) cxo += 1;
     for (const x of EXTRA_KEYS) if (p.primary?.extras?.[x]) extras[x] += 1;
   }
-  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, cxo, extras };
+  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, attendingSent, cxo, extras };
 }
 
 /**
