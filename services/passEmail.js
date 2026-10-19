@@ -17,7 +17,9 @@
 
    Pure builder (buildPassEmail). Images are `src` strings: "cid:…"
    for sending (passEmailFor({ inline: false })), data: URIs for the
-   admin preview. Every value is HTML-escaped; staff text never
+   admin preview. A real send may add a 1×1 open pixel (`pixelSrc`, from
+   the pass's `openPixel`: services/engagementStore.js passEmailPixel);
+   previews never have one. Every value is HTML-escaped; staff text never
    becomes HTML (line breaks are kept, email addresses in the contact
    box become links). Email-safe: tables, inline styles, 600px max.
 ========================================================= */
@@ -32,6 +34,7 @@ import { ANCHORS, ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmt
 import { ISSUE_TIERS, defaultIssuedCopy, includesWithExtras, issuedVariant, rsvpReasonFor } from "./issuedPasses.js";
 import { EXTRA_KEYS, autoExtras, effectiveExtras } from "./passExtras.js";
 import { carryPassRules, fillText, mergeCopy, textHtml, tierFor } from "./passEmailCopy.js";
+import { withPixel } from "./trackToken.js";
 
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const SERIF = "Georgia,'Times New Roman',Times,serif";
@@ -407,9 +410,10 @@ const isSet = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === "string" &&
  *                              any field set here replaces the built-in text
  * @param {object} [p.variant]  an issued / exhibitor pass (passVariant); none = the speakers' Speaker Pass email
  * @param {object} [p.extras]   the speakers' email: staff's pass extras on their pass (services/passExtras.js extrasOverride)
+ * @param {string} [p.pixelSrc] a real send's open pixel ("" = none)
  * @returns {{ subject, preheader, html, text, defaults }} `defaults`: the built-in text of every field for this pass
  */
-export function buildPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {}, variant = null, extras = {} } = {}) {
+export function buildPassEmail({ name, title = "", company = "", ticketId, qrSrc = "", logoSrc = "", runOfShow = null, contact = "", copy = {}, variant = null, extras = {}, pixelSrc = "" } = {}) {
   const D = passEmailDefaults({ variant, runOfShow, extras });
   const fullName = String(name || "").replace(/\s+/g, " ").trim();
   const first = speakerFirstName(fullName) || "there";
@@ -605,12 +609,12 @@ ${runOfShowHtml({ name: fullName, runOfShow }, t, h, edited)}
     t.footerNote,
   ].join("\n");
 
-  return { subject, preheader, html: out, text, defaults: D };
+  return { subject, preheader, html: withPixel(out, pixelSrc), text, defaults: D };
 }
 
 /**
  * Subject / html / text for one pass. `inline: true` uses data: URIs (admin preview); false gives the
- * inline-CID images and their Resend attachments (a real send).
+ * inline-CID images and their Resend attachments (a real send), with `pass.openPixel` when the sender set one.
  */
 export async function passEmailFor(pass, { inline = true, copy = {}, variant = null } = {}) {
   const base = {
@@ -619,7 +623,7 @@ export async function passEmailFor(pass, { inline = true, copy = {}, variant = n
   };
   if (inline) return { ...buildPassEmail({ ...base, ...(await inlineImageSrcs(pass.ticketId)) }), attachments: [] };
   const { srcs, attachments } = await speakerPassAttachments(pass.ticketId);
-  return { ...buildPassEmail({ ...base, ...srcs }), attachments };
+  return { ...buildPassEmail({ ...base, ...srcs, pixelSrc: pass.openPixel || "" }), attachments };
 }
 
 /** One pass's saved wording (Attendee.issuedPass): its copy, with its "Name on the pass" as the pass name. */

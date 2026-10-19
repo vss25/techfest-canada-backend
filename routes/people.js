@@ -6,6 +6,7 @@ import Rsvp from "../models/Rsvp.js";
 import Company from "../models/Company.js";
 import CompanyLogo from "../models/CompanyLogo.js";
 import CampaignSend from "../models/CampaignSend.js";
+import EmailEngagement from "../models/EmailEngagement.js";
 import Subscription from "../models/Subscription.js";
 import { SessionRegistration } from "../models/Social.js";
 import { AdminAudit } from "../models/Admin.js";
@@ -47,8 +48,10 @@ import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
    Admin → People (staff only)
    ---------------------------------------------------------
    /api/console/people
-     GET    /               ?q= &type= &pass= &value= &rsvp= &exhibitor= &rsvpEmail= &vip= &status= &sort= &dir= &page=
+     GET    /               ?q= &type= &pass= &value= &rsvp= &exhibitor= &rsvpEmail= &vip= &status= &attending= &sort= &dir= &page=
                             → { total, page, size, rows, counts, stripe }
+                            (Oct 19 2026: rows carry `engagement`, counts the engagement totals and `unattributedPosts`;
+                            ?attending=, ?rsvpEmail= and ?rsvp= take the engagement values, services/people.js filterPeople)
      GET    /export         the same view as CSV (management: it holds emails)
      GET    /reminder       ?(the same filters) → { counts, targets: [{ email, name, tickets, people }], skipped, job, cooldownHours }
                             who "Send RSVP reminder" would email (Unconfirmed, a usable email, a pass)
@@ -155,8 +158,11 @@ const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate 
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
+const ENGAGEMENT_SELECT = "campaign email ticketId opens firstOpenAt lastOpenAt visits firstVisitAt lastVisitAt posts postedAt lastPostedAt postUrl "
+  + "shares sharedAt lastSharedAt manuals manualAt lastManualAt trackedAt";
+
 async function loadDirectory() {
-  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending] = await Promise.all([
+  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending, engagement] = await Promise.all([
     User.find({}).select(USER_SELECT).lean(),
     Attendee.find({}).select(ATTENDEE_SELECT).lean(),
     Rsvp.find(LIVE_RSVPS).lean(),
@@ -165,9 +171,11 @@ async function loadDirectory() {
     loadStripe(),
     CampaignSend.find({ campaign: REMINDER_CAMPAIGN, sentAt: { $ne: null } }).select("email sentAt").lean(),
     CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt sends").lean(),
+    // Opens, page visits, posts and RSVP form opens (services/engagement.js); a read failure only hides them.
+    EmailEngagement.find({}).select(ENGAGEMENT_SELECT).lean().catch((err) => { console.error("PEOPLE ENGAGEMENT ERROR:", err?.message || err); return []; }),
   ]);
   const built = buildPeople({
-    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending,
+    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending, engagement,
   });
   return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
 }
@@ -219,7 +227,7 @@ router.get("/", wrap(async (req, res) => {
   res.json({
     total: list.length, page, size: PAGE,
     rows: list.slice(page * PAGE, (page + 1) * PAGE).map(personRow),
-    counts: peopleCounts(d.people),
+    counts: { ...peopleCounts(d.people), unattributedPosts: d.unattributedPosts || 0 },
     stripe: d.stripe, speakersLoaded: d.speakersLoaded, builtAt: d.builtAt,
   });
 }));
@@ -316,13 +324,13 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
    The Marketing › I'm attending campaign email, unchanged: their personal /attending link to make the image
    and post it on LinkedIn. Same confirm, count and skip list as the RSVP reminder above (services/attendingNudge.js
    planAttendingNudges): no pass, no email, suspended, unsubscribed, unconfirmed send, emailed in the last 3 days.
-   Opens, clicks and posts aren't tracked, so "already posted" can't be known. Sends are recorded in the
-   campaign's CampaignSend rows, so its "send to everyone" skips anyone nudged. */
+   Since Oct 19 2026 anyone with a confirmed LinkedIn post is left out too (services/engagement.js). Sends are
+   recorded in the campaign's CampaignSend rows, so its "send to everyone" skips anyone nudged. */
 const nudgeRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
 const singleSends = makeLimiter(SINGLE_SEND_LIMIT); // one-person reminders and nudges from a profile, per staff member
 const sendNudge = makeReminderSender({
   store: campaignSendStore(CampaignSend, { campaign: ATTENDING_CAMPAIGN, cooldownMs: NUDGE_COOLDOWN_MS }),
-  send: ({ to, row }) => sendAttendingEmail({ to, recipient: row }),
+  send: ({ to, row, track }) => sendAttendingEmail({ to, recipient: row, track }),
 });
 
 async function nudgePlan(query, { fresh = false } = {}) {

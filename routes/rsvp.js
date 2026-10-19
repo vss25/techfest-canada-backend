@@ -2,7 +2,9 @@ import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
-import { lastNameMatches } from "../services/ticketAccess.js";
+import { lastNameMatches, makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
+import { CAMPAIGNS, engagementKey } from "../services/engagement.js";
+import { trackLater } from "../services/engagementStore.js";
 import { findTicket, ticketNameMatches } from "./ticketAuth.js";
 import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS, buildRsvpEmail,
   RSVP_AGENDA_URL, parseRsvpAgenda, agendaTimes } from "../services/rsvp.js";
@@ -27,6 +29,8 @@ import { effectiveTypes, passKind } from "../services/teamRoles.js";
                             Keep `editToken` and send it back to change the RSVP later.
    ---------------------------------------------------------
    The website page (/rsvp) has no links to it. No email is sent.
+   A lookup that verifies a ticket counts as "RSVP form opened" for it
+   (People), once per ticket and address in 30 minutes, after answering.
    Staff: Admin → Leads → RSVPs (routes/console.js /rsvps).
    Logic: services/rsvpHandler.js, services/rsvp.js.
 ========================================================= */
@@ -80,9 +84,16 @@ const notify = (row, opts) => sendFormSubmissionEmail({ to: RSVP_INBOX, ...build
 // Special-event times on the RSVP page come from the agenda (cached a minute; the last good copy if Sanity is down).
 const rsvpAgenda = makeAgendaCache({ url: RSVP_AGENDA_URL, parse: parseRsvpAgenda, label: "RSVP AGENDA", ttlMs: 60 * 1000 });
 
+// "RSVP form opened" (People): once per ticket and address in half an hour, so typing doesn't count twice.
+const formOpens = makeLimiter({ max: 1, windowMs: 30 * 60 * 1000 });
+const onFormOpen = (ticketId, ip) => {
+  if (formOpens.hit(`${ip}|${normalizeTicketId(ticketId)}`)) trackLater(engagementKey({ c: CAMPAIGNS.rsvpForm, t: ticketId }), "visit");
+};
+
 const handlers = makeRsvpHandlers({
   lookup,
   notify,
+  onFormOpen,
   agendaTimes: async () => { const s = await rsvpAgenda.get(); return s ? agendaTimes(s) : null; },
   store: {
     // The edit token's hash is never read anywhere else (select: false in the model).

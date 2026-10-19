@@ -68,6 +68,8 @@ import { PLACEHOLDERS, SECTIONS, cleanFields, changedFields, compact, fieldsFor,
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { loadWebsite, applyWebsite, planWebsiteLinks, nudgeCopy, NUDGE_COPY } from "../services/speakerWebsite.js";
 import { sendSpeakerPassEmail } from "../services/emailService.js";
+import { CAMPAIGNS } from "../services/engagement.js";
+import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
 import { runSearch } from "../services/adminSearch.js";
 import { makeSearchSources } from "../services/adminSearchSources.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -1193,7 +1195,10 @@ async function sendSpeakerPass(a, opts = {}) {
   const row = speakerPassRow((await livePass(a, opts.site)).doc);
   const to = opts.to?.length ? opts.to : passRecipients(a);
   const cc = (opts.cc ?? DEFAULT_SPEAKER_CC()).filter((e) => !to.includes(e));
-  await sendSpeakerPassEmail({ to, pass: row, cc, copy: speakerCopy(a, opts) });
+  // The open pixel (People › RSVP email opened) only without a cc: a cc'd copy would count as their open.
+  const track = passEmailPixel({ campaign: CAMPAIGNS.speakerPass, email: a.email || to[0], ticketId: row.ticketId, cc });
+  await sendSpeakerPassEmail({ to, pass: { ...row, openPixel: track.pixel }, cc, copy: speakerCopy(a, opts) });
+  if (track.key) noteTrackedSend(track.key);
   let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
     // The Speaker Pass email always has the RSVP button (People › "RSVP email sent").
@@ -1524,7 +1529,9 @@ async function nudgeSpeaker(a, opts) {
   const row = speakerPassRow((await livePass(a, opts.site)).doc);
   const to = opts.to?.length ? opts.to : passRecipients(a);
   const cc = (opts.cc ?? DEFAULT_SPEAKER_CC()).filter((e) => !to.includes(e));
-  await sendSpeakerPassEmail({ to, pass: row, cc, copy: nudgeWording(a, opts) });
+  const track = passEmailPixel({ campaign: CAMPAIGNS.speakerNudge, email: a.email || to[0], ticketId: row.ticketId, cc });
+  await sendSpeakerPassEmail({ to, pass: { ...row, openPixel: track.pixel }, cc, copy: nudgeWording(a, opts) });
+  if (track.key) noteTrackedSend(track.key);
   return Attendee.findOneAndUpdate({ _id: a._id, ...SPEAKER_SCOPE },
     { $set: { speakerNudgedAt: new Date() }, $inc: { speakerNudgeCount: 1 } }, { new: true })
     .select(SPEAKER_PASS_FIELDS).lean();

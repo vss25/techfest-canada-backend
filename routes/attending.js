@@ -9,6 +9,9 @@ import {
   pngFromDataUrl, postReturnUrl, readCookie, statesMatch,
 } from "../services/attendingCampaign.js";
 import { postImageToLinkedin } from "../services/linkedinPost.js";
+import { verifyTrack } from "../services/trackToken.js";
+import { CAMPAIGNS, UNATTRIBUTED_POSTS, engagementKey } from "../services/engagement.js";
+import { trackLater } from "../services/engagementStore.js";
 
 /* =========================================================
    /api/attending: the website's "I'm attending" page (/attending)
@@ -50,12 +53,28 @@ import { postImageToLinkedin } from "../services/linkedinPost.js";
      cross-origin read (the canvas would be "tainted" and couldn't be
      exported). Only https media.licdn.com hosts, no redirects, images
      only, 5 MB max, rate-limited per IP.
+
+   Who did what (Oct 19 2026, People › I'm attending): real sends of
+   the email add their signed token to the link (#…&r=, services/
+   trackToken.js). The page sends it back:
+   POST /event { r, type: "visit" | "share" | "manual" } → 204
+     visit: opened from their link; share: the phone's share sheet
+     finished (it can't say which app); manual: "Download and open
+     LinkedIn" (we can't see the post). A token that isn't ours, or
+     isn't for this email, is ignored (still 204). JSON or text/plain
+     (so the page can send it without a preflight); rate-limited per IP.
+   POST /post also takes `r`: the post LinkedIn confirms is recorded
+   for that person, with its link; a post from a link without one
+   only adds to the count of unattributed posts. Nothing slows down,
+   changes or fails because of this (services/engagementStore.js).
 ========================================================= */
 
 const router = express.Router();
 const photoPerIp = makeLimiter({ max: 30, windowMs: 15 * 60 * 1000 });
 const startPerIp = makeLimiter({ max: 20, windowMs: 15 * 60 * 1000 });
 const draftPerIp = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 });
+const eventPerIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 });
+export const PAGE_EVENTS = ["visit", "share", "manual"];
 const COOKIE_PATH = "/api/auth/linkedin";
 const COOKIE_MAX_AGE_S = 10 * 60;
 
@@ -82,6 +101,23 @@ router.get("/linkedin", (req, res) => {
   }));
 });
 
+/** The address an "I'm attending" token was signed for ("" when it isn't a token of this email's). */
+function attendingEmailOf(r) {
+  const p = typeof r === "string" ? verifyTrack(r) : null;
+  return p && p.c === CAMPAIGNS.attending && p.e ? p.e : "";
+}
+
+/** POST /api/attending/event: the page was opened, shared or taken to LinkedIn by hand. */
+router.post("/event", express.json({ type: ["application/json", "text/plain"], limit: "2kb" }), (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!eventPerIp.hit(req.ip || "?")) return res.status(429).json({ error: "Too many requests. Try again in a few minutes." });
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (!PAGE_EVENTS.includes(b.type)) return res.status(400).json({ error: "Unknown event." });
+  const email = attendingEmailOf(b.r);
+  if (email) trackLater(engagementKey({ c: CAMPAIGNS.attending, e: email }), b.type);
+  return res.status(204).end();
+});
+
 /** POST /api/attending/post: keeps the finished image + text while they approve posting on LinkedIn. */
 export async function attendingPostDraft(req, res) {
   if (!linkedinConfigured()) return res.status(503).json({ error: "Posting to LinkedIn isn't available right now.", code: "unavailable" });
@@ -91,7 +127,7 @@ export async function attendingPostDraft(req, res) {
   const text = cleanPostText(req.body?.text);
   if (!text) return res.status(400).json({ error: "Write something for your post first.", code: "text" });
   const draftId = newDraftId();
-  await AttendingPost.create({ draftId, png, text });
+  await AttendingPost.create({ draftId, png, text, trackEmail: attendingEmailOf(req.body?.r) });
   res.set("Cache-Control", "no-store");
   res.json({ id: draftId });
 }
@@ -152,6 +188,9 @@ export async function attendingLinkedinCallback(req, res, next) {
         accessToken: token.data?.access_token, personId: u.sub, png: draft.png, text: draft.text,
         altText: "I'm attending The Tech Festival Canada 2026, 26–27 October, Toronto",
       });
+      // Theirs in People when the page had their token; else counted without a name.
+      const who = draft.trackEmail ? engagementKey({ c: CAMPAIGNS.attending, e: draft.trackEmail }) : null;
+      trackLater(who || UNATTRIBUTED_POSTS, "post", { postUrl: url });
       return res.redirect(302, postReturnUrl(frontendUrl(), { post: url }));
     }
     return res.redirect(302, attendingReturnUrl(frontendUrl(), {

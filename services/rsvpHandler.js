@@ -40,6 +40,11 @@
    holder), plus any extra already on their RSVP (never taken away). The lookup
    tells the page with `allowedOptions`, and for verified tickets `cxoBreakfast`
    and `keepOptions` (extras kept from their RSVP that the pass doesn't offer).
+
+   Form opens (Oct 19 2026, People › RSVP): a lookup that verifies a ticket
+   means the form was opened for it (their personal link fills the ticket ID
+   and last name in). `onFormOpen(ticketId, ip)` is told, never waited for:
+   the answer is the same, as fast, whatever it does.
 ========================================================= */
 
 import { makeLimiter, ticketGuesses, ticketGuessKey, normalizeTicketId } from "./ticketAccess.js";
@@ -189,6 +194,7 @@ export function makeRsvpHandlers({
   submitIpLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }),
   submitNameLimiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 }), // per address + name, RSVPs about to be saved
   agendaTimes = async () => null, // { optionKey: "7:55 AM" } from the CMS agenda; null keeps the fallback times
+  onFormOpen = null, // (ticketId, ip) => void: a lookup verified this ticket (People › RSVP form opened); never awaited
 }) {
   const ipOf = (req) => String(req.ip || "unknown");
 
@@ -218,6 +224,10 @@ export function makeRsvpHandlers({
       if (both && !lookupNameLimiter.hit(`${ipOf(req)}|n:${personNameKey(q.firstName, q.lastName)}`)) return res.status(429).json({ ...NONE, error: TOO_MANY });
       if (withTicket && !ticketGuessLimiter.hit(ticketGuessKey(q.ticketId), q.lastName)) return res.status(429).json({ ...NONE, error: TOO_MANY });
       const r = await lookup(q);
+      if (r.ticket && onFormOpen) {
+        const ticketId = r.ticket.ticketId;
+        Promise.resolve().then(() => onFormOpen(ticketId, ipOf(req))).catch(() => {});
+      }
       const keepOptions = r.ticket ? extraOptionsFor(await priorRows(r.ticket, q)) : [];
       return res.json(publicLookup(r, q, { keepOptions }));
     } catch (err) {
