@@ -17,7 +17,7 @@ import { trimBody, threadKey } from "../services/socialHelpers.js";
 import { cleanRole, typeInfo, PERSON_TYPES } from "../services/teamRoles.js";
 import {
   DEFAULT_MATRIX, RIGHTS, RIGHT_LABELS, INBOUND_RIGHTS, ADMIN_POWERS, mergeMatrix, cleanMatrix, matrixChanges,
-  consoleTypes, typesEdit, typeCandidates,
+  consoleTypes, typesEdit, typeCandidates, vipEdit,
 } from "../services/appRights.js";
 import { rightsContext, matrixInfo, loadMatrix, saveMatrix, loadFlags } from "../services/rightsStore.js";
 import { loadExhibitors } from "../services/exhibitorCache.js";
@@ -117,9 +117,10 @@ router.get("/stats", async (req, res) => {
 });
 
 /* ---------- People ----------
-   Rows carry `types`: their effective person types (services/teamRoles.js).
-   `?type=vip` (any of PERSON_TYPES) keeps only people who have that type. */
-const PEOPLE_SELECT = "name email role jobTitle organization topics tickets banned directoryHidden messagesOff requestsOff lastActiveAt createdAt provider types typesOff";
+   Rows carry `types`: their effective person types (services/teamRoles.js) and `vip` (the VIP switch).
+   `?type=speaker` (any of PERSON_TYPES) keeps only people who have that type; `?type=vip` (the old
+   VIP type, now the switch) keeps the VIPs. */
+const PEOPLE_SELECT = "name email role jobTitle organization topics tickets banned directoryHidden messagesOff requestsOff lastActiveAt createdAt provider types typesOff vip";
 const PEOPLE_PAGE = 50;
 router.get("/users", async (req, res) => {
   const q = String(req.query.q || "").trim();
@@ -128,17 +129,17 @@ router.get("/users", async (req, res) => {
   if (req.query.banned === "true") filter.banned = true;
   const page = Math.max(0, Number(req.query.page) || 0);
   const type = req.query.type ? String(req.query.type).toLowerCase() : "";
-  if (type && !PERSON_TYPES.includes(type)) return res.status(400).json({ error: `type must be one of: ${PERSON_TYPES.join(", ")}` });
+  if (type && type !== "vip" && !PERSON_TYPES.includes(type)) return res.status(400).json({ error: `type must be one of: ${PERSON_TYPES.join(", ")}` });
   const exhibitors = await loadExhibitors();
   const sort = { lastActiveAt: -1, createdAt: -1 };
   let rows;
   let total;
   if (type) {
     // Automatic types (passes, roles) can't all be queried, so narrow, then keep exact matches.
-    const cand = typeCandidates(type);
+    const cand = type === "vip" ? {} : typeCandidates(type);
     if (Object.keys(cand).length) filter = { $and: [filter, cand] };
     const all = (await User.find(filter).select(PEOPLE_SELECT).sort(sort).limit(5000).lean())
-      .filter((u) => typeInfo(u, exhibitors).types.includes(type));
+      .filter((u) => { const info = typeInfo(u, exhibitors); return type === "vip" ? info.vip : info.types.includes(type); });
     total = all.length;
     rows = all.slice(page * PEOPLE_PAGE, (page + 1) * PEOPLE_PAGE);
   } else {
@@ -152,6 +153,7 @@ router.get("/users", async (req, res) => {
     topics: u.topics || [], tickets: (u.tickets || []).length, banned: !!u.banned, provider: u.provider,
     directoryHidden: !!u.directoryHidden, messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff,
     types: typeInfo(u, exhibitors).types,
+    vip: typeInfo(u, exhibitors).vip,
     lastActiveAt: u.lastActiveAt, createdAt: u.createdAt,
   })) });
 });
@@ -216,6 +218,9 @@ router.patch("/users/:id", async (req, res) => {
   // Person types (services/appRights.js typesEdit): validated; staff / volunteer types are management only.
   const typed = typesEdit(u, req.body, { management: isManagement(req.user) });
   if (typed.error) return res.status(typed.status).json({ error: typed.error });
+  // The VIP switch (services/teamRoles.js isVip): a flag on the account, not a type.
+  const vipped = vipEdit(u, req.body, { vipPass: req.body?.vip !== undefined ? (await loadExhibitors()).hasVipPass(u) : false });
+  if (vipped.error) return res.status(vipped.status).json({ error: vipped.error });
   for (const k of EDITABLE) {
     if (req.body?.[k] === undefined) continue;
     let v = req.body[k];
@@ -231,13 +236,14 @@ router.patch("/users/:id", async (req, res) => {
   // (accounts from before levels existed), so someone newly made staff starts at "staff".
   if (changed.includes("role")) u.staffRole = u.role === "admin" ? "staff" : undefined;
   for (const [k, v] of Object.entries(typed.set)) { u[k] = v; changed.push(k); }
+  for (const [k, v] of Object.entries(vipped.set)) { u[k] = v; changed.push(k); }
   // The attendee-list switch is staff-only now: record that staff made the call (services/directoryHide.js).
   if (req.body?.directoryHidden !== undefined) {
     const hide = staffDirectoryHide(req.body.directoryHidden);
     if (u.directoryHiddenByStaff !== hide) { u.directoryHiddenByStaff = hide; if (!changed.includes("directoryHidden")) changed.push("directoryHidden"); }
   }
   await u.save();
-  if (changed.length) await audit(req, "edit_user", "user", u._id, [changed.join(", "), typed.note].filter(Boolean).join(" | "));
+  if (changed.length) await audit(req, "edit_user", "user", u._id, [changed.join(", "), typed.note, vipped.note].filter(Boolean).join(" | "));
   res.json({ ok: true, changed });
 });
 
@@ -1138,7 +1144,8 @@ async function sendSpeakerPass(a, opts = {}) {
   await sendSpeakerPassEmail({ to, pass: row, cc, copy: opts.copy || {} });
   let updated = await Attendee.findOneAndUpdate(
     { _id: a._id, ...SPEAKER_SCOPE },
-    { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", ") }, $inc: { passEmailSentCount: 1 } },
+    // The Speaker Pass email always has the RSVP button (People › "RSVP email sent").
+    { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", "), passEmailRsvp: true }, $inc: { passEmailSentCount: 1 } },
     { new: true },
   ).select(SPEAKER_PASS_FIELDS).lean();
   if (!row.sessions) return updated;

@@ -2,21 +2,27 @@
    Staff-entered RSVPs (Admin → People → profile → RSVP)
    ---------------------------------------------------------
    Who wins, in order:
-     1. The attendee's own RSVP from /rsvp. It always replaces
-        staff's answers (services/rsvpHandler.js: the same ticket,
-        the edit token, or a staff-made name-only row for the same
-        name when they come with their verified ticket), and in a
-        staff merge of two rows its answers are kept over staff's
-        (services/rsvp.js planRsvpMerge).
+     1. The attendee's own RSVP from /rsvp. It replaces staff's
+        answers (services/rsvpHandler.js: the same ticket, the edit
+        token, or a staff-made name-only row for the same name when
+        they come with their verified ticket), and in a staff merge
+        of two rows its answers are kept over staff's (services/rsvp.js
+        planRsvpMerge). Seats staff gave on top (`staffAdded`) stay.
      2. Staff. Staff can enter an RSVP for anyone without one, and
-        change one staff entered. An RSVP the attendee sent is only
-        changed with an explicit override (`override: true`, else
-        409 "attendee_rsvp"); `basedOn` (the updatedAt staff saw)
-        refuses a save over a change made since (409 "changed").
-   The pass's limits still apply (checkOptions: only what the pass
-   includes on the chosen days); `allowOutsidePass: true` lets
-   staff include more, saved with passLimitOverride and returned as
-   a warning. Staff changes never email anyone; routes/people.js
+        change one staff entered. An RSVP the attendee sent is never
+        changed by staff (Oct 19 2026: "Do not update existing RSVP by
+        attendee"): staff can only ADD special events to it (luncheons,
+        the Gala Dinner, CxO Breakfasts…), kept in `staffAdded` (and in
+        `options`, so headcounts count them), and take off only what
+        staff added. Taking off anything the attendee chose → 409
+        "attendee_rsvp"; their days, dietary needs and accessibility
+        note stay theirs. `basedOn` (the updatedAt staff saw) refuses
+        a save over a change made since (409 "changed").
+   The pass's limits apply (checkOptions: what the pass includes on
+   the chosen days, its CxO Breakfast switch and any breakfast already
+   on their RSVP); `allowOutsidePass: true` lets staff include more for
+   anyone (staff override), saved with passLimitOverride and returned
+   as a warning. Staff changes never email anyone; routes/people.js
    writes them to the audit log. Pure, unit-tested
    (test/rsvp-staff.test.js).
 ========================================================= */
@@ -79,34 +85,83 @@ const summary = (v) => [
   v.dietary.length ? `dietary: ${v.dietary.map((k) => DIET_LABEL[k] || k).join(", ")}` : "",
 ].filter(Boolean).join("; ");
 
+/** What the attendee chose themselves on their own RSVP: its options minus what staff added. */
+export const attendeeOwnOptions = (r) => (r?.options || []).filter((k) => !(r?.staffAdded || []).includes(k));
+
+/**
+ * Staff add to an RSVP the attendee sent: `body.options` is the full list they want; everything the
+ * attendee chose must still be in it. → plan (see planStaffRsvp) or an error.
+ */
+function planAttendeeAdditions({ existing, body, who, staff, name, now, rules }) {
+  if (body.options != null && !Array.isArray(body.options)) return { status: 400, field: "options", code: "invalid", error: "Options must be a list" };
+  const wanted = [...new Set((body.options || []).map((o) => cleanText(o)).filter(Boolean))].filter((k) => !DAY_KEYS.includes(k));
+  if (wanted.some((o) => !OPTION_KEYS.includes(o))) return { status: 400, field: "options", code: "invalid", error: "Unknown option" };
+  const own = attendeeOwnOptions(existing);
+  const removed = own.filter((k) => !wanted.includes(k));
+  if (removed.length) {
+    return {
+      status: 409, code: "attendee_rsvp", field: "options", invalid: removed,
+      error: `They chose ${removed.map(optionLabel).join(", ")} themselves. Staff can add to an attendee's RSVP but can't take anything off it.`,
+    };
+  }
+  const added = EXPERIENCE_KEYS.filter((k) => wanted.includes(k) && !own.includes(k));
+  const before = EXPERIENCE_KEYS.filter((k) => (existing.staffAdded || []).includes(k) && !own.includes(k));
+  const check = checkOptions(existing.tier, existing.days || [], added, rules);
+  let warning = "";
+  if (!check.ok) {
+    if (body.allowOutsidePass !== true) return { status: 400, code: "outside_pass", field: "options", invalid: check.invalid, error: check.error };
+    warning = `Includes what the ${TIER_LABELS[existing.tier] || "pass"} doesn't cover on those days: ${check.invalid.map(optionLabel).join(", ")}.`;
+  }
+  const gone = before.filter((k) => !added.includes(k));
+  const fresh = added.filter((k) => !before.includes(k));
+  const set = {
+    options: EXPERIENCE_KEYS.filter((k) => own.includes(k) || added.includes(k)),
+    staffAdded: added,
+    staffUpdatedBy: who, staffUpdatedById: String(staff.id || ""), staffUpdatedAt: now,
+    passLimitOverride: !check.ok,
+  };
+  const parts = [
+    fresh.length ? `added ${fresh.map(optionLabel).join(", ")}` : "",
+    gone.length ? `took off ${gone.map(optionLabel).join(", ")} (added by staff)` : "",
+  ].filter(Boolean);
+  return {
+    create: false, id: String(existing._id), set, warning,
+    audit: {
+      action: "rsvp_staff_add",
+      detail: `${name || "RSVP"} (their own RSVP kept): ${parts.join("; ") || "no change"}${warning ? " · outside the pass" : ""}`,
+    },
+  };
+}
+
 /**
  * Plan a staff RSVP save.
  * @param {object} o
  * @param {object|null} o.existing   the person's current (listed, not a possible duplicate) RSVP, or null
- * @param {object} o.person          { name, firstName?, lastName?, email, pass: { ticketId, type } | null }
- * @param {object} o.body            { days, options, dietary, dietaryOther, accessibility, tier?, override?, allowOutsidePass?, basedOn? }
+ * @param {object} o.person          { name, firstName?, lastName?, email, pass: { ticketId, type } | null,
+ *                                     cxo?: their pass's CxO Breakfast (true / false), extra?: options they keep (extraOptionsFor) }
+ * @param {object} o.body            { days, options, dietary, dietaryOther, accessibility, tier?, allowOutsidePass?, basedOn? }
+ *                                   (an RSVP the attendee sent: only `options` is read, see planAttendeeAdditions)
  * @param {object} o.staff           { id, name }
  * @param {Date}   [o.now]
  * @returns {{ status: number, error: string, code: string, field?: string, invalid?: string[] }
  *          | { create: boolean, id?: string, doc?: object, set?: object, warning: string, audit: { action, detail } }}
  */
 export function planStaffRsvp({ existing = null, person = {}, body = {}, staff = {}, now = new Date() }) {
-  const answers = cleanStaffAnswers(body);
-  if (!answers.ok) return { status: 400, error: answers.error, field: answers.field, code: "invalid" };
-  const v = answers.value;
   const who = cleanText(staff.name).slice(0, 120) || "Staff";
   const name = cleanText(person.name).slice(0, 160) || [person.firstName, person.lastName].filter(Boolean).join(" ");
+  const rules = { cxo: typeof person.cxo === "boolean" ? person.cxo : undefined, extra: Array.isArray(person.extra) ? person.extra : [] };
 
   if (existing) {
     if (existing.spam || existing.mergedInto) return { status: 404, error: "RSVP not found", code: "missing" };
     if (body.basedOn && existing.updatedAt && new Date(body.basedOn).getTime() !== new Date(existing.updatedAt).getTime()) {
       return { status: 409, code: "changed", error: "This RSVP changed since you opened it. Reload to see the latest answers." };
     }
-    const fromAttendee = rsvpSource(existing) === "attendee";
-    if (fromAttendee && body.override !== true) {
-      return { status: 409, code: "attendee_rsvp", error: "The attendee entered this RSVP themselves. Confirm that you want to override it." };
-    }
+    // The attendee's own RSVP: staff can only add to it.
+    if (rsvpSource(existing) === "attendee") return planAttendeeAdditions({ existing, body, who, staff, name, now, rules });
   }
+  const answers = cleanStaffAnswers(body);
+  if (!answers.ok) return { status: 400, error: answers.error, field: answers.field, code: "invalid" };
+  const v = answers.value;
 
   // The pass: the ticket's when there is one (verified), else what staff choose.
   let tier;
@@ -127,7 +182,7 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
   }
 
   // What the pass includes on those days; staff may go past it only on purpose.
-  const check = checkOptions(tier, v.days, v.options);
+  const check = checkOptions(tier, v.days, v.options, rules);
   let options = check.ok ? check.options : v.options;
   let warning = "";
   if (!check.ok) {
@@ -142,18 +197,16 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
     days: v.days, options, dietary: v.dietary, dietaryOther: v.dietaryOther, accessibility: v.accessibility,
     source: "staff", staffUpdatedBy: who, staffUpdatedById: String(staff.id || ""), staffUpdatedAt: now,
     passLimitOverride: !check.ok,
+    // Seats outside their pass are staff's invitation: they stay when the attendee sends their own RSVP.
+    staffAdded: check.ok ? [] : check.invalid.filter((k) => options.includes(k)),
   };
 
   if (existing) {
-    const overriding = rsvpSource(existing) === "attendee";
-    const set = { ...staffFields, staffOverride: overriding || !!existing.staffOverride };
+    const set = { ...staffFields };
     if (tier !== existing.tier) set.tier = tier; // only ever an unverified pass (a ticket's pass can't be changed here)
     return {
       create: false, id: String(existing._id), set, warning,
-      audit: {
-        action: overriding ? "rsvp_staff_override" : "rsvp_staff_edit",
-        detail: `${name || "RSVP"}${overriding ? " (overrode the attendee's RSVP)" : ""}: ${summary({ ...v, options })}${warning ? " · outside the pass" : ""}`,
-      },
+      audit: { action: "rsvp_staff_edit", detail: `${name || "RSVP"}: ${summary({ ...v, options })}${warning ? " · outside the pass" : ""}` },
     };
   }
 
@@ -180,19 +233,23 @@ export function planStaffRsvp({ existing = null, person = {}, body = {}, staff =
   };
 }
 
+/** RSVP status names (Admin → People): the attendee RSVP'd themselves, staff entered it, or neither. */
+export const RSVP_STATUS_LABELS = Object.freeze({ none: "Unconfirmed", attendee: "Confirmed by Individual", staff: "Confirmed by Staff" });
+
 /** How the directory and profile describe an RSVP: { status: "none" | "attendee" | "staff", at, by, days, ... }. */
 export function rsvpStatusOf(r) {
-  if (!r) return { status: "none", label: "Not yet", at: null, by: "", days: [], options: [] };
+  if (!r) return { status: "none", label: RSVP_STATUS_LABELS.none, at: null, by: "", days: [], options: [], staffAdded: [] };
   const src = rsvpSource(r);
   const at = src === "staff" ? r.staffUpdatedAt || r.updatedAt : r.attendeeSubmittedAt || r.updatedAt || r.createdAt;
   return {
     status: src,
-    label: src === "staff" ? "Set by staff" : "RSVP'd by attendee",
+    label: RSVP_STATUS_LABELS[src],
+    staffAdded: Array.isArray(r.staffAdded) ? r.staffAdded : [],
     at: at || null,
     by: src === "staff" ? r.staffUpdatedBy || "" : "",
     days: r.days || [],
     options: r.options || [],
-    passLimitOverride: src === "staff" && !!r.passLimitOverride,
+    passLimitOverride: (src === "staff" || (r.staffAdded || []).length > 0) && !!r.passLimitOverride,
     staffOverride: !!r.staffOverride,
   };
 }

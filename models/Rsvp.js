@@ -61,8 +61,12 @@ const rsvpSchema = new mongoose.Schema({
   staffUpdatedBy: str,       // staff name, last staff change (kept as history after the attendee changes it)
   staffUpdatedById: str,
   staffUpdatedAt: Date,
-  staffOverride: { type: Boolean, default: false },     // staff replaced answers the attendee had sent
+  staffOverride: { type: Boolean, default: false },     // staff replaced answers the attendee had sent (before Oct 19 2026; no longer possible)
   passLimitOverride: { type: Boolean, default: false }, // staff let it include options their pass doesn't cover
+  // Special events staff gave on top of the attendee's own answers, or outside their pass on a staff-made RSVP
+  // (also in `options`, so every headcount counts them). Staff can never remove what the attendee chose; these
+  // seats are kept when the attendee sends their RSVP again (services/rsvpStaff.js, services/rsvpHandler.js).
+  staffAdded: { type: [String], default: undefined },
 }, { timestamps: true });
 
 rsvpSchema.index({ key: 1 }, { unique: true, partialFilterExpression: { spam: false } });

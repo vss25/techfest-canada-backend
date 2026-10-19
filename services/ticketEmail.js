@@ -57,7 +57,7 @@ export function walletButtonHtml(url) {
  * @param {string} [p.qrUrl]     signed /api/wallet/qr image link ("" hides the QR)
  * @returns {{ subject: string, preheader: string, html: string, text: string }}
  */
-export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "" } = {}) {
+export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = "", qrUrl = "", cxoBreakfast } = {}) {
   const id = String(ticketId || "");
   const booth = isBoothId(id);
   const pass = displayPassName(tier, id);
@@ -66,7 +66,7 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     ? String(name).trim() : (first || "Delegate");
   const wallet = booth ? "" : walletUrl;
   const qr = booth ? "" : qrUrl;
-  const includes = booth ? [] : inclusionsFor(tier);
+  const includes = booth ? [] : inclusionsFor(tier, { cxoBreakfast });
   const tips = booth ? [] : emailTips(tier);
   const cal = googleCalendarUrl();
   const pdfName = `ttfc-pass-${id}.pdf`;

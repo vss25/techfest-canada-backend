@@ -11,6 +11,8 @@ import { detailsFromMetadata, displayName } from "../services/attendeeDetails.js
 import { sendResetPasswordEmail } from "../services/emailService.js";
 import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
+import { effectiveCxo, cxoOverride } from "../services/cxoBreakfast.js";
+import { effectiveTypes } from "../services/teamRoles.js";
 
 const router = express.Router();
 
@@ -144,6 +146,10 @@ router.post("/stripe", async (req, res) => {
           await Attendee.updateMany({ ticketId }, { $set: { ticketType: tier } });
           console.log("⬆️ Ticket upgraded:", ticketId, fromTier, "→", tier);
           if (email || user.email) {
+            // The upgraded pass's CxO Breakfasts: staff's switch on this ticket if set, else the new pass's rule.
+            const cxoBreakfast = await Attendee.findOne({ ticketId }).select("cxoBreakfast").lean()
+              .then((a) => effectiveCxo({ ticketType: tier, types: effectiveTypes(user), override: cxoOverride(ticket, a) }))
+              .catch(() => undefined);
             await sendTicketEmail({
               email: email || user.email,
               name: displayName(ticket.details, user.name) || name,
@@ -151,6 +157,7 @@ router.post("/stripe", async (req, res) => {
               ticketId,
               tier,
               purchaseDate: ticket.purchaseDate,
+              cxoBreakfast,
             });
           }
         } else {
@@ -158,6 +165,8 @@ router.post("/stripe", async (req, res) => {
         }
       } else if (!isBooth) {
         const ticketId = crypto.randomBytes(6).toString("hex");
+        // A speaker buying a pass gets the CxO Breakfasts with it (services/cxoBreakfast.js); else the pass's rule.
+        let buyerTypes = [];
 
         // If user purchased while logged in → attach ticket to account
         if (userId && userId !== "guest") {
@@ -165,6 +174,7 @@ router.post("/stripe", async (req, res) => {
           const user = await User.findById(userId);
 
           if (user) {
+            buyerTypes = effectiveTypes(user);
 
             user.tickets.push({
               ticketId,
@@ -208,7 +218,8 @@ router.post("/stripe", async (req, res) => {
             name,
             firstName: details?.firstName,
             ticketId,
-            tier
+            tier,
+            cxoBreakfast: effectiveCxo({ ticketType: tier, types: buyerTypes }),
           });
 
           console.log("📧 Ticket email sent to:", email);

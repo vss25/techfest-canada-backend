@@ -52,32 +52,69 @@ test("staff edits stay inside the pass unless they say so, then it's a warning",
   assert.equal(planStaffRsvp({ person: PERSON, body: { days: ["day1"], options: ["gala"] }, staff: STAFF }).code, "outside_pass");
 });
 
-test("an RSVP the attendee sent is protected: 409 unless staff override on purpose", () => {
-  const theirs = { _id: "r1", key: "t:abc123def", tier: "power", tierVerified: true, kind: "ticket", days: ["day1"], options: [], updatedAt: new Date("2026-10-19T10:00:00Z") };
-  const legacy = planStaffRsvp({ existing: theirs, person: PERSON, body: ANSWERS, staff: STAFF }); // no `source`: the attendee's
-  assert.deepEqual([legacy.status, legacy.code], [409, "attendee_rsvp"]);
-  assert.equal(planStaffRsvp({ existing: { ...theirs, source: "attendee" }, person: PERSON, body: { ...ANSWERS, override: "yes" }, staff: STAFF }).code, "attendee_rsvp");
-  const over = planStaffRsvp({ existing: { ...theirs, source: "attendee" }, person: PERSON, body: { ...ANSWERS, override: true }, staff: STAFF, now: NOW });
-  assert.equal(over.create, false);
-  assert.equal(over.id, "r1");
-  assert.deepEqual([over.set.source, over.set.staffOverride, over.set.staffUpdatedBy, over.set.staffUpdatedAt], ["staff", true, "Nicole Staff", NOW]);
-  assert.equal(over.audit.action, "rsvp_staff_override");
-  assert.ok(!("tier" in over.set)); // a ticket's pass never changes here
-  // Staff's own RSVP: no confirmation needed; the override note is kept.
-  const again = planStaffRsvp({ existing: { ...theirs, source: "staff", staffOverride: true }, person: PERSON, body: ANSWERS, staff: STAFF });
-  assert.deepEqual([again.create, again.set.staffOverride, again.audit.action], [false, true, "rsvp_staff_edit"]);
+test("an RSVP the attendee sent is never changed: staff can only add to it (Oct 19 2026)", () => {
+  const theirs = { _id: "r1", key: "t:abc123def", tier: "power", tierVerified: true, kind: "ticket", days: ["day1"], options: ["lunch_d1"],
+    dietary: ["vegan"], updatedAt: new Date("2026-10-19T10:00:00Z") };
+  // Adding a special event: their own answers stay, the new seat is staff's.
+  const add = planStaffRsvp({ existing: theirs, person: PERSON, body: { days: ["day2"], options: ["lunch_d1", "awards"], dietary: [] }, staff: STAFF, now: NOW });
+  assert.equal(add.create, false);
+  assert.equal(add.id, "r1");
+  assert.deepEqual([add.set.options, add.set.staffAdded, add.set.staffUpdatedBy, add.set.staffUpdatedAt], [["lunch_d1", "awards"], ["awards"], "Nicole Staff", NOW]);
+  for (const k of ["source", "days", "dietary", "accessibility", "tier", "staffOverride"]) assert.ok(!(k in add.set), k); // the attendee's answers are untouched
+  assert.equal(add.audit.action, "rsvp_staff_add");
+  assert.match(add.audit.detail, /their own RSVP kept\): added Catalyst Awards Night/);
+  // Taking off what the attendee chose is refused, override or not.
+  for (const body of [{ options: [] }, { options: ["awards"], override: true }]) {
+    const no = planStaffRsvp({ existing: { ...theirs, source: "attendee" }, person: PERSON, body, staff: STAFF });
+    assert.deepEqual([no.status, no.code, no.invalid], [409, "attendee_rsvp", ["lunch_d1"]]);
+    assert.match(no.error, /chose Networking Luncheon \(Day 1\) themselves/);
+  }
+  // A seat their pass doesn't include (a CxO Breakfast on Power) only on purpose, with a warning.
+  const cxo = planStaffRsvp({ existing: theirs, person: PERSON, body: { options: ["lunch_d1", "cxo_d1"] }, staff: STAFF });
+  assert.deepEqual([cxo.status, cxo.code, cxo.invalid], [400, "outside_pass", ["cxo_d1"]]);
+  const cxoOk = planStaffRsvp({ existing: theirs, person: PERSON, body: { options: ["lunch_d1", "cxo_d1"], allowOutsidePass: true }, staff: STAFF });
+  assert.deepEqual([cxoOk.set.options, cxoOk.set.staffAdded, cxoOk.set.passLimitOverride], [["cxo_d1", "lunch_d1"], ["cxo_d1"], true]);
+  assert.match(cxoOk.warning, /Power Pass doesn't cover.*CxO Breakfast/);
+  // With the pass's "CxO Breakfast included" switched on, it's in their pass.
+  const switched = planStaffRsvp({ existing: theirs, person: { ...PERSON, cxo: true }, body: { options: ["lunch_d1", "cxo_d1"] }, staff: STAFF });
+  assert.deepEqual([switched.set.staffAdded, switched.set.passLimitOverride, switched.warning], [["cxo_d1"], false, ""]);
+  // Staff take off only what staff added.
+  const withExtra = { ...theirs, options: ["lunch_d1", "awards"], staffAdded: ["awards"] };
+  const off = planStaffRsvp({ existing: withExtra, person: PERSON, body: { options: ["lunch_d1"] }, staff: STAFF });
+  assert.deepEqual([off.set.options, off.set.staffAdded], [["lunch_d1"], []]);
+  assert.match(off.audit.detail, /took off Catalyst Awards Night \(Day 1\) \(added by staff\)/);
+  // Staff's own RSVP: changed freely.
+  const again = planStaffRsvp({ existing: { ...theirs, source: "staff" }, person: PERSON, body: ANSWERS, staff: STAFF });
+  assert.deepEqual([again.create, again.set.source, again.audit.action], [false, "staff", "rsvp_staff_edit"]);
   // Changed since staff opened it.
   const stale = planStaffRsvp({ existing: { ...theirs, source: "staff" }, person: PERSON, body: { ...ANSWERS, basedOn: "2026-10-18T10:00:00Z" }, staff: STAFF });
   assert.deepEqual([stale.status, stale.code], [409, "changed"]);
+  const staleAdd = planStaffRsvp({ existing: theirs, person: PERSON, body: { options: ["lunch_d1"], basedOn: "2026-10-18T10:00:00Z" }, staff: STAFF });
+  assert.deepEqual([staleAdd.status, staleAdd.code], [409, "changed"]);
   const fresh = planStaffRsvp({ existing: { ...theirs, source: "staff" }, person: PERSON, body: { ...ANSWERS, basedOn: "2026-10-19T10:00:00.000Z" }, staff: STAFF });
   assert.equal(fresh.create, false);
 });
 
+test("staff override for meals: any person, any pass, saved as staff's seat", () => {
+  // A Connect holder with no RSVP gets a Gala Dinner and a CxO Breakfast seat from staff.
+  const plan = planStaffRsvp({ person: { ...PERSON, pass: { ticketId: "C1", type: "connect" } },
+    body: { days: ["day2"], options: ["gala", "cxo_d2", "lunch_d2"], allowOutsidePass: true }, staff: STAFF });
+  assert.equal(plan.create, true);
+  assert.deepEqual([plan.doc.source, plan.doc.options, plan.doc.staffAdded, plan.doc.passLimitOverride], ["staff", ["cxo_d2", "lunch_d2", "gala"], ["cxo_d2", "lunch_d2", "gala"], true]);
+  assert.equal(rsvpStatusOf(plan.doc).label, "Confirmed by Staff");
+  // A speaker on any pass gets the breakfasts without the override.
+  const spk = planStaffRsvp({ person: { ...PERSON, cxo: true }, body: { days: ["day1"], options: ["cxo_d1"] }, staff: STAFF });
+  assert.deepEqual([spk.create, spk.doc.options, spk.doc.passLimitOverride, spk.doc.staffAdded], [true, ["cxo_d1"], false, []]);
+  // Headcounts count staff's seats.
+  const s = summarizeRsvps([plan.doc, spk.doc]);
+  assert.deepEqual([s.counts.gala, s.counts.cxo_d2, s.counts.cxo_d1, s.counts.lunch_d2], [1, 1, 1, 1]);
+});
+
 test("an unverified pass can be corrected by staff; a verified one can't", () => {
   const row = { _id: "r2", source: "staff", tier: "connect", tierVerified: false, days: ["day1"], options: [] };
-  const up = planStaffRsvp({ existing: row, person: { name: "Sam Guest" }, body: { days: ["day1"], options: ["cxo_d1"], tier: "power" }, staff: STAFF });
+  const up = planStaffRsvp({ existing: row, person: { name: "Sam Guest" }, body: { days: ["day1"], options: ["awards"], tier: "power" }, staff: STAFF });
   assert.equal(up.set.tier, "power");
-  const locked = planStaffRsvp({ existing: { ...row, tierVerified: true }, person: { name: "Sam Guest" }, body: { days: ["day1"], options: ["cxo_d1"], tier: "power" }, staff: STAFF });
+  const locked = planStaffRsvp({ existing: { ...row, tierVerified: true }, person: { name: "Sam Guest" }, body: { days: ["day1"], options: ["awards"], tier: "power" }, staff: STAFF });
   assert.equal(locked.code, "outside_pass"); // still Connect
 });
 
@@ -93,12 +130,15 @@ test("staff answers are checked like the public form's", () => {
   assert.deepEqual(splitName("Cher"), { firstName: "Cher", lastName: "" });
 });
 
-test("RSVP status: not yet, the attendee's (when), or staff's (who, when)", () => {
-  assert.equal(rsvpStatusOf(null).status, "none");
+test("RSVP status: Unconfirmed, Confirmed by Individual (when), or Confirmed by Staff (who, when)", () => {
+  assert.deepEqual([rsvpStatusOf(null).status, rsvpStatusOf(null).label], ["none", "Unconfirmed"]);
   const a = rsvpStatusOf({ days: ["day1"], updatedAt: "2026-10-01T00:00:00Z", attendeeSubmittedAt: "2026-10-02T00:00:00Z" });
-  assert.deepEqual([a.status, a.label, a.at, a.by], ["attendee", "RSVP'd by attendee", "2026-10-02T00:00:00Z", ""]);
+  assert.deepEqual([a.status, a.label, a.at, a.by], ["attendee", "Confirmed by Individual", "2026-10-02T00:00:00Z", ""]);
   const s = rsvpStatusOf({ source: "staff", staffUpdatedBy: "Nicole", staffUpdatedAt: "2026-10-03T00:00:00Z", days: ["day2"], passLimitOverride: true });
-  assert.deepEqual([s.status, s.by, s.at, s.days, s.passLimitOverride], ["staff", "Nicole", "2026-10-03T00:00:00Z", ["day2"], true]);
+  assert.deepEqual([s.status, s.label, s.by, s.at, s.days, s.passLimitOverride], ["staff", "Confirmed by Staff", "Nicole", "2026-10-03T00:00:00Z", ["day2"], true]);
+  // Staff seats on the attendee's own RSVP: still Confirmed by Individual.
+  const both = rsvpStatusOf({ days: ["day1"], options: ["awards"], staffAdded: ["awards"], staffUpdatedBy: "Nicole" });
+  assert.deepEqual([both.status, both.staffAdded], ["attendee", ["awards"]]);
   assert.equal(rsvpSource({}), "attendee");
 });
 
@@ -152,7 +192,7 @@ const JANE = { firstName: "Jane", lastName: "Doe", ticketId: "ABC123DEF", tier: 
 
 test("a staff RSVP under the ticket is found and replaced by the attendee's own (not duplicated)", async () => {
   const w = world();
-  await w.staffSave(planStaffRsvp({ person: PERSON, body: { days: ["day1"], options: ["cxo_d1"], dietary: ["halal"] }, staff: STAFF }));
+  await w.staffSave(planStaffRsvp({ person: PERSON, body: { days: ["day1"], options: ["lunch_d1"], dietary: ["halal"] }, staff: STAFF }));
   assert.equal(w.rows[0].source, "staff");
   const r = await w.submit({ ...JANE, days: ["day2"], options: ["gala"], dietary: ["vegan"] });
   assert.equal(r.statusCode, 201);
@@ -164,18 +204,25 @@ test("a staff RSVP under the ticket is found and replaced by the attendee's own 
   assert.equal(row.passLimitOverride, false);
   assert.equal(r.body.updated, true);
   assert.equal(summarizeRsvps(w.rows).total, 1);
+  // A seat staff gave outside their pass (a CxO Breakfast on Power) stays when they send their own.
+  const w2 = world();
+  await w2.staffSave(planStaffRsvp({ person: PERSON, body: { days: ["day1"], options: ["cxo_d1", "lunch_d1"], allowOutsidePass: true }, staff: STAFF }));
+  await w2.submit({ ...JANE, days: ["day2"], options: ["gala"] });
+  const kept = w2.rows[0];
+  assert.deepEqual([kept.source, kept.days, kept.options, kept.staffAdded, kept.passLimitOverride], ["attendee", ["day2"], ["cxo_d1", "gala"], ["cxo_d1"], true]);
+  assert.equal(summarizeRsvps(w2.rows).counts.cxo_d1, 1);
 });
 
 test("a staff RSVP made by name (no ticket on file then) is taken over when they RSVP with their ticket", async () => {
   const w = world();
   await w.staffSave(planStaffRsvp({ person: { name: "Jane Doe", pass: null }, body: { days: ["day1"], options: [], tier: "connect" }, staff: STAFF }));
   assert.equal(w.rows[0].key, "n:jane doe");
-  const r = await w.submit({ ...JANE, days: ["day1", "day2"], options: ["cxo_d2"] });
+  const r = await w.submit({ ...JANE, days: ["day1", "day2"], options: ["gala"] });
   assert.equal(r.statusCode, 201);
   assert.equal(w.rows.length, 1);
   const row = w.rows[0];
   assert.deepEqual([row.key, row.source, row.tier, row.tierVerified, row.ticketVerified, row.duplicateOf], ["t:abc123def", "attendee", "power", true, true, ""]);
-  assert.deepEqual(row.options, ["cxo_d2"]);
+  assert.deepEqual(row.options, ["gala"]);
   // An attendee's own name-only RSVP is NOT taken over that way (no proof it's the same person): it's superseded as before.
   const w2 = world();
   w2.rows.push({ _id: "old", key: "n:jane doe", nameKey: "jane doe", source: "attendee", days: ["day1"], options: [], tier: "connect", firstName: "Jane", lastName: "Doe" });
@@ -184,17 +231,19 @@ test("a staff RSVP made by name (no ticket on file then) is taken over when they
   assert.equal(w2.rows[0].duplicateOf, w2.rows[1]._id);
 });
 
-test("the attendee's next RSVP replaces a staff override", async () => {
+test("staff seats added to the attendee's RSVP stay when they send it again; one they pick becomes theirs", async () => {
   const w = world();
-  const first = await w.submit({ ...JANE, days: ["day1"], options: [] });
+  const first = await w.submit({ ...JANE, days: ["day1"], options: ["lunch_d1"] });
   const token = first.body.editToken;
   const row = w.rows[0];
-  const over = planStaffRsvp({ existing: row, person: PERSON, body: { days: ["day1", "day2"], options: ["gala"], override: true }, staff: STAFF });
-  await w.staffSave(over);
-  assert.deepEqual([row.source, row.staffOverride], ["staff", true]);
-  // They change it again from the same browser (edit token + ticket): theirs wins over the override.
-  await w.submit({ firstName: "Jane", lastName: "Doe", ticketId: "ABC123DEF", tier: "power", days: ["day2"], options: [], editToken: token });
-  assert.deepEqual([w.rows.length, row.source, row.days, row.options, row.staffOverride], [1, "attendee", ["day2"], [], false]);
+  await w.staffSave(planStaffRsvp({ existing: row, person: PERSON, body: { options: ["lunch_d1", "awards"] }, staff: STAFF }));
+  assert.deepEqual([row.source, row.days, row.options, row.staffAdded], ["attendee", ["day1"], ["lunch_d1", "awards"], ["awards"]]);
+  // They change it again from the same browser (edit token + ticket): their answers, staff's seat kept.
+  await w.submit({ firstName: "Jane", lastName: "Doe", ticketId: "ABC123DEF", tier: "power", days: ["day1", "day2"], options: ["gala"], editToken: token });
+  assert.deepEqual([w.rows.length, row.source, row.days, row.options, row.staffAdded], [1, "attendee", ["day1", "day2"], ["awards", "gala"], ["awards"]]);
+  // Picking it themselves makes it theirs.
+  await w.submit({ ...JANE, days: ["day1"], options: ["awards"] });
+  assert.deepEqual([row.options, row.staffAdded], [["awards"], []]);
 });
 
 test("staff edits never email anyone; the attendee's RSVP still emails the team", async () => {

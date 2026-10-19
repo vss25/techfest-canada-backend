@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { PERSON_TYPES } from "../services/teamRoles.js";
+import { STORED_TYPE_VALUES } from "../services/teamRoles.js";
 import { CONTACT_KINDS } from "../services/contactCard.js";
 
 const ticketSchema = new mongoose.Schema({
@@ -42,6 +42,11 @@ const ticketSchema = new mongoose.Schema({
   hiddenByStaff: {
     type: Boolean,
     default: false
+  },
+  // "CxO Breakfast included" for this ticket (services/cxoBreakfast.js): true / false = staff's choice,
+  // unset = automatic. On the ticket itself because tickets bought on an account have no Attendee row.
+  cxoBreakfast: {
+    type: Boolean
   }
 });
 
@@ -101,11 +106,15 @@ const userSchema = new mongoose.Schema(
     // accepted connections and people they wrote to can still message them.
     messagesOff:  { type: Boolean, default: false },      // no new 1:1 messages from others
     requestsOff:  { type: Boolean, default: false },      // no new connection requests (badge scan still works)
-    // Person types set by staff (services/teamRoles.js): attendee speaker exhibitor vip staff vendor volunteer.
+    // Person types set by staff (services/teamRoles.js): attendee speaker exhibitor staff vendor volunteer.
     // Effective types = these ∪ automatic ones (role, passes) − typesOff; they pick the app rights
     // column(s) in services/appRights.js. typesOff is the only way to switch an automatic type off.
-    types:        { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
-    typesOff:     { type: [{ type: String, enum: PERSON_TYPES }], default: [] },
+    // "vip" is still accepted so documents from before the VIP flag validate (services/vipFlag.js moves it).
+    types:        { type: [{ type: String, enum: STORED_TYPE_VALUES }], default: [] },
+    typesOff:     { type: [{ type: String, enum: STORED_TYPE_VALUES }], default: [] },
+    // VIP yes / no set by staff (Admin → People). Unset = from their passes (Attendee.vip). Not a type:
+    // it gives no app rights of its own; the apps show the VIP badge (kind "vip").
+    vip:          { type: Boolean },
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
     lastActiveAt: { type: Date },

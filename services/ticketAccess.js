@@ -10,7 +10,7 @@
    Pure helpers are exported for unit tests.
 ========================================================= */
 
-import { passKind, strongerKind, boothOf, typesTier, storedTypes, PUBLIC_TYPES } from "./teamRoles.js";
+import { passKind, isVipPass, strongerKind, boothOf, typesTier, storedTypes, PUBLIC_TYPES } from "./teamRoles.js";
 import { personAccess } from "./appRights.js";
 
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
@@ -119,16 +119,18 @@ function addGuestWork(entry, g) {
  * People are merged by email; guest-only duplicates are also merged by
  * name. Each person keeps their most recent ticket. Never returns email.
  */
-/** An unclaimed pass (speaker / exhibitor) adds its type to a directory entry and can raise its kind,
-    never lower it. `off`: the account's typesOff (a type staff switched off stays off). */
+/** An unclaimed pass (speaker / exhibitor, or a pass staff marked VIP) adds its type to a directory entry and
+    can raise its kind, never lower it. `off`: the account's typesOff (a type staff switched off stays off);
+    "vip" is in it when staff set the account's VIP switch (User.vip true / false), which then decides. */
 function addPassKind(entry, g, off = []) {
-  const k = passKind(g);
-  if (!k || off.includes(k)) return;
-  if (!entry.types.includes(k)) entry.types = PUBLIC_TYPES.filter((t) => t === k || entry.types.includes(t));
-  const kind = strongerKind(entry.kind || "", k);
-  if (kind === entry.kind) return;
-  entry.kind = kind;
-  entry.booth = kind === "exhibitor" ? boothOf(g) : "";
+  for (const k of [passKind(g), isVipPass(g) ? "vip" : ""]) {
+    if (!k || off.includes(k)) continue;
+    if (!entry.types.includes(k)) entry.types = PUBLIC_TYPES.filter((t) => t === k || entry.types.includes(t));
+    const kind = strongerKind(entry.kind || "", k);
+    if (kind === entry.kind) continue;
+    entry.kind = kind;
+    entry.booth = kind === "exhibitor" ? boothOf(g) : "";
+  }
 }
 
 export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null, matrix = undefined } = {}) {
@@ -169,7 +171,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       ticketType: t.type,
       purchaseDate: t.purchaseDate,
     });
-    offById.set(String(u._id), storedTypes(u.typesOff));
+    offById.set(String(u._id), [...storedTypes(u.typesOff), ...(typeof u.vip === "boolean" ? ["vip"] : [])]);
   }
 
   const guestByName = new Map();

@@ -13,8 +13,8 @@ const d = (s) => new Date(`2026-${s}T12:00:00Z`);
 /* A small world: accounts, guest passes of every kind, RSVPs and speakers. */
 function world() {
   const users = [
-    // Bought a Power Pass on their account; staff gave them the VIP type.
-    { _id: "u1", name: "Jane Doe", email: "jane@acme.com", role: "user", types: ["vip"], organization: "Acme Inc.", jobTitle: "CTO", linkedinUrl: "https://linkedin.com/in/jane",
+    // Bought a Power Pass on their account; staff switched VIP on (User.vip).
+    { _id: "u1", name: "Jane Doe", email: "jane@acme.com", role: "user", vip: true, organization: "Acme Inc.", jobTitle: "CTO", linkedinUrl: "https://linkedin.com/in/jane",
       tickets: [{ ticketId: "AAA111", type: "power", purchaseDate: d("09-01"), stripeSessionId: "cs_1" }] },
     // Staff account, no ticket.
     { _id: "u2", name: "Nicole Staff", email: "nicole@thetechfestival.com", role: "admin", tickets: [] },
@@ -150,7 +150,8 @@ test("pass status from the ticket records (and Stripe refunds)", () => {
 test("types: effective person types, unclaimed passes and the speaker list", () => {
   const { people } = buildPeople(world());
   const types = (n) => byName(people, n).types;
-  assert.deepEqual(types("Jane Doe"), ["vip"]); // VIP only: attendee is automatic only with no other type
+  assert.deepEqual(types("Jane Doe"), ["attendee"]); // VIP is a switch, not a type: she's a delegate
+  assert.equal(byName(people, "Jane Doe").vip, true);
   assert.deepEqual(types("Nicole Staff"), ["staff"]);
   assert.deepEqual(types("Alán Aspuru-Guzik"), ["speaker"]);
   assert.deepEqual(types("Michael Chen"), ["speaker"]);
@@ -176,7 +177,7 @@ test("exhibitor: what the apps use, the type from staff or an exhibitor pass, un
   assert.deepEqual(ex(people, "Fay Flagged"), [true, false, true]); // staff said Yes
   // An account: staff's type, or an exhibitor pass it claimed; typesOff switches either off.
   const w = world();
-  w.users[0].types = ["vip", "exhibitor"];
+  w.users[0].types = ["exhibitor"];
   assert.deepEqual(ex(buildPeople(w).people, "Jane Doe"), [true, false, true]);
   const claimed = world();
   claimed.attendees.push({ _id: "a20", name: "Jane Doe", email: "jane@acme.com", ticketId: "EXJ001", ticketType: "connect", promoCode: "EXHIBITOR", claimedBy: "u1" });
@@ -257,7 +258,11 @@ test("search, filters, sorting and counts", () => {
   assert.deepEqual(names(filterPeople(people, { type: "none" })).sort(), ["Bob Buyer", "Walk In"]);
   assert.deepEqual(names(filterPeople(people, { status: "pending" })), ["Michael Chen"]);
   assert.deepEqual(names(filterPeople(people, { pass: "power" })), ["Jane Doe"]);
-  assert.equal(filterPeople(people, { pass: "none" }).length, 5);
+  // Only the four passes filter: "speaker" (a type, not a pass) and "none" are ignored.
+  assert.equal(filterPeople(people, { pass: "none" }).length, 12);
+  assert.equal(filterPeople(people, { pass: "speaker" }).length, 12);
+  assert.deepEqual(names(filterPeople(people, { vip: "yes" })), ["Jane Doe"]);
+  assert.equal(filterPeople(people, { vip: "no" }).length, 11);
   assert.deepEqual(names(filterPeople(people, { rsvp: "staff" })), ["Carol Colleague"]);
   assert.equal(filterPeople(people, { rsvp: "any" }).length, 4);
   assert.equal(filterPeople(people, { rsvp: "none" }).length, 8);
@@ -277,7 +282,7 @@ test("search, filters, sorting and counts", () => {
 
   const c = peopleCounts(people);
   assert.equal(c.total, 12);
-  assert.deepEqual([c.byType.speaker, c.byType.exhibitor, c.byType.vip, c.byType.none], [3, 2, 1, 2]);
+  assert.deepEqual([c.byType.speaker, c.byType.exhibitor, c.byType.vip, c.byType.none, c.vips], [3, 2, undefined, 2, 1]);
   assert.deepEqual([c.byStatus.paid, c.byStatus.pending, c.byStatus.refunded, c.byStatus.none], [3, 1, 1, 5]);
   assert.deepEqual([c.byRsvp.attendee, c.byRsvp.staff, c.byRsvp.none], [3, 1, 8]);
   assert.equal(c.exhibitors, 2); // the same people as the exhibitor type
@@ -289,8 +294,10 @@ test("CSV export: one row per person with pass, RSVP and a profile link", () => 
   const csv = peopleCsv(sortPeople(filterPeople(people, { q: "jane" })), { profileBase: "https://www.thetechfestival.com/" });
   const [head, line] = csv.replace(/^﻿/, "").split("\n");
   assert.equal(head.split(",").length, PEOPLE_CSV_HEAD.length);
-  assert.match(line, /^Jane Doe,jane@acme\.com,VIP,Acme Inc\.,CTO,Power Pass,AAA111,Paid,1,RSVP'd by attendee,Attendee,/);
-  assert.match(line, /Day 1 & Day 2,CxO Breakfast \(Day 1\); Gala Dinner & Networking Reception \(Day 2\),No,/);
+  // Types, VIP, pass, value (unknown without Stripe), CxO Breakfast (Power: No), RSVP status.
+  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,No,1,Confirmed by Individual,Attendee,/);
+  // A breakfast she chose before Power lost it stays on her RSVP; nothing added by staff; no RSVP email recorded.
+  assert.match(line, /Day 1 & Day 2,CxO Breakfast \(Day 1\); Gala Dinner & Networking Reception \(Day 2\),,No,,No,/);
   assert.match(line, /,https:\/\/www\.thetechfestival\.com\/admin\/people\/u-u1$/);
   // Formula-looking cells are escaped like every other export.
   const w = world();

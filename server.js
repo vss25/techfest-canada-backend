@@ -5,6 +5,9 @@ import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
+import { migrateVipTypeOnce } from "./services/vipFlag.js";
+import { clearRightsCache } from "./services/rightsStore.js";
+import { clearExhibitorCache } from "./services/exhibitorCache.js";
 import UserModel from "./models/User.js";
 import { AdminAudit, AppContent } from "./models/Admin.js";
 import cors from "cors";
@@ -170,6 +173,8 @@ mongoose
     console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
+    // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.
+    migrateVipTypeOnce({ User: UserModel, AppContent, AdminAudit, onDone: () => { clearRightsCache(); clearExhibitorCache(); } });
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 

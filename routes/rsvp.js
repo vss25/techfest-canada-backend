@@ -9,12 +9,15 @@ import { buildHolderIndex, makeSpeakerCache, ticketPersonNames, LIVE_RSVPS, buil
 import { makeAgendaCache } from "../services/points.js";
 import { sendFormSubmissionEmail } from "../services/emailService.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
+import { cxoOverride } from "../services/cxoBreakfast.js";
+import { effectiveTypes, passKind } from "../services/teamRoles.js";
 
 /* =========================================================
    TTFC 2026 RSVPs — mounted at /api/rsvp
    GET  /api/rsvp/options   passes, days, experiences per pass, dietary list
    POST /api/rsvp/lookup    { firstName, lastName, ticketId?, _hp }
-                            → { kind: ticket|speaker|none, tier?, verified, displayName?, ticketMatched? }
+                            → { kind: ticket|speaker|none, tier?, verified, displayName?, ticketMatched?,
+                                cxoBreakfast?, keepOptions? (verified tickets only) }
    POST /api/rsvp           { firstName, lastName, email?, ticketId?, tier, days, options,
                               dietary, dietaryOther, accessibility?, page?, editToken?, _hp, elapsedMs }
                             → { success, updated, editToken, kind, tier, tierLabel, tierVerified }
@@ -28,19 +31,27 @@ import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js
 const router = express.Router();
 
 /** Ticket ID + last name, checked exactly as the app's ticket sign-in does (routes/ticketAuth.js).
-    `names`: who the ticket is for, so the lookup can check the first name too (never sent out). */
+    `names`: who the ticket is for, so the lookup can check the first name too (never sent out).
+    `types` (the holder's person types) and `cxoOverride` (staff's "CxO Breakfast included" on this
+    ticket) decide whether the CxO Breakfasts are offered (services/cxoBreakfast.js). */
 async function verifyTicket(ticketId, lastName) {
   const found = await findTicket(ticketId);
   if (!found) return null;
   if (found.kind === "user") {
     if (!(await ticketNameMatches(found, lastName))) return null;
-    const original = await Attendee.findOne({ ticketId: found.ticketId }).select("name details.firstName details.lastName").lean();
+    const original = await Attendee.findOne({ ticketId: found.ticketId }).select("name details.firstName details.lastName cxoBreakfast").lean();
     const names = [...ticketPersonNames(found.owner.name, found.ticket.details), ...(original ? ticketPersonNames(original.name, original.details) : [])];
-    return { ticketId: found.ticketId, type: found.ticket.type, names };
+    return {
+      ticketId: found.ticketId, type: found.ticket.type, names,
+      types: effectiveTypes(found.owner), cxoOverride: cxoOverride(found.ticket, original),
+    };
   }
   const a = found.attendee;
   const ok = lastNameMatches(a.name, lastName) || (a.details?.lastName && lastNameMatches(a.details.lastName, lastName));
-  return ok ? { ticketId: a.ticketId, type: a.ticketType, names: ticketPersonNames(a.name, a.details) } : null;
+  return ok ? {
+    ticketId: a.ticketId, type: a.ticketType, names: ticketPersonNames(a.name, a.details),
+    types: passKind(a) === "speaker" ? ["speaker"] : [], cxoOverride: cxoOverride(a),
+  } : null;
 }
 
 // Names only (and passes), reloaded at most every 2 minutes.

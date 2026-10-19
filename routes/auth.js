@@ -11,6 +11,7 @@ import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile } from "../services/onboardingProfile.js";
 import { canUseStaffSignIn } from "../services/teamRoles.js";
 import { accessOf } from "../services/rightsStore.js";
+import { ticketsWithCxo } from "../services/cxoBreakfast.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -148,7 +149,12 @@ router.get("/me", async (req, res) => {
     // `types`: their effective person types (attendee included), `rights`: what they may do in
     // the app (services/appRights.js). Same values as GET /api/social/me.
     const { types, rights } = await accessOf(user);
-    res.json({ ...withCheckoutProfile(user.toObject(), claimed), types, rights });
+    const profile = withCheckoutProfile(user.toObject(), claimed);
+    // Each ticket's `cxoBreakfast` (true / false): its CxO Breakfasts, from staff's switch on the ticket
+    // (the account's, else its Attendee row's) or automatic (services/cxoBreakfast.js). The apps and the web app read it.
+    const ids = (profile.tickets || []).map((t) => t?.ticketId).filter(Boolean);
+    const switched = ids.length ? await Attendee.find({ ticketId: { $in: ids }, cxoBreakfast: { $in: [true, false] } }).select("ticketId cxoBreakfast").lean() : [];
+    res.json({ ...profile, tickets: ticketsWithCxo(profile.tickets, { types, attendees: switched }), types, rights });
 
   } catch (err) {
 

@@ -93,7 +93,7 @@ export function userCard(user, { exhibitors = null, matrix = undefined, self = f
 }
 
 /** Fields userCard reads. Every query that builds cards must select these. */
-export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff";
+export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff vip";
 
 /** Fields a person's full profile page shows (GET /api/social/users/:id). */
 export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;

@@ -1,5 +1,5 @@
 import {
-  PERSON_TYPES, isStaff, typeInfo, publicTypes, cleanTypes, storedTypes, autoTypes, holdsPass,
+  PERSON_TYPES, isStaff, typeInfo, publicTypes, cleanTypes, storedTypes, autoTypes, holdsPass, badgeTypes, legacyVip,
 } from "./teamRoles.js";
 
 /* =========================================================
@@ -20,6 +20,9 @@ import {
       and checkIn, whatever the matrix says.
    6. Global app switches: flag.allow_posts off → post false,
       flag.allow_groups off → createGroups false (for everyone).
+   VIP is a yes / no flag, not a type (Oct 19 2026): it has no column and
+   changes no rights; a VIP gets the rights of their other types. The
+   stored matrix's old "vip" column is dropped on start (services/vipFlag.js).
 ========================================================= */
 
 export const RIGHTS = [
@@ -56,7 +59,6 @@ export const DEFAULT_MATRIX = Object.freeze({
   attendee: row([...NETWORKING, ...COMMUNITY]),
   speaker: row([...NETWORKING, ...COMMUNITY]),
   exhibitor: row([...NETWORKING, ...COMMUNITY]),
-  vip: row(["sendMessages", "sendRequests", "post", "comment", "startDiscussions"]),
   staff: row(RIGHTS),
   vendor: row(["sendMessages", "receiveMessages", "comment", "shareContact"]),
   volunteer: row([...NETWORKING, ...COMMUNITY, "checkIn"]),
@@ -92,7 +94,7 @@ export function cleanMatrix(input) {
   return { matrix: mergeMatrix(input) };
 }
 
-/** What changed between two matrices, for the audit log: ["vip.receiveMessages: off → on", …]. */
+/** What changed between two matrices, for the audit log: ["vendor.receiveMessages: off → on", …]. */
 export function matrixChanges(before, after) {
   const a = mergeMatrix(before);
   const b = mergeMatrix(after);
@@ -134,7 +136,8 @@ export function personAccess(user, ctx = {}) {
   const info = typeInfo(user, ctx.exhibitors || null);
   return {
     ...info,
-    publicTypes: publicTypes(info.types),
+    // What other people see: their types plus the VIP badge (never rights).
+    publicTypes: publicTypes(badgeTypes(info.types, info.vip)),
     rights: effectiveRights(info.types, ctx.matrix, user, ctx.flags),
   };
 }
@@ -201,11 +204,13 @@ export function holdersQuery(right, matrix = DEFAULT_MATRIX) {
  *   autoTypes        — [{ type, from: "role" | "pass" }] they get without anyone choosing
  *                      (attendee aside: it's automatic only when `holdsPass` and no other type applies)
  *   effectiveTypes / rights — the result (services/teamRoles.js, effectiveRights above)
+ *   vip / vipFrom    — the VIP flag and where it comes from: "account" (User.vip), "pass" (Attendee.vip), "" (not a VIP)
  */
 export function consoleTypes(user, ctx = {}) {
   const booth = ctx.exhibitors ? ctx.exhibitors.boothFor(user) : null;
   const exhibitor = booth !== null;
   const acc = personAccess(user, ctx);
+  const set = typeof user?.vip === "boolean";
   return {
     types: storedTypes(user?.types),
     typesOff: storedTypes(user?.typesOff),
@@ -213,8 +218,20 @@ export function consoleTypes(user, ctx = {}) {
     holdsPass: holdsPass(user, { exhibitor }),
     effectiveTypes: acc.types,
     rights: acc.rights,
+    vip: acc.vip,
+    vipFrom: !acc.vip ? "" : set || legacyVip(user) ? "account" : "pass",
   };
 }
+
+/** A console edit of the VIP flag ({ vip: true | false }) → { set: { vip }, note } | { set: {} } | { error, status }. */
+export function vipEdit(user, body = {}, { vipPass = false } = {}) {
+  if (body?.vip === undefined) return { set: {} };
+  if (typeof body.vip !== "boolean") return { status: 400, error: "vip must be true or false" };
+  const before = isVipNow(user, vipPass);
+  if (typeof user?.vip === "boolean" && user.vip === body.vip) return { set: {} };
+  return { set: { vip: body.vip }, note: `VIP: ${before ? "Yes" : "No"} → ${body.vip ? "Yes" : "No"}` };
+}
+const isVipNow = (user, vipPass) => (typeof user?.vip === "boolean" ? user.vip : legacyVip(user) || !!vipPass);
 
 const TEAM_TYPES = ["staff", "volunteer"];
 
@@ -229,7 +246,10 @@ export function typesEdit(user, body = {}, { management = false } = {}) {
   for (const k of ["types", "typesOff"]) {
     if (body?.[k] === undefined) continue;
     const v = cleanTypes(body[k]);
-    if (!v) return { status: 400, error: `${k} must be a list of: ${PERSON_TYPES.join(", ")}` };
+    if (!v) {
+      const vip = Array.isArray(body[k]) && body[k].some((t) => String(t ?? "").trim().toLowerCase() === "vip");
+      return { status: 400, error: vip ? "VIP is a yes / no switch now, not a type. Use the VIP switch." : `${k} must be a list of: ${PERSON_TYPES.join(", ")}` };
+    }
     const before = storedTypes(user?.[k]);
     if (JSON.stringify(before) === JSON.stringify(v)) continue;
     const team = TEAM_TYPES.some((t) => before.includes(t) !== v.includes(t));
@@ -247,7 +267,7 @@ export function typesEdit(user, body = {}, { management = false } = {}) {
  */
 export function typeCandidates(type) {
   switch (type) {
-    case "vip": case "vendor": return { types: type };
+    case "vendor": return { types: type };
     case "staff": return { $or: [{ role: "admin" }, { types: "staff" }] };
     case "volunteer": return { $or: [{ role: "volunteer" }, { types: "volunteer" }] };
     case "speaker": return { $or: [{ types: "speaker" }, { "tickets.type": { $regex: "^speaker$", $options: "i" } }] };

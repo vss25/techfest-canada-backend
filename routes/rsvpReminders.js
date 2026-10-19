@@ -11,7 +11,7 @@ import { sendSequentially } from "../services/profileRequest.js";
 import { planRecipients, usableEmail } from "../services/attendingCampaign.js";
 import {
   REMINDER_CAMPAIGN, REMINDER_COOLDOWN_MS, SAMPLE_REMINDER, planReminders, reminderCounts, reminderEmailFor,
-  sendRsvpReminder, withReminderStatus,
+  sendRsvpReminder, withReminderStatus, campaignSendStore, makeReminderSender, reminderJob,
 } from "../services/rsvpReminder.js";
 
 /* =========================================================
@@ -61,45 +61,12 @@ async function currentRows() {
   return { rows: withStatus, counts: reminderCounts(withStatus, rsvpd) };
 }
 
-let job = { running: false, startedAt: null, finishedAt: null, by: "", total: 0, sent: 0, failed: 0, skipped: 0 };
-const jobView = () => ({ ...job });
+// One run at a time across this page and Admin → People (services/rsvpReminder.js reminderJob).
+const job = reminderJob;
+const jobView = () => job.view();
 
-/** Claims one person for a send. `force` (a single send) ignores the cool-down. False = someone else has it. */
-async function claim(r, by, { force = false } = {}) {
-  const now = new Date();
-  const filter = force
-    ? { campaign: REMINDER_CAMPAIGN, email: r.email }
-    : { campaign: REMINDER_CAMPAIGN, email: r.email, $or: [
-      { status: "failed" },
-      { status: "sent", $or: [{ sentAt: { $lt: new Date(now.getTime() - REMINDER_COOLDOWN_MS) } }, { sentAt: null }] },
-    ] };
-  const upd = await CampaignSend.updateOne(filter, {
-    $set: { status: "sending", name: r.name || "", lastTriedAt: now, sentBy: by }, $inc: { attempts: 1 },
-  });
-  if (upd.matchedCount) return true;
-  try {
-    await CampaignSend.create({ campaign: REMINDER_CAMPAIGN, email: r.email, name: r.name || "", status: "sending", attempts: 1, lastTriedAt: now, sentBy: by });
-    return true;
-  } catch (err) {
-    if (err?.code === 11000) return false; // reminded recently, or being sent right now
-    throw err;
-  }
-}
-
-async function sendTo(r, by, opts) {
-  if (!(await claim(r, by, opts))) return "skipped";
-  try {
-    const data = await sendRsvpReminder({ to: r.email, row: r });
-    const sentAt = new Date();
-    await CampaignSend.updateOne({ campaign: REMINDER_CAMPAIGN, email: r.email },
-      { $set: { status: "sent", sentAt, resendId: data.id || "", error: "" }, $inc: { sends: 1 } });
-    return sentAt;
-  } catch (err) {
-    const msg = String(err?.message || err || "Send failed").slice(0, 300);
-    await CampaignSend.updateOne({ campaign: REMINDER_CAMPAIGN, email: r.email }, { $set: { status: "failed", error: msg } }).catch(() => {});
-    throw err;
-  }
-}
+// Claim in CampaignSend, send through Resend, record the result (shared with routes/people.js).
+const sendTo = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
 
 router.get("/", async (req, res) => {
   const { rows, counts } = await currentRows();
@@ -136,7 +103,7 @@ router.post("/send-test", requireManagement, async (req, res) => {
 router.post("/send-one", requireManagement, async (req, res) => {
   const email = usableEmail(req.body?.email);
   if (!email) return res.status(400).json({ error: "Enter a valid email address." });
-  if (job.running) return res.status(409).json({ error: "A send to everyone is running. Try again when it finishes." });
+  if (job.state.running) return res.status(409).json({ error: "A send to everyone is running. Try again when it finishes." });
   const { rows } = await currentRows();
   const r = rows.find((x) => x.email === email);
   if (!r) return res.status(404).json({ error: "They've RSVP'd already, or that email has no ticket." });
@@ -154,17 +121,16 @@ router.post("/send-one", requireManagement, async (req, res) => {
 
 router.post("/send-all", requireManagement, async (req, res) => {
   if (req.body?.confirm !== "SEND") return res.status(400).json({ error: "Type SEND to confirm." });
-  if (job.running) return res.status(409).json({ error: "A send is already running.", job: jobView() });
-  job = { running: true, startedAt: new Date(), finishedAt: null, by: req.user.name || req.user.email || "", total: 0, sent: 0, failed: 0, skipped: 0 };
+  if (job.state.running) return res.status(409).json({ error: "A send is already running.", job: jobView() });
+  job.start(req.user.name || req.user.email || "", "rsvp-reminders");
   let todo;
   try {
     todo = (await currentRows()).rows.filter((r) => r.due);
   } catch (err) {
-    job.running = false;
-    job.finishedAt = new Date();
+    job.finish();
     return res.status(500).json({ error: `Couldn't read the list: ${err?.message || err}` });
   }
-  job.total = todo.length;
+  job.state.total = todo.length;
   await audit(req, "rsvp_reminder_send_all_start", `${todo.length} to send`);
   res.status(202).json({ started: true, toSend: todo.length, job: jobView() });
 
@@ -174,18 +140,17 @@ router.post("/send-all", requireManagement, async (req, res) => {
       await sendSequentially(todo, async (r) => {
         try {
           const out = await sendTo(r, by);
-          if (out === "skipped") job.skipped++; else job.sent++;
+          if (out === "skipped") job.state.skipped++; else job.state.sent++;
         } catch (err) {
-          job.failed++;
+          job.state.failed++;
           throw err;
         }
       }, { delayMs: SEND_GAP_MS });
     } catch (err) {
       console.error("RSVP REMINDER SEND-ALL ERROR:", err?.message || err);
     } finally {
-      job.running = false;
-      job.finishedAt = new Date();
-      await audit(req, "rsvp_reminder_send_all_done", `sent ${job.sent}, failed ${job.failed}, skipped ${job.skipped}`);
+      job.finish();
+      await audit(req, "rsvp_reminder_send_all_done", `sent ${job.state.sent}, failed ${job.state.failed}, skipped ${job.state.skipped}`);
     }
   })();
 });
