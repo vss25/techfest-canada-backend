@@ -1,12 +1,13 @@
 import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
-import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc } from "../services/cmsSchema.js";
+import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc, auditCreateDetail, auditEditDetail } from "../services/cmsSchema.js";
 import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
 
 /* =========================================================
    /api/cms — edit the website's Sanity content (speakers,
-   partners, sponsors, marquee, home sponsors, site settings)
+   partners (incl. sponsors = the "featured" row), the alumni
+   strip, marquee, home sponsors, site settings)
    from the admin panel. The website and the iOS app both read
    Sanity directly, so a change here shows up on both within a
    minute, with no deploy.
@@ -58,11 +59,8 @@ async function audit(req, action, type, id, detail = "") {
                             targetId: String(id || ""), detail: String(detail).slice(0, 500) }).catch(() => {});
 }
 
-/* Audit detail: field names, plus the value for the session live switches
-   ("polls=off"; cleared = back to auto). */
-const LIVE_FIELDS = ["polls", "qa"];
-const auditField = (k, set, unset) => (!LIVE_FIELDS.includes(k) ? k : unset.includes(k) ? `${k}=auto` : `${k}=${set[k]}`);
-const liveDetail = (set) => LIVE_FIELDS.filter((k) => set[k] !== undefined).map((k) => `${k}=${set[k]}`).join(", ");
+/* Audit detail: field names, plus the value for the session live switches and the
+   partner website/app switches ("polls=off", "showInApp=false"); see services/cmsSchema.js. */
 
 const fail = (res, err) => res.status(err.status && err.status < 500 ? err.status : 502).json({ error: err.message || "Sanity error" });
 
@@ -168,7 +166,7 @@ router.post("/:type", async (req, res) => {
   try {
     const out = await mutate([{ create: { _type: type, ...set } }]);
     const doc = out.results?.[0]?.document;
-    await audit(req, "cms_create", type, doc?._id, [set.name || set.title || "", liveDetail(set)].filter(Boolean).join(" · "));
+    await audit(req, "cms_create", type, doc?._id, auditCreateDetail(set));
     res.status(201).json(doc);
   } catch (err) { fail(res, err); }
 });
@@ -185,7 +183,7 @@ router.patch("/:type/:id", async (req, res) => {
   if (!patch.set && !patch.unset) return res.status(400).json({ error: "Nothing to change" });
   try {
     const out = await mutate([{ patch }]);
-    await audit(req, "cms_edit", type, id, Object.keys(set).concat(unset).map((k) => auditField(k, set, unset)).join(", "));
+    await audit(req, "cms_edit", type, id, auditEditDetail(set, unset));
     res.json(out.results?.[0]?.document || { _id: id });
   } catch (err) { fail(res, err); }
 });
