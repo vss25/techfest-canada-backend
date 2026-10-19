@@ -140,3 +140,13 @@ test("ticket PDF renders one page and links the wallet pass", async () => {
   assert.ok(pdf.includes(walletUrl), "wallet link annotation");
   await assert.rejects(() => generateTicketPDF({ tier: "apex" }), /Ticket ID missing/);
 });
+
+test("ticket email header: the TTFC logo (inline cid) and the venue address, not the TTFC 2026 text", async () => {
+  const { EVENT } = await import("../services/ticketInfo.js");
+  const { html } = buildTicketEmail({ name: "Jane Doe", ticketId: "TTFC-ABC123", tier: "power", logoSrc: "cid:ttfc-logo" });
+  assert.match(html, /<img src="cid:ttfc-logo"/);
+  assert.doesNotMatch(html, />TTFC 2026<\/div>/);
+  assert.ok(html.includes(EVENT.venue));
+  assert.ok(html.includes(EVENT.address));
+  assert.ok(html.includes(EVENT.mapsUrl.replace(/&/g, "&amp;")));
+});

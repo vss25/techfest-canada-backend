@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 import { generateTicketPDF } from "./pdfTicket.js";
-import { buildTicketEmail } from "./ticketEmail.js";
+import { buildTicketEmail, LOGO_CID as TICKET_LOGO_CID } from "./ticketEmail.js";
 import { buildProfileRequestEmail } from "./profileEmail.js";
 import { buildSignInEmail, buildNoTicketEmail } from "./signInEmail.js";
 import { buildBrochureEmail, buildBrochureReceiptEmail } from "./brochureEmail.js";
@@ -8,7 +8,7 @@ import { SALES_INBOX } from "./brochureDownloads.js";
 import { walletPassUrl, ticketQrUrl } from "./walletLink.js";
 import { isConfigured as walletConfigured } from "./walletPass.js";
 import { isBoothId, EVENT } from "./ticketInfo.js";
-import { speakerPassEmailFor, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
+import { speakerPassEmailFor, logoPng, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -278,7 +278,8 @@ export async function sendTicketEmail({ email, name, firstName, ticketId, tier, 
       cxoBreakfast,
     });
 
-    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast });
+    // The TTFC logo goes inline (cid:), like the Speaker Pass email; without it the header falls back to text.
+    const { subject, html, text } = buildTicketEmail({ name, firstName, ticketId, tier, walletUrl, qrUrl, cxoBreakfast, logoSrc: `cid:${TICKET_LOGO_CID}` });
 
     await resend.emails.send({
       from: "TechFest Canada <tickets@thetechfestival.com>",
@@ -291,7 +292,8 @@ export async function sendTicketEmail({ email, name, firstName, ticketId, tier, 
         {
           filename: `ttfc-pass-${ticketId}.pdf`,
           content: pdfBuffer
-        }
+        },
+        { filename: "ttfc-2026.png", content: logoPng().toString("base64"), content_type: "image/png", content_id: TICKET_LOGO_CID },
       ]
     });
 
