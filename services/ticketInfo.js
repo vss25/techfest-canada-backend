@@ -23,7 +23,7 @@ export const EVENT = {
   doors: "Registration opens 8:00 AM on Oct 26 and 8:30 AM on Oct 27.",
   website: "https://www.thetechfestival.com",
   websiteLabel: "thetechfestival.com",
-  supportEmail: "info@thetechfestival.com",
+  supportEmail: "enquire@thetechfestival.com",
   phone: "+1 647 946 4643",
   tollFree: "+1 844 TTFC 001",
   mapsUrl: "https://maps.google.com/?q=The+Westin+Harbour+Castle,+1+Harbour+Square,+Toronto",
@@ -57,6 +57,30 @@ export const PASS_INCLUSIONS = {
 PASS_INCLUSIONS.vip = PASS_INCLUSIONS.apex;
 // Speaker Pass (staff-issued, never sold): everything, plus the speaker lounge.
 PASS_INCLUSIONS.speaker = ["Speaker Lounge", ...PASS_INCLUSIONS.apex];
+
+/* The tagline and the paragraph each pass card carries on the website
+   (Tickets.jsx PASS_META). Repeated in the confirmation email so the
+   buyer reads the same promise they bought on.
+
+   Connect is deliberately absent — it is sold out and its copy is not
+   on the live card, and taglineFor/blurbFor return "" for anything
+   missing rather than inventing wording. */
+export const PASS_TAGLINE = {
+  influence: "A fuller event experience beyond the conference floor.",
+  power: "The ultimate all-access experience.",
+  apex: "Everything, plus the meetings you actually came for.",
+};
+
+export const PASS_BLURB = {
+  influence: "Built for decision makers, growth leaders, investors, and professionals who want premium daytime access with elevated networking moments — creating space for higher-value conversations and stronger business connections.",
+  power: "Built for senior executives, VIP guests, speakers, and leaders who want to experience The Tech Festival Canada at the highest level. With access to every major element of the event, this pass offers the most complete and elevated way to engage with the festival.",
+  apex: "Our highest tier. Everything in the Power Pass, plus two business meetings matched for you in advance against your objectives, preferential seating at every keynote and panel, and entry to our private Scotch & cocktail lounge. Built for those who measure an event by the deals it starts.",
+};
+
+/** Website tagline for a tier, "" when there isn't one. */
+export const taglineFor = (tier) => PASS_TAGLINE[tierKey(tier)] || "";
+/** Website description paragraph for a tier, "" when there isn't one. */
+export const blurbFor = (tier) => PASS_BLURB[tierKey(tier)] || "";
 
 export const isBoothId = (ticketId) => /^BOOTH-/i.test(String(ticketId || ""));
 
