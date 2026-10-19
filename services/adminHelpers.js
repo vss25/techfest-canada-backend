@@ -67,8 +67,10 @@ export const CONTENT_KEYS = {
      (403 upgrades_off). Speakers' passes are never upgraded, even when this is on. */
   "flag.upgrades": false,
   /* Ticket offer shown to guests in the web app (/app). It only shows while the code is live
-     (POST /api/promos/validate) and before offer.guest_ends. */
-  "flag.guestOffer": true,
+     (POST /api/promos/validate) and before offer.guest_ends. Promotions are banned (Oct 18 2026): it was
+     switched off then, defaults to off, and the console refuses switching it on for anyone
+     (services/staffPowers.js). The admin panel no longer shows these five settings. */
+  "flag.guestOffer": false,
   "offer.guest_code": "APP50",
   "offer.guest_discount": "50",
   "offer.guest_ends": "2026-10-21T23:59:00-04:00",   // ISO time with offset (Toronto)

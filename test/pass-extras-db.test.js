@@ -233,10 +233,11 @@ test("Issue passes: extras on the form, the email's list, the audit log; claimed
   assert.equal(prev.status, 200, JSON.stringify(prev.body));
   assert.deepEqual(prev.body.includes, ["1× Gala Dinner & Networking Reception", "2× Luncheons", "2× Day Conference Access", "Expo Floor Access", "Networking Breaks"]);
   assert.match(prev.body.text, /RSVP for the luncheons and the Gala Dinner, so we can save your seat and plan catering\./);
-  // Creating (management) stores them and logs them.
-  assert.equal((await call("POST", "/api/console/issued-passes", { as: sam, body: { name: "Gia Guest", email: "gia@example.com", tier: "connect" } })).status, 403);
+  // Creating stores them and logs them. (Staff may create a single pass since Oct 19 2026, test/admin-simplify-db.test.js;
+  // changing one stays management only.)
   const made = await call("POST", "/api/console/issued-passes", { body: { name: "Gia Guest", email: "gia@example.com", tier: "connect", extras: { gala: true, lunch: true } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal((await call("PATCH", `/api/console/issued-passes/${made.body.row.id}`, { as: sam, body: { tier: "power" } })).status, 403);
   assert.deepEqual([made.body.row.extras.gala.included, made.body.row.extras.lunch.included, made.body.row.extras.awards.included], [true, true, false]);
   const doc = await M.Attendee.findOne({ ticketId: made.body.row.ticketId }).lean();
   assert.deepEqual([doc.galaDinner, doc.luncheons, "awardsNight" in doc], [true, true, false]);

@@ -5,7 +5,9 @@ import User from "../models/User.js";
 import Rsvp from "../models/Rsvp.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import { AdminAudit } from "../models/Admin.js";
-import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
+import { makeLimiter } from "../services/ticketAccess.js";
+import { STAFF_PASS_LIMIT, staffNote } from "../services/staffPowers.js";
 import { CONTACT_EMAIL, FROM } from "../services/speakerPassEmail.js";
 import { passRecipients, validateSpeakerEmails } from "../services/speakerPasses.js";
 import { LIVE_RSVPS } from "../services/rsvp.js";
@@ -32,6 +34,11 @@ import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
         filled in with their booth; promo code EXHIBITOR)
    Staff only; creating, editing, sending and deleting are management only
    and audited. Nothing is emailed without a send click.
+   Event week (the organiser, Oct 19 2026): staff who aren't management may
+   give a single issued pass (Admin › Give a pass): create one (POST /), then
+   send it (POST /:id/send), one pass per request, STAFF_PASS_LIMIT an hour
+   each, audited with their name and "(by staff)". Editing, deleting, the
+   email template and exhibitor passes stay management only.
 
    GET    /tiers                 → { tiers: [{ key, label, access, includes, rsvpReason, copy, autoExtras }], cc, defaultTier, defaultLabel,
                                      fields, sections, placeholders, extras }   (fields: one pass's editable email wording;
@@ -62,7 +69,7 @@ import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 const KINDS = {
   issued: {
     promo: ISSUED_PROMO, campaign: "issued-pass-2026", audit: "issued_pass", ccEnv: "ISSUED_PASS_CC",
-    defaultTier: "influence", defaultLabel: "", manual: false,
+    defaultTier: "influence", defaultLabel: "", manual: false, staffSingle: true,
   },
   exhibitor: {
     promo: EXHIBITOR_PROMO, campaign: "exhibitor-pass-2026", audit: "exhibitor_pass", ccEnv: "EXHIBITOR_PASS_CC",
@@ -104,6 +111,17 @@ export function issuedPassRouter(kindName = "issued") {
   router.use(requireAdmin);
 
   const SCOPE = { promoCode: kind.promo };
+  const staffCreates = makeLimiter(STAFF_PASS_LIMIT);
+  const staffSends = makeLimiter(STAFF_PASS_LIMIT);
+  /** Management, or (Give a pass only) a staff member within their hourly budget: one pass, one send at a time. */
+  const managementOrSingle = (limiter) => (req, res, next) => {
+    if (isManagement(req.user)) return next();
+    if (!kind.staffSingle) return res.status(403).json({ error: "Management only" });
+    if (!limiter.hit(String(req.user._id))) {
+      return res.status(429).json({ code: "rate_limited", error: "That's a lot of passes in an hour. Ask someone in management, or try again later." });
+    }
+    next();
+  };
   const DEFAULT_CC = () => String(process.env[kind.ccEnv] ?? process.env.ISSUED_PASS_CC ?? process.env.SPEAKER_CC ?? "lubna@thetechfestival.com")
     .split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
   const find = (id) => (isId(id) ? Attendee.findOne({ _id: id, ...SCOPE }).select(PASS_FIELDS).lean() : null);
@@ -264,6 +282,8 @@ export function issuedPassRouter(kindName = "issued") {
     res.json({
       rows,
       counts: { passes: rows.length, sent: rows.filter((r) => r.status === "sent").length, ready: rows.filter((r) => r.status === "ready").length, rsvpd: rows.filter((r) => r.rsvpd).length },
+      // May this person create and send a pass here (management; staff on Give a pass, one at a time)?
+      canIssue: isManagement(req.user) || !!kind.staffSingle,
     });
   });
 
@@ -298,7 +318,7 @@ export function issuedPassRouter(kindName = "issued") {
     });
   });
 
-  router.post("/", requireManagement, async (req, res) => {
+  router.post("/", managementOrSingle(staffCreates), async (req, res) => {
     const check = validateIssuedPass(withDefaults(req.body || {}));
     if (!check.ok) return res.status(400).json({ error: check.error });
     if (!check.value.emails.length) return res.status(400).json({ error: "Enter the email address the pass is for." });
@@ -316,7 +336,7 @@ export function issuedPassRouter(kindName = "issued") {
     const extrasNote = EXTRAS.filter((e) => typeof check.value[e.field] === "boolean")
       .map((e) => `, ${e.key === "cxo" ? "CxO Breakfast" : e.label} ${check.value[e.field] ? "Yes" : "No"}`).join("");
     const wording = Object.keys(compact(check.value.copy || {}));
-    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}`);
+    await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}${staffNote(isManagement(req.user))}`);
     res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
   });
 
@@ -381,7 +401,7 @@ export function issuedPassRouter(kindName = "issued") {
     });
   }
 
-  router.post("/:id/send", requireManagement, async (req, res) => {
+  router.post("/:id/send", managementOrSingle(staffSends), async (req, res) => {
     const a = await find(req.params.id);
     if (!a) return res.status(404).json({ error: "Pass not found" });
     const opts = sendOptions(req.body || {}, a);
@@ -401,14 +421,14 @@ export function issuedPassRouter(kindName = "issued") {
       });
       if (error || !data?.id) throw new Error(error?.message || "the email service refused it");
     } catch (err) {
-      await audit(req, "send_failed", a.ticketId, `${a.name} → ${to.join(", ")}: ${err?.message || err}`);
+      await audit(req, "send_failed", a.ticketId, `${a.name} → ${to.join(", ")}${staffNote(isManagement(req.user))}: ${err?.message || err}`);
       return res.status(502).json({ error: `Couldn't send: ${err?.message || err}` });
     }
     // passEmailRsvp: whether this email had the RSVP button (People › "RSVP email sent").
     const updated = await Attendee.findOneAndUpdate({ _id: a._id, ...SCOPE },
       { $set: { passEmailSentAt: new Date(), passEmailSentTo: to.join(", "), passEmailRsvp: issuedVariant(a).rsvp }, $inc: { passEmailSentCount: 1 } },
       { new: true }).select(PASS_FIELDS).lean();
-    await audit(req, "send", a.ticketId, `${a.name} → ${to.join(", ")}${cc.length ? ` (cc ${cc.join(", ")})` : ""}`);
+    await audit(req, "send", a.ticketId, `${a.name} → ${to.join(", ")}${cc.length ? ` (cc ${cc.join(", ")})` : ""}${staffNote(isManagement(req.user))}`);
     res.json({ row: issuedPassRow(updated) });
   });
 

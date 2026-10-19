@@ -11,6 +11,7 @@ import {
   CAMPAIGN_KEY, SAMPLE_RECIPIENT, planRecipients, sendCounts, usableEmail, withSendStatus,
 } from "../services/attendingCampaign.js";
 import { attendingEmailFor, sendAttendingEmail } from "../services/attendingEmail.js";
+import { attendingJob } from "../services/attendingNudge.js";
 
 /* =========================================================
    /api/console/attending-campaign: the "I'm attending" email
@@ -62,9 +63,9 @@ async function currentRecipients() {
   return { rows, skipped, counts: sendCounts(rows) };
 }
 
-/* One background send at a time (per server). Progress is also in CampaignSend, so it survives a restart. */
-let job = { running: false, startedAt: null, finishedAt: null, by: "", total: 0, sent: 0, failed: 0, skipped: 0 };
-const jobView = () => ({ ...job });
+/* One background send at a time (per server), shared with Admin › People's LinkedIn nudge (services/attendingNudge.js).
+   Progress is also in CampaignSend, so it survives a restart. */
+const jobView = () => attendingJob.view();
 
 router.get("/preview-sample", (req, res) => {
   const { subject, html, text, link } = attendingEmailFor(SAMPLE_RECIPIENT, { inline: true });
@@ -121,16 +122,16 @@ async function claim(r, by) {
 }
 
 async function sendOne(r, by) {
-  if (!(await claim(r, by))) { job.skipped++; return; }
+  if (!(await claim(r, by))) { attendingJob.state.skipped++; return; }
   try {
     const data = await sendAttendingEmail({ to: r.email, recipient: r });
     await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email },
       { $set: { status: "sent", sentAt: new Date(), resendId: data.id || "", error: "" } });
-    job.sent++;
+    attendingJob.state.sent++;
   } catch (err) {
     const msg = String(err?.message || err || "Send failed").slice(0, 300);
     await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email }, { $set: { status: "failed", error: msg } }).catch(() => {});
-    job.failed++;
+    attendingJob.state.failed++;
     throw err;
   }
 }
@@ -138,7 +139,7 @@ async function sendOne(r, by) {
 router.post("/send-one", requireManagement, async (req, res) => {
   const email = usableEmail(req.body?.email);
   if (!email) return res.status(400).json({ error: "Enter a valid email address." });
-  if (job.running) return res.status(409).json({ error: "A send to everyone is running. Try again when it finishes." });
+  if (attendingJob.state.running) return res.status(409).json({ error: "A send to everyone is running. Try again when it finishes." });
   const { rows } = await currentRecipients();
   const r = rows.find((x) => x.email === email);
   if (!r) return res.status(404).json({ error: "That email isn't on the recipient list." });
@@ -174,19 +175,18 @@ router.post("/send-one", requireManagement, async (req, res) => {
 
 router.post("/send-all", requireManagement, async (req, res) => {
   if (req.body?.confirm !== "SEND") return res.status(400).json({ error: "Type SEND to confirm." });
-  if (job.running) return res.status(409).json({ error: "A send to everyone is already running.", job: jobView() });
-  job = { running: true, startedAt: new Date(), finishedAt: null, by: req.user.name || req.user.email || "", total: 0, sent: 0, failed: 0, skipped: 0 };
+  if (attendingJob.state.running) return res.status(409).json({ error: "A send to everyone is already running.", job: jobView() });
+  attendingJob.start(req.user.name || req.user.email || "", "attending-campaign");
   let todo, counts;
   try {
     const current = await currentRecipients();
     counts = current.counts;
     todo = current.rows.filter((r) => r.status === "pending" || r.status === "failed");
   } catch (err) {
-    job.running = false;
-    job.finishedAt = new Date();
+    attendingJob.finish();
     return res.status(500).json({ error: `Couldn't read the recipients: ${err?.message || err}` });
   }
-  job.total = todo.length;
+  attendingJob.state.total = todo.length;
   await audit(req, "attending_campaign_send_all_start", `${todo.length} to send, ${counts.sent} already sent, ${counts.sending} unconfirmed`);
   res.status(202).json({ started: true, toSend: todo.length, alreadySent: counts.sent, unconfirmed: counts.sending, job: jobView() });
 
@@ -197,8 +197,8 @@ router.post("/send-all", requireManagement, async (req, res) => {
     } catch (err) {
       console.error("ATTENDING CAMPAIGN SEND-ALL ERROR:", err?.message || err);
     } finally {
-      job.running = false;
-      job.finishedAt = new Date();
+      attendingJob.finish();
+      const job = attendingJob.state;
       await audit(req, "attending_campaign_send_all_done", `sent ${job.sent}, failed ${job.failed}, skipped ${job.skipped} of ${job.total}`);
     }
   })();

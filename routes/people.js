@@ -36,6 +36,12 @@ import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOG
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
 import { prepareLogo, storeLogo, chooseStore, decodeLogoDataUrl } from "../services/logoStore.js";
 import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/contactCard.js";
+import { usableEmail } from "../services/attendingCampaign.js";
+import { sendAttendingEmail } from "../services/attendingEmail.js";
+import {
+  ATTENDING_CAMPAIGN, ATTENDING_TRACKING, NUDGE_COOLDOWN_DAYS, NUDGE_COOLDOWN_MS, NUDGE_MAX, NUDGE_SKIP_LABELS, attendingJob, planAttendingNudges,
+} from "../services/attendingNudge.js";
+import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -49,6 +55,14 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
      POST   /reminder       { query: (the filters), confirm: "SEND", expected: n } (management)
                             → 202 { started, toSend, job }; sent in the background, 600 ms apart
      GET    /reminder/job   → { job }
+     GET    /nudge          ?(the same filters) → { counts, targets, skipped, skipLabels, cooldownDays, tracking, job }
+                            who "Send LinkedIn nudge" (the "I'm attending" email) would email, and who's left out and why
+     POST   /nudge          { query, confirm: "SEND", expected: n } (management) → 202 { started, toSend, job }
+     GET    /nudge/job      → { job }
+     POST   /:id/reminder   the RSVP reminder to this one person (staff and management; the 20-hour cool-down applies)
+                            → { sent, email, sentAt } | 409 { code: <skip reason>, error }
+     POST   /:id/nudge      the "I'm attending" email to this one person (staff and management; the 3-day cool-down)
+                            → { sent, email, sentAt } | 409 { code: <skip reason>, error }
      GET    /:id            the profile: person, passes, RSVP (+ catalog for the editor),
                             agenda (sessions saved in the app + RSVP special events), company,
                             contactCard (their app contact details, read only)
@@ -73,8 +87,11 @@ import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/c
    Staff RSVPs and who wins over whom: services/rsvpStaff.js.
    Logo search and safe fetching: services/logoFetch.js; storage:
    services/logoStore.js. Every change is audited; nothing here emails
-   anyone except POST /reminder (the RSVP reminder, management, after a
-   confirmation), and listing never creates an account or any other record.
+   anyone except the RSVP reminder and the "I'm attending" LinkedIn nudge:
+   to a filtered view (POST /reminder, POST /nudge: management, after a
+   confirmation with the count), or to one person from their profile
+   (POST /:id/reminder, POST /:id/nudge: staff too, Oct 19 2026, rate-limited,
+   with the same cool-downs). Listing never creates an account or any other record.
    Passes (Oct 19 2026): Connect, Influence, Power, Apex and the internal
    Speaker Pass (holding one makes someone a speaker); an exhibitor pass is
    a Connect Pass, named so; "All Access" is the Power Pass.
@@ -139,7 +156,7 @@ const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate 
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 async function loadDirectory() {
-  const [users, attendees, rsvps, companies, speakers, stripe, reminders] = await Promise.all([
+  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending] = await Promise.all([
     User.find({}).select(USER_SELECT).lean(),
     Attendee.find({}).select(ATTENDEE_SELECT).lean(),
     Rsvp.find(LIVE_RSVPS).lean(),
@@ -147,9 +164,10 @@ async function loadDirectory() {
     speakerCache.get(),
     loadStripe(),
     CampaignSend.find({ campaign: REMINDER_CAMPAIGN, sentAt: { $ne: null } }).select("email sentAt").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt sends").lean(),
   ]);
   const built = buildPeople({
-    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders,
+    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending,
   });
   return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
 }
@@ -171,7 +189,9 @@ async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
 const invalidate = () => { dir = { at: 0, data: null, pending: null, gen: dir.gen + 1 }; };
 
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
-  const key = String(id || "").slice(0, 80);
+  const raw = String(id || "").slice(0, 80);
+  const key = raw.startsWith("t-") ? `t-${normalizeTicketId(raw.slice(2))}` : raw; // t-<ticket ID>: from Ticket records
+
   let d = await directory({ fresh, maxAgeMs });
   let p = d.byId.get(key);
   if (!p && !fresh) { d = await directory({ fresh: true }); p = d.byId.get(key); }
@@ -220,7 +240,7 @@ const REMINDER_GAP_MS = 600;
 const REMINDER_MAX = 500; // emails per run; run it again for the rest (anyone reminded is then skipped)
 const reminderRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
 const sendReminder = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
-const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status"];
+const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status", "attending"];
 const pickFilters = (src = {}) => Object.fromEntries(FILTER_KEYS.filter((k) => typeof src?.[k] === "string" && src[k]).map((k) => [k, String(src[k]).slice(0, 120)]));
 
 async function reminderPlan(query, { fresh = false } = {}) {
@@ -291,6 +311,88 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
   })();
 }));
 
+/* ---------- "Send LinkedIn nudge": the "I'm attending" email, to the current view (management) ----------
+   The Marketing › I'm attending campaign email, unchanged: their personal /attending link to make the image
+   and post it on LinkedIn. Same confirm, count and skip list as the RSVP reminder above (services/attendingNudge.js
+   planAttendingNudges): no pass, no email, suspended, unsubscribed, unconfirmed send, emailed in the last 3 days.
+   Opens, clicks and posts aren't tracked, so "already posted" can't be known. Sends are recorded in the
+   campaign's CampaignSend rows, so its "send to everyone" skips anyone nudged. */
+const nudgeRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
+const singleSends = makeLimiter(SINGLE_SEND_LIMIT); // one-person reminders and nudges from a profile, per staff member
+const sendNudge = makeReminderSender({
+  store: campaignSendStore(CampaignSend, { campaign: ATTENDING_CAMPAIGN, cooldownMs: NUDGE_COOLDOWN_MS }),
+  send: ({ to, row }) => sendAttendingEmail({ to, recipient: row }),
+});
+
+async function nudgePlan(query, { fresh = false } = {}) {
+  const d = await directory({ fresh });
+  const list = filterPeople(d.people, query);
+  const [optedOut, sends] = await Promise.all([
+    Subscription.find({ subscribed: false }).select("email").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt").lean(),
+  ]);
+  return planAttendingNudges(list, { optedOut: optedOut.map((x) => x.email), sends, cooldownMs: NUDGE_COOLDOWN_MS });
+}
+const nudgeOut = (plan) => ({
+  counts: { ...plan.counts, toSend: Math.min(plan.targets.length, NUDGE_MAX), max: NUDGE_MAX },
+  targets: plan.targets.slice(0, NUDGE_MAX).map((t) => ({ email: t.email, name: t.name, people: t.people })),
+  skipped: plan.skipped.slice(0, 1000),
+  skipLabels: NUDGE_SKIP_LABELS,
+  cooldownDays: NUDGE_COOLDOWN_DAYS,
+  tracking: ATTENDING_TRACKING,
+  job: attendingJob.view(),
+});
+
+router.get("/nudge/job", (req, res) => res.json({ job: attendingJob.view() }));
+
+router.get("/nudge", wrap(async (req, res) => {
+  res.json(nudgeOut(await nudgePlan(pickFilters(req.query), { fresh: req.query.refresh === "1" })));
+}));
+
+router.post("/nudge", requireManagement, wrap(async (req, res) => {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (b.confirm !== "SEND") return res.status(400).json({ error: "Confirm the send first." });
+  if (attendingJob.state.running) return res.status(409).json({ error: "An \"I'm attending\" send is already running. Try again when it finishes.", job: attendingJob.view() });
+  const filters = pickFilters(b.query);
+  const plan = await nudgePlan(filters, { fresh: true });
+  const todo = plan.targets.slice(0, NUDGE_MAX);
+  if (Number(b.expected) !== todo.length) {
+    return res.status(409).json({ code: "changed", error: "The list changed since you checked it. Look at the new count, then send again.", ...nudgeOut(plan) });
+  }
+  if (!todo.length) return res.status(400).json({ error: "Nobody here can be nudged right now." });
+  if (!nudgeRuns.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of nudge sends. Try again in an hour." });
+  const by = String(req.user.email || req.user._id);
+  attendingJob.start(req.user.name || req.user.email || "", "people", todo.length);
+  const view = Object.entries(filters).map(([k, v]) => `${k}=${v}`).join(" ") || "everyone";
+  await audit(req, "people_attending_nudge_start", "campaign", ATTENDING_CAMPAIGN,
+    `${todo.length} emails (${plan.counts.people} people) for ${view}; left out ${plan.counts.skipped}`);
+  res.status(202).json({ started: true, toSend: todo.length, job: attendingJob.view() });
+
+  (async () => {
+    const failures = [];
+    try {
+      await sendSequentially(todo, async (t) => {
+        try {
+          const out = await sendNudge(t, by);
+          if (out === "skipped") attendingJob.state.skipped++; else attendingJob.state.sent++;
+        } catch (err) {
+          attendingJob.state.failed++;
+          failures.push(`${t.email}: ${String(err?.message || err).slice(0, 80)}`);
+          throw err;
+        }
+      }, { delayMs: REMINDER_GAP_MS });
+    } catch (err) {
+      console.error("PEOPLE ATTENDING NUDGE ERROR:", err?.message || err);
+    } finally {
+      attendingJob.finish();
+      invalidate();
+      const st = attendingJob.state;
+      await audit(req, "people_attending_nudge_done", "campaign", ATTENDING_CAMPAIGN,
+        `sent ${st.sent}, failed ${st.failed}, skipped ${st.skipped}${failures.length ? ` · ${failures.slice(0, 5).join("; ")}` : ""}`);
+    }
+  })();
+}));
+
 /* Who is eligible for each pass extra: every pass (not hidden, not a booth) whose extra is Yes, by staff's
    switch or automatically (services/people.js eligibleCounts). Leads › RSVPs shows it on the headcounts. */
 router.get("/eligible", wrap(async (req, res) => {
@@ -310,6 +412,7 @@ router.get("/:id", wrap(async (req, res) => {
     p.user ? User.findById(p.user._id).select(CONTACT_SELECT).lean() : Promise.resolve(null),
   ]);
   const person = personDetail(p, { management: isManagement(req.user), cmsLogos: cmsLogos || [], staffId: req.user._id });
+  const outreach = await outreachFor(p);
   res.json({
     canonicalId: p.id,
     person,
@@ -321,8 +424,82 @@ router.get("/:id", wrap(async (req, res) => {
     logoStore: chooseStore(),
     // Their app contact card, read only: [{ kind, label, value, shareByDefault }] (each person picks what they share).
     contactCard: contactItemsFor(card).map((it) => ({ kind: it.kind, label: it.label, value: it.value, shareByDefault: it.shareByDefault })),
+    outreach,
   });
 }));
+
+/* ---------- One person: the RSVP reminder and the LinkedIn nudge from their profile ----------
+   Staff and management (the organiser, Oct 19 2026: staff may send a single reminder or nudge),
+   the same emails, cool-downs and skip rules as the sends to a view above, one person per request,
+   SINGLE_SEND_LIMIT an hour each, every send audited with who sent it. */
+
+/** May each email go to this person now? → { reminder: plan, nudge: plan } for just them. */
+async function singlePlans(p) {
+  const d = await directory();
+  const email = usableEmail(p.email);
+  const [optedOut, reminded, attending] = email ? await Promise.all([
+    Subscription.find({ email, subscribed: false }).select("email").lean(),
+    CampaignSend.find({ campaign: REMINDER_CAMPAIGN, email }).select("email status sentAt").lean(),
+    CampaignSend.find({ campaign: ATTENDING_CAMPAIGN, email }).select("email status sentAt").lean(),
+  ]) : [[], [], []];
+  const out = optedOut.map((x) => x.email);
+  return {
+    reminder: planPeopleReminders([p], { rsvps: d.rsvps, optedOut: out, sends: reminded, cooldownMs: REMINDER_COOLDOWN_MS }),
+    nudge: planAttendingNudges([p], { optedOut: out, sends: attending, cooldownMs: NUDGE_COOLDOWN_MS }),
+    lastReminder: reminded.find((r) => r.sentAt)?.sentAt || null,
+  };
+}
+/** { canSend, reason, label } from a one-person plan. */
+const verdict = (plan, labels) => {
+  if (plan.targets.length) return { canSend: true, reason: "", label: "" };
+  if (plan.counts.confirmed) return { canSend: false, reason: "confirmed", label: labels.confirmed };
+  const s = plan.skipped[0];
+  return { canSend: false, reason: s?.reason || "unknown", label: s?.label || "Can't be sent right now" };
+};
+
+/** The profile's Emails card. */
+async function outreachFor(p) {
+  const { reminder, nudge, lastReminder } = await singlePlans(p);
+  return {
+    rsvpReminder: { ...verdict(reminder, REMINDER_SKIP_LABELS), lastSentAt: lastReminder, cooldownHours: REMINDER_COOLDOWN_MS / 3600000, running: !!reminderJob.state.running },
+    attending: {
+      ...(p.attending || { status: "none", sentAt: null, nudges: 0 }), ...verdict(nudge, NUDGE_SKIP_LABELS),
+      cooldownDays: NUDGE_COOLDOWN_DAYS, tracking: ATTENDING_TRACKING, running: !!attendingJob.state.running,
+    },
+  };
+}
+
+/** One person, one email: `kind` "reminder" (RSVP reminder) or "nudge" ("I'm attending"). */
+const sendOne = (kind) => wrap(async (req, res) => {
+  const reminder = kind === "reminder";
+  const p = await findPerson(req.params.id, { maxAgeMs: 3000 });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const job = reminder ? reminderJob : attendingJob;
+  if (job.state.running) return res.status(409).json({ code: "running", error: "A send to many people is running. Try again when it finishes." });
+  const plans = await singlePlans(p);
+  const plan = reminder ? plans.reminder : plans.nudge;
+  const v = verdict(plan, reminder ? REMINDER_SKIP_LABELS : NUDGE_SKIP_LABELS);
+  if (!v.canSend) return res.status(409).json({ code: v.reason, error: v.label });
+  if (!singleSends.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of single sends in an hour. Try again later." });
+  const t = plan.targets[0];
+  const by = String(req.user.email || req.user._id);
+  const note = staffNote(isManagement(req.user));
+  const action = reminder ? "people_rsvp_reminder_one" : "people_attending_nudge_one";
+  try {
+    const sentAt = await (reminder ? sendReminder : sendNudge)(t, by);
+    if (sentAt === "skipped") {
+      return res.status(409).json({ code: "skipped", error: reminder ? "They were reminded very recently, or someone is sending to them right now." : "They were emailed very recently, or someone is sending to them right now." });
+    }
+    await audit(req, action, "person", p.id, `${p.name} <${t.email}>${note}`);
+    invalidate();
+    return res.json({ sent: true, email: t.email, sentAt });
+  } catch (err) {
+    await audit(req, `${action}_failed`, "person", p.id, `${p.name} <${t.email}>${note}: ${String(err?.message || err).slice(0, 200)}`);
+    return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
+  }
+});
+router.post("/:id/reminder", sendOne("reminder"));
+router.post("/:id/nudge", sendOne("nudge"));
 
 const LINK = /^https?:\/\/[^\s<>"]+$/i;
 const PHONE = /^[+()\d][\d\s().+-]{5,24}$/;

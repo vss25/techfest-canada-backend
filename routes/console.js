@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { contentAccess, contentEditRefusal } from "../services/staffPowers.js";
 import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
@@ -388,19 +389,27 @@ router.patch("/reports/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- App texts & switches ---------- */
+/* ---------- App texts & switches ----------
+   Everyone on the console reads them. `managementOnly`: only management may change it (ticket sales on / off
+   and its message, pass upgrades, the guest offer); `locked`: nobody may switch it on (the guest offer:
+   promotions are banned). Both are refused here with 403 (services/staffPowers.js), whatever the panel shows. */
 router.get("/app-content", async (req, res) => {
   const rows = await AppContent.find({}).lean();
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
   res.json(Object.entries(CONTENT_KEYS).map(([key, def]) => ({
     key, default: def, value: byKey[key] ? byKey[key].value : def,
-    updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null,
+    updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null, ...contentAccess(key),
   })));
 });
 
 router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) return res.status(400).json({ error: "Unknown key" });
+  const refusal = contentEditRefusal(c[0], c[1], { management: isManagement(req.user) });
+  if (refusal) {
+    await audit(req, "edit_app_text_refused", "content", c[0], `${refusal.code}: ${String(c[1]).slice(0, 80)}`);
+    return res.status(refusal.status).json({ error: refusal.error, code: refusal.code });
+  }
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
   forgetSwitches();   // polls, Q&A and pass upgrades follow at once on this server
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
@@ -437,8 +446,9 @@ router.put("/app-rights", requireManagement, async (req, res) => {
   res.json({ ...(await appRightsPayload(req)), changed: changes });
 });
 
-/* ---------- Broadcast: an official post everyone sees + a notification ---------- */
-router.post("/broadcast", async (req, res) => {
+/* ---------- Broadcast: an official post everyone sees + a notification ----------
+   Management only since Oct 19 2026 (a push to every phone); staff keep personal notifications (/notify). */
+router.post("/broadcast", requireManagement, async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   if (!body) return res.status(400).json({ error: "body required" });
   const post = await SocialPost.create({
