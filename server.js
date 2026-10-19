@@ -45,7 +45,8 @@ import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + cl
 import emailLinkRouter from "./routes/emailLink.js";   // "email me a sign-in link" (app + website)
 import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
 import consoleRouter from "./routes/console.js";       // admin console API
-import cmsRouter from "./routes/cms.js";               // edit Sanity speakers/partners from the admin panel
+import cmsRouter, { siteFileBody, uploadSiteFile } from "./routes/cms.js"; // edit Sanity speakers/partners from the admin panel
+import { requireManagementAdmin } from "./middleware/adminAuth.js";
 import filesRouter from "./routes/files.js";           // post photos + profile photos
 import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
 import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
@@ -100,6 +101,9 @@ app.use(
 /* ==========================================
    JSON PARSER
 ========================================== */
+// Large site files (the home video, the brochure PDF): the raw file, up to 40 MB, before the JSON parsers.
+// Management is checked first, so nobody else can make the server read 40 MB.
+app.post("/api/cms/upload-file", requireManagementAdmin, siteFileBody, uploadSiteFile);
 // CMS uploads (speaker photos, logos) need a bigger body than everything else.
 app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
 // "I'm attending" Post to LinkedIn: the finished image arrives as a base64 PNG.

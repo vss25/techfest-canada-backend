@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
 import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc, auditCreateDetail, auditEditDetail } from "../services/cmsSchema.js";
 import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
+import { SITE_FILE_MAX_BYTES, SITE_FILE_TOO_BIG, SITE_FILE_TYPES, checkSiteFile, siteFileAuditDetail } from "../services/siteFiles.js";
 
 /* =========================================================
    /api/cms — edit the website's Sanity content (speakers,
@@ -84,6 +85,39 @@ router.post("/upload", async (req, res) => {
     res.status(201).json({ assetId: out.document?._id, url: out.document?.url });
   } catch (err) { fail(res, err); }
 });
+
+/* Large site files (Admin › Site settings › Large site files): the home page video or the
+   brochure PDF, sent as the raw file (Content-Type video/mp4 or application/pdf, up to 40 MB)
+   and stored unchanged as a Sanity file asset on cdn.sanity.io. Management only. Mounted in
+   server.js before the JSON parsers (they'd refuse 40 MB), after requireManagementAdmin, so the
+   body is only read for management. The panel then saves `url` in site.hero_video_url or
+   site.brochure_url (services/siteFiles.js).
+   POST /api/cms/upload-file?filename=hero-bg.mp4 → 201 { assetId, url } */
+const rawSiteFile = express.raw({ type: Object.keys(SITE_FILE_TYPES), limit: SITE_FILE_MAX_BYTES });
+
+export function siteFileBody(req, res, next) {
+  rawSiteFile(req, res, (err) => {
+    if (!err) return next();
+    if (err.type === "entity.too.large") return res.status(413).json({ error: SITE_FILE_TOO_BIG });
+    res.status(err.status && err.status < 500 ? err.status : 400).json({ error: "Couldn't read the file. Try again." });
+  });
+}
+
+export async function uploadSiteFile(req, res) {
+  if (needToken(res)) return;
+  const check = checkSiteFile({ body: req.body, contentType: req.headers["content-type"], filename: req.query?.filename });
+  if (check.error) return res.status(check.status).json({ error: check.error });
+  try {
+    const out = await sanity(`/assets/files/${DATASET}?filename=${encodeURIComponent(check.filename)}`, {
+      method: "POST", headers: { "Content-Type": check.type }, body: req.body, signal: AbortSignal.timeout(180000),
+    });
+    const assetId = out?.document?._id;
+    const url = out?.document?.url;
+    if (!assetId || !url) return res.status(502).json({ error: "Sanity didn't send back the file's address. Try again." });
+    await audit(req, "cms_upload_file", "asset", assetId, siteFileAuditDetail(check));
+    res.status(201).json({ assetId, url });
+  } catch (err) { fail(res, err); }
+}
 
 /* One-time import of the agenda that's currently hardcoded on the website.
    Body: { sessions: [...] } in the website's agenda.js shape. Never overwrites:

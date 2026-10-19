@@ -1,11 +1,13 @@
 import express from "express";
 import Brochure from "../models/Brochure.js";
+import { AppContent } from "../models/Admin.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import {
   BROCHURES, validateBrochureRequest, isHoneypotFilled, dedupeSince, websiteBase, brochureUrl,
   salesInbox, attachMaxBytes, loadAttachment, cleanText, botReason,
 } from "../services/brochureDownloads.js";
 import { sendBrochureEmail, sendBrochureReceiptEmail } from "../services/emailService.js";
+import { BROCHURE_URL_KEY, savedSiteFileUrl } from "../services/siteFiles.js";
 
 /* =========================================================
    Brochure downloads — mounted at /api/brochure
@@ -36,13 +38,15 @@ const TOO_MANY = "Too many requests. Please try again later or email sales@thete
 async function deliverBrochure(doc) {
   const brochure = BROCHURES[doc.brochure];
   const base = websiteBase();
-  const link = brochureUrl(brochure, base);
+  // The PDF uploaded in Admin › Site settings › Large site files (Sanity CDN), else the website's copy.
+  const uploaded = await savedSiteFileUrl(BROCHURE_URL_KEY, { AppContent });
+  const link = brochureUrl(brochure, base, uploaded);
   let delivery = "failed";
   let emailError = "";
 
   try {
     // Attached only when the website's PDF is small enough; otherwise link only.
-    const attachment = await loadAttachment(brochure, { base, maxBytes: attachMaxBytes() });
+    const attachment = await loadAttachment(brochure, { base, uploaded, maxBytes: attachMaxBytes() });
     await sendBrochureEmail({ email: doc.email, firstName: doc.firstName, brochure, link, attachment });
     delivery = attachment ? "attached" : "link";
   } catch (err) {
