@@ -216,7 +216,7 @@ test("profile email escapes the name, carries the link and the pass, and never s
   assert.ok(e.html.includes(`href="${link.replace("&", "&amp;")}"`));   // & is escaped in HTML attributes
   assert.ok(e.html.includes("Complete my profile"));
   assert.ok(e.html.includes("Power Pass"));
-  assert.ok(e.html.includes("info@thetechfestival.com"));
+  assert.ok(e.html.includes("enquire@thetechfestival.com")); // EVENT.supportEmail (changed on main, Oct 19 2026)
   assert.ok(e.html.includes("max-width:600px"));
   assert.ok(e.html.includes("prefers-color-scheme: dark"));
   assert.ok(e.text.includes(link));
