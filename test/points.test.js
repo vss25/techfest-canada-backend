@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  RULES, LEVELS, scoreFromCounts, levelFor, nextLevelFor, emptyCounts, profileCounts, mergeCounts,
+  RULES, LEVELS, scoreFromCounts, activityFromCounts, levelFor, nextLevelFor, emptyCounts, profileCounts, mergeCounts,
   onLeaderboard, leaderboardCard, rankRows, rankAmong, clampLimit, countPipelines,
   parseSessionIds, makeAgendaCache,
 } from "../services/points.js";
@@ -47,6 +47,30 @@ test("breakdown has every rule in RULES order, zeros included", () => {
   assert.deepEqual(Object.keys(s.breakdown[0]), ["key", "label", "points", "count"]);
   assert.ok(s.breakdown.every((b) => b.points === 0 && b.count === 0));
   assert.equal(s.total, 0);
+});
+
+test("activity: what was done per rule, before caps, every rule key (zeros too)", () => {
+  const zero = activityFromCounts(emptyCounts());
+  assert.deepEqual(Object.keys(zero), RULES.map((r) => r.key));
+  assert.ok(Object.values(zero).every((n) => n === 0));
+  assert.deepEqual(activityFromCounts(undefined), zero);
+
+  const counts = {
+    ...emptyCounts(), hasLinkedin: true, topics: ["AI", "ai ", "Quantum", "Robotics"], sessionsSaved: 14, sessionsAttended: 2,
+    votesPerSession: [5, 1], questionsApproved: 3, upvotesPerQuestion: [12, 0, 1], requestsSent: 25, connections: 7,
+    inPersonConnections: 4, postsPerDay: { "2026-10-26": 5, "2026-10-27": 1 }, commentsPerDay: [12], likesPerPost: [30, 2],
+  };
+  assert.deepEqual(activityFromCounts(counts), {
+    "profile.linkedin": 1, "profile.topics": 3, "session.saved": 14, "session.attended": 2, "live.vote": 6,
+    "live.question": 3, "live.upvoted": 13, "network.request": 25, "network.connection": 7, "network.inPerson": 4,
+    "feed.post": 6, "feed.comment": 12, "feed.likes": 32,
+  });
+  // The breakdown still counts only up to each cap.
+  const s = scoreFromCounts(counts);
+  assert.equal(pts(s, "session.saved").count, 10);
+  assert.equal(pts(s, "feed.post").count, 4);
+  assert.equal(pts(s, "live.vote").count, 4);
+  assert.equal(activityFromCounts({ sessionsSaved: -3, connections: "x", postsPerDay: [2.7, -1] })["feed.post"], 2);
 });
 
 /* ================= each rule ================= */

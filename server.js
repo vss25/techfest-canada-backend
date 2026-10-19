@@ -4,6 +4,9 @@ dotenv.config();
 import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
+import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
+import UserModel from "./models/User.js";
+import { AdminAudit, AppContent } from "./models/Admin.js";
 import cors from "cors";
 import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
@@ -132,7 +135,7 @@ app.use("/api/moderate", moderateRouter); // POST /api/moderate
 app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
-app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId
+app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
@@ -163,7 +166,11 @@ app.get("/", (req, res) => {
 ========================================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => { console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler(); })
+  .then(() => {
+    console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
+    // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
+    migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
+  })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 /* ==========================================

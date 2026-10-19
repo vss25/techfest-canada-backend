@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { buildPass, isConfigured } from "../services/walletPass.js";
-import { verifyTicketSig } from "../services/walletLink.js";
+import { verifyTicketSig, walletPassUrl } from "../services/walletLink.js";
 import { displayName } from "../services/attendeeDetails.js";
 import { escapeHtml } from "../services/ticketInfo.js";
 import { signedInWithoutPassword } from "../services/signInMethod.js";
@@ -12,12 +12,19 @@ import { signedInWithoutPassword } from "../services/signInMethod.js";
 /* =========================================================
    GET /api/wallet/pass/:ticketId
      Either   Authorization: Bearer <user token>  (iOS app / website;
-              the ticket must be on the caller's account, staff may
-              fetch any)
+              the ticket must be on the caller's account, staff
+              signed in with a password may fetch any)
      or       ?sig=<hmac>  — the signed link in the ticket email/PDF,
               for guests without an account (services/walletLink.js)
    → application/vnd.apple.pkpass. 503 until the Pass Type ID cert
      is configured — see services/walletPass.js.
+
+   GET /api/wallet/link/:ticketId
+     Authorization: Bearer <user token>, same ticket rule as /pass.
+   → { url }: the signed /pass link (the one the ticket email carries),
+     for the web app. Safari can't follow a Bearer fetch into the Wallet
+     sheet, so the page sets window.location.href to this URL instead.
+     503 until Apple Wallet is set up (Pass certificate or link secret).
 
    GET /api/wallet/qr/:ticketId?sig=<hmac>
    → PNG of the ticket QR (bare ticket ID, same as the PDF) for the
@@ -56,6 +63,44 @@ async function findTicket(ticketId) {
   return null;
 }
 
+/** Bearer caller → { owner, ticket } when the ticket is on their account (staff
+    signed in with a password: on any account), else { status, error }. Shared by /pass and /link. */
+async function ticketForCaller(req, ticketId) {
+  const h = req.headers.authorization;
+  if (!h) return { status: 401, error: "Unauthorized" };
+  let decoded;
+  try { decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET); }
+  catch { return { status: 401, error: "Invalid token" }; }
+
+  const user = await User.findById(decoded.id).select("name role tickets");
+  if (!user) return { status: 401, error: "Unauthorized" };
+
+  let owner = user;
+  let ticket = user.tickets.find((t) => t.ticketId === ticketId);
+  // Staff may fetch anyone's pass, but only with a password sign-in (like the admin panel).
+  if (!ticket && user.role === "admin" && !signedInWithoutPassword(decoded)) {
+    owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
+    ticket = owner?.tickets.find((t) => t.ticketId === ticketId);
+  }
+  if (!ticket) return { status: 404, error: "Ticket not found on this account" };
+  return { owner, ticket };
+}
+
+router.get("/link/:ticketId", async (req, res) => {
+  try {
+    const ticketId = String(req.params.ticketId);
+    const found = await ticketForCaller(req, ticketId);
+    if (found.error) return res.status(found.status).json({ error: found.error });
+    const url = isConfigured() ? walletPassUrl(ticketId) : "";
+    if (!url) return res.status(503).json({ error: "Apple Wallet passes are not set up yet" });
+    res.set("Cache-Control", "private, no-store");
+    res.json({ url });
+  } catch (err) {
+    console.error("WALLET LINK ERROR:", err);
+    res.status(500).json({ error: "Could not make the Apple Wallet link" });
+  }
+});
+
 router.get("/pass/:ticketId", async (req, res) => {
   try {
     const ticketId = String(req.params.ticketId);
@@ -72,23 +117,9 @@ router.get("/pass/:ticketId", async (req, res) => {
       if (!found) return sendProblem(req, res, 404, "We couldn't find this ticket.");
       pass = { ticketId, ...found };
     } else {
-      const h = req.headers.authorization;
-      if (!h) return res.status(401).json({ error: "Unauthorized" });
-      let decoded;
-      try { decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET); }
-      catch { return res.status(401).json({ error: "Invalid token" }); }
-
-      const user = await User.findById(decoded.id).select("name role tickets");
-      if (!user) return res.status(401).json({ error: "Unauthorized" });
-
-      let owner = user;
-      let ticket = user.tickets.find((t) => t.ticketId === ticketId);
-      // Staff may fetch anyone's pass, but only with a password sign-in (like the admin panel).
-      if (!ticket && user.role === "admin" && !signedInWithoutPassword(decoded)) {
-        owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
-        ticket = owner?.tickets.find((t) => t.ticketId === ticketId);
-      }
-      if (!ticket) return res.status(404).json({ error: "Ticket not found on this account" });
+      const found = await ticketForCaller(req, ticketId);
+      if (found.error) return res.status(found.status).json({ error: found.error });
+      const { owner, ticket } = found;
       if (!isConfigured()) return res.status(503).json({ error: "Apple Wallet passes are not set up yet" });
       pass = { ticketId, tier: ticket.type, name: owner.name, purchaseDate: ticket.purchaseDate };
     }

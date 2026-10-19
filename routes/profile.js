@@ -17,7 +17,9 @@ import { syncLinkedInItem } from "../services/contactCard.js";
 
 const router = express.Router();
 
-const EDITABLE = ["name", "linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "directoryHidden", "appOnboarded",
+// No "directoryHidden": everyone is in the attendee list and only staff can take someone off it
+// (Admin › App users, routes/console.js). Older apps still send it; it's ignored.
+const EDITABLE = ["name", "linkedinUrl", "fieldOfWork", "jobTitle", "organization", "country", "topics", "appOnboarded",
   "tagline", "salutation", "gender", "jobLevel", "objectives", "availabilitySlots", "meetingSpot"];
 const MAX = { name: 120, linkedinUrl: 300, fieldOfWork: 120, jobTitle: 120, organization: 160, country: 80,
   tagline: 140, salutation: 20, gender: 40, jobLevel: 80, meetingSpot: 160 };
@@ -37,7 +39,7 @@ export function sanitizeProfilePatch(body = {}) {
         .slice(0, LISTS[key]);
       continue;
     }
-    if (key === "directoryHidden" || key === "appOnboarded") { if (typeof body[key] === "boolean") out[key] = body[key]; continue; }
+    if (key === "appOnboarded") { if (typeof body[key] === "boolean") out[key] = body[key]; continue; }
     if (typeof body[key] !== "string") continue;
     let v = body[key].trim().slice(0, MAX[key]);
     if (key === "name" && !v) continue;     // never blank a name
@@ -45,6 +47,14 @@ export function sanitizeProfilePatch(body = {}) {
     out[key] = v;
   }
   return out;
+}
+
+export const SELF_HIDE_ERROR = "Everyone with a pass is shown in the attendee list. To be taken off it, contact the TTFC team at info@thetechfestival.com.";
+
+/** Pure: the answer to a body that only tries to set directoryHidden (null when it doesn't). */
+export function selfHideReply(body = {}) {
+  if (typeof body?.directoryHidden !== "boolean") return null;
+  return body.directoryHidden ? { status: 403, error: SELF_HIDE_ERROR } : { status: 200 };
 }
 
 async function requireUser(req, res) {
@@ -90,7 +100,12 @@ router.patch("/", async (req, res) => {
     const user = await requireUser(req, res);
     if (!user) return;
     const patch = { ...sanitizeProfilePatch(req.body), ...consentPatch(req.body, user) };
-    if (!Object.keys(patch).length) return res.status(400).json({ error: "No editable fields supplied" });
+    if (!Object.keys(patch).length) {
+      // Older apps' "Show me in the attendee list" switch: showing is a no-op, hiding is staff-only now.
+      const self = selfHideReply(req.body);
+      if (self) return res.status(self.status).json(self.status === 200 ? { success: true, user } : { error: self.error });
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
     // The profile LinkedIn is also the first LinkedIn item on a saved contact card.
     const cardItems = patch.linkedinUrl !== undefined && patch.linkedinUrl !== user.linkedinUrl ? syncLinkedInItem(user, patch.linkedinUrl) : null;
     Object.assign(user, patch);
