@@ -67,6 +67,10 @@ import { PLACEHOLDERS, SECTIONS, cleanFields, changedFields, compact, fieldsFor,
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { loadWebsite, applyWebsite, planWebsiteLinks, nudgeCopy, NUDGE_COPY } from "../services/speakerWebsite.js";
 import { sendSpeakerPassEmail } from "../services/emailService.js";
+import { runSearch } from "../services/adminSearch.js";
+import { makeSearchSources } from "../services/adminSearchSources.js";
+import { makeLimiter } from "../services/ticketAccess.js";
+import { directory as peopleDirectory } from "./people.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -83,6 +87,34 @@ router.get("/me", (req, res) => {
   res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
              staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user) });
 });
+
+/* ---------- Global search (the panel's top bar and ⌘K / Ctrl-K) ----------
+   GET /search?q=  or  POST /search { q }  (the panel posts, so search terms stay out of URLs and logs)
+   → { query: { text, exact: "" | "email" | "ticket" }, tooShort, minChars, groups: [{ key, label, items: [{ type, id,
+       title, subtitle, link, badges?, exact?, meta? }], total, more, seeAll? }], failed: [{ key, label, reason }], tookMs }
+   Same rights as the pages: every staff member sees what their pages show; Staff accounts and amounts paid only
+   management (volunteers never get here: requireAdmin). At most 5 per group. 120 searches a minute per staff member;
+   each source has 5 s (services/adminSearch.js), and a failed one only leaves its own groups out. Never logged
+   with the terms. Matching and groups: services/adminSearch.js; what's read: services/adminSearchSources.js. */
+const searchSources = makeSearchSources({ directory: () => peopleDirectory() });
+const searchLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });
+async function globalSearch(req, res) {
+  if (!searchLimiter.hit(String(req.user._id))) {
+    return res.status(429).json({ error: "That's a lot of searches. Wait a few seconds and try again.", code: "rate_limited" });
+  }
+  const q = req.method === "POST" ? req.body?.q : req.query.q;
+  const management = isManagement(req.user);
+  try {
+    const out = await runSearch({ q, viewer: { management, isManagement }, sources: searchSources });
+    res.set("Cache-Control", "no-store");
+    res.json(out);
+  } catch (err) {
+    console.error(`ADMIN SEARCH ERROR (${err?.name || "Error"})`);
+    res.status(500).json({ error: "Search isn't working right now. Try again." });
+  }
+}
+router.get("/search", globalSearch);
+router.post("/search", globalSearch);
 
 const isId = (s) => mongoose.isValidObjectId(String(s || ""));
 const rx = (q) => new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
