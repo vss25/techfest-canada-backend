@@ -2,6 +2,7 @@ import express from "express";
 import { Resend } from "resend";
 import Nomination from "../models/Nomination.js";
 import { nominationFromForm } from "../services/nominations.js";
+import { switchOn } from "../services/liveSwitches.js";
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -164,8 +165,15 @@ function buildConfirmationEmail(n) {
    POST /api/nominations
    Saves it (Admin → Catalyst Awards), sends admin email + nominator confirmation email
    ═══════════════════════════════════════════════════════ */
+export const NOMINATIONS_CLOSED = "Nominations are now closed. Thank you for your interest.";
+
 router.post("/nominations", async (req, res) => {
   try {
+    // Admin › Site settings › "Award nominations open": off closes the form on the
+    // website and refuses late or scripted submissions here too.
+    if (!(await switchOn("site.nominations_open"))) {
+      return res.status(403).json({ error: NOMINATIONS_CLOSED, code: "closed" });
+    }
     const n = req.body || {};
 
     // Basic validation
