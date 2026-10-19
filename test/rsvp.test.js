@@ -1148,12 +1148,21 @@ test("team email: lists pass, days, special events and dietary, all escaped", ()
 
 test("submit: each saved RSVP is passed to notify; a failing email never blocks the RSVP", async () => {
   const sent = [];
-  const { run } = submitter({ requireTicket: true, notify: async (row, o) => { sent.push([row.firstName, o.updated]); throw new Error("mail down"); } });
+  const { run } = submitter({ requireTicket: true, notify: async (row, o) => { sent.push([row, o.updated]); throw new Error("mail down"); } });
   const ok = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] });
   assert.equal(ok.statusCode, 201);
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(sent.length, 1);
   assert.equal(sent[0][1], false);
+  // The team email names the person and their days (it used to get only the pass: "Someone", no days).
+  const [row] = sent[0];
+  assert.equal(row.firstName, "Jane");
+  assert.deepEqual(row.days, ["day1", "day2"]);
+  assert.deepEqual(row.options, ["gala"]);
+  assert.equal(row.tier, "power");
+  assert.equal(row.editTokenHash, undefined);
+  const mail = buildRsvpEmail(row, { updated: false });
+  assert.match(mail.subject, /Jane Doe/);
 });
 
 test("speakers can't RSVP for the pre-matched meetings or the Scotch lounge (Apex only)", () => {

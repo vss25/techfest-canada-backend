@@ -386,10 +386,12 @@ export function makeRsvpHandlers({
         return res.status(400).json({ success: false, message: result.invalid.error, field: "options", invalid: result.invalid.invalid });
       }
 
-      // No row id, and `updated` only for the person who proved the RSVP is theirs.
-      const { final } = result;
-      if (notify && final && !final.duplicateOf) {
-        Promise.resolve().then(() => notify(final, { updated: !!result.updated })).catch((err) => log.error?.("RSVP EMAIL ERROR:", err?.message || err));
+      // No row id, and `updated` only for the person who proved the RSVP is theirs. The team email gets the
+      // saved RSVP (name, days, options) with the pass it was checked against (`final`: kind, tier).
+      const { saved, final } = result;
+      if (notify && saved && !saved.duplicateOf) {
+        const { _id, editTokenHash, ...row } = saved;
+        Promise.resolve().then(() => notify({ ...row, ...(final || {}) }, { updated: !!result.updated })).catch((err) => log.error?.("RSVP EMAIL ERROR:", err?.message || err));
       }
       return res.status(201).json({
         ...OK, updated: result.updated, editToken: result.token,
