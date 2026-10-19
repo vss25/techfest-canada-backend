@@ -266,6 +266,8 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
     .em-qr { padding:0 24px 22px !important; text-align:left !important; }
     .em-h1 { font-size:26px !important; line-height:32px !important; }
     .em-logo { width:170px !important; max-width:170px !important; }
+    .em-logo img { width:170px !important; max-width:170px !important; height:auto !important; }
+    .em-head-addr { text-align:left !important; padding-top:16px !important; }
   }
 </style>
 </head>
@@ -278,8 +280,15 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
 <!-- header -->
 <tr><td bgcolor="${C.bg}" class="em-pad" style="background:${C.bg};background-image:radial-gradient(circle at 90% 0%,rgba(122,63,209,0.55),rgba(6,2,15,0) 60%);padding:26px 32px 24px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-    <td valign="middle" class="em-logo">${logoBlock}</td>
-    <td valign="middle" align="right" width="190" style="font-family:${SANS};font-size:11px;line-height:15px;font-weight:700;letter-spacing:1.4px;color:${C.gold};text-align:right;">OCT 26&ndash;27<br><span style="color:#c9b8f2;font-weight:600;letter-spacing:1px;">WESTIN HARBOUR CASTLE</span></td>
+    <td valign="middle" class="em-logo em-stack">${logoBlock}</td>
+    <td valign="middle" align="right" width="230" class="em-stack em-head-addr" style="font-family:${SANS};text-align:right;">
+      <!-- The logo already carries the dates; the header adds where. -->
+      <div style="font-size:11px;line-height:15px;font-weight:700;letter-spacing:1.4px;color:${C.gold};text-transform:uppercase;">Venue</div>
+      <a href="${esc(EVENT.mapsUrl)}" target="_blank" style="color:#ffffff;text-decoration:none;">
+        <span style="display:block;font-size:14px;line-height:19px;font-weight:700;color:#ffffff;margin-top:6px;">${esc(EVENT.venue)}</span>
+        <span style="display:block;font-size:12px;line-height:17px;color:#c9b8f2;margin-top:2px;">${esc(EVENT.address)}</span>
+      </a>
+    </td>
   </tr></table>
 </td></tr>
 <tr><td height="4" bgcolor="${C.pink}" style="height:4px;line-height:4px;font-size:0;background:${C.pink};background-image:linear-gradient(90deg,${C.purple},${C.pink} 60%,${C.gold});">&nbsp;</td></tr>
