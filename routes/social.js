@@ -19,7 +19,7 @@ import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
-  publicProfile, PROFILE_SELECT, CARD_SELECT,
+  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
@@ -90,7 +90,7 @@ async function statusFor(text, userId, context) {
 }
 
 const isAdmin = (u) => u.role === "admin";
-/** The pass stored on the signed-in person's new post or comment: only a Speaker Pass or "Exhibitor". */
+/** The tier stored on the signed-in person's new post or comment: only "Speaker" or "Exhibitor" (their type). */
 const authorTier = (req) => typesTier(req.types);
 
 /** authorId → avatarVersion for the people who have a profile photo. */
@@ -360,11 +360,11 @@ router.get("/feed/:id/comments", async (req, res) => {
     postId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }],
   }).sort({ createdAt: 1 }).lean();
-  res.json(comments.filter((c) => !req.blocked.has(String(c.authorId))).map((c) => ({
-    id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
-    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body,
-    status: c.status, createdAt: c.createdAt,
-  })));
+  const shown = comments.filter((c) => !req.blocked.has(String(c.authorId)));
+  // Each author's kind now (the directory's), so a speaker keeps their badge whatever their pass says.
+  const authors = new Map((await User.find({ _id: { $in: [...new Set(shown.map((c) => String(c.authorId)))] } }).select(CARD_SELECT).lean())
+    .map((u) => [String(u._id), u]));
+  res.json(shown.map((c) => commentDTO(c, authors.get(String(c.authorId)) || null, req.ctx)));
 });
 
 router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
@@ -383,11 +383,7 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
     recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
   }
-  res.status(201).json({
-    id: String(c._id), postId: String(post._id), authorId: String(req.user._id),
-    authorName: c.authorName, authorTier: publicTier(c.authorTier), body: c.body, status: c.status, createdAt: c.createdAt,
-    commentCount: post.commentCount,
-  });
+  res.status(201).json({ ...commentDTO(c.toObject(), req.user, req.ctx), commentCount: post.commentCount });
 });
 
 /* ================= CONNECTIONS ================= */

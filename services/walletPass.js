@@ -32,7 +32,11 @@ export function isConfigured() {
 }
 
 const TIER_NAMES = { discover: "Discover Pass", connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", vip: "Apex Pass", speaker: "Speaker Pass" };
-export const tierLabel = (key) => TIER_NAMES[String(key || "").toLowerCase()] || `${String(key || "Delegate")} Pass`;
+// "All Access" is the Power Pass's other name (Oct 19 2026); the internal Speaker Pass shows as "Speaker Pass".
+export const tierLabel = (key) => {
+  const k = String(key || "").trim().toLowerCase();
+  return TIER_NAMES[/^all[- ]?access( pass)?$/.test(k) ? "power" : k] || `${String(key || "Delegate")} Pass`;
+};
 
 /** Pure: the pass.json-level props + fields. Exported for tests. */
 export function passContent({ ticketId, tier, name, purchaseDate }) {

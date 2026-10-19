@@ -26,7 +26,18 @@ export function cleanRole(v) {
 // that module pulls in pdfkit and would make an import cycle with ticketAccess).
 export const EXHIBITOR_PROMO = "EXHIBITOR";
 
-export const holdsSpeakerPass = (tickets) => (Array.isArray(tickets) ? tickets : []).some((t) => String(t?.type || "").toLowerCase() === "speaker");
+// Same value as SPEAKER_PROMO in services/speakerPasses.js (Admin › Speaker passes).
+export const SPEAKER_PROMO = "SPEAKER";
+
+/** A Speaker Pass: the internal fifth pass (tier "speaker", Oct 19 2026: never sold or listed on the website),
+    from Admin › Speaker passes (promo SPEAKER) or Issue passes. Holding one makes someone a speaker
+    automatically (autoTypes, passKind), like an exhibitor pass makes an exhibitor. */
+export function isSpeakerPass(rec) {
+  return String(rec?.type || rec?.ticketType || "").trim().toLowerCase() === "speaker"
+    || String(rec?.promoCode || "").toUpperCase() === SPEAKER_PROMO;
+}
+
+export const holdsSpeakerPass = (tickets) => (Array.isArray(tickets) ? tickets : []).some(isSpeakerPass);
 export const holdsExhibitorPass = (tickets) => (Array.isArray(tickets) ? tickets : []).some((t) => String(t?.promoCode || "").toUpperCase() === EXHIBITOR_PROMO);
 
 /* ================= PERSON TYPES =================
@@ -34,7 +45,7 @@ export const holdsExhibitorPass = (tickets) => (Array.isArray(tickets) ? tickets
    and the badges on their card. Effective types =
      (User.types set by staff ∪ automatic types) − User.typesOff
    Automatic: staff (role admin), volunteer (role volunteer), speaker (a Speaker
-   Pass), exhibitor (an exhibitor pass). Attendee is automatic for anyone holding
+   Pass: isSpeakerPass), exhibitor (an exhibitor pass). Attendee is automatic for anyone holding
    a pass or ticket who has no other type; staff can also add it by hand. typesOff
    is the only way to take an automatic type away from one person. `role` stays
    the sign-in / admin panel switch.
@@ -153,7 +164,7 @@ export const isExhibitorPass = (a) => (typeof a?.exhibitor === "boolean"
 
 /** Kind for a ticket record (Attendee): "speaker" | "exhibitor" | "". */
 export function passKind(a) {
-  if (String(a?.ticketType || "").toLowerCase() === "speaker") return "speaker";
+  if (isSpeakerPass(a)) return "speaker";
   if (isExhibitorPass(a)) return "exhibitor";
   return "";
 }
@@ -201,21 +212,24 @@ export function exhibitorIndex(rows = [], { vipRows = [] } = {}) {
   };
 }
 
-export const SPEAKER_TIER = "Speaker Pass";
+/** What other attendees see in `tier` on a card, post or comment: the person's type, "Speaker"
+    or "Exhibitor" (Oct 19 2026; it said "Speaker Pass" before, and posts from then still store that). */
+export const SPEAKER_TIER = "Speaker";
 export const EXHIBITOR_TIER = "Exhibitor";
+const LEGACY_SPEAKER_TIER = "Speaker Pass";
 
-/** The pass other attendees see on someone's card, post or comment: a Speaker
-    Pass, or "Exhibitor" for exhibitors; every other tier stays private ("").
-    The person still sees their own pass (/social/me, /auth/me). `tier` is a
-    display name ("Apex Pass"); a stored "Exhibitor" passes through. */
+/** The `tier` other attendees see on someone's card, post or comment: "Speaker" for speakers,
+    "Exhibitor" for exhibitors; every pass stays private (""). The person still sees their own
+    pass (/social/me, /auth/me). `tier` is a display name ("Apex Pass"); a stored "Exhibitor"
+    passes through and a stored "Speaker Pass" (older posts) reads as "Speaker". */
 export function publicTier(tier, kind = "") {
   const t = String(tier || "").trim();
-  if (kind === "speaker" || t === SPEAKER_TIER) return SPEAKER_TIER;
+  if (kind === "speaker" || t === SPEAKER_TIER || t === LEGACY_SPEAKER_TIER) return SPEAKER_TIER;
   if (kind === "exhibitor" || t === EXHIBITOR_TIER) return EXHIBITOR_TIER;
   return "";
 }
 
-/** The pass others see for someone with these effective types: a Speaker Pass, "Exhibitor" or "". */
+/** The `tier` others see for someone with these effective types: "Speaker", "Exhibitor" or "". */
 export function typesTier(types = []) {
   if ((types || []).includes("speaker")) return SPEAKER_TIER;
   if ((types || []).includes("exhibitor")) return EXHIBITOR_TIER;

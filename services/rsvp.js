@@ -21,10 +21,12 @@ import { cleanText, cleanPage, csvCell } from "./brochureDownloads.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
 /* ---------- Passes ---------- */
+/* The four passes on sale, and the internal Speaker Pass (Oct 19 2026): never sold or listed on the
+   website; Power's options plus the two CxO Breakfasts (no Apex meetings or Scotch lounge). */
 export const PASS_TIERS = ["connect", "influence", "power", "apex"];
-export const TIERS = [...PASS_TIERS, "speaker"]; // speakers aren't sold; they see everything
+export const TIERS = [...PASS_TIERS, "speaker"];
 export const TIER_LABELS = {
-  connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", speaker: "Speaker",
+  connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", speaker: "Speaker Pass",
 };
 
 /* ---------- Days ---------- */
@@ -221,9 +223,10 @@ export function checkOptions(tier, days, options, { cxo, extra = [] } = {}) {
 export function tierFromTicketType(type) {
   const s = String(type || "").toLowerCase().replace(/ttfc|20\d\d|pass|ticket/g, " ").replace(/[^a-z-]+/g, " ").trim();
   if (!s) return "connect";
-  if (/\bspeaker\b/.test(s)) return "speaker"; // Speaker Pass (staff-issued, never sold): every option
-  if (/\b(apex|vip|all[- ]access)\b/.test(s)) return "apex";
-  if (/\bpower\b/.test(s)) return "power";
+  if (/\bspeaker\b/.test(s)) return "speaker"; // Speaker Pass (staff-issued, never sold): Power + the CxO Breakfasts
+  if (/\b(apex|vip)\b/.test(s)) return "apex";
+  // "All Access Pass" is the Power Pass, never Apex (Oct 19 2026).
+  if (/\b(power|all[- ]access)\b/.test(s)) return "power";
   if (/\binfluence\b/.test(s)) return "influence";
   return "connect";
 }

@@ -192,8 +192,9 @@ test("the speaker email: personal, complete and on brand", () => {
     "SPEAKER PASS", "Jane Doe", "Chief AI Officer", "Example Corp",
     "October 26–27, 2026", "The Westin Harbour Castle", "A1B2C3D4E5F6", `src="cid:${QR_CID}"`, `src="cid:${LOGO_CID}"`,
     `href="${RSVP_URL}#t=A1B2C3D4E5F6&amp;fn=Jane&amp;ln=Doe"`, "Save your seat", escapeHtml(RSVP_REASON), "RSVP Now",
-    `mailto:${CONTACT_EMAIL}`, "All-Access", "CxO Breakfasts &amp; Luncheons", "The Gala Dinner",
-    "Catalyst Awards Night", "The VIP Lounge", "#06020f", "#7a3fd1", "#e8458b", "#f5a623",
+    // Oct 19 2026: Power's privileges plus both CxO Breakfasts and the VIP Lounge; no Apex extras.
+    `mailto:${CONTACT_EMAIL}`, "2× Day Conference Access", "2× CxO Breakfasts", "2× Luncheons", "The Gala Dinner",
+    "Catalyst Awards Night", "VIP Lounge Access (both days)", "Power + CxO Breakfasts &amp; VIP Lounge", "#06020f", "#7a3fd1", "#e8458b", "#f5a623",
   ]) assert.ok(e.html.includes(s), s);
   assert.ok(!/data:image/.test(e.html), "no data: URIs in a sent email");
   for (const s of ["Dear Jane,", "We're delighted to have you speaking at TTFC 2026.", "Ticket ID: A1B2C3D4E5F6", link,
@@ -202,7 +203,8 @@ test("the speaker email: personal, complete and on brand", () => {
   }
   // Forward-looking, and the removed pieces are gone from both versions.
   for (const body of [e.html, e.text, e.preheader]) {
-    for (const gone of [/thank you for speaking/i, /Speaker Lounge/, /Pre-matched meetings/, /Three quick steps/i,
+    for (const gone of [/thank you for speaking/i, /Speaker Lounge/, /Pre-matched meetings/i, /Preferential Seating/i, /Scotch/i,
+      /All[- ]Access/i, /Exhibitor Pass/i, /Three quick steps/i,
       /Sign in to the TTFC app/, /Show your QR code at registration/, /we've made sure/i, /agree to take the stage/]) {
       assert.ok(!gone.test(body), String(gone));
     }
@@ -248,16 +250,18 @@ test("the QR is TECHFEST:<ticketId>, sent as an inline CID image", async () => {
 
 /* ---------- Tier everywhere else ---------- */
 
-test('tierFromTicketType("speaker") is "speaker": the RSVP page offers every option except meetings and the lounge', () => {
+test('tierFromTicketType("speaker") is "speaker": the RSVP page offers Power\'s options plus the CxO Breakfasts', () => {
   assert.equal(tierFromTicketType("speaker"), "speaker");
   assert.equal(tierFromTicketType("Speaker Pass"), "speaker");
-  assert.equal(TIER_LABELS.speaker, "Speaker");
+  assert.equal(TIER_LABELS.speaker, "Speaker Pass");
   assert.equal(passName("speaker"), "Speaker Pass");
   assert.deepEqual(resolvePass({ kind: "ticket", tier: "speaker", verified: true }, ""), { ok: true, tier: "speaker", tierVerified: true, kind: "ticket" });
   // Name on the speaker list + a verified Speaker Pass ticket: proven.
   assert.deepEqual(resolvePass({ kind: "speaker", tier: "speaker", verified: true, ticket: { type: "speaker" } }, ""),
     { ok: true, tier: "speaker", tierVerified: true, kind: "speaker", detectedTier: "speaker" });
   assert.ok(checkOptions("speaker", DAY_KEYS, OPTION_KEYS.filter((k) => k !== "meetings" && k !== "lounge")).ok);
+  assert.equal(checkOptions("speaker", DAY_KEYS, ["meetings"]).ok, false);
+  assert.equal(checkOptions("speaker", DAY_KEYS, ["lounge"]).ok, false);
 });
 
 test("speaker passes are not sales and never duplicates of a bought ticket", () => {

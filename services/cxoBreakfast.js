@@ -56,12 +56,14 @@ export const cxoLabel = (override, effective) => (typeof override === "boolean" 
  * The signed-in person's tickets (GET /api/auth/me) with `cxoBreakfast: true|false` on each,
  * the effective value. `types`: their effective person types; `attendees`: Attendee rows for
  * those ticket IDs ({ ticketId, cxoBreakfast }) whose switch applies when the account ticket has none.
+ * `type` is as stored: connect | influence | power | apex | speaker (the internal Speaker Pass), or a booth.
  */
 export function ticketsWithCxo(tickets = [], { types = [], attendees = [] } = {}) {
   const byTicket = new Map();
   for (const a of attendees || []) if (a?.ticketId && typeof a.cxoBreakfast === "boolean") byTicket.set(normalizeTicketId(a.ticketId), a);
   return (Array.isArray(tickets) ? tickets : []).map((t) => {
-    const { cxoBreakfast: stored, ...rest } = t || {};
+    // Staff's manual ticket value (Admin → People) stays out of the person's own app.
+    const { cxoBreakfast: stored, manualValue, manualValueNote, manualValueBy, manualValueAt, ...rest } = t || {};
     const override = cxoOverride({ cxoBreakfast: stored }, byTicket.get(normalizeTicketId(t?.ticketId)));
     const booth = /^BOOTH-/i.test(String(t?.ticketId || ""));
     return { ...rest, cxoBreakfast: !booth && effectiveCxo({ ticketType: t?.type, types, override }) };

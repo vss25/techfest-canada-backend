@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPeople, passStatus, primaryPass, namesMatch, personRow, personDetail, filterPeople, sortPeople, peopleCounts, peopleCsv,
-  PEOPLE_CSV_HEAD, agendaFor, specialEvents, suggestDomain, editInfo,
+  PEOPLE_CSV_HEAD, agendaFor, specialEvents, suggestDomain, editInfo, ticketValue,
 } from "../services/people.js";
 import { companyKey, cleanDomain, domainOfUrl, companyDTO } from "../services/companies.js";
 import { passKind, isExhibitorPass } from "../services/teamRoles.js";
@@ -143,6 +143,12 @@ test("pass status from the ticket records (and Stripe refunds)", () => {
   assert.equal(passStatus({ promoCode: "ISSUED", passEmailSentAt: d("10-01") }), "issued");
   assert.equal(passStatus({ promoCode: "EARLYBIRD" }), "paid");
   assert.equal(passStatus({ stripeSessionId: "x" }, new Map([["x", { total: 0, refunded: 0 }]])), "paid");
+  // Speaker Passes: staff-made ones are pending until emailed; a bought pass management changed to one stays paid.
+  assert.equal(passStatus({ type: "speaker", promoCode: "SPEAKER" }), "pending");
+  assert.equal(passStatus({ type: "speaker", claimed: true }), "complimentary");
+  assert.equal(passStatus({ type: "speaker", stripeSessionId: "x" }), "paid");
+  assert.equal(ticketValue({ type: "speaker", promoCode: "SPEAKER" }), 0);
+  assert.equal(ticketValue({ type: "speaker", stripeSessionId: "s", ticketId: "t" }, { paid: new Map([["s", 999]]) }), 999);
   assert.equal(primaryPass([{ status: "refunded", tier: "apex" }, { status: "paid", tier: "connect" }]).tier, "connect");
   assert.equal(primaryPass([{ status: "paid", tier: "apex", hidden: true }]), null);
 });
@@ -244,7 +250,15 @@ test("RSVP status on the row: not yet, the attendee's, or staff's; duplicates do
   assert.equal(row("Bob Buyer").rsvp.status, "none");
   const r = row("Jane Doe");
   assert.deepEqual([r.pass.label, r.pass.status, r.passStatusLabel, r.company, r.hasAccount], ["Power Pass", "paid", "Paid", "Acme Inc.", true]);
-  assert.equal(row("Ed Exhibitor").pass.label, "Exhibitor Pass");
+  // An exhibitor pass is a Connect Pass, named so (being an exhibitor is their type).
+  assert.deepEqual([row("Ed Exhibitor").pass.label, row("Ed Exhibitor").exhibitor, row("Ed Exhibitor").types.includes("exhibitor")], ["Connect Pass", true, true]);
+  // The internal Speaker Pass; holding one makes the person a speaker.
+  const mike = row("Michael Chen");
+  assert.deepEqual([mike.pass.label, mike.pass.tier, mike.types.includes("speaker")], ["Speaker Pass", "speaker", true]);
+  // Every pass is named by its tier: the four, or the Speaker Pass. Never "Exhibitor Pass" or "All Access Pass".
+  for (const p of people) {
+    for (const t of personDetail(p).passes) assert.ok(["Connect Pass", "Influence Pass", "Power Pass", "Apex Pass", "Speaker Pass"].includes(t.label), `${p.name}: ${t.label}`);
+  }
   assert.equal(row("Alán Aspuru-Guzik").photoUrl, "https://cdn.sanity.io/images/x/alan.jpg");
 });
 
@@ -258,9 +272,9 @@ test("search, filters, sorting and counts", () => {
   assert.deepEqual(names(filterPeople(people, { type: "none" })).sort(), ["Bob Buyer", "Walk In"]);
   assert.deepEqual(names(filterPeople(people, { status: "pending" })), ["Michael Chen"]);
   assert.deepEqual(names(filterPeople(people, { pass: "power" })), ["Jane Doe"]);
-  // Only the four passes filter: "speaker" (a type, not a pass) and "none" are ignored.
+  // The internal Speaker Pass filters too ("Speaker (internal)"); anything else is ignored.
+  assert.deepEqual(names(filterPeople(people, { pass: "speaker" })).sort(), ["Alán Aspuru-Guzik", "Michael Chen"]);
   assert.equal(filterPeople(people, { pass: "none" }).length, 12);
-  assert.equal(filterPeople(people, { pass: "speaker" }).length, 12);
   assert.deepEqual(names(filterPeople(people, { vip: "yes" })), ["Jane Doe"]);
   assert.equal(filterPeople(people, { vip: "no" }).length, 11);
   assert.deepEqual(names(filterPeople(people, { rsvp: "staff" })), ["Carol Colleague"]);
@@ -295,7 +309,7 @@ test("CSV export: one row per person with pass, RSVP and a profile link", () => 
   const [head, line] = csv.replace(/^﻿/, "").split("\n");
   assert.equal(head.split(",").length, PEOPLE_CSV_HEAD.length);
   // Types, VIP, pass, value (unknown without Stripe), CxO Breakfast (Power: No), RSVP status.
-  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,No,1,Confirmed by Individual,Attendee,/);
+  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,Stripe,No,1,Confirmed by Individual,Attendee,/);
   // A breakfast she chose before Power lost it stays on her RSVP; nothing added by staff; no RSVP email recorded.
   assert.match(line, /Day 1 & Day 2,CxO Breakfast \(Day 1\); Gala Dinner & Networking Reception \(Day 2\),,No,,No,/);
   assert.match(line, /,https:\/\/www\.thetechfestival\.com\/admin\/people\/u-u1$/);

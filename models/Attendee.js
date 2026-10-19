@@ -6,11 +6,13 @@ const attendeeSchema = new mongoose.Schema(
       type: String,
       required: true
     },
-    // Required for every pass except a Speaker Pass, which is created before staff
-    // have the speaker's email (they add it in the admin panel, then send the pass).
+    // Required for every pass except a Speaker Pass (Admin → Speaker passes), which is created before
+    // staff have the speaker's email (they add it in the admin panel, then send the pass).
     email: {
       type: String,
-      required: function () { return this.ticketType !== "speaker"; },
+      required: function () {
+        return !(this.ticketType === "speaker" || this.promoCode === "SPEAKER");
+      },
       lowercase: true
     },
     ticketId: {
@@ -78,9 +80,20 @@ const attendeeSchema = new mongoose.Schema(
     // "CxO Breakfast included" for this pass (services/cxoBreakfast.js): true / false = staff's choice,
     // unset = automatic (Apex and Speaker Passes, and speakers on any pass).
     cxoBreakfast: { type: Boolean },
+    // Ticket value after payment typed by management for a pass paid outside Stripe (invoice, bank
+    // transfer), CAD before HST. Unset = worked out (Stripe, or 0 for staff-made passes). Admin → People.
+    manualValue: { type: Number },
+    manualValueNote: { type: String },
+    manualValueBy: { type: String },
+    manualValueAt: { type: Date },
+    // "RSVP Email Sent" marked by staff for an email sent outside the admin panel: true / false,
+    // unset = from our send records (services/people.js rsvpEmailOf). Pass-only people; accounts use User.rsvpEmailMark.
+    rsvpEmailMark: { type: Boolean },
+    rsvpEmailMarkBy: { type: String },
+    rsvpEmailMarkAt: { type: Date },
     // Staff-set logo for this person only; "" = their company's default (models/Company.js).
     companyLogoUrl: { type: String, default: "" },
-    // Speaker Pass (ticketType "speaker"): the Sanity speaker document it was made for.
+    // Speaker Pass (ticketType "speaker", promo SPEAKER): the Sanity speaker document it was made for.
     // One pass per speaker; the sync keys on this.
     speakerId: {
       type: String,

@@ -2,6 +2,14 @@ import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { requireCheckIn } from "../middleware/adminAuth.js";
+import { isSpeakerPass } from "../services/teamRoles.js";
+import { tierKey, displayPassName } from "../services/ticketInfo.js";
+
+/** What the scanner shows about the pass: `ticketType` (connect | influence | power | apex | speaker; the text
+    "All Access" is Power), `passName` its name ("Speaker Pass" for the internal one) and `speaker` true for a Speaker Pass. */
+const passFields = (type, ticketId, rec) => ({
+  ticketType: tierKey(type), passName: displayPassName(type, ticketId), speaker: isSpeakerPass(rec),
+});
 
 const router = express.Router();
 
@@ -51,7 +59,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         status: "success",
         name: user.name,
         ticketId,
-        ticketType: ticket.type,
+        ...passFields(ticket.type, ticketId, ticket),
       });
 
       return;
@@ -83,7 +91,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       status: "success",
       name: attendee.name,
       ticketId,
-      ticketType: attendee.ticketType,
+      ...passFields(attendee.ticketType, ticketId, attendee),
     });
   } catch (err) {
     console.error("CHECK-IN ERROR:", err);

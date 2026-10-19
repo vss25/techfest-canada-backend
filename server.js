@@ -6,6 +6,9 @@ import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
 import { migrateVipTypeOnce } from "./services/vipFlag.js";
+import { migratePassNamesOnce } from "./services/passNames.js";
+import AttendeeModel from "./models/Attendee.js";
+import EmailTemplateModel from "./models/EmailTemplate.js";
 import { clearRightsCache } from "./services/rightsStore.js";
 import { clearExhibitorCache } from "./services/exhibitorCache.js";
 import UserModel from "./models/User.js";
@@ -175,6 +178,8 @@ mongoose
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.
     migrateVipTypeOnce({ User: UserModel, AppContent, AdminAudit, onDone: () => { clearRightsCache(); clearExhibitorCache(); } });
+    // Once: exhibitor passes named "Connect Pass", "All Access Pass" gone (it's the Power Pass), issued Speaker Passes "Speaker Pass".
+    migratePassNamesOnce({ Attendee: AttendeeModel, EmailTemplate: EmailTemplateModel, AppContent, AdminAudit });
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 

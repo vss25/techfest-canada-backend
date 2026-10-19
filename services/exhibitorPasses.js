@@ -2,9 +2,11 @@
    Exhibitor passes (Admin → Marketing → Exhibitor passes)
    ---------------------------------------------------------
    An issued pass (services/issuedPasses.js) for someone on an
-   exhibitor's booth, stored under promo code EXHIBITOR: the same
-   pass email, with the Exhibitor Manual & return form attached as
-   a PDF (services/exhibitorManual.js) filled in with their booth.
+   exhibitor's booth, stored under promo code EXHIBITOR: a Connect
+   Pass, named "Connect Pass" (Oct 19 2026: never "Exhibitor Pass";
+   being an exhibitor is their type, "Is Exhibitor? Yes"). The same pass email, with the
+   Exhibitor Manual & return form attached as a PDF
+   (services/exhibitorManual.js) filled in with their booth.
    Staff can change the email's default wording ("exhibitor-pass"
    EmailTemplate), each pass's wording, and every word of the
    manual ("exhibitor-manual" EmailTemplate content).
@@ -16,8 +18,9 @@ import { cleanBooth } from "./exhibitorManual.js";
 export const EXHIBITOR_PROMO = "EXHIBITOR";
 export const EXHIBITOR_TEMPLATE_KEY = "exhibitor-pass";
 export const MANUAL_TEMPLATE_KEY = "exhibitor-manual";
-export const EXHIBITOR_LABEL = "Exhibitor Pass";
 export const EXHIBITOR_TIER = "connect";
+/** The pass's name: the tier's ("Connect Pass"). Nothing is stored on the pass, so a tier change renames it. */
+export const EXHIBITOR_LABEL = "Connect Pass";
 
 /** The built-in wording: the issued pass email, plus a line about the attached manual. */
 export function defaultExhibitorCopy(label = EXHIBITOR_LABEL) {

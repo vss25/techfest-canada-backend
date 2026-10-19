@@ -6,6 +6,8 @@ import TicketInventory from "../models/TicketInventory.js";
 import { applyDuePrices, priceAt } from "../services/scheduledPrices.js";
 import Promo from "../models/Promo.js";
 import { HOLD_MINUTES, LIMIT_REACHED, isFull, promoExpired, lockPromo, promoUsageNow } from "../services/promoLimits.js";
+import { switchOn, UPGRADES_KEY } from "../services/liveSwitches.js";
+import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
 
 const router = express.Router();
 
@@ -203,6 +205,25 @@ function cleanMetadata(obj) {
 // ================= PASS UPGRADES =================
 // An upgrade charges only the difference between the two passes' list
 // prices (plus HST) and keeps the same ticketId, so the QR still works.
+//
+// Oct 19 2026, the organiser: "Don't offer upgrades to Apex for anyone who is marked as
+// speakers. In fact, don't offer upgrades at all." So upgrades are refused unless staff turn
+// on Admin › App text & switches › Pass upgrades (flag.upgrades, default off), and a Speaker
+// Pass (tier "speaker", or promo SPEAKER) or anyone of the speaker type never upgrades,
+// even with it on. An upgrade already paid is still finished by the webhook.
+export const UPGRADES_OFF = Object.freeze({ status: 403, code: "upgrades_off", error: "Pass upgrades aren't available." });
+export const SPEAKER_NO_UPGRADE = Object.freeze({ status: 403, code: "speaker_pass", error: "Speakers' passes can't be upgraded." });
+
+/** Pure: whether this ticket of this account is a speaker's (never upgraded): a Speaker Pass (tier "speaker",
+    or promo SPEAKER: isSpeakerPass) or anyone of the speaker type. Exported for tests. */
+export function isSpeakersPass(buyer, ticket) {
+  const user = typeof buyer?.toObject === "function" ? buyer.toObject() : buyer;
+  const tier = String(ticket?.type || ticket?.ticketType || "").trim().toLowerCase();
+  return tier === "speaker" || isSpeakerPass(ticket) || effectiveTypes(user).includes("speaker");
+}
+
+/** The JSON body of a refused upgrade: { code?, error }. */
+const refusal = (r) => ({ ...(r.code ? { code: r.code } : {}), error: r.error });
 
 /** Pure: price difference in CAD, or an error. Exported for tests. */
 export function upgradeQuote(fromPrice, toPrice) {
@@ -216,12 +237,12 @@ export function upgradeQuote(fromPrice, toPrice) {
 }
 
 async function resolveUpgrade(buyer, ticketId, toTier) {
+  if (!(await switchOn(UPGRADES_KEY))) return UPGRADES_OFF;
   if (!buyer) return { status: 401, error: "Sign in to upgrade your pass." };
   const ticket = (buyer.tickets || []).find((t) => t.ticketId === String(ticketId || "").trim());
   if (!ticket) return { status: 404, error: "That ticket isn't on your account." };
-  // A Speaker Pass (never sold, no inventory row) already includes everything; quoting it
-  // from $0 would charge a full pass and overwrite the speaker ticket.
-  if (String(ticket.type || "").toLowerCase() === "speaker") return { status: 409, error: "Your Speaker Pass already includes everything at TTFC 2026." };
+  // A Speaker Pass (the internal fifth pass), or anyone who's a speaker, is never upgraded.
+  if (isSpeakersPass(buyer, ticket)) return SPEAKER_NO_UPGRADE;
   if (ticket.checkedIn) return { status: 409, error: "This pass has already been used at the door; upgrade at the registration desk." };
   await applyDuePrices();
   const [from, to] = await Promise.all([
@@ -243,7 +264,7 @@ router.get("/upgrade-quote", async (req, res) => {
   let buyer = null;
   try { buyer = await getUserFromReq(req); } catch { buyer = null; }
   const r = await resolveUpgrade(buyer, req.query.ticketId, String(req.query.tier || ""));
-  if (r.error) return res.status(r.status).json({ error: r.error });
+  if (r.error) return res.status(r.status).json(refusal(r));
   const { ticket, ...quote } = r;
   res.json({ ticketId: ticket.ticketId, hstPercent: TAX_MODE === "manual" ? HST_PERCENT : 0, ...quote });
 });
@@ -322,7 +343,7 @@ router.post("/create-checkout", async (req, res) => {
     // ----- Upgrade: charge the difference only -----
     if (req.body?.upgradeFrom) {
       const up = await resolveUpgrade(buyer, req.body.upgradeFrom, tier);
-      if (up.error) return res.status(up.status).json({ error: up.error });
+      if (up.error) return res.status(up.status).json(refusal(up));
       const stripe = getStripe();
       const { lineItemExtras, sessionExtras } = await buildTaxConfig(stripe);
       const session = await stripe.checkout.sessions.create({

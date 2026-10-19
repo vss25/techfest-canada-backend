@@ -41,14 +41,18 @@ const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial
 const SERIF = "Georgia,'Times New Roman',Times,serif";
 const MONO = "'SFMono-Regular',Menlo,Consolas,'Courier New',monospace";
 
-/** What a Speaker Pass includes (email + plain text). */
+/** What a Speaker Pass includes (email + plain text), Oct 19 2026: everything in the Power Pass, plus both
+    CxO Breakfasts and the VIP Lounge. None of the Apex extras (meetings, preferential seating, the Scotch lounge). */
 export const SPEAKER_INCLUDES = [
-  ["All-Access, Both Days", "Every keynote, stage and the expo floor"],
-  ["CxO Breakfasts & Luncheons", "Every one, on both days"],
+  ["2× Day Conference Access", "Every keynote, panel and stage, and the expo floor, both days"],
+  ["2× CxO Breakfasts", "Senior-leader breakfasts, both mornings"],
+  ["2× Luncheons", "The networking lunch on both days"],
   ["The Gala Dinner", "Dinner and networking reception on Day 2"],
   ["Catalyst Awards Night", "Celebrating Canada's frontier tech on Day 1"],
-  ["The VIP Lounge", "A quiet space to prepare and connect"],
+  ["VIP Lounge Access (both days)", "A quiet space to prepare and connect"],
 ];
+/** The Speaker Pass's access line ("All Access" is the Power Pass's own name, so not this). */
+export const SPEAKER_ACCESS = "Power + CxO Breakfasts & VIP Lounge";
 
 /** Why speakers should RSVP (shown above the button and in the plain text). */
 export const RSVP_REASON = "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.";
@@ -59,7 +63,7 @@ export const RSVP_REASON = "RSVP for the CxO breakfasts, luncheons, the Gala Din
  * there's an RSVP button, and the built-in wording ({firstName}/{fullName} filled in).
  */
 export const SPEAKER_VARIANT = Object.freeze({
-  label: "Speaker Pass", access: "All Access", includes: null, rsvp: true, rsvpReason: null,
+  label: "Speaker Pass", access: SPEAKER_ACCESS, includes: null, rsvp: true, rsvpReason: null,
 });
 
 export const qrPayload = (ticketId) => `TECHFEST:${String(ticketId || "").trim()}`;
@@ -139,7 +143,7 @@ function button(href, label) {
 }
 
 /** The pass card: a badge-style ticket that reads well in every client. */
-function passCard({ name, title, company, id, qrSrc, logoSrc, label = "Speaker Pass", access = "All Access" }) {
+function passCard({ name, title, company, id, qrSrc, logoSrc, label = "Speaker Pass", access = SPEAKER_ACCESS }) {
   const role = [title, company].filter(Boolean);
   const detail = (label, value, extra = "") => `
             <tr><td style="padding:0 0 14px;">

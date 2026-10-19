@@ -164,8 +164,8 @@ test("kind: staff > volunteer > vip > speaker > exhibitor > vendor; public types
   assert.equal(strongerKind("", "vendor"), "vendor");
 });
 
-test("typesTier: Speaker Pass / Exhibitor from types, so a switched-off speaker shows no pass", () => {
-  assert.equal(typesTier(["speaker", "vip"]), "Speaker Pass");
+test("typesTier: Speaker / Exhibitor from types, so a switched-off speaker shows nothing", () => {
+  assert.equal(typesTier(["speaker", "vip"]), "Speaker");
   assert.equal(typesTier(["exhibitor"]), "Exhibitor");
   assert.equal(typesTier(["vip"]), "");
   assert.equal(typesTier(), "");
@@ -356,7 +356,7 @@ test("cards: public types and kind, receive rights as accepts*, never rights or 
   const c = userCard({ ...minister, tickets: speakerPass });
   assert.deepEqual(c.types, ["vip", "speaker"]);   // the VIP badge from the flag, unchanged for the apps
   assert.equal(c.kind, "vip");
-  assert.equal(c.tier, "Speaker Pass");
+  assert.equal(c.tier, "Speaker");
   assert.deepEqual([c.acceptsMessages, c.acceptsRequests], [false, false]);   // the contact switches
   assert.equal("rights" in c, false);
   assert.equal("typesOff" in c, false);
@@ -364,7 +364,7 @@ test("cards: public types and kind, receive rights as accepts*, never rights or 
   assert.deepEqual([a.types, a.kind, a.acceptsMessages, a.acceptsRequests], [[], "", true, true]);
   const v = userCard(vendor);
   assert.deepEqual([v.kind, v.acceptsMessages, v.acceptsRequests], ["vendor", true, false]);
-  // Speaker switched off: shown as VIP only, no Speaker Pass.
+  // Speaker switched off: shown as VIP only, no Speaker.
   const off = userCard({ ...vip, tickets: speakerPass, typesOff: ["speaker"] });
   assert.deepEqual([off.types, off.kind, off.tier, off.acceptsMessages], [["vip"], "vip", "", true]);
   // Matrix edits reach the cards.
@@ -391,7 +391,7 @@ test("directory: types on entries, receive rights, typesOff kept when an unclaim
   const by = Object.fromEntries(dir.map((p) => [p.name, p]));
   assert.deepEqual([by["Vee Ip"].types, by["Vee Ip"].kind, by["Vee Ip"].acceptsMessages, by["Vee Ip"].acceptsRequests], [["vip"], "vip", true, false]);
   assert.deepEqual([by["Shown Asvip"].types, by["Shown Asvip"].kind, by["Shown Asvip"].tier], [["vip"], "vip", ""]);
-  assert.deepEqual([by["Spe Guest"].types, by["Spe Guest"].kind, by["Spe Guest"].tier], [["speaker"], "speaker", "Speaker Pass"]);
+  assert.deepEqual([by["Spe Guest"].types, by["Spe Guest"].kind, by["Spe Guest"].tier], [["speaker"], "speaker", "Speaker"]);
   assert.deepEqual([by["Pass Vip"].types, by["Pass Vip"].kind], [["vip"], "vip"]);
   assert.deepEqual([by["Not Avip"].types, by["Not Avip"].kind], [[], ""]);
   const opened = buildDirectory([{ ...users[0], requestsOff: false, types: ["vendor"] }], [], { matrix: mergeMatrix({ vendor: { receiveRequests: true } }) });

@@ -3,7 +3,7 @@
    ---------------------------------------------------------
    Admin → Tickets & attendees → Issue passes. Like the Speaker
    Pass, but staff choose the person, the pass (Connect, Influence,
-   Power, Apex or Speaker / All Access), the name printed on it,
+   Power, Apex or the internal Speaker Pass), the name printed on it,
    whether the email has an RSVP button, and its wording. Stored as
    an Attendee (promo code ISSUED) with a new ticket ID, so the pass
    works everywhere a ticket does: app sign-in (last name + ticket
@@ -18,6 +18,7 @@ import { EVENT } from "./ticketInfo.js";
 import { cleanCopy } from "./speakerPassEmail.js";
 import { passRecipients, passStatus, validateSpeakerEmails } from "./speakerPasses.js";
 import { effectiveCxo, cleanCxoSwitch } from "./cxoBreakfast.js";
+import { tierKey } from "./ticketInfo.js";
 
 export const ISSUED_PROMO = "ISSUED";
 
@@ -27,7 +28,7 @@ const CONF = [
   ["Networking Breaks", "Coffee and conversations between sessions"],
 ];
 const LUNCH = [["2× Luncheons", "The networking lunch on both days"]];
-// Apex and Speaker / All Access passes include them; Power doesn't since Oct 19 2026. Staff can switch them
+// Apex and Speaker Passes include them; Power doesn't since Oct 19 2026. Staff can switch them
 // on (or off) for one pass with "CxO Breakfast included" (Attendee.cxoBreakfast, services/cxoBreakfast.js).
 export const CXO = Object.freeze(["2× CxO Breakfasts", "Senior-leader breakfasts, both mornings"]);
 const POWER = [
@@ -40,7 +41,12 @@ const APEX = [
   ["Private Scotch & Cocktail Lounge (19+)", "Our private lounge, both days"],
 ];
 
-/** The passes staff can issue, with the website's inclusions (thetechfestival.com/tickets).
+/** The VIP Lounge speakers get (not the Apex Scotch & Cocktail Lounge). */
+export const VIP_LOUNGE = Object.freeze(["VIP Lounge Access (both days)", "A quiet space to prepare and connect"]);
+
+/** The passes staff can issue, with the website's inclusions (thetechfestival.com/tickets), and the internal
+    Speaker Pass (Oct 19 2026: Power + both CxO Breakfasts + the VIP Lounge; none of the Apex extras). Access lines:
+    "All Access" is the Power Pass's alone ("All Access Pass = Power Pass only").
     `rsvpReason` is the pass as sold; `rsvpReasonCxo` / `rsvpReasonNoCxo` the same pass with
     the CxO Breakfasts switched on / off for one person (issuedVariant). */
 export const ISSUE_TIERS = Object.freeze({
@@ -53,10 +59,10 @@ export const ISSUE_TIERS = Object.freeze({
   power: { label: "Power Pass", access: "All Access", includes: [...POWER, ...LUNCH, ...CONF],
     rsvpReason: "RSVP for the luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.",
     rsvpReasonCxo: "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering." },
-  apex: { label: "Apex Pass", access: "All Access + Apex", includes: [...APEX, CXO, ...POWER, ...LUNCH, ...CONF],
+  apex: { label: "Apex Pass", access: "Power + Apex extras", includes: [...APEX, CXO, ...POWER, ...LUNCH, ...CONF],
     rsvpReason: "RSVP for the CxO breakfasts, luncheons, the Gala Dinner, the Catalyst Awards Night and your business meetings, so we can save your seat.",
     rsvpReasonNoCxo: "RSVP for the luncheons, the Gala Dinner, the Catalyst Awards Night and your business meetings, so we can save your seat." },
-  speaker: { label: "All Access Pass", access: "All Access", includes: [CXO, ...POWER, ...LUNCH, ["The VIP Lounge", "A quiet space to prepare and connect"], ...CONF],
+  speaker: { label: "Speaker Pass", access: "Power + CxO Breakfasts & VIP Lounge", includes: [CXO, ...POWER, ...LUNCH, VIP_LOUNGE, ...CONF],
     rsvpReason: "RSVP for the CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering.",
     rsvpReasonNoCxo: "RSVP for the luncheons, the Gala Dinner and the Catalyst Awards Night, so we can save your seat and plan catering." },
 });
@@ -106,9 +112,10 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
   }
   if ("title" in body) value.title = clean(body.title, 120);
   if ("company" in body) value.company = clean(body.company, 160);
-  if ("label" in body) value.label = clean(body.label, 40);
+  // "All Access Pass" and "Exhibitor Pass" are never printed (Oct 19 2026): the tier's own name is.
+  if ("label" in body) value.label = printedLabel(clean(body.label, 40));
   if ("rsvp" in body) value.rsvp = body.rsvp !== false;
-  // "CxO Breakfast included": true / false, or null = automatic (Apex and All Access passes).
+  // "CxO Breakfast included": true / false, or null = automatic (Apex and Speaker Passes).
   if ("cxoBreakfast" in body) {
     const c = cleanCxoSwitch(body.cxoBreakfast);
     if (c === undefined) return { ok: false, error: "CxO Breakfast must be Yes, No or automatic." };
@@ -176,11 +183,19 @@ export function issuedPassUpdate(v, before) {
  * The email settings for a pass: label, access, includes, RSVP, built-in wording.
  * `copyFor(label)`: the default wording (exhibitor passes have their own).
  */
+/** Names never printed on a pass: "All Access Pass" is the Power Pass, "Exhibitor Pass" the Connect Pass. */
+export const RETIRED_LABELS = Object.freeze(["All Access Pass", "Exhibitor Pass"]);
+export const printedLabel = (label) => {
+  const l = String(label || "").trim();
+  return RETIRED_LABELS.some((x) => x.toLowerCase() === l.toLowerCase()) ? "" : l;
+};
+
 export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
-  const key = ISSUE_TIERS[String(a?.ticketType || "").toLowerCase()] ? String(a.ticketType).toLowerCase() : "influence";
+  const t = tierKey(a?.ticketType);
+  const key = ISSUE_TIERS[t] ? t : "influence";
   const tier = ISSUE_TIERS[key];
-  const label = a?.issuedPass?.label || tier.label;
-  // The pass's CxO Breakfasts: staff's switch on this pass, else the pass's own rule (Apex, All Access).
+  const label = printedLabel(a?.issuedPass?.label) || tier.label;
+  // The pass's CxO Breakfasts: staff's switch on this pass, else the pass's own rule (Apex, Speaker Pass).
   const cxo = effectiveCxo({ ticketType: key, override: a?.cxoBreakfast });
   const asSold = effectiveCxo({ ticketType: key });
   const rsvpReason = cxo === asSold ? tier.rsvpReason : (cxo ? tier.rsvpReasonCxo : tier.rsvpReasonNoCxo) || tier.rsvpReason;
@@ -189,19 +204,19 @@ export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
 
 /** One row for Admin → Issue passes. */
 export function issuedPassRow(a) {
-  const tierKey = String(a.ticketType || "").toLowerCase();
+  const key = tierKey(a.ticketType);
   return {
     id: String(a._id),
     name: a.name || "",
     title: a.details?.jobTitle || "",
     company: a.details?.organisation || "",
-    tier: tierKey,
-    tierLabel: ISSUE_TIERS[tierKey]?.label || tierKey,
-    label: a.issuedPass?.label || "",
+    tier: key,
+    tierLabel: ISSUE_TIERS[key]?.label || key,
+    label: printedLabel(a.issuedPass?.label),
     rsvp: a.issuedPass?.rsvp !== false,
     // "CxO Breakfast included": true / false = staff's switch, null = automatic; cxoEffective = what the pass gets.
     cxoBreakfast: typeof a.cxoBreakfast === "boolean" ? a.cxoBreakfast : null,
-    cxoEffective: effectiveCxo({ ticketType: tierKey, override: a.cxoBreakfast }),
+    cxoEffective: effectiveCxo({ ticketType: key, override: a.cxoBreakfast }),
     copy: a.issuedPass?.copy || {},
     ticketId: a.ticketId,
     email: a.email || "",

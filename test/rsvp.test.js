@@ -122,12 +122,14 @@ test("the options payload is the shared config the website reads", () => {
 });
 
 /* ---------- ticket type → pass ---------- */
-test("stored ticket types map to the four passes", () => {
+test("stored ticket types map to the four passes and the internal Speaker Pass; All Access is Power", () => {
   const cases = {
     connect: "connect", influence: "influence", power: "power", apex: "apex", vip: "apex", VIP: "apex",
     "Apex Pass": "apex", "TTFC Power Pass": "power", " Influence ": "influence", "TTFC 2026 Apex Pass": "apex",
     discover: "connect", early: "connect", festival: "connect", session: "connect", "": "connect", undefined: "connect",
-    "all-access": "apex",
+    // Oct 19 2026: "All Access Pass = Power Pass only".
+    "all-access": "power", "All Access Pass": "power", "TTFC All Access": "power",
+    speaker: "speaker", "Speaker Pass": "speaker",
   };
   for (const [type, tier] of Object.entries(cases)) assert.equal(tierFromTicketType(type === "undefined" ? undefined : type), tier, type);
 });
@@ -322,7 +324,7 @@ test("lookup: ticket ID + last name is verified; speakers see everything; one na
   assert.equal(r2.kind, "none"); // wrong last name, and no Jane Smith holds a ticket
   assert.equal(publicLookup(r2, { ticketId: "abc123def" }).ticketMatched, false);
   const r3 = await lookup(cleanLookup({ firstName: "alan", lastName: "aspuru guzik" }));
-  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Alán Aspuru-Guzik", allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
+  assert.deepEqual(publicLookup(r3), { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker Pass", displayName: "Alán Aspuru-Guzik", allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
   // A speaker with a verified (complimentary Connect) ticket still sees everything.
   const r4 = await lookup(cleanLookup({ firstName: "Chris", lastName: "Golden", ticketId: "spk999xyz" }));
   assert.equal(r4.kind, "speaker");
@@ -349,7 +351,7 @@ test("lookup: a speaker whose ticket has another form of their first name is sti
   assert.deepEqual([r.kind, r.tier, r.verified, r.displayName], ["speaker", "speaker", true, "Dr. Chris Golden"]);
   assert.deepEqual([r.ticket.ticketId, r.ticket.holderMatch, r.ticket.holderLastMatch], ["CHR111IST222", false, true]);
   assert.deepEqual(publicLookup(r, { ticketId: "chr111ist222" }),
-    { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker", displayName: "Dr. Chris Golden", ticketMatched: true, cxoBreakfast: true, keepOptions: [],
+    { kind: "speaker", verified: true, tier: "speaker", tierLabel: "Speaker Pass", displayName: "Dr. Chris Golden", ticketMatched: true, cxoBreakfast: true, keepOptions: [],
       allowedOptions: allowedExperiences("speaker", DAY_KEYS) });
   // The full ticket name isn't on the speaker list: the ticket's pass.
   const full = await lookup(cleanLookup({ firstName: "Christopher", lastName: "Golden", ticketId: "chr111ist222" }));

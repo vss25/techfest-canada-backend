@@ -7,8 +7,8 @@
      - User: app and website accounts, their tickets, person types
        and staff / volunteer roles
      - Attendee: guest purchases, complimentary passes (COMP),
-       Speaker Passes (SPEAKER), issued passes (ISSUED) and
-       exhibitor passes (EXHIBITOR)
+       Speaker Passes (SPEAKER), issued passes (ISSUED) and exhibitor
+       passes (EXHIBITOR, Connect Passes)
      - Rsvp: the website /rsvp answers and staff-entered RSVPs
      - Sanity `speaker` docs (the public speaker list)
      - Company: each company's default logo
@@ -21,10 +21,10 @@
      2. A guest pass whose email is an account's joins that account
         when the names agree (or the pass carries no real name):
         buyers who bought passes for colleagues share an email, and
-        a staff member's email can be on a Speaker Pass.
+        a staff member's email can be on a speaker's pass.
      3. Other guest passes with the same name join each other when
         their emails agree or one has none; else a person each.
-     4. A speaker joins the person holding their Speaker Pass
+     4. A speaker joins the person holding their speaker's pass
         (speakerId), else the one person with their name, else is
         a person of their own.
      5. An RSVP joins the person holding its ticket ("t:" key or a
@@ -40,8 +40,14 @@
    link keeps working when a guest pass is later claimed by an
    account (the profile answers with the person's current id).
 
+   Passes (Oct 19 2026): the four on sale (Connect, Influence, Power,
+   Apex) and the internal Speaker Pass (tier "speaker", never sold or
+   listed; holding one makes someone a speaker). "All Access" is the
+   Power Pass; an exhibitor pass is a Connect Pass, named so.
+
    Filters (Oct 19 2026, the organiser's list): Attendee Type (the six
-   types), Pass Type (Connect, Influence, Power, Apex), Ticket Value
+   types), Pass Type (Connect, Influence, Power, Apex, and the internal
+   Speaker Pass, "Speaker (internal)"), Ticket Value
    After Payment (below / above 100 CAD), RSVP Status (Confirmed by
    Individual / by Staff / Unconfirmed), Is Exhibitor?, RSVP Email
    Sent? and VIP?. Each is worked out below (ticketValue, rsvpEmail,
@@ -50,10 +56,11 @@
 ========================================================= */
 
 import {
-  effectiveTypes, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isVip, isVipPass, legacyVip, PERSON_TYPES, EXHIBITOR_PROMO, TYPE_LABELS,
+  effectiveTypes, autoTypes, holdsPass, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isSpeakerPass, isVip, isVipPass, legacyVip,
+  PERSON_TYPES, EXHIBITOR_PROMO, TYPE_LABELS,
 } from "./teamRoles.js";
-import { normalizeTicketId, guestName, guestWork, passName } from "./ticketAccess.js";
-import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, PASS_TIERS, optionLabel, extraOptionsFor } from "./rsvp.js";
+import { normalizeTicketId, guestName, guestWork } from "./ticketAccess.js";
+import { personNameKey, fullNameMatches, tierFromTicketType, TIER_LABELS, RSVP_OPTIONS, DAYS, TIERS, optionLabel, extraOptionsFor } from "./rsvp.js";
 import { csvCell } from "./brochureDownloads.js";
 import { companyKey, companyDTO, domainOfUrl } from "./companies.js";
 import { rsvpStatusOf, splitName, RSVP_STATUS_LABELS } from "./rsvpStaff.js";
@@ -78,18 +85,21 @@ export { RSVP_STATUS_LABELS };
 /* ---------- Ticket value after payment ----------
    What was paid for the pass in CAD: the Stripe Checkout Session's subtotal after
    promo codes, before HST, less any refund (the same "revenue" as the Analytics
-   page, services/stripeSales.js), plus paid upgrades of that ticket. Staff-made
-   passes (COMP, issued, exhibitor, Speaker Pass) and $0 checkouts (a 100% code)
-   are 0. A bought ticket we can't find in Stripe (no session ID, or Stripe not
-   read) has no value: it matches neither band. Exactly 100.00 is "above". */
+   page, services/stripeSales.js), plus paid upgrades of that ticket. A pass paid
+   outside Stripe (invoice, bank transfer) shows the amount management typed
+   (`manualValue`, "manual"); a Stripe-paid pass always shows Stripe's. Other
+   staff-made passes (COMP, issued, exhibitor, speakers') and $0 checkouts (a 100%
+   code) are 0. A bought ticket we can't find in Stripe (no session ID, or Stripe
+   not read) has no value: it matches neither band. Exactly 100.00 is "above". */
 export const VALUE_LINE = 100;
 export const VALUE_BANDS = ["below", "above"];
 export const VALUE_BAND_LABELS = { below: "Below 100 CAD", above: "Above 100 CAD", unknown: "Not known", none: "No pass" };
+export const VALUE_SOURCE_LABELS = { stripe: "Stripe", manual: "Manual (paid outside Stripe)", staff: "Staff-made pass", unknown: "Not known" };
 export const valueBand = (v) => (v === null || v === undefined ? "unknown" : v >= VALUE_LINE ? "above" : "below");
 
 /* ---------- RSVP email sent ----------
    "Yes" when an email with their RSVP link went to them, from these records:
-     - their Speaker Pass email (Attendee.passEmailSentAt; it has had the RSVP
+     - their speaker's pass email (Attendee.passEmailSentAt; it has had the RSVP
        button since 2026-10-12 02:16 UTC, so earlier sends count only when
        passEmailRsvp says so) and the speaker nudges (speakerNudgedAt);
      - their issued or exhibitor pass email, when it had the RSVP button
@@ -98,13 +108,17 @@ export const valueBand = (v) => (v === null || v === undefined ? "unknown" : v >
        one of their email addresses (CampaignSend "rsvp-reminder-2026").
    Bulk campaigns (Marketing › Campaigns) aren't counted: their records are
    made before sending and don't show an email went. The purchase email and
-   the "I'm attending" email have no RSVP link. */
+   the "I'm attending" email have no RSVP link. Staff can mark it Yes or No
+   by hand for an email sent outside the admin panel (User.rsvpEmailMark on an
+   account, Attendee.rsvpEmailMark on a pass-only person); that mark wins. */
 export const SPEAKER_RSVP_LINK_FROM = new Date("2026-10-12T02:16:04Z");
 const ISSUED_PROMOS = new Set(["ISSUED", "EXHIBITOR"]);
 
 const STAFF_PROMOS = new Set(["COMP", "ISSUED", "EXHIBITOR", "SPEAKER"]);
 const EMAILED_PROMOS = new Set(["ISSUED", "EXHIBITOR", "SPEAKER"]); // passes the admin panel emails out
-const EXHIBITOR_PASS_LABEL = "Exhibitor Pass";
+/** A Speaker Pass staff made (Admin › Speaker passes, Issue passes): one bought through checkout and changed to
+    the Speaker Pass by management keeps its Stripe payment, so it stays "paid" with its Stripe value. */
+const staffSpeakerPass = (t) => isSpeakerPass(t) && !t?.stripeSessionId;
 const PLACEHOLDER = /@ticket\.thetechfestival\.com$/i;
 const isBooth = (id) => /^BOOTH-/i.test(String(id || ""));
 const realEmail = (e) => {
@@ -121,15 +135,15 @@ const ms = (d) => {
 /**
  * One ticket's status (staff view):
  *   refunded       Stripe shows the whole payment refunded (only when Stripe could be read)
- *   complimentary  staff-made (COMP, ISSUED, EXHIBITOR, Speaker Pass) and claimed in the app or checked in
- *   pending        staff-made pass we email out (Speaker, issued, exhibitor) whose email hasn't been sent
+ *   complimentary  staff-made (COMP, ISSUED, EXHIBITOR, a speaker's pass) and claimed in the app or checked in
+ *   pending        staff-made pass we email out (speaker's, issued, exhibitor) whose email hasn't been sent
  *   issued         staff-made, sent or handed out, not claimed in the app yet
  *   paid           bought through the website checkout (a promo code may have lowered the price)
  * `refunds`: Map(Stripe Checkout Session id → { total, refunded }) or null.
  */
 export function passStatus(t, refunds = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
-  const speakerPass = String(t?.type || "").toLowerCase() === "speaker";
+  const speakerPass = staffSpeakerPass(t);
   const r = t?.stripeSessionId && refunds ? refunds.get(t.stripeSessionId) : null;
   if (r && r.total > 0 && r.refunded >= r.total) return "refunded";
   if (STAFF_PROMOS.has(promo) || speakerPass) {
@@ -140,12 +154,10 @@ export function passStatus(t, refunds = null) {
   return "paid";
 }
 
-/** The pass a ticket is, as staff call it: "Power Pass", "Speaker Pass", "Exhibitor Pass", an issued pass's own label. */
-function passLabel(type, promo, issuedLabel) {
-  if (String(promo || "").toUpperCase() === EXHIBITOR_PROMO) return EXHIBITOR_PASS_LABEL;
-  if (issuedLabel) return String(issuedLabel).slice(0, 60);
-  return passName(type) || "Pass";
-}
+/** The pass a ticket is, by its tier: "Connect Pass" … "Apex Pass", or "Speaker Pass" (internal). Never a printed label. */
+const passLabel = (type) => TIER_LABELS[tierFromTicketType(type)] || "Pass";
+const RETIRED_LABEL = /^\s*(all[- ]access|exhibitor)\s+pass\s*$/i;
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
 /** A user ticket and / or the guest record of the same ticket → one pass record. */
 function ticketRecord({ user = null, t = null, a = null }) {
@@ -153,12 +165,20 @@ function ticketRecord({ user = null, t = null, a = null }) {
   const ticketId = String(t?.ticketId || a?.ticketId || "");
   const type = String(t?.type || a?.ticketType || "");
   const promoCode = String(t?.promoCode || a?.promoCode || "");
+  const manualValue = num(t?.manualValue) ?? num(a?.manualValue);
+  const manualFrom = num(t?.manualValue) !== undefined ? t : a;
   return {
     ticketId,
     norm: normalizeTicketId(ticketId),
     type,
     tier: tierFromTicketType(type),
-    label: passLabel(type, promoCode, a?.issuedPass?.label),
+    label: passLabel(type),
+    // The name staff printed on an issued pass, if any (the pass itself is still one of the four); the retired names never.
+    printedLabel: RETIRED_LABEL.test(String(a?.issuedPass?.label || "")) ? "" : String(a?.issuedPass?.label || "").trim().slice(0, 60),
+    manualValue,
+    manualValueNote: manualValue !== undefined ? String(manualFrom?.manualValueNote || "") : "",
+    manualValueBy: manualValue !== undefined ? String(manualFrom?.manualValueBy || "") : "",
+    manualValueAt: manualValue !== undefined ? manualFrom?.manualValueAt || null : null,
     promoCode,
     stripeSessionId: String(t?.stripeSessionId || a?.stripeSessionId || ""),
     purchaseDate: t?.purchaseDate || a?.purchaseDate || null,
@@ -166,6 +186,8 @@ function ticketRecord({ user = null, t = null, a = null }) {
     hidden: !!(t?.hiddenByStaff || a?.hiddenByStaff || a?.syncDuplicate),
     claimed: !!t || !!a?.claimedBy,
     passEmailSentAt: a?.passEmailSentAt || null,
+    upgradedFrom: String(t?.upgradedFrom || ""),
+    phone: String((t?.details || a?.details)?.phone || "").trim(),
     attendeeId: a ? String(a._id) : "",
     source: t ? "account" : "guest",
     // The Tickets page's row key (routes/console.js /tickets)
@@ -202,13 +224,24 @@ export function stripeMaps({ rows = [], free = [] } = {}) {
     upgrades: Map(ticket → CAD), shared: Map(session → tickets on it) } or null when Stripe wasn't read. */
 export function ticketValue(t, stripe = null) {
   const promo = String(t?.promoCode || "").toUpperCase();
-  if (STAFF_PROMOS.has(promo) || String(t?.type || "").toLowerCase() === "speaker") return 0;
+  // Paid outside Stripe: what management typed. (A pass with a Stripe session always takes Stripe's value.)
+  if (!t?.stripeSessionId && num(t?.manualValue) !== undefined) return Math.round(t.manualValue * 100) / 100;
+  if (STAFF_PROMOS.has(promo) || staffSpeakerPass(t)) return 0;
   if (!stripe || !t?.stripeSessionId) return null;
   const extra = stripe.upgrades?.get(t.norm || normalizeTicketId(t.ticketId)) || 0;
   const share = Math.max(1, stripe.shared?.get(t.stripeSessionId) || 1);
   if (stripe.paid?.has(t.stripeSessionId)) return Math.round((stripe.paid.get(t.stripeSessionId) / share + extra) * 100) / 100;
   if (stripe.free?.has(t.stripeSessionId)) return Math.round(extra * 100) / 100;
   return null;
+}
+
+/** Where a pass's value comes from: "stripe" (computed), "manual" (typed by management, paid outside Stripe),
+    "staff" (a staff-made pass: 0) or "unknown". */
+export function valueSource(t) {
+  if (t?.stripeSessionId) return "stripe";
+  if (num(t?.manualValue) !== undefined) return "manual";
+  if (STAFF_PROMOS.has(String(t?.promoCode || "").toUpperCase()) || isSpeakerPass(t)) return "staff";
+  return "unknown";
 }
 
 /** The pass to show for a person: usable before refunded, then the biggest pass, then the newest. */
@@ -431,19 +464,30 @@ function vipOf(p) {
   return { vip: passVip, vipFrom: passVip ? "pass" : "" };
 }
 
-/** Did an email with their RSVP link go to them? → { sent, at, via: ["Speaker Pass email", …] } (see SPEAKER_RSVP_LINK_FROM). */
+/** Staff's own "RSVP email sent" mark: the account's (User.rsvpEmailMark), else the newest on their passes. → { value, by, at } | null */
+export function rsvpEmailMarkOf(p) {
+  if (p.user && typeof p.user.rsvpEmailMark === "boolean") {
+    return { value: p.user.rsvpEmailMark, by: String(p.user.rsvpEmailMarkBy || ""), at: p.user.rsvpEmailMarkAt || null };
+  }
+  if (p.user) return null;
+  const marked = p.attendees.filter((a) => typeof a.rsvpEmailMark === "boolean").sort((x, y) => ms(y.rsvpEmailMarkAt) - ms(x.rsvpEmailMarkAt))[0];
+  return marked ? { value: marked.rsvpEmailMark, by: String(marked.rsvpEmailMarkBy || ""), at: marked.rsvpEmailMarkAt || null } : null;
+}
+
+/** Did an email with their RSVP link go to them? → { sent, at, via: ["Speaker's pass email", …], mark, auto }
+    (see SPEAKER_RSVP_LINK_FROM). `mark`: staff's Yes / No (it wins), `auto`: what our send records say. */
 function rsvpEmailOf(p, remindedAt) {
   const hits = [];
   const add = (at, via) => { if (at) hits.push({ at: new Date(at), via }); };
   for (const a of p.attendees) {
     const promo = String(a.promoCode || "").toUpperCase();
-    const speakerPass = String(a.ticketType || "").toLowerCase() === "speaker";
+    const speakerPass = promo === "SPEAKER" || String(a.ticketType || "").toLowerCase() === "speaker";
     if (a.passEmailSentAt) {
       const sentAt = new Date(a.passEmailSentAt);
       const hadButton = typeof a.passEmailRsvp === "boolean" ? a.passEmailRsvp
         : speakerPass ? sentAt >= SPEAKER_RSVP_LINK_FROM
           : ISSUED_PROMOS.has(promo) ? a.issuedPass?.rsvp !== false : false;
-      if (hadButton) add(sentAt, speakerPass ? "Speaker Pass email" : promo === "EXHIBITOR" ? "Exhibitor pass email" : "Pass email");
+      if (hadButton) add(sentAt, speakerPass ? "Speaker Pass email" : promo === "EXHIBITOR" ? "Exhibitor's pass email" : "Pass email");
     }
     if (speakerPass && a.speakerNudgedAt) add(a.speakerNudgedAt, "Speaker reminder");
   }
@@ -451,7 +495,11 @@ function rsvpEmailOf(p, remindedAt) {
     if (remindedAt?.has(e)) add(remindedAt.get(e), "RSVP reminder");
   }
   hits.sort((x, y) => y.at - x.at);
-  return { sent: hits.length > 0, at: hits[0]?.at || null, via: [...new Set(hits.map((h) => h.via))] };
+  const auto = { sent: hits.length > 0, at: hits[0]?.at || null, via: [...new Set(hits.map((h) => h.via))] };
+  const mark = rsvpEmailMarkOf(p);
+  if (!mark) return { ...auto, mark: null, auto };
+  if (!mark.value) return { sent: false, at: null, via: [], mark, auto };
+  return { sent: true, at: mark.at || auto.at, via: ["Marked by staff", ...auto.via], mark, auto };
 }
 
 function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
@@ -491,6 +539,8 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
     t.cxoAuto = autoCxo(t.type, types);
     t.cxo = effectiveCxo({ ticketType: t.type, types, override: t.cxoOverride });
   }
+  const phone = fromPasses((d) => String(d.phone || "").trim());
+  const exhibitorAuto = u ? exIdx.boothFor(u) !== null : false;
   // Exhibitor yes / no is what the apps use: the exhibitor type, from staff or from an exhibitor pass,
   // unless staff switched it off (typesOff on an account, Attendee.exhibitor false on a pass).
   const exhibitor = types.includes("exhibitor");
@@ -508,7 +558,11 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
     company,
     jobTitle,
     linkedinUrl,
+    phone,
     types,
+    // An account's types as stored and as they come automatically (the App › People editor's view).
+    autoTypes: u ? autoTypes(u, { exhibitor: exhibitorAuto }) : [],
+    holdsPass: u ? holdsPass(u, { exhibitor: exhibitorAuto }) : tickets.some((t) => !t.hidden),
     exhibitor,
     exhibitorPass,
     companyKey: cKey,
@@ -527,12 +581,14 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt }) {
 
 /* ---------- What the admin panel gets ---------- */
 
+/* `label` / `tierLabel`: the pass by its tier ("Connect Pass" … "Apex Pass", "Speaker Pass" for the internal one).
+   `valueSource`: stripe | manual | staff | unknown. */
 const passOut = (t) => (t ? {
   ticketId: t.ticketId, label: t.label, tier: t.tier, tierLabel: TIER_LABELS[t.tier] || "", status: t.status,
   statusLabel: PASS_STATUS_LABELS[t.status] || t.status, key: t.key, source: t.source,
   // "CxO Breakfast included" for this pass: the effective value, staff's switch (null = automatic) and the automatic value.
   cxoBreakfast: !!t.cxo, cxoOverride: typeof t.cxoOverride === "boolean" ? t.cxoOverride : null, cxoAuto: !!t.cxoAuto,
-  valueBand: valueBand(t.value),
+  valueBand: valueBand(t.value), valueSource: valueSource(t),
 } : null);
 
 /** The person's ticket value band: "below" | "above" | "unknown" (a pass we can't price) | "none" (no pass). */
@@ -557,7 +613,12 @@ export function personRow(p) {
     passCount: p.passList.filter((t) => !t.hidden).length,
     rsvp: { ...r, id: p.rsvp ? String(p.rsvp._id) : "" },
     rsvpDuplicates: p.dupRsvps.length,
-    rsvpEmail: { sent: p.rsvpEmail.sent, at: p.rsvpEmail.at, via: p.rsvpEmail.via },
+    rsvpEmail: {
+      sent: p.rsvpEmail.sent, at: p.rsvpEmail.at, via: p.rsvpEmail.via,
+      // Staff's Yes / No mark (null = from our send records) and what the records say on their own.
+      mark: p.rsvpEmail.mark ? p.rsvpEmail.mark.value : null, markedBy: p.rsvpEmail.mark?.by || "", markedAt: p.rsvpEmail.mark?.at || null,
+      auto: { sent: p.rsvpEmail.auto.sent, at: p.rsvpEmail.auto.at },
+    },
     valueBand: bandOf(p),
     valueBandLabel: VALUE_BAND_LABELS[bandOf(p)],
     cxoBreakfast: p.primary ? !!p.primary.cxo : null,
@@ -575,7 +636,7 @@ export function personRow(p) {
 
 const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
 
-/** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex;
+/** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
     ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar). */
 export function filterPeople(people, query = {}) {
@@ -590,7 +651,7 @@ export function filterPeople(people, query = {}) {
   return people.filter((p) => {
     if (words.length && !words.every((w) => p.search.includes(w))) return false;
     if (type === "none" ? p.types.length : PERSON_TYPES.includes(type) && !p.types.includes(type)) return false;
-    if (PASS_TIERS.includes(pass) && p.primary?.tier !== pass) return false;
+    if (TIERS.includes(pass) && p.primary?.tier !== pass) return false;
     if (VALUE_BANDS.includes(value) && bandOf(p) !== value) return false;
     if (PASS_STATUSES.includes(status) && (p.primary?.status || "none") !== status) return false;
     const rs = rsvpStatusOf(p.rsvp).status;
@@ -656,7 +717,7 @@ const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 1
 
 export const PEOPLE_CSV_HEAD = [
   "Name", "Email", "Types", "VIP", "Company", "Job title", "Pass", "Ticket ID", "Pass status",
-  "Ticket value after payment (CAD before HST)", "Ticket value", "CxO Breakfast", "Passes",
+  "Ticket value after payment (CAD before HST)", "Ticket value", "Ticket value from", "CxO Breakfast", "Passes",
   "RSVP", "RSVP set by", "RSVP updated (UTC)", "Days", "Special events", "Added by staff",
   "RSVP email sent", "RSVP email last sent (UTC)", "Exhibitor", "LinkedIn", "Company logo", "Profile",
 ];
@@ -671,6 +732,7 @@ export function peopleCsv(people, { profileBase = "" } = {}) {
       p.name, p.email, p.types.map((t) => TYPE_LABELS[t] || t).join("; "), p.vip ? "Yes" : "No", p.company, p.jobTitle,
       p.primary?.label || "", p.primary?.ticketId || "", PASS_STATUS_LABELS[p.primary?.status || "none"],
       v === null || v === undefined ? "" : v.toFixed(2), VALUE_BAND_LABELS[bandOf(p)],
+      p.primary ? VALUE_SOURCE_LABELS[valueSource(p.primary)] : "",
       p.primary ? (p.primary.cxo ? "Yes" : "No") : "",
       p.passList.filter((t) => !t.hidden).length,
       RSVP_STATUS_LABELS[r.status], r.status === "staff" ? r.by : r.status === "attendee" ? "Attendee" : "", stamp(r.at),
@@ -730,20 +792,34 @@ export function suggestDomain(p, cmsLogos = []) {
   return p.email ? workDomain(p.email) : "";
 }
 
-/** What may be edited on a person, and where it's saved. */
-export function editInfo(p, { management = false } = {}) {
+/** What may be edited on a person, and where it's saved. `staffId`: who's asking (nobody deletes themselves). */
+export function editInfo(p, { management = false, staffId = "" } = {}) {
   const where = p.user ? "account" : p.attendees.length ? "pass" : "none";
   const staffAccount = p.user?.role === "admin";
   const canEdit = where !== "none" && (!staffAccount || management);
+  const self = !!staffId && !!p.user && String(p.user._id) === String(staffId);
+  const hasPass = p.passList.some((t) => !t.hidden);
   return {
     where,
     canEdit,
     canEditEmail: canEdit && management,
+    canEditPhone: canEdit && p.passList.length > 0,
+    // Person types: an account's types (the App › People rules: staff / volunteer are management only);
+    // a pass-only person's Speaker and Exhibitor (saved on their passes), the rest needs an account.
+    canEditTypes: canEdit,
+    typesWhere: where === "account" ? "account" : where === "pass" ? "passes" : "none",
     canEditExhibitor: canEdit,
     canEditVip: canEdit,
-    canEditCxo: canEdit && p.passList.some((t) => !t.hidden),
+    canEditCxo: canEdit && hasPass,
+    // Change a pass (the four, or the internal Speaker Pass), and the ticket value of a pass paid outside Stripe: management.
+    canEditPass: canEdit && management && hasPass,
+    canEditValue: canEdit && management && hasPass,
+    canEditRsvpEmail: canEdit,
     canEditLogo: true,
-    canEditRsvp: !!p.rsvp || p.passList.some((t) => !t.hidden) || !!(p.name && p.name !== "No name"),
+    canEditRsvp: !!p.rsvp || hasPass || !!(p.name && p.name !== "No name"),
+    // Delete person: management, never their own account (the last management account is checked on delete).
+    canDelete: management && !self,
+    deleteReason: !management ? "Only management can delete people." : self ? "You can't delete your own account." : "",
     reason: where === "none"
       ? "This person has no account or pass yet, so there's nowhere to save these. Their RSVP can still be set."
       : staffAccount && !management ? "Only management can change staff accounts." : "",
@@ -754,33 +830,39 @@ export function editInfo(p, { management = false } = {}) {
     and any breakfast already on their RSVPs. → { cxo: true | false | undefined, extra: [keys] } */
 export function rsvpRulesFor(p) {
   const cxo = p.primary ? !!p.primary.cxo : p.types.includes("speaker") ? true : undefined;
-  return { cxo, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]) };
+  return { cxo, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]), speaker: p.types.includes("speaker") };
 }
 
 /** Everything for the profile page (the route adds the agenda, the RSVPs in full and the company).
     `management`: the amount paid for each pass (everyone else sees the band). */
-export function personDetail(p, { management = false, cmsLogos = [] } = {}) {
+export function personDetail(p, { management = false, cmsLogos = [], staffId = "" } = {}) {
   const rules = rsvpRulesFor(p);
   return {
     ...personRow(p),
     firstName: p.firstName,
     lastName: p.lastName,
+    phone: p.phone || "",
     rsvpRules: { cxo: rules.cxo ?? null, keep: rules.extra },
     passes: p.passList.map((t) => ({
       ...passOut(t), hidden: t.hidden, checkedIn: t.checkedIn, purchaseDate: t.purchaseDate, promoCode: t.promoCode,
-      claimed: t.claimed, booth: t.booth, exhibitorPass: t.exhibitorPass,
-      ...(management ? { value: t.value ?? null } : {}),
+      claimed: t.claimed, booth: t.booth, exhibitorPass: t.exhibitorPass, printedLabel: t.printedLabel || "",
+      hasStripe: !!t.stripeSessionId,
+      ...(management ? {
+        value: t.value ?? null,
+        manualValue: t.manualValue ?? null, manualValueNote: t.manualValueNote || "", manualValueBy: t.manualValueBy || "", manualValueAt: t.manualValueAt || null,
+      } : {}),
     })).sort((a, b) => (a.hidden - b.hidden) || ms(b.purchaseDate) - ms(a.purchaseDate)),
     boothOrders: p.boothOrders,
     speaker: p.speaker ? { id: String(p.speaker._id), name: String(p.speaker.name || "").trim(), title: String(p.speaker.title || "").trim(), company: String(p.speaker.company || "").trim() } : null,
     account: p.user ? {
       id: String(p.user._id), role: p.user.role || "user", lastActiveAt: p.user.lastActiveAt || null, createdAt: p.user.createdAt || null,
-      types: storedTypes(p.user.types), typesOff: storedTypes(p.user.typesOff),
+      // The App › People type editor's view: stored types, switched-off types, the automatic ones and whether they hold a pass.
+      types: storedTypes(p.user.types), typesOff: storedTypes(p.user.typesOff), autoTypes: p.autoTypes || [], holdsPass: !!p.holdsPass,
     } : null,
     companyRecord: companyDTO(p.companyDoc),
     suggestedDomain: suggestDomain(p, cmsLogos),
     specialEvents: specialEvents(p.rsvp),
-    edit: editInfo(p, { management }),
+    edit: editInfo(p, { management, staffId }),
   };
 }
 

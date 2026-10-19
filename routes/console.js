@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
@@ -398,6 +399,7 @@ router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) return res.status(400).json({ error: "Unknown key" });
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
+  forgetSwitches();   // polls, Q&A and pass upgrades follow at once on this server
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
   res.json({ ok: true });
 });
@@ -1069,8 +1071,9 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
 });
 
 /* ---------- Speaker Passes ----------
-   A ghost pass (ticketType "speaker", never sold or listed) for every speaker on the
-   website, made from the Sanity speaker list with no email (services/speakerPasses.js).
+   The internal Speaker Pass (ticketType "speaker", never sold or listed; Power + both CxO Breakfasts +
+   the VIP Lounge) for every speaker on the website, made from the Sanity speaker list with no email
+   (services/speakerPasses.js).
    Staff add each speaker's email, preview the pass email, then management sends it.
    Nothing is ever emailed without a send click; send-all needs { confirm: "SEND" }. */
 
@@ -1114,7 +1117,9 @@ function sendOptions(body = {}, template) {
   }
   return { ok: true, copy, to, cc };
 }
-const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE };
+// Speaker Passes made here (Sanity speakers, manual adds). One staff issued in Issue passes (promo ISSUED) has
+// its own list and email there, so it isn't listed, synced or sent from here too.
+const SPEAKER_SCOPE = { ticketType: SPEAKER_TYPE, promoCode: { $ne: "ISSUED" } };
 let speakerSendAllRunning = false;
 
 const findSpeakerPass = (id) => (isId(id)

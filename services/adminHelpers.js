@@ -62,6 +62,10 @@ export const CONTENT_KEYS = {
   "flag.allow_groups": true,
   "flag.polls": true,                      // off = live polls hidden in the apps, votes refused
   "flag.qa": true,                         // off = audience Q&A hidden in the apps, questions refused
+  /* Pass upgrades (Oct 19 2026, the organiser: "don't offer upgrades at all"). Off = no upgrade offers on the
+     website, the web app or the apps, and GET /payments/upgrade-quote and upgrade checkouts are refused
+     (403 upgrades_off). Speakers' passes are never upgraded, even when this is on. */
+  "flag.upgrades": false,
   /* Ticket offer shown to guests in the web app (/app). It only shows while the code is live
      (POST /api/promos/validate) and before offer.guest_ends. */
   "flag.guestOffer": true,
