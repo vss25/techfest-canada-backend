@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
@@ -398,6 +399,7 @@ router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) return res.status(400).json({ error: "Unknown key" });
   await AppContent.updateOne({ key: c[0] }, { $set: { value: c[1], updatedBy: req.user.name } }, { upsert: true });
+  forgetSwitches();   // polls, Q&A and pass upgrades follow at once on this server
   await audit(req, "edit_app_text", "content", c[0], String(c[1]).slice(0, 120));
   res.json({ ok: true });
 });

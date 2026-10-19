@@ -219,32 +219,107 @@ test("after the migration: RSVP lookup, /auth/me and check-in say Power Pass, ke
   assert.doesNotMatch(JSON.stringify(pass), RETIRED);
 });
 
-test("a speaker's Power Pass upgrades to Apex at the price difference; Power's sold count is left alone", { skip }, async () => {
-  const { User, TicketInventory } = M;
-  await TicketInventory.create([{ tier: "power", total: 10, sold: 2, price: 1099 }, { tier: "apex", total: 10, sold: 1, price: 1599 }]);
-  const lee = await User.findOne({ email: "lee.speaker@example.com" });
-  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=lee000000001&tier=apex", { token: tokenFor(lee) });
-  assert.equal(q.status, 200, JSON.stringify(q.body));
-  assert.deepEqual([q.body.fromTier, q.body.toTier, q.body.difference], ["power", "apex", 500]);
-  assert.doesNotMatch(JSON.stringify(q.body), RETIRED);
-  // Stripe says it's paid (a signed test event, built here): the ticket becomes Apex, still a speaker's.
+/* Pass upgrades (Oct 19 2026, the organiser: "Don't offer upgrades to Apex for anyone who is marked as speakers.
+   In fact, don't offer upgrades at all."): off unless staff turn on flag.upgrades; speakers never. */
+async function setUpgrades(on) {
+  await M.AppContent.updateOne({ key: "flag.upgrades" }, { $set: { value: on, updatedBy: "test" } }, { upsert: true });
+  (await import("../services/liveSwitches.js")).forgetSwitches();
+}
+const soldCounts = async () => Object.fromEntries((await M.TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
+async function paidWebhook(id, user, ticketId, email) {
+  // Stripe says it's paid (a signed test event, built here; nothing reaches Stripe).
   const { default: Stripe } = await import("stripe");
-  const payload = JSON.stringify({ id: "evt_up", type: "checkout.session.completed", data: { object: {
-    id: "cs_up_lee", customer_details: { email: "lee.speaker@example.com", name: "Lee Speaker" },
-    metadata: { type: "upgrade", tier: "apex", userId: String(lee._id), upgradeFrom: "lee000000001", fromTier: "power" },
+  const payload = JSON.stringify({ id: `evt_${id}`, type: "checkout.session.completed", data: { object: {
+    id, customer_details: { email, name: user.name },
+    metadata: { type: "upgrade", tier: "apex", userId: String(user._id), upgradeFrom: ticketId, fromTier: "power" },
   } } });
   const header = new Stripe("sk_test_dummy").webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET });
-  const r = await realFetch(`${base}/api/webhook/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: payload });
+  return realFetch(`${base}/api/webhook/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: payload });
+}
+const OFF = { code: "upgrades_off", error: "Pass upgrades aren't available." };
+const SPEAKER = { code: "speaker_pass", error: "Speakers' passes can't be upgraded." };
+
+test("pass upgrades are off by default: the quote and the upgrade checkout refuse with upgrades_off", { skip }, async () => {
+  const { User, TicketInventory } = M;
+  await TicketInventory.create([{ tier: "power", total: 10, sold: 2, price: 1099 }, { tier: "apex", total: 10, sold: 1, price: 1599 }]);
+  const pat = await User.create({ name: "Pat Power", email: "pat.power@example.com", tickets: [{ ticketId: "pat000000001", type: "power", stripeSessionId: "cs_pat" }] });
+  // No switch saved at all = off, signed in or not.
+  for (const token of [tokenFor(pat), undefined]) {
+    const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token });
+    assert.deepEqual([q.status, q.body], [403, OFF]);
+  }
+  const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(pat), body: { tier: "apex", upgradeFrom: "pat000000001", client: "ios" } });
+  assert.deepEqual([c.status, c.body], [403, OFF]);
+  // Saved as off: the same.
+  await setUpgrades(false);
+  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token: tokenFor(pat) });
+  assert.deepEqual([q.status, q.body], [403, OFF]);
+  // The public app content says so (the website and the apps hide every offer).
+  const { CONTENT_KEYS } = await import("../services/adminHelpers.js");
+  assert.equal(CONTENT_KEYS["flag.upgrades"], false);
+  assert.deepEqual(await soldCounts(), { power: 2, apex: 1 });
+});
+
+test("switch on: a Power Pass upgrades to Apex at the price difference (quote, checkout past the gate, paid webhook)", { skip }, async () => {
+  const { User } = M;
+  await setUpgrades(true);
+  const pat = await User.findOne({ email: "pat.power@example.com" });
+  const q = await call("GET", "/api/payments/upgrade-quote?ticketId=pat000000001&tier=apex", { token: tokenFor(pat) });
+  assert.equal(q.status, 200, JSON.stringify(q.body));
+  assert.deepEqual([q.body.fromTier, q.body.toTier, q.body.difference], ["power", "apex", 500]);
+  // The checkout gets past every check and reaches Stripe (no key in tests, so it stops there; never a 403).
+  const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(pat), body: { tier: "apex", upgradeFrom: "pat000000001", client: "ios" } });
+  assert.equal(c.status, 500, JSON.stringify(c.body));
+  assert.match(c.body.error, /STRIPE_SECRET_KEY/);
+  const r = await paidWebhook("cs_up_pat", pat, "pat000000001", "pat.power@example.com");
+  assert.equal(r.status, 200);
+  const t = (await User.findById(pat._id).lean()).tickets[0];
+  assert.deepEqual([t.type, t.upgradedFrom], ["apex", "power"]);
+  assert.deepEqual(await soldCounts(), { power: 1, apex: 2 });
+  await setUpgrades(false);
+});
+
+test("speakers' passes (tier speaker, marker or speaker type) are never upgraded, even with the switch on; an upgrade already paid still goes through", { skip }, async () => {
+  const { User } = M;
+  const lee = await User.findOne({ email: "lee.speaker@example.com" });   // a speaker's Power Pass (speakerPass marker)
+  // A bought Power Pass whose holder staff made a speaker (person type), no marker on the ticket.
+  const sky = await User.create({ name: "Sky Speaker", email: "sky.speaker@example.com", types: ["speaker"],
+    tickets: [{ ticketId: "sky000000001", type: "power", stripeSessionId: "cs_sky" }] });
+  // A pass on the "speaker" tier with no marker, its holder's automatic speaker type switched off: the tier alone says so.
+  const ula = await User.create({ name: "Ula Tier", email: "ula.tier@example.com", typesOff: ["speaker"],
+    tickets: [{ ticketId: "ula000000001", type: "speaker" }] });
+  const { isSpeakersPass } = await import("../routes/payments.js");
+  assert.equal(isSpeakersPass(ula, ula.tickets[0]), true);
+  assert.equal(isSpeakersPass({ types: [] }, { type: "speaker", speakerPass: false }), true);   // not the marker alone
+  assert.equal(isSpeakersPass({ types: ["speaker"] }, { type: "connect" }), true);
+  assert.equal(isSpeakersPass({ types: [] }, { type: "power" }), false);
+  await setUpgrades(true);
+  for (const [u, id] of [[lee, "lee000000001"], [sky, "sky000000001"], [ula, "ula000000001"]]) {
+    const q = await call("GET", `/api/payments/upgrade-quote?ticketId=${id}&tier=apex`, { token: tokenFor(u) });
+    assert.deepEqual([q.status, q.body], [403, SPEAKER]);
+    const c = await call("POST", "/api/payments/create-checkout", { token: tokenFor(u), body: { tier: "apex", upgradeFrom: id, client: "android" } });
+    assert.deepEqual([c.status, c.body], [403, SPEAKER]);
+  }
+  // Off: the switch answers first.
+  await setUpgrades(false);
+  const off = await call("GET", "/api/payments/upgrade-quote?ticketId=lee000000001&tier=apex", { token: tokenFor(lee) });
+  assert.deepEqual([off.status, off.body], [403, OFF]);
+
+  // An upgrade paid before the change: the webhook finishes it as before. The ticket becomes Apex, still a
+  // speaker's; Power's sold count is left alone (a speaker's issued pass never took a seat).
+  const before = await soldCounts();
+  const r = await paidWebhook("cs_up_lee", lee, "lee000000001", "lee.speaker@example.com");
   assert.equal(r.status, 200);
   const t = (await User.findById(lee._id).lean()).tickets[0];
   assert.deepEqual([t.type, t.upgradedFrom, t.speakerPass], ["apex", "power", true]);
-  const inv = Object.fromEntries((await TicketInventory.find({}).lean()).map((x) => [x.tier, x.sold]));
-  assert.deepEqual([inv.power, inv.apex], [2, 2]);
-  // The purchase email went to the stub only, and says Apex Pass.
+  const after = await soldCounts();
+  assert.deepEqual([after.power, after.apex], [before.power, before.apex + 1]);
+  // The purchase email went to the stub only, says Apex Pass and offers no upgrade.
   const mail = sent.find((m) => (m.to || []).includes?.("lee.speaker@example.com") || m.to === "lee.speaker@example.com");
   assert.ok(mail, "upgrade email built");
   assert.match(mail.subject, /Apex Pass/);
   assert.doesNotMatch(`${mail.subject}${mail.html}${mail.text}`, RETIRED);
+  assert.doesNotMatch(`${mail.subject}${mail.html}${mail.text}`, /upgrade/i);
   // From now on it counts like any sold Apex Pass (the recount agrees with the webhook).
   const { isIssuedSpeakerPass } = await import("../services/teamRoles.js");
   assert.equal(isIssuedSpeakerPass(t), false);
