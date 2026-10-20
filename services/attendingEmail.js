@@ -35,7 +35,7 @@ const PREVIEW_FILE = path.join(__dirname, "..", "assets", "email", "attending-pr
 export const LOGO_CID = "ttfc-logo";
 export const PREVIEW_CID = "ttfc-attending-preview";
 export const CONTACT_EMAIL = "enquire@thetechfestival.com";
-export const FROM = "The Tech Festival Canada <noreply@thetechfestival.com>";
+export const FROM = "The Tech Festival Canada <enquire@thetechfestival.com>";
 
 export const C = {
   bg: "#06020f", card: "#120827", cardEdge: "#2b1a4f", panel: "#0d0620",

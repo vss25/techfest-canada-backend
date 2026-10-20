@@ -30,7 +30,7 @@ export const QR_CID = "ttfc-speaker-qr";
 export const LOGO_CID = "ttfc-logo";
 export const RSVP_URL = "https://www.thetechfestival.com/rsvp";
 export const CONTACT_EMAIL = "enquire@thetechfestival.com";
-export const FROM = "The Tech Festival Canada <noreply@thetechfestival.com>";
+export const FROM = "The Tech Festival Canada <enquire@thetechfestival.com>";
 
 export const C = {
   bg: "#06020f", card: "#120827", cardEdge: "#2b1a4f", panel: "#0d0620",

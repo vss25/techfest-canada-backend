@@ -34,7 +34,7 @@ export async function sendWelcomeEmail(email, name) {
 
     await resend.emails.send({
 
-      from: "TechFest Canada <noreply@thetechfestival.com>",
+      from: "TechFest Canada <enquire@thetechfestival.com>",
 
       to: email,
 
@@ -73,7 +73,7 @@ export async function sendResetPasswordEmail(email, resetLink) {
 
     await resend.emails.send({
 
-      from: "TechFest Canada <noreply@thetechfestival.com>",
+      from: "TechFest Canada <enquire@thetechfestival.com>",
 
       to: email,
 
@@ -142,7 +142,7 @@ export async function sendSignInLinkEmail({ email, link, code, minutes = 15 }) {
   if (!email || !link || !code) throw new Error("Missing email, link or code");
   const { subject, html, text } = buildSignInEmail({ link, code, minutes });
   const { data, error } = await resend.emails.send({
-    from: "TechFest Canada <noreply@thetechfestival.com>",
+    from: "TechFest Canada <enquire@thetechfestival.com>",
     to: email,
     reply_to: EVENT.supportEmail,
     subject,
@@ -157,7 +157,7 @@ export async function sendNoTicketEmail({ email, ticketsUrl }) {
   if (!email) throw new Error("Missing email");
   const { subject, html, text } = buildNoTicketEmail({ email, ticketsUrl });
   const { data, error } = await resend.emails.send({
-    from: "TechFest Canada <noreply@thetechfestival.com>",
+    from: "TechFest Canada <enquire@thetechfestival.com>",
     to: email,
     reply_to: EVENT.supportEmail,
     subject,
@@ -180,7 +180,7 @@ export async function sendBrochureEmail({ email, firstName, brochure, link, atta
   if (!email || !brochure || !link) throw new Error("Missing email, brochure or link");
   const { subject, html, text } = buildBrochureEmail({ firstName, brochure, link, attached: !!attachment });
   const { data, error } = await resend.emails.send({
-    from: "TechFest Canada <noreply@thetechfestival.com>",
+    from: "TechFest Canada <enquire@thetechfestival.com>",
     to: email,
     reply_to: SALES_INBOX,
     subject,
@@ -196,7 +196,7 @@ export async function sendBrochureReceiptEmail({ to = [SALES_INBOX], lead, broch
   if (!lead?.email) throw new Error("Missing lead");
   const { subject, html, text } = buildBrochureReceiptEmail({ lead, brochure, delivery });
   const { data, error } = await resend.emails.send({
-    from: "TechFest Canada <noreply@thetechfestival.com>",
+    from: "TechFest Canada <enquire@thetechfestival.com>",
     to,
     reply_to: lead.email,
     subject,
@@ -218,7 +218,7 @@ export async function sendBrochureReceiptEmail({ to = [SALES_INBOX], lead, broch
 export async function sendFormSubmissionEmail({ to, subject, html, text, replyTo = "" }) {
   if (!to?.length || !subject || !html) throw new Error("Missing recipient, subject or body");
   const { data, error } = await resend.emails.send({
-    from: "TTFC Website <noreply@thetechfestival.com>",
+    from: "TTFC Website <enquire@thetechfestival.com>",
     to,
     ...(replyTo ? { reply_to: replyTo } : {}),
     subject,
