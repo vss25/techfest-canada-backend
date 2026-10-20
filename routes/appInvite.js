@@ -10,7 +10,8 @@ import { sendSequentially } from "../services/profileRequest.js";
 import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 import { usableEmail } from "../services/attendingCampaign.js";
 import {
-  APP_INVITE_CAMPAIGN, APP_URL, COOLDOWN_DAYS, PLAY_STORE_URL, SAMPLE_PERSON, appInviteJob, appStoreUrl, inviteStats, planAppInvites,
+  APP_INVITE_CAMPAIGN, APP_URL, COOLDOWN_DAYS, GROUP_SIZES, MAX_BATCH, PLAY_STORE_URL, SAMPLE_PERSON, TYPE_SEND_FROM, appInviteJob, appStoreUrl,
+  droppedSummary, inviteStats, pickBatch, planAppInvites,
 } from "../services/appInvite.js";
 import {
   DEFAULT_COPY, DEFAULT_OPTIONS, FIELDS, OPTIONS, PLACEHOLDERS, SECTIONS, changedWording, cleanCopy, cleanOptions, wordingToSave,
@@ -32,11 +33,19 @@ import { directory } from "./people.js";
    PUT  /template { ...fields, options } (management) → the same
    POST /preview { ...draft fields, options?, as? } → { subject, preheader, html, text, to }
                                Jane Doe (made up), or `as`: a recipient's email (their name and address).
-   GET  /recipients?skipUsing=1|0 → { counts, stats, rows, job, cooldownDays }
+   GET  /recipients?skipUsing=1|0 → { counts, stats, rows, job, cooldownDays, groupSizes, typeSendFrom }
+                               rows[]: …, ticket (bought / given: services/appInvite.js ticketOf), sendAgain, canSelect
    POST /send-test { ...draft fields, options? } → { sent, to } (to yourself, "[Test] ", no tracking, not recorded)
    POST /send-one { email } → { sent, email, sentAt } (waits COOLDOWN_DAYS after the last one)
    POST /send-all { confirm: "SEND", skipUsing?, only?: "failed" } (management) → 202 { started, toSend }
                                Runs in the background, SEND_GAP_MS apart; poll /recipients (job, counts).
+   POST /send-batch { kind: "next" | "selected", emails: [...], size?, skipUsing?, confirm } (management)
+                               → 202 { started, toSend, dropped: [{ email, name, reason, label }], droppedText, job }
+                               A group ("Send next 20": `size` 10 / 20 / 50 / 100, the next people who'll get it in
+                               the list's order and filter) or the people ticked on the page. `emails` is only a
+                               wish list: it's intersected with who can get it now (services/appInvite.js
+                               pickBatch), in that order; the rest come back in `dropped`. confirm "SEND" for
+                               TYPE_SEND_FROM or more, else "CONFIRM". The same background job as /send-all.
 ========================================================= */
 
 const router = express.Router();
@@ -119,10 +128,12 @@ router.get("/recipients", wrap(async (req, res) => {
     counts: plan.counts,
     stats: inviteStats(plan.rows),
     skipUsing,
-    rows: plan.rows.map(({ id, name, email, roles, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, reason, label, error }) =>
-      ({ id, name, email, roles, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, reason, label, error })),
+    rows: plan.rows.map(({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error }) =>
+      ({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error })),
     job: appInviteJob.view(),
     cooldownDays: COOLDOWN_DAYS,
+    groupSizes: GROUP_SIZES,
+    typeSendFrom: TYPE_SEND_FROM,
   });
 }));
 
@@ -143,7 +154,7 @@ router.post("/send-test", wrap(async (req, res) => {
 
 /** Send to one person (this page, and a profile in People: routes/people.js). → { status, body } */
 export async function sendInviteToOne(email, { by = "", fresh = true } = {}) {
-  if (appInviteJob.state.running) return { status: 409, body: { code: "running", error: "A send to everyone is running. Try again when it finishes." } };
+  if (appInviteJob.state.running) return { status: 409, body: { code: "running", error: "A send to many people is running. Try again when it finishes." } };
   const plan = await currentPlan({ mode: "one", fresh });
   const row = plan.rows.find((r) => r.email === email && r.reason !== "duplicate");
   if (!row) return { status: 404, body: { error: "That email isn't on the list (people with a pass or a role at TTFC 2026)." } };
@@ -169,26 +180,8 @@ router.post("/send-one", wrap(async (req, res) => {
   }
 }));
 
-router.post("/send-all", requireManagement, wrap(async (req, res) => {
-  const b = req.body && typeof req.body === "object" ? req.body : {};
-  if (b.confirm !== "SEND") return res.status(400).json({ error: "Type SEND to confirm." });
-  if (appInviteJob.state.running) return res.status(409).json({ error: "A send to everyone is already running.", job: appInviteJob.view() });
-  const skipUsing = b.skipUsing !== false;
-  const mode = b.only === "failed" ? "failed" : "all";
-  appInviteJob.start(req.user.name || req.user.email || "", mode === "failed" ? "app-invite-retry" : "app-invite");
-  let todo, template;
-  try {
-    const plan = await currentPlan({ skipUsing, mode, fresh: true });
-    todo = plan.targets;
-    template = await loadInviteTemplate(EmailTemplate);
-  } catch (err) {
-    appInviteJob.finish();
-    return res.status(500).json({ error: `Couldn't read the list: ${err?.message || err}` });
-  }
-  appInviteJob.state.total = todo.length;
-  await audit(req, mode === "failed" ? "app_invite_retry_start" : "app_invite_send_all_start", `${todo.length} to send${skipUsing ? ", skipping people already using the app" : ""}`);
-  res.status(202).json({ started: true, toSend: todo.length, job: appInviteJob.view() });
-
+/** Sends `todo` one by one in the background (the job is already started), then audits `<doneAction>`. */
+function runInBackground(req, todo, template, doneAction) {
   const by = String(req.user.email || req.user._id);
   const sendTo = makeInviteSender({ CampaignSend, template });
   (async () => {
@@ -203,13 +196,75 @@ router.post("/send-all", requireManagement, wrap(async (req, res) => {
         }
       }, { delayMs: SEND_GAP_MS });
     } catch (err) {
-      console.error("APP INVITE SEND-ALL ERROR:", err?.message || err);
+      console.error("APP INVITE SEND ERROR:", err?.message || err);
     } finally {
       appInviteJob.finish();
       const s = appInviteJob.state;
-      await audit(req, "app_invite_send_all_done", `sent ${s.sent}, failed ${s.failed}, skipped ${s.skipped} of ${s.total}`);
+      await audit(req, doneAction, `sent ${s.sent}, failed ${s.failed}, skipped ${s.skipped} of ${s.total}`);
     }
   })();
+}
+
+router.post("/send-all", requireManagement, wrap(async (req, res) => {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (b.confirm !== "SEND") return res.status(400).json({ error: "Type SEND to confirm." });
+  if (appInviteJob.state.running) return res.status(409).json({ error: "A send is already running.", job: appInviteJob.view() });
+  const skipUsing = b.skipUsing !== false;
+  const mode = b.only === "failed" ? "failed" : "all";
+  appInviteJob.start(req.user.name || req.user.email || "", mode === "failed" ? "app-invite-retry" : "app-invite", 0, { kind: mode === "failed" ? "retry" : "all" });
+  let todo, template;
+  try {
+    const plan = await currentPlan({ skipUsing, mode, fresh: true });
+    todo = plan.targets;
+    template = await loadInviteTemplate(EmailTemplate);
+  } catch (err) {
+    appInviteJob.finish();
+    return res.status(500).json({ error: `Couldn't read the list: ${err?.message || err}` });
+  }
+  appInviteJob.state.total = todo.length;
+  await audit(req, mode === "failed" ? "app_invite_retry_start" : "app_invite_send_all_start", `${todo.length} to send${skipUsing ? ", skipping people already using the app" : ""}`);
+  res.status(202).json({ started: true, toSend: todo.length, job: appInviteJob.view() });
+  runInBackground(req, todo, template, "app_invite_send_all_done");
+}));
+
+/** A group ("Send next N") or the people ticked on the page: see the header. */
+router.post("/send-batch", requireManagement, wrap(async (req, res) => {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  const kind = b.kind === "next" ? "next" : b.kind === "selected" ? "selected" : "";
+  if (!kind) return res.status(400).json({ error: "Send a group (kind: next) or the people you picked (kind: selected)." });
+  const emails = Array.isArray(b.emails) ? b.emails.filter((e) => typeof e === "string").map((e) => e.slice(0, 200)) : [];
+  if (!emails.length) return res.status(400).json({ error: "Pick who to send it to first." });
+  if (emails.length > MAX_BATCH) return res.status(400).json({ error: `That's more than ${MAX_BATCH} people. Use Send to everyone instead.` });
+  const size = Number(b.size) || 0;
+  if (kind === "next" && (!GROUP_SIZES.includes(size) || emails.length > size)) {
+    return res.status(400).json({ error: `Pick a group of ${GROUP_SIZES.slice(0, -1).join(", ")} or ${GROUP_SIZES.at(-1)} people.` });
+  }
+  const typed = emails.length >= TYPE_SEND_FROM;
+  if (typed ? b.confirm !== "SEND" : !["SEND", "CONFIRM"].includes(b.confirm)) {
+    return res.status(400).json({ error: typed ? "Type SEND to confirm." : "Confirm the send first." });
+  }
+  if (appInviteJob.state.running) return res.status(409).json({ error: "A send is already running.", job: appInviteJob.view() });
+  const skipUsing = b.skipUsing !== false;
+  const before = appInviteJob.start(req.user.name || req.user.email || "", `app-invite-${kind}`, 0, { kind, size: kind === "next" ? size : 0 });
+  let pick, template;
+  try {
+    pick = pickBatch(await currentPlan({ skipUsing, mode: "all", fresh: true }), emails, { kind });
+    template = await loadInviteTemplate(EmailTemplate);
+  } catch (err) {
+    appInviteJob.restore(before);
+    return res.status(500).json({ error: `Couldn't read the list: ${err?.message || err}` });
+  }
+  const { todo, dropped } = pick;
+  if (!todo.length) {
+    appInviteJob.restore(before);
+    return res.status(409).json({ code: "none", error: `None of them can get it now: ${droppedSummary(dropped)}.`, toSend: 0, dropped });
+  }
+  Object.assign(appInviteJob.state, { total: todo.length, dropped: dropped.length });
+  const what = kind === "next" ? `next ${size}` : `${emails.length} picked`;
+  await audit(req, `app_invite_send_${kind}_start`,
+    `${what}: ${todo.length} to send${dropped.length ? `, ${dropped.length} dropped (${[...new Set(dropped.map((d) => d.reason))].join(", ")})` : ""}${skipUsing ? ", skipping people already using the app" : ""}`);
+  res.status(202).json({ started: true, toSend: todo.length, dropped, droppedText: droppedSummary(dropped), job: appInviteJob.view() });
+  runInBackground(req, todo, template, `app_invite_send_${kind}_done`);
 }));
 
 export default router;

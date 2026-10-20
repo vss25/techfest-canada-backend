@@ -533,7 +533,7 @@ router.post("/:id/nudge", sendOne("nudge"));
 router.post("/:id/app-invite", wrap(async (req, res) => {
   const p = await findPerson(req.params.id, { maxAgeMs: 3000 });
   if (!p) return res.status(404).json({ error: "Person not found" });
-  if (appInviteJob.state.running) return res.status(409).json({ code: "running", error: "A send to everyone is running. Try again when it finishes." });
+  if (appInviteJob.state.running) return res.status(409).json({ code: "running", error: "A send to many people is running. Try again when it finishes." });
   const row = await appInviteFor(p);
   if (!row) return res.status(409).json({ code: "notPart", error: "They have no pass or role at TTFC 2026." });
   if (!row.willGet) return res.status(409).json({ code: row.reason, error: row.label });
