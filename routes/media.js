@@ -33,7 +33,7 @@ const RECIPIENTS = (
 
 // Address the applicant's confirmation email replies to
 const REPLY_TO = "marcom@thetechfestival.com";
-const FROM = "TTFC 2026 Media <noreply@thetechfestival.com>";
+const FROM = "TTFC 2026 Media <enquire@thetechfestival.com>";
 
 /* Instantiated lazily so a missing RESEND_API_KEY can never throw
    while Express is still wiring up routes. */

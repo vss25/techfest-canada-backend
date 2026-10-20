@@ -344,7 +344,7 @@ router.post("/pavilion", async (req, res) => {
     // Send to sales team
     try {
       requireEmailDelivery(await resend.emails.send({
-        from: "TTFC India Pavilion <noreply@thetechfestival.com>",
+        from: "TTFC India Pavilion <enquire@thetechfestival.com>",
         to: SALES_EMAIL,
         reply_to: n.repEmail,
         subject: `India Pavilion Application — ${n.legalName}`,
@@ -359,7 +359,7 @@ router.post("/pavilion", async (req, res) => {
     // Send confirmation to applicant
     try {
       requireEmailDelivery(await resend.emails.send({
-        from: "TTFC India Pavilion <noreply@thetechfestival.com>",
+        from: "TTFC India Pavilion <enquire@thetechfestival.com>",
         to: n.repEmail,
         reply_to: SALES_EMAIL,
         subject: `India Pavilion Application Received — ${n.legalName}`,
@@ -413,7 +413,7 @@ router.post("/pavilion/payment-confirmation", async (req, res) => {
 
     // Send notification to sales@
     requireEmailDelivery(await resend.emails.send({
-      from: "TTFC India Pavilion <noreply@thetechfestival.com>",
+      from: "TTFC India Pavilion <enquire@thetechfestival.com>",
       to: SALES_EMAIL,
       reply_to: p.contactEmail,
       subject: `[Pavilion Deposit] $500 received — ${p.companyName}`,
@@ -423,7 +423,7 @@ router.post("/pavilion/payment-confirmation", async (req, res) => {
     // Send receipt to the applicant (non-blocking)
     try {
       requireEmailDelivery(await resend.emails.send({
-        from: "TTFC India Pavilion <noreply@thetechfestival.com>",
+        from: "TTFC India Pavilion <enquire@thetechfestival.com>",
         to: p.contactEmail,
         reply_to: SALES_EMAIL,
         subject: `Payment Confirmed — India Pavilion Deposit`,

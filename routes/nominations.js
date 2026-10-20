@@ -210,7 +210,7 @@ router.post("/nominations", async (req, res) => {
 
     // Send admin notification
     const sent = await resend.emails.send({
-      from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
+      from: "TTFC Catalyst Awards <enquire@thetechfestival.com>",
       to: ["baldeep@thetechfestival.com", "nicole@thetechfestival.com"],
       reply_to: n.nominatorEmail,
       subject: `[Catalyst Nomination] ${n.nomineeName} — ${categoryShort}`,
@@ -222,7 +222,7 @@ router.post("/nominations", async (req, res) => {
     // Send confirmation to the nominator (non-blocking — if it fails, don't fail the whole request)
     try {
       await resend.emails.send({
-        from: "TTFC Catalyst Awards <noreply@thetechfestival.com>",
+        from: "TTFC Catalyst Awards <enquire@thetechfestival.com>",
         to: n.nominatorEmail,
         reply_to: "enquire@thetechfestival.com",
         subject: `Your nomination for ${n.nomineeName} has been received`,
