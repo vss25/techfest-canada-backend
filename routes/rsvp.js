@@ -13,7 +13,8 @@ import { sendFormSubmissionEmail } from "../services/emailService.js";
 import { makeLookup, makeRsvpHandlers, cached } from "../services/rsvpHandler.js";
 import { cxoOverride } from "../services/cxoBreakfast.js";
 import { extrasOverride, EXTRA_SELECT } from "../services/passExtras.js";
-import { effectiveTypes, passKind } from "../services/teamRoles.js";
+import { isMediaPass, isVipPass, passKind, typeInfo } from "../services/teamRoles.js";
+import { loadExhibitors } from "../services/exhibitorCache.js";
 
 /* =========================================================
    TTFC 2026 RSVPs — mounted at /api/rsvp
@@ -39,9 +40,9 @@ const router = express.Router();
 
 /** Ticket ID + last name, checked exactly as the app's ticket sign-in does (routes/ticketAuth.js).
     `names`: who the ticket is for, so the lookup can check the first name too (never sent out).
-    `types` (the holder's person types) and `extras` (staff's pass extras on this ticket: CxO Breakfasts,
-    luncheons, Gala Dinner, Awards Night) decide which of those are offered (services/passExtras.js);
-    `cxoOverride` is the CxO Breakfasts' switch alone (kept for older callers). */
+    `types` (the holder's person types), `vip` (the holder is a VIP) and `extras` (staff's pass extras on this
+    ticket: CxO Breakfasts, luncheons, Gala Dinner, Awards Night) decide which of those are offered
+    (services/passExtras.js); `cxoOverride` is the CxO Breakfasts' switch alone (kept for older callers). */
 async function verifyTicket(ticketId, lastName) {
   const found = await findTicket(ticketId);
   if (!found) return null;
@@ -49,16 +50,19 @@ async function verifyTicket(ticketId, lastName) {
     if (!(await ticketNameMatches(found, lastName))) return null;
     const original = await Attendee.findOne({ ticketId: found.ticketId }).select(`name details.firstName details.lastName ${EXTRA_SELECT}`).lean();
     const names = [...ticketPersonNames(found.owner.name, found.ticket.details), ...(original ? ticketPersonNames(original.name, original.details) : [])];
+    // Their types and VIP flag as the apps see them (a pass marked VIP or Media counts: the exhibitor index).
+    const { types, vip } = typeInfo(found.owner, await loadExhibitors().catch(() => null));
     return {
       ticketId: found.ticketId, type: found.ticket.type, names,
-      types: effectiveTypes(found.owner), cxoOverride: cxoOverride(found.ticket, original), extras: extrasOverride(found.ticket, original),
+      types, vip, cxoOverride: cxoOverride(found.ticket, original), extras: extrasOverride(found.ticket, original),
     };
   }
   const a = found.attendee;
   const ok = lastNameMatches(a.name, lastName) || (a.details?.lastName && lastNameMatches(a.details.lastName, lastName));
   return ok ? {
     ticketId: a.ticketId, type: a.ticketType, names: ticketPersonNames(a.name, a.details),
-    types: passKind(a) === "speaker" ? ["speaker"] : [], cxoOverride: cxoOverride(a), extras: extrasOverride(a),
+    types: [...(passKind(a) === "speaker" ? ["speaker"] : []), ...(isMediaPass(a) ? ["media"] : [])], vip: isVipPass(a),
+    cxoOverride: cxoOverride(a), extras: extrasOverride(a),
   } : null;
 }
 

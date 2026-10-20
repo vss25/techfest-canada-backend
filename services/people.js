@@ -45,7 +45,7 @@
    listed; holding one makes someone a speaker). "All Access" is the
    Power Pass; an exhibitor pass is a Connect Pass, named so.
 
-   Filters (Oct 19 2026, the organiser's list): Attendee Type (the six
+   Filters (Oct 19 2026, the organiser's list): Attendee Type (the seven
    types), Pass Type (Connect, Influence, Power, Apex, and the internal
    Speaker Pass, "Speaker (internal)"), Ticket Value
    After Payment (below / above 100 CAD), RSVP Status (Confirmed by
@@ -61,7 +61,7 @@
 ========================================================= */
 
 import {
-  effectiveTypes, autoTypes, holdsPass, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isSpeakerPass, isVip, isVipPass, legacyVip,
+  effectiveTypes, autoTypes, holdsPass, storedTypes, exhibitorIndex, passKind, isExhibitorPass, isSpeakerPass, isVip, isVipPass, isMediaPass, legacyVip,
   PERSON_TYPES, EXHIBITOR_PROMO, TYPE_LABELS,
 } from "./teamRoles.js";
 import { normalizeTicketId, guestName, guestWork } from "./ticketAccess.js";
@@ -73,7 +73,7 @@ import { companyKey, companyDTO, domainOfUrl } from "./companies.js";
 import { rsvpStatusOf, splitName, RSVP_STATUS_LABELS } from "./rsvpStaff.js";
 import { workDomain } from "./attendeeDetails.js";
 import { cxoOverride } from "./cxoBreakfast.js";
-import { EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
+import { EXTRAS, EXTRA_KEYS, autoExtras, cxoPerson, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
 import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
 import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
@@ -460,8 +460,9 @@ function typesOf(p, exIdx) {
   const off = new Set(storedTypes(u?.typesOff));
   const stored = new Set(storedTypes(u?.types));
   const on = new Set(u ? effectiveTypes(u, { exhibitor: exIdx.boothFor(u) !== null }) : []);
-  // Unclaimed passes found for them, and the speaker list.
+  // Unclaimed passes found for them (a pass marked Media too), and the speaker list.
   for (const a of p.attendees) { const k = passKind(a); if (k && !off.has(k)) on.add(k); }
+  if (p.attendees.some(isMediaPass) && !off.has("media")) on.add("media");
   if (p.speaker && !off.has("speaker")) on.add("speaker");
   // Attendee is automatic only for pass holders with no other type.
   if (on.has("attendee") && !stored.has("attendee") && [...on].some((t) => t !== "attendee")) on.delete("attendee");
@@ -552,11 +553,13 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
   const email = realEmail(u?.email) || [...p.emails][0] || realEmail(rsvp?.email) || "";
 
   const types = typesOf(p, exIdx);
+  const vipInfo = vipOf(p);
   // Pass extras per pass (CxO Breakfasts, luncheons, Gala, Awards): staff's switch, else automatic (the pass's
-  // rules; the CxO Breakfasts also for a speaker-type person). `cxo` / `cxoAuto`: the CxO Breakfasts on their own.
+  // rules; the CxO Breakfasts also for a speaker- or media-type person and a VIP). `cxo` / `cxoAuto`: the CxO
+  // Breakfasts on their own.
   for (const t of tickets) {
-    t.extrasAuto = autoExtras(t.type, types);
-    t.extras = effectiveExtras({ ticketType: t.type, types, override: t.extrasOverride });
+    t.extrasAuto = autoExtras(t.type, types, { vip: vipInfo.vip });
+    t.extras = effectiveExtras({ ticketType: t.type, types, vip: vipInfo.vip, override: t.extrasOverride });
     t.cxoAuto = t.extrasAuto.cxo;
     t.cxo = t.extras.cxo;
   }
@@ -582,7 +585,7 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
     phone,
     types,
     // An account's types as stored and as they come automatically (the App › People editor's view).
-    autoTypes: u ? autoTypes(u, { exhibitor: exhibitorAuto }) : [],
+    autoTypes: u ? autoTypes(u, { exhibitor: exhibitorAuto, media: p.attendees.some(isMediaPass) }) : [],
     holdsPass: u ? holdsPass(u, { exhibitor: exhibitorAuto }) : tickets.some((t) => !t.hidden),
     exhibitor,
     exhibitorPass,
@@ -594,7 +597,9 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
     primary,
     rsvp,
     photoUrl,
-    ...vipOf(p),
+    ...vipInfo,
+    // Marked Media on a pass of theirs (Attendee.media): an account's Media is its type, this is where it came from.
+    mediaPass: p.attendees.some(isMediaPass),
     rsvpEmail: rsvpEmailOf(p, remindedAt),
     // The "I'm attending" email to any of their addresses (services/attendingNudge.js), and what they did with it.
     attending: attendingStatusOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], attendingIdx),
@@ -666,6 +671,7 @@ export function personRow(p) {
     cxoBreakfast: p.primary ? !!p.primary.cxo : null,
     vip: p.vip,
     vipFrom: p.vipFrom,
+    mediaPass: !!p.mediaPass,
     exhibitor: p.exhibitor,
     exhibitorPass: p.exhibitorPass,
     // "I'm attending" email: { status: none | sent | failed | sending, label, sentAt, nudges }.
@@ -930,6 +936,8 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
     typesWhere: where === "account" ? "account" : where === "pass" ? "passes" : "none",
     canEditExhibitor: canEdit,
     canEditVip: canEdit,
+    // Media (Oct 20 2026): an account's type, or saved on a pass-only person's passes (Attendee.media), like Exhibitor.
+    canEditMedia: canEdit,
     canEditCxo: canEdit && hasPass,
     // The pass extras (CxO Breakfasts, luncheons, Gala, Awards) per pass: anyone who can edit them.
     canEditExtras: canEdit && hasPass,
@@ -949,10 +957,11 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
 }
 
 /** Pass extras rules for this person's RSVP: their main pass's extras (staff's switches, else automatic; with
-    no pass, the speaker type gives the CxO Breakfasts) and any extra already on their RSVPs (never taken away).
+    no pass, the speaker or media type or the VIP flag gives the CxO Breakfasts) and any extra already on their
+    RSVPs (never taken away).
     → { cxo: true | false | undefined, extras: { cxo, lunch, gala, awards } | undefined, extra: [keys], speaker } */
 export function rsvpRulesFor(p) {
-  const cxo = p.primary ? !!p.primary.cxo : p.types.includes("speaker") ? true : undefined;
+  const cxo = p.primary ? !!p.primary.cxo : cxoPerson(p.types, p.vip) ? true : undefined;
   const extras = p.primary ? { ...p.primary.extras } : cxo ? { cxo: true } : undefined;
   return { cxo, extras, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]), speaker: p.types.includes("speaker") };
 }

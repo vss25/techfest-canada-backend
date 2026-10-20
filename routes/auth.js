@@ -12,6 +12,7 @@ import { withCheckoutProfile } from "../services/onboardingProfile.js";
 import { canUseStaffSignIn } from "../services/teamRoles.js";
 import { accessOf } from "../services/rightsStore.js";
 import { ticketsWithExtras, EXTRA_FIELDS, EXTRA_SELECT } from "../services/passExtras.js";
+import { profileTagOf } from "../services/profileTag.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -148,17 +149,21 @@ router.get("/me", async (req, res) => {
     const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
     // `types`: their effective person types (attendee included), `rights`: what they may do in
     // the app (services/appRights.js). Same values as GET /api/social/me.
-    const { types, rights } = await accessOf(user);
+    const { types, vip, rights } = await accessOf(user);
     const profile = withCheckoutProfile(user.toObject(), claimed);
     // Each ticket's `cxoBreakfast` (true / false: its CxO Breakfasts) and `inclusions` (everything it includes, with
     // the pass extras staff switched on or off for it: luncheons, Gala Dinner, Awards Night, CxO Breakfasts), from
-    // staff's switches on the ticket (the account's, else its Attendee row's) or automatic (services/passExtras.js).
-    // The apps and the web app read them.
+    // staff's switches on the ticket (the account's, else its Attendee row's) or automatic (services/passExtras.js:
+    // the CxO Breakfasts also for speakers, VIPs and media). The apps and the web app read them.
+    // `profileTag`: the colour of their own Profile page ({ key, label } | null, services/profileTag.js).
     const ids = (profile.tickets || []).map((t) => t?.ticketId).filter(Boolean);
     const switched = ids.length
       ? await Attendee.find({ ticketId: { $in: ids }, $or: EXTRA_FIELDS.map((f) => ({ [f]: { $in: [true, false] } })) }).select(`ticketId ${EXTRA_SELECT}`).lean()
       : [];
-    res.json({ ...profile, tickets: ticketsWithExtras(profile.tickets, { types, attendees: switched }), types, rights });
+    res.json({
+      ...profile, tickets: ticketsWithExtras(profile.tickets, { types, vip, attendees: switched }), types, rights,
+      profileTag: profileTagOf(user.toObject(), { types, vip }),
+    });
 
   } catch (err) {
 

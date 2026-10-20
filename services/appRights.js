@@ -62,6 +62,8 @@ export const DEFAULT_MATRIX = Object.freeze({
   staff: row(RIGHTS),
   vendor: row(["sendMessages", "receiveMessages", "comment", "shareContact"]),
   volunteer: row([...NETWORKING, ...COMMUNITY, "checkIn"]),
+  // Media (Oct 20 2026): an attendee's rights.
+  media: row([...NETWORKING, ...COMMUNITY]),
 });
 
 /** A full matrix: every type × every right, stored values over the defaults (non-booleans ignored). */
@@ -192,7 +194,7 @@ export function holdersQuery(right, matrix = DEFAULT_MATRIX) {
   if (ADMIN_POWERS.includes(right) || types.includes("staff")) or.push({ role: "admin" });
   if (types.includes("volunteer")) or.push({ role: "volunteer" });
   // Pass-based types (and attendee, which anyone without a type gets) can be anyone.
-  if (types.some((t) => ["attendee", "speaker", "exhibitor"].includes(t))) return { banned: { $ne: true } };
+  if (types.some((t) => ["attendee", "speaker", "exhibitor", "media"].includes(t))) return { banned: { $ne: true } };
   return { banned: { $ne: true }, $or: or };
 }
 
@@ -209,12 +211,13 @@ export function holdersQuery(right, matrix = DEFAULT_MATRIX) {
 export function consoleTypes(user, ctx = {}) {
   const booth = ctx.exhibitors ? ctx.exhibitors.boothFor(user) : null;
   const exhibitor = booth !== null;
+  const media = !!ctx.exhibitors?.hasMediaPass?.(user);
   const acc = personAccess(user, ctx);
   const set = typeof user?.vip === "boolean";
   return {
     types: storedTypes(user?.types),
     typesOff: storedTypes(user?.typesOff),
-    autoTypes: autoTypes(user, { exhibitor }),
+    autoTypes: autoTypes(user, { exhibitor, media }),
     holdsPass: holdsPass(user, { exhibitor }),
     effectiveTypes: acc.types,
     rights: acc.rights,
@@ -268,6 +271,8 @@ export function typesEdit(user, body = {}, { management = false } = {}) {
 export function typeCandidates(type) {
   switch (type) {
     case "vendor": return { types: type };
+    // Media: staff's type on the account, or a pass marked Media (matched by the exhibitor index).
+    case "media": return {};
     case "staff": return { $or: [{ role: "admin" }, { types: "staff" }] };
     case "volunteer": return { $or: [{ role: "volunteer" }, { types: "volunteer" }] };
     case "speaker": return { $or: [{ types: "speaker" }, { "tickets.type": { $regex: "^speaker$", $options: "i" } }] };

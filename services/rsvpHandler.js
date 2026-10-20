@@ -84,9 +84,9 @@ const canCheckTicket = (q) => !!q.ticketId && foldName(q.lastName).length >= 2;
 
 /**
  * @param {object} deps
- * @param {(ticketId: string, lastName: string) => Promise<{ticketId: string, type: string, names?: Array, types?: string[], extras?: object, cxoOverride?: boolean} | null>} deps.verifyTicket
+ * @param {(ticketId: string, lastName: string) => Promise<{ticketId: string, type: string, names?: Array, types?: string[], vip?: boolean, extras?: object, cxoOverride?: boolean} | null>} deps.verifyTicket
  *        `names`: who the ticket is for (ticketPersonNames), to check the first name too;
- *        `types`: the holder's effective person types; `extras`: staff's pass extras on that ticket
+ *        `types`: the holder's effective person types; `vip`: the holder is a VIP; `extras`: staff's pass extras on that ticket
  *        ({ cxo?, lunch?, gala?, awards? }: true / false, services/passExtras.js extrasOverride);
  *        `cxoOverride`: the CxO Breakfasts' switch alone (used when `extras.cxo` isn't sent)
  * @param {() => Promise<Array>} deps.getHolders    buildHolderIndex() output
@@ -104,6 +104,7 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
         ticket = {
           ticketId: t.ticketId, type: t.type,
           types: Array.isArray(t.types) ? t.types : [],
+          vip: t.vip === true,
           cxoOverride: typeof t.cxoOverride === "boolean" ? t.cxoOverride : undefined,
           extras: { ...(typeof t.cxoOverride === "boolean" ? { cxo: t.cxoOverride } : {}), ...(t.extras && typeof t.extras === "object" ? t.extras : {}) },
           holderMatch: names.some((n) => fullNameMatches(n, q.firstName, q.lastName)),
@@ -121,8 +122,8 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
     // `verified` here means the server settles the pass (the page locks it). The speaker list
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
     // The verified pass's extras (services/passExtras.js): staff's switches, else the pass's rules (the CxO
-    // Breakfasts: Apex / Speaker Pass / speaker type).
-    const extrasOf = (tier) => (ticket ? effectiveExtras({ ticketType: tier, types: ticket.types, override: ticket.extras }) : undefined);
+    // Breakfasts: Apex / Speaker Pass / speaker or media type / a VIP).
+    const extrasOf = (tier) => (ticket ? effectiveExtras({ ticketType: tier, types: ticket.types, vip: ticket.vip, override: ticket.extras }) : undefined);
     if (speaker) {
       const extras = extrasOf("speaker");
       return { kind: "speaker", tier: "speaker", verified: true, displayName: speaker, ticket, cxoBreakfast: extras?.cxo, extras };

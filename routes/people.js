@@ -154,7 +154,7 @@ const USER_SELECT = ["name email role staffRole types typesOff vip banned organi
   ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
   "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
-  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip", ...EXTRA_FIELDS,
+  "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip media", ...EXTRA_FIELDS,
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
@@ -529,6 +529,8 @@ const passIsTheirs = (details, name) => {
  *   types, typesOff                      an account's person types (the App › People rules: staff / volunteer = management)
  *   (Speaker comes with a Speaker Pass: change their pass to it, PATCH /:id/passes/:ticketId { tier: "speaker" })
  *   exhibitor, vip                       the switches (as before)
+ *   media                                true / false: the Media type (Oct 20 2026). An account: its types (like the
+ *                                        Exhibitor switch); a pass-only person: saved on their passes (Attendee.media)
  *   rsvpEmailSent                        true / false (staff's mark for an email sent outside the panel) | null (from our records)
  * Staff accounts: management only. Audited `person_edit` (and `person_email` for a sign-in change).
  */
@@ -570,6 +572,10 @@ router.patch("/:id", wrap(async (req, res) => {
     if (typeof b.vip !== "boolean") return res.status(400).json({ error: "VIP must be Yes or No", field: "vip" });
     want.vip = b.vip;
   }
+  if (b.media !== undefined) {
+    if (typeof b.media !== "boolean") return res.status(400).json({ error: "Media must be Yes or No", field: "media" });
+    want.media = b.media;
+  }
   if (b.rsvpEmailSent !== undefined) {
     if (![true, false, null].includes(b.rsvpEmailSent)) return res.status(400).json({ error: "RSVP email sent must be Yes, No or automatic", field: "rsvpEmailSent" });
     want.rsvpEmailSent = b.rsvpEmailSent;
@@ -579,13 +585,14 @@ router.patch("/:id", wrap(async (req, res) => {
   if (info.where === "none") return res.status(409).json({ error: info.reason });
   if (!info.canEdit) return res.status(403).json({ error: info.reason || "You can't change this person" });
   if (typesAsked && !p.user) {
-    return res.status(409).json({ error: "Their types live on an app account. Without one, Exhibitor is switched on their passes and Speaker comes with a Speaker Pass; the other types need an account first.", field: "types" });
+    return res.status(409).json({ error: "Their types live on an app account. Without one, Exhibitor and Media are switched on their passes and Speaker comes with a Speaker Pass; the other types need an account first.", field: "types" });
   }
 
   const changed = [];
   const notes = [];
   const yn = (v) => (v ? "Yes" : "No");
-  const note = (k, from, to) => changed.push(["exhibitor", "vip"].includes(k) ? `${k === "vip" ? "VIP" : k} ${yn(from)} → ${yn(to)}` : k);
+  const note = (k, from, to) => changed.push(["exhibitor", "vip", "media"].includes(k) ? `${k === "vip" ? "VIP" : k} ${yn(from)} → ${yn(to)}` : k);
+  const mediaNow = p.types.includes("media");
   const attIds = p.attendees.map((a) => a._id);
   const oldName = p.name === "No name" ? "" : p.name;
   const oldEmail = String(p.email || "").toLowerCase();
@@ -644,6 +651,19 @@ router.patch("/:id", wrap(async (req, res) => {
         if (attIds.length) await Attendee.updateMany({ _id: { $in: attIds }, exhibitor: true }, { $unset: { exhibitor: 1 } });
       }
       note("exhibitor", p.exhibitor, want.exhibitor);
+    }
+    if (want.media !== undefined && want.media !== mediaNow) {
+      // The Media type on the account. Off: staff's type goes, and Media from a pass of theirs is switched off (typesOff).
+      const types = storedTypes(u.types);
+      const off = storedTypes(u.typesOff);
+      if (want.media) {
+        u.types = PERSON_TYPES.filter((t) => t === "media" || types.includes(t));
+        u.typesOff = off.filter((t) => t !== "media");
+      } else {
+        u.types = types.filter((t) => t !== "media");
+        if (p.mediaPass || off.includes("media")) u.typesOff = PERSON_TYPES.filter((t) => t === "media" || off.includes(t));
+      }
+      note("media", mediaNow, want.media);
     }
     if (want.vip !== undefined && (want.vip !== p.vip || typeof u.vip !== "boolean")) {
       // The VIP switch is the account's (User.vip). Their passes' own VIP marks go back to unset, so nothing contradicts it.
@@ -718,6 +738,12 @@ router.patch("/:id", wrap(async (req, res) => {
       else await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { exhibitor: false } });
       note("exhibitor", p.exhibitor, want.exhibitor);
     }
+    if (want.media !== undefined && want.media !== mediaNow) {
+      // Every pass of theirs, so the account that later claims any of them is Media too (services/teamRoles.js isMediaPass).
+      if (want.media) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { media: true } });
+      else await Attendee.updateMany({ _id: { $in: attIds } }, { $unset: { media: 1 } });
+      note("media", mediaNow, want.media);
+    }
     if (want.vip !== undefined && want.vip !== p.vip) {
       // Every pass of theirs, so the account that later claims any of them is a VIP too.
       if (want.vip) await Attendee.updateMany({ _id: { $in: attIds } }, { $set: { vip: true } });
@@ -740,7 +766,7 @@ router.patch("/:id", wrap(async (req, res) => {
     if (Object.keys(set).length) { await Rsvp.updateOne({ _id: r0._id }, { $set: set }); rsvpsTouched++; }
   }
 
-  if (want.exhibitor !== undefined || want.vip !== undefined || typesAsked) clearExhibitorCache();
+  if (want.exhibitor !== undefined || want.vip !== undefined || want.media !== undefined || typesAsked) clearExhibitorCache();
   if (changed.length) {
     const where = [passesTouched ? `${passesTouched} pass record(s)` : "", rsvpsTouched ? `${rsvpsTouched} RSVP(s)` : ""].filter(Boolean).join(", ");
     await audit(req, "person_edit", "person", p.id, `${want.name || p.name}: ${changed.join(", ")}${notes.length ? ` | ${notes.join("; ")}` : ""}${where ? ` (also ${where})` : ""}`);
@@ -822,7 +848,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     await writeTicket(set, unset);
     const overrideAfter = { ...overrideNow };
     for (const [k, v] of Object.entries(changedExtras)) { if (v === null) delete overrideAfter[k]; else overrideAfter[k] = v; }
-    const effectiveAfter = effectiveExtras({ ticketType: tier || t.type, types: p.types, override: overrideAfter });
+    const effectiveAfter = effectiveExtras({ ticketType: tier || t.type, types: p.types, vip: p.vip, override: overrideAfter });
     for (const x of EXTRAS.filter((e) => e.key in changedExtras)) {
       const before = extraLabel(overrideNow[x.key], t.extras?.[x.key]);
       const after = extraLabel(overrideAfter[x.key], effectiveAfter[x.key]);
@@ -842,7 +868,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     if (rsvp) {
       const rules = rsvpRulesFor(p);
       // The new pass's extras: staff's switches on this pass, else the new pass's rules.
-      const extras = effectiveExtras({ ticketType: tier, types: p.types, override: t.extrasOverride || {} });
+      const extras = effectiveExtras({ ticketType: tier, types: p.types, vip: p.vip, override: t.extrasOverride || {} });
       const check = checkOptions(tier, rsvp.days || [], rsvp.options || [], { extras, extra: [...rules.extra, ...(rsvp.staffAdded || [])] });
       if (!check.ok) warnings.push(`Their RSVP has ${check.invalid.map(optionLabel).join(", ")}, which the ${TIER_LABELS[tier]} doesn't include. It stays: staff never take away what they chose.`);
     }

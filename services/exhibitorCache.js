@@ -13,14 +13,16 @@ export const EXHIBITOR_FILTER = Object.freeze({ $or: [{ promoCode: EXHIBITOR_PRO
 let cached = { at: 0, index: null };
 
 /** exhibitorIndex() over every exhibitor pass, plus the passes staff marked VIP (Attendee.vip,
-    for hasVipPass), cached for a minute. Admin → People clears it after either switch. */
+    for hasVipPass) and Media (Attendee.media, for hasMediaPass), cached for a minute. Admin → People
+    and Give a pass clear it after a switch. */
 export async function loadExhibitors() {
   if (cached.index && Date.now() - cached.at < EXHIBITOR_TTL_MS) return cached.index;
-  const [rows, vipRows] = await Promise.all([
+  const [rows, vipRows, mediaRows] = await Promise.all([
     Attendee.find(EXHIBITOR_FILTER).select("claimedBy ticketId issuedPass.booth").lean(),
     Attendee.find({ vip: true }).select("claimedBy ticketId").lean(),
+    Attendee.find({ media: true }).select("claimedBy ticketId").lean(),
   ]);
-  cached = { at: Date.now(), index: exhibitorIndex(rows, { vipRows }) };
+  cached = { at: Date.now(), index: exhibitorIndex(rows, { vipRows, mediaRows }) };
   return cached.index;
 }
 export const clearExhibitorCache = () => { cached = { at: 0, index: null }; };

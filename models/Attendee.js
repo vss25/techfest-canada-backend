@@ -77,8 +77,12 @@ const attendeeSchema = new mongoose.Schema(
     // VIP switch set by staff in Admin → People (services/teamRoles.js isVip). true = a VIP; unset / false = not.
     // An account that claims this pass is a VIP too, unless staff set User.vip on the account.
     vip: { type: Boolean },
+    // Media switch set by staff (Admin → People, Give a pass; Oct 20 2026). true = Media (the media person type,
+    // services/teamRoles.js isMediaPass); unset = not. An account that claims this pass is Media too, unless
+    // staff switched media off on the account (typesOff).
+    media: { type: Boolean },
     // "CxO Breakfast included" for this pass (services/cxoBreakfast.js): true / false = staff's choice,
-    // unset = automatic (Apex and Speaker Passes, and speakers on any pass).
+    // unset = automatic (Apex and Speaker Passes, and speakers, VIPs and media on any pass).
     cxoBreakfast: { type: Boolean },
     // The other pass extras (services/passExtras.js), the same way: true / false = staff's choice, unset = automatic.
     luncheons: { type: Boolean },   // Networking Luncheons (automatic: Influence and up)

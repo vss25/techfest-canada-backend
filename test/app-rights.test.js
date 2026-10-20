@@ -43,9 +43,9 @@ test("rights and labels: twelve rights, plain labels, inbound + admin powers nam
 
 test("default matrix matches the agreed columns", () => {
   const everyday = ["sendMessages", "receiveMessages", "sendRequests", "receiveRequests", "post", "comment", "startDiscussions", "createGroups", "shareContact"];
-  for (const t of ["attendee", "speaker", "exhibitor"]) assert.deepEqual(on(DEFAULT_MATRIX[t]), everyday, t);
+  for (const t of ["attendee", "speaker", "exhibitor", "media"]) assert.deepEqual(on(DEFAULT_MATRIX[t]), everyday, t);
   assert.equal("vip" in DEFAULT_MATRIX, false);   // VIP is a switch, not a column (Oct 19 2026)
-  assert.deepEqual(Object.keys(DEFAULT_MATRIX), ["attendee", "speaker", "exhibitor", "staff", "vendor", "volunteer"]);
+  assert.deepEqual(Object.keys(DEFAULT_MATRIX), ["attendee", "speaker", "exhibitor", "staff", "vendor", "volunteer", "media"]);
   assert.deepEqual(on(DEFAULT_MATRIX.staff), RIGHTS);
   assert.deepEqual(on(DEFAULT_MATRIX.vendor), ["sendMessages", "receiveMessages", "comment", "shareContact"]);
   assert.deepEqual(on(DEFAULT_MATRIX.volunteer), [...everyday, "checkIn"]);
@@ -87,10 +87,12 @@ test("matrixChanges lists each changed cell for the audit log", () => {
 
 /* ---------- types ---------- */
 
-test("cleanTypes: the six types in a fixed order, null for anything unknown (VIP is a switch now)", () => {
-  assert.deepEqual(PERSON_TYPES, ["attendee", "speaker", "exhibitor", "staff", "vendor", "volunteer"]);
-  assert.deepEqual(TYPE_LABELS, { attendee: "Delegate", speaker: "Speaker", exhibitor: "Exhibitor", staff: "Organizer", vendor: "Vendor", volunteer: "Volunteer" });
+test("cleanTypes: the seven types in a fixed order, null for anything unknown (VIP is a switch now)", () => {
+  // Media since Oct 20 2026; the staff type is called "Staff" (it was "Organizer").
+  assert.deepEqual(PERSON_TYPES, ["attendee", "speaker", "exhibitor", "staff", "vendor", "volunteer", "media"]);
+  assert.deepEqual(TYPE_LABELS, { attendee: "Delegate", speaker: "Speaker", exhibitor: "Exhibitor", staff: "Staff", vendor: "Vendor", volunteer: "Volunteer", media: "Media" });
   assert.deepEqual(cleanTypes(["Volunteer", " vendor ", "vendor"]), ["vendor", "volunteer"]);
+  assert.deepEqual(cleanTypes(["media", "Speaker"]), ["speaker", "media"]);
   assert.deepEqual(cleanTypes([]), []);
   assert.equal(cleanTypes(["vip"]), null);
   assert.equal(cleanTypes(["vendor", "minister"]), null);
