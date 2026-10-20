@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import Rsvp from "../models/Rsvp.js";
 import Company from "../models/Company.js";
+import Promo from "../models/Promo.js";
 import CompanyLogo from "../models/CompanyLogo.js";
 import CampaignSend from "../models/CampaignSend.js";
 import EmailEngagement from "../models/EmailEngagement.js";
@@ -162,7 +163,7 @@ const ENGAGEMENT_SELECT = "campaign email ticketId opens firstOpenAt lastOpenAt 
   + "shares sharedAt lastSharedAt manuals manualAt lastManualAt trackedAt";
 
 async function loadDirectory() {
-  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending, engagement] = await Promise.all([
+  const [users, attendees, rsvps, companies, speakers, stripe, reminders, attending, engagement, promos] = await Promise.all([
     User.find({}).select(USER_SELECT).lean(),
     Attendee.find({}).select(ATTENDEE_SELECT).lean(),
     Rsvp.find(LIVE_RSVPS).lean(),
@@ -173,9 +174,11 @@ async function loadDirectory() {
     CampaignSend.find({ campaign: ATTENDING_CAMPAIGN }).select("email status sentAt sends").lean(),
     // Opens, page visits, posts and RSVP form opens (services/engagement.js); a read failure only hides them.
     EmailEngagement.find({}).select(ENGAGEMENT_SELECT).lean().catch((err) => { console.error("PEOPLE ENGAGEMENT ERROR:", err?.message || err); return []; }),
+    // Each code's discount, for "SPRING20 · 20% off" (services/promoCodes.js); a read failure only drops the discount.
+    Promo.find({}).select("code discount").lean().catch(() => []),
   ]);
   const built = buildPeople({
-    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending, engagement,
+    users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending, engagement, promos,
   });
   return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
 }

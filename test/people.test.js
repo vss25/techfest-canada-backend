@@ -310,7 +310,8 @@ test("CSV export: one row per person with pass, RSVP and a profile link", () => 
   assert.equal(head.split(",").length, PEOPLE_CSV_HEAD.length);
   // Types, VIP, pass, value (unknown without Stripe), CxO Breakfast (Power: No, but she's a VIP, so Yes since
   // Oct 20 2026), the other pass extras (Power: luncheons, Gala, Awards; none set by staff), RSVP status.
-  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,,Not known,Stripe,Yes,Yes,Yes,Yes,,1,Confirmed by Individual,Attendee,/);
+  // Code (Oct 20 2026): her Stripe checkout had no coupon code.
+  assert.match(line, /^Jane Doe,jane@acme\.com,Delegate,Yes,Acme Inc\.,CTO,Power Pass,AAA111,Paid,No code,,Not known,Stripe,Yes,Yes,Yes,Yes,,1,Confirmed by Individual,Attendee,/);
   // A breakfast she chose before Power lost it stays on her RSVP; nothing added by staff; no RSVP email recorded.
   assert.match(line, /Day 1 & Day 2,CxO Breakfast \(Day 1\); Gala Dinner & Networking Reception \(Day 2\),,No,,No,/);
   assert.match(line, /,https:\/\/www\.thetechfestival\.com\/admin\/people\/u-u1$/);

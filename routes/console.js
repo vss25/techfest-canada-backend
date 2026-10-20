@@ -26,7 +26,9 @@ import { loadExhibitors } from "../services/exhibitorCache.js";
 import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
-import { collectTickets, duplicateKeys, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
+import Promo from "../models/Promo.js";
+import { collectTickets, duplicateKeys, filterByCode, matchRows, salesSummary, recountSold } from "../services/staffTickets.js";
+import { codesForTickets, discountMap } from "../services/promoCodes.js";
 import { DETAIL_COLUMNS, cleanStaffEdit, mergeStaffEdit } from "../services/attendeeDetails.js";
 import { stripeRows, stripeSummary } from "../services/stripeSales.js";
 import { planProfileRequests, countReasons, profileLink, profileLinksReady, requestStamp, sendSequentially } from "../services/profileRequest.js";
@@ -52,7 +54,7 @@ import {
   submissionsCsv, planImport, importKey,
 } from "../services/formSubmissions.js";
 import Rsvp from "../models/Rsvp.js";
-import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, LIVE_RSVPS } from "../services/rsvp.js";
+import { rsvpsFilter, rsvpListPayload, rsvpDetail, rsvpsCsv, rsvpTicketId, LIVE_RSVPS } from "../services/rsvp.js";
 import { resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import {
   SPEAKER_TYPE, syncSpeakerPasses, speakerPassRow, speakerPassCounts,
@@ -654,11 +656,13 @@ router.post("/kill-switch", requireManagement, async (req, res) => {
    Hiding a ticket only removes it from staff lists and analytics. The
    owner keeps it: it still shows in their app/website and works at the door. */
 async function allTicketRows() {
-  const [users, guests] = await Promise.all([
+  const [users, guests, promos] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode details").lean(),
+    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode stripeSessionId details").lean(),
+    Promo.find({}).select("code discount").lean(),
   ]);
-  return collectTickets(users, guests);
+  // `code` on each row: the coupon code it was bought with, or "No code" / what a staff-made pass is (services/promoCodes.js).
+  return collectTickets(users, guests, { discounts: discountMap(promos) });
 }
 
 router.get("/tickets", async (req, res) => {
@@ -670,10 +674,8 @@ router.get("/tickets", async (req, res) => {
   else if (show === "hidden") rows = rows.filter((r) => r.hidden);
   else if (show === "duplicates") rows = rows.filter((r) => r.duplicate);
   rows = matchRows(rows, req.query.q || "");
-  if (req.query.promo) {
-    const code = String(req.query.promo).toUpperCase();
-    rows = rows.filter((r) => (code === "ANY" ? !!r.promoCode : r.promoCode === code));
-  }
+  // ?promo=ANY: bought with a coupon code (staff-made passes' markers never count); ?promo=<code>: that code.
+  rows = filterByCode(rows, req.query.promo);
   const page = Math.max(0, Number(req.query.page) || 0), size = 100;
   res.json({ total: rows.length, duplicates: dupes.size, rows: rows.slice(page * size, page * size + size) });
 });
@@ -686,11 +688,11 @@ router.get("/tickets/export", requireManagement, async (req, res) => {
     const s = Array.isArray(v) ? v.join("; ") : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v ?? "");
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const head = ["Ticket ID", "Pass", "Name", "Email", "Purchased", "Checked in", "Promo code", "Source",
+  const head = ["Ticket ID", "Pass", "Name", "Email", "Purchased", "Checked in", "Code", "Source",
     ...DETAIL_COLUMNS.map(([, label]) => label), "Organisation from email", "Profile link emailed", "Profile completed by attendee"];
   const date = (d) => (d ? new Date(d).toISOString().slice(0, 10) : "");
   const lines = rows.map((r) => [r.ticketId, r.tier, r.name, r.email,
-    date(r.purchaseDate), r.checkedIn, r.promoCode,
+    date(r.purchaseDate), r.checkedIn, r.code.label,
     r.source === "account" ? "Account" : "Guest checkout",
     ...DETAIL_COLUMNS.map(([k]) => r.details?.[k]), r.emailOrg,
     date(r.profileRequestedAt), date(r.profileCompletedAt)].map(cell).join(","));
@@ -921,6 +923,9 @@ router.patch("/form-submissions/:id", async (req, res) => {
    possible duplicates (`duplicateOf`) are listed but not counted until staff
    resolve them (POST /rsvps/:id/resolve). `catalog` is GET /api/rsvp/options,
    so this page keeps its labels while the kill switch has the public API off. */
+/** Map(ticket ID → code) for these RSVPs' tickets (one query each for accounts, passes and promo codes). */
+const rsvpCodes = (rows) => codesForTickets(rows.map(rsvpTicketId), { User, Attendee, Promo });
+
 router.get("/rsvps", async (req, res) => {
   const filter = rsvpsFilter(req.query);
   const page = Math.max(0, Number(req.query.page) || 0), size = 50;
@@ -929,16 +934,19 @@ router.get("/rsvps", async (req, res) => {
     Rsvp.countDocuments(filter),
     Rsvp.find(LIVE_RSVPS, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1, duplicateOf: 1 }).lean(),
   ]);
-  res.json(rsvpListPayload({ total, page, size, everyone, rows }));
+  // Each row's ticket code (the coupon it was bought with, or what a staff-made pass is): services/promoCodes.js.
+  const codes = await rsvpCodes(rows);
+  res.json(rsvpListPayload({ total, page, size, everyone, rows, codes }));
 });
 
 // Spreadsheet of every RSVP in this view. Management only: it holds emails and accessibility notes.
 router.get("/rsvps/export", requireManagement, async (req, res) => {
   const rows = await Rsvp.find(rsvpsFilter(req.query)).sort({ updatedAt: -1 }).lean();
   await audit(req, "rsvps_export", "rsvp", "", `${rows.length} rows`);
+  const codes = await rsvpCodes(rows);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-rsvps-${new Date().toISOString().slice(0, 10)}.csv"`);
-  res.send(rsvpsCsv(rows));
+  res.send(rsvpsCsv(rows, codes));
 });
 
 // Delete an RSVP for good (management). Rows that pointed at it as their duplicate are unflagged.
@@ -955,7 +963,7 @@ router.get("/rsvps/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "RSVP not found" });
   const r = await Rsvp.findById(req.params.id).lean();
   if (!r) return res.status(404).json({ error: "RSVP not found" });
-  res.json({ rsvp: rsvpDetail(r) });
+  res.json({ rsvp: rsvpDetail(r, await rsvpCodes([r])) });
 });
 
 // A possible duplicate (a second RSVP for a name, not proven to be the same person). Body { action }:
