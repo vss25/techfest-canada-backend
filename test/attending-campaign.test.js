@@ -252,9 +252,10 @@ test("sending: Resend gets reply-to, unsubscribe header, campaign tag and the in
   assert.equal(data.id, "re_1");
   const p = calls[0];
   assert.equal(p.to, "jane@example.com");
-  assert.equal(p.reply_to, "enquire@thetechfestival.com");
+  assert.equal(p.from, "The Tech Festival Canada <marcom@thetechfestival.com>");
+  assert.equal(p.reply_to, "marcom@thetechfestival.com");
   assert.ok(p.subject.startsWith("[Test] Jane, show the world"));
-  assert.match(p.headers["List-Unsubscribe"], /mailto:enquire@thetechfestival\.com/);
+  assert.match(p.headers["List-Unsubscribe"], /mailto:marcom@thetechfestival\.com/);
   assert.deepEqual(p.tags, [{ name: "campaign", value: CAMPAIGN_KEY }]);
   assert.equal(p.attachments.length, 2);
   assert.ok(p.text && p.html.includes(`cid:${PREVIEW_CID}`));
@@ -262,4 +263,11 @@ test("sending: Resend gets reply-to, unsubscribe header, campaign tag and the in
   const refusing = { emails: { send: async () => ({ data: null, error: { message: "rate limited" } }) } };
   await assert.rejects(sendAttendingEmail({ to: "a@b.co", recipient: SAMPLE_RECIPIENT, client: refusing }), /rate limited/);
   await assert.rejects(sendAttendingEmail({ to: "", recipient: SAMPLE_RECIPIENT, client }), /Missing email/);
+});
+
+test("RSVP reminders still come from enquire@ (only I'm attending moved to marcom@)", async () => {
+  const { FROM: REMINDER_FROM } = await import("../services/rsvpReminder.js");
+  const { FROM: ATTENDING_FROM } = await import("../services/attendingEmail.js");
+  assert.equal(REMINDER_FROM, "The Tech Festival Canada <enquire@thetechfestival.com>");
+  assert.equal(ATTENDING_FROM, "The Tech Festival Canada <marcom@thetechfestival.com>");
 });

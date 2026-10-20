@@ -35,7 +35,11 @@ const PREVIEW_FILE = path.join(__dirname, "..", "assets", "email", "attending-pr
 export const LOGO_CID = "ttfc-logo";
 export const PREVIEW_CID = "ttfc-attending-preview";
 export const CONTACT_EMAIL = "enquire@thetechfestival.com";
-export const FROM = "The Tech Festival Canada <enquire@thetechfestival.com>";
+/* "I'm attending" (the campaign, single sends and the LinkedIn nudges) comes from marcom@ (Oct 20 2026, the
+   organiser: "I am attending campaign will be sent through Marcomm, everything else through enquire"); replies
+   and unsubscribe requests go there too. Questions in the email itself still point to enquire@. */
+export const MARCOM_EMAIL = "marcom@thetechfestival.com";
+export const FROM = `The Tech Festival Canada <${MARCOM_EMAIL}>`;
 
 export const C = {
   bg: "#06020f", card: "#120827", cardEdge: "#2b1a4f", panel: "#0d0620",
@@ -307,12 +311,12 @@ export async function sendAttendingEmail({ to, recipient, subjectPrefix = "", cl
   const { data, error } = await client.emails.send({
     from: FROM,
     to,
-    reply_to: CONTACT_EMAIL,
+    reply_to: MARCOM_EMAIL,
     subject: `${subjectPrefix}${subject}`,
     html,
     text,
     attachments,
-    headers: { "List-Unsubscribe": `<mailto:${CONTACT_EMAIL}?subject=unsubscribe>` },
+    headers: { "List-Unsubscribe": `<mailto:${MARCOM_EMAIL}?subject=unsubscribe>` },
     tags: [{ name: "campaign", value: CAMPAIGN_KEY }],
   });
   if (error) throw new Error(error.message || "Resend refused the email");

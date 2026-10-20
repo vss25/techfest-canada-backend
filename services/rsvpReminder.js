@@ -21,12 +21,15 @@
 import { Resend } from "resend";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { greetingName } from "./attendingCampaign.js";
-import { C, CONTACT_EMAIL, FROM, LOGO_CID, SANS, SERIF, button, eyebrow, logoPng, stripe } from "./attendingEmail.js";
+import { C, CONTACT_EMAIL, LOGO_CID, SANS, SERIF, button, eyebrow, logoPng, stripe } from "./attendingEmail.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 import { personNameKey } from "./rsvp.js";
 import { RSVP_URL, displayTicketId } from "./speakerPassEmail.js";
 import { openPixelUrl, withPixel } from "./trackToken.js";
 import { noteTrackedSend } from "./engagementStore.js";
+
+/** RSVP reminders come from enquire@ (the "I'm attending" email moved to marcom@ on Oct 20 2026). */
+export const FROM = `The Tech Festival Canada <${CONTACT_EMAIL}>`;
 
 export const REMINDER_CAMPAIGN = "rsvp-reminder-2026";
 export const REMINDER_COOLDOWN_MS = 20 * 60 * 60 * 1000;
