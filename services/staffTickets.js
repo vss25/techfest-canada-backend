@@ -1,4 +1,5 @@
 import { orgFromEmail } from "./attendeeDetails.js";
+import { codeOf, codeView } from "./promoCodes.js";
 /* Staff view of every ticket (account tickets + guest purchases), duplicate
    detection and real sales numbers. Pure functions, unit-tested.
 
@@ -13,10 +14,13 @@ const profileDates = (d) => ({
   profileCompletedAt: d?.profileCompletedAt || null,
 });
 
-/** One row per ticket. A guest ticket already linked to an account appears once (as the account's). */
-export function collectTickets(users = [], guests = []) {
+/** One row per ticket. A guest ticket already linked to an account appears once (as the account's).
+    `code`: the coupon code it was bought with, or what it is instead (services/promoCodes.js; `discounts`: discountMap()),
+    from the account's ticket and its guest record (a claimed pass keeps its marker there). */
+export function collectTickets(users = [], guests = [], { discounts = new Map() } = {}) {
   const rows = [];
   const onAccounts = new Set();
+  const guestById = new Map((guests || []).filter((g) => g?.ticketId).map((g) => [g.ticketId, g]));
   for (const u of users) {
     for (const t of u.tickets || []) {
       if (!t?.ticketId) continue;
@@ -26,6 +30,7 @@ export function collectTickets(users = [], guests = []) {
         name: u.name || "", email: String(u.email || "").toLowerCase(), ticketId: t.ticketId,
         tier: String(t.type || "").toLowerCase(), purchaseDate: t.purchaseDate || null,
         checkedIn: !!t.checkedIn, hidden: !!t.hiddenByStaff, promoCode: t.promoCode || "",
+        code: codeView(codeOf([t, guestById.get(t.ticketId)], { discounts })),
         details: t.details || null, emailOrg: orgFromEmail(u.email), ...profileDates(t.details),
       });
     }
@@ -37,6 +42,7 @@ export function collectTickets(users = [], guests = []) {
       name: g.name || "", email: String(g.email || "").toLowerCase(), ticketId: g.ticketId,
       tier: String(g.ticketType || "").toLowerCase(), purchaseDate: g.purchaseDate || null,
       checkedIn: !!g.checkedIn, hidden: !!g.hiddenByStaff, promoCode: g.promoCode || "",
+      code: codeView(codeOf([g], { discounts })),
       details: g.details || null, emailOrg: orgFromEmail(g.email), ...profileDates(g.details),
     });
   }
@@ -64,13 +70,20 @@ export function duplicateKeys(rows) {
   return out;
 }
 
-/** Matches rows by name or email (case/accents ignored). */
+/** Matches rows by name, email, ticket ID, company, job title or the coupon code used (case/accents ignored). */
 export function matchRows(rows, q) {
   const needle = fold(q);
   if (!needle) return rows;
   return rows.filter((r) => fold(r.name).includes(needle) || r.email.includes(String(q).trim().toLowerCase()) || r.ticketId.includes(String(q).trim().toLowerCase())
     || fold(r.details?.organisation).includes(needle) || fold(r.details?.jobTitle).includes(needle)
-    || fold(r.emailOrg).includes(needle));
+    || fold(r.emailOrg).includes(needle) || (r.code?.kind === "code" && fold(r.code.code).includes(needle)));
+}
+
+/** ?promo= on the Tickets page: "ANY" = bought with a coupon code (never a staff-made pass), else that code. */
+export function filterByCode(rows, promo) {
+  const code = String(promo || "").trim().toUpperCase();
+  if (!code) return rows;
+  return rows.filter((r) => r.code?.kind === "code" && (code === "ANY" || r.code.code === code));
 }
 
 const DAY = 864e5;

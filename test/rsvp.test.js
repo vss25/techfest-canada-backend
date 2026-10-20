@@ -1101,7 +1101,8 @@ test("rows, detail and the CSV (formula-escaped, one column per option)", () => 
   assert.equal(cells(head).length, CSV_HEAD.length);
   assert.equal(cells(line).length, CSV_HEAD.length);
   assert.ok(cells(head).includes('"Keynotes, panels & sessions (Day 1)"'));
-  assert.match(line, /^2026-10-12 10:00:00,'=cmd,Doe,j@x.com,Power Pass,Yes,Ticket holder,ABC,Yes,,/);
+  // Code (Oct 20 2026): "—" without the ticket records (the route passes codesForTickets' map).
+  assert.match(line, /^2026-10-12 10:00:00,'=cmd,Doe,j@x.com,Power Pass,Yes,Ticket holder,ABC,—,Yes,,/);
   assert.match(line, /'\+no fish/);
   assert.match(line, /"Wheelchair, ""step-free"""/);
   assert.match(line, /,Yes$/);

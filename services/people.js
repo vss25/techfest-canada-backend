@@ -78,6 +78,7 @@ import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
 import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
 import { OPENS_NOTE, attendingEngagementOf, engagementIndex, rsvpEngagementOf } from "./engagement.js";
+import { codeOf, codeView, discountMap } from "./promoCodes.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -190,6 +191,8 @@ function ticketRecord({ user = null, t = null, a = null }) {
     manualValueBy: manualValue !== undefined ? String(manualFrom?.manualValueBy || "") : "",
     manualValueAt: manualValue !== undefined ? manualFrom?.manualValueAt || null : null,
     promoCode,
+    // What the coupon code is worked out from (services/promoCodes.js codeOf): the account's ticket, then its pass row.
+    codeSources: [t, a].filter(Boolean).map((r) => ({ promoCode: r.promoCode, stripeSessionId: r.stripeSessionId, type: r.type ?? r.ticketType })),
     stripeSessionId: String(t?.stripeSessionId || a?.stripeSessionId || ""),
     purchaseDate: t?.purchaseDate || a?.purchaseDate || null,
     checkedIn: !!(t?.checkedIn || a?.checkedIn),
@@ -306,7 +309,7 @@ function passNames(a) {
  * @returns {{ people: object[], byId: Map<string, object>, unattributedPosts: number }}  internal person records (see personRow /
  *          personDetail); unattributedPosts: LinkedIn posts from "I'm attending" links that didn't say whose they were
  */
-export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [], engagement = [] } = {}) {
+export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [], engagement = [], promos = [] } = {}) {
   const people = [];
   const alias = new Map();
   const byTicket = new Map();
@@ -448,7 +451,7 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     if (e && at && (!remindedAt.has(e) || remindedAt.get(e) < at)) remindedAt.set(e, at);
   }
   const engagementIdx = engagementIndex(engagement);
-  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending), engagementIdx };
+  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending), engagementIdx, discounts: discountMap(promos) };
   for (const p of people) Object.assign(p, summarize(p, ctx));
   return { people, byId: alias, unattributedPosts: engagementIdx.unattributedPosts };
 }
@@ -521,9 +524,13 @@ function rsvpEmailOf(p, remindedAt) {
   return { sent: true, at: mark.at || auto.at, via: ["Marked by staff", ...auto.via], mark, auto };
 }
 
-function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx, engagementIdx }) {
+function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx, engagementIdx, discounts }) {
   const u = p.user;
-  const tickets = [...p.tickets.values()].map((t) => ({ ...t, status: passStatus(t, refunds), value: ticketValue(t, stripe) }));
+  const tickets = [...p.tickets.values()].map((t) => ({
+    ...t, status: passStatus(t, refunds), value: ticketValue(t, stripe),
+    // The coupon code it was bought with, "No code", or what a staff-made pass is (services/promoCodes.js).
+    code: codeView(codeOf(t.codeSources, { discounts })),
+  }));
   const primary = primaryPass(tickets);
   const att = (primary?.attendeeId && p.attendees.find((a) => String(a._id) === primary.attendeeId)) || p.attendees[0] || null;
   const details = primary?.details || att?.details || {};
@@ -606,7 +613,8 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
     attendingEngagement: attendingEngagementOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], engagementIdx),
     // Opens of the emails with their RSVP link, and the RSVP form opened with one of their tickets.
     rsvpEngagement: rsvpEngagementOf({ emails: [email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], tickets: [...p.tickets.keys()] }, engagementIdx),
-    search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...p.emails].filter(Boolean).join(" ")),
+    // The coupon codes they bought with count too: typing SPRING20 lists who used it.
+    search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...tickets.filter((t) => t.code.kind === "code").map((t) => t.code.code), ...p.emails].filter(Boolean).join(" ")),
   };
 }
 
@@ -622,6 +630,8 @@ const passOut = (t) => (t ? {
   // Every pass extra, the same way: { <cxo|lunch|gala|awards>: { override: true | false | null, auto, included } }.
   extras: extrasView(t.extrasOverride || {}, t.extrasAuto || {}, t.extras || {}),
   valueBand: valueBand(t.value), valueSource: valueSource(t),
+  // { kind: code | none | staff | unknown, code, discount, label: "SPRING20 · 20% off" | "No code" | "Given by staff" | "—" }
+  code: t.code || null,
 } : null);
 
 /** The person's ticket value band: "below" | "above" | "unknown" (a pass we can't price) | "none" (no pass). */
@@ -746,7 +756,7 @@ const ENGAGED = {
   },
 };
 
-export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip", "attending"];
+export const SORTS = ["name", "company", "type", "pass", "code", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip", "attending"];
 const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), "en", { sensitivity: "base" });
 
 /** Sorted copy. Blanks go last whichever way; ties by name. */
@@ -758,6 +768,8 @@ export function sortPeople(people, sort = "name", dir = "asc") {
     company: (p) => p.company,
     type: (p) => p.types.filter((t) => t !== "attendee").join(" ") || (p.types.includes("attendee") ? "~attendee" : ""),
     pass: (p) => (p.primary ? TIER_RANK[p.primary.tier] || 0 : null),
+    // Coupon codes A–Z, then "No code", then staff-made passes; nothing on record last.
+    code: (p) => { const c = p.primary?.code; return !c || c.kind === "unknown" ? null : c.kind === "code" ? `0${c.code}` : c.kind === "none" ? "1" : `2${c.label}`; },
     status: (p) => (p.primary ? PASS_STATUSES.indexOf(p.primary.status) : null),
     rsvp: (p) => { const r = rsvpStatusOf(p.rsvp); return r.status === "none" ? null : ms(r.at); },
     value: (p) => (p.primary && p.primary.value !== null && p.primary.value !== undefined ? p.primary.value : null),
@@ -835,7 +847,7 @@ const GENERIC = /^(sessions|expo|breaks)_d\d$/; // what every pass includes on a
 const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 16) : "");
 
 export const PEOPLE_CSV_HEAD = [
-  "Name", "Email", "Types", "VIP", "Company", "Job title", "Pass", "Ticket ID", "Pass status",
+  "Name", "Email", "Types", "VIP", "Company", "Job title", "Pass", "Ticket ID", "Pass status", "Code",
   "Ticket value after payment (CAD before HST)", "Ticket value", "Ticket value from", "CxO Breakfast",
   "Networking Luncheons", "Gala Dinner & Networking Reception", "Catalyst Awards Night", "Extras set by staff", "Passes",
   "RSVP", "RSVP set by", "RSVP updated (UTC)", "Days", "Special events", "Added by staff",
@@ -854,7 +866,7 @@ export function peopleCsv(people, { profileBase = "" } = {}) {
     const v = p.primary ? p.primary.value : null;
     return [
       p.name, p.email, p.types.map((t) => TYPE_LABELS[t] || t).join("; "), p.vip ? "Yes" : "No", p.company, p.jobTitle,
-      p.primary?.label || "", p.primary?.ticketId || "", PASS_STATUS_LABELS[p.primary?.status || "none"],
+      p.primary?.label || "", p.primary?.ticketId || "", PASS_STATUS_LABELS[p.primary?.status || "none"], p.primary?.code?.label || "",
       v === null || v === undefined ? "" : v.toFixed(2), VALUE_BAND_LABELS[bandOf(p)],
       p.primary ? VALUE_SOURCE_LABELS[valueSource(p.primary)] : "",
       p.primary ? (p.primary.cxo ? "Yes" : "No") : "",

@@ -649,13 +649,28 @@ export function summarizeRsvps(docs = []) {
 
 /** GET /api/console/rsvps. `catalog` is the options payload, so the staff page has the
     labels even while the kill switch has GET /api/rsvp/options (the public site) switched off. */
-export function rsvpListPayload({ total = 0, page = 0, size = 50, everyone = [], rows = [] } = {}) {
-  return { total, page, size, summary: summarizeRsvps(everyone), rows: rows.map(rsvpRow), catalog: rsvpOptionsPayload() };
+/** `codes`: Map(ticket ID → the coupon code its ticket was bought with, services/promoCodes.js codesForTickets). */
+export function rsvpListPayload({ total = 0, page = 0, size = 50, everyone = [], rows = [], codes = null } = {}) {
+  return { total, page, size, summary: summarizeRsvps(everyone), rows: rows.map((d) => rsvpRow(d, codes)), catalog: rsvpOptionsPayload() };
 }
 
-/** A row of the admin table. */
-export function rsvpRow(d) {
+/** The ticket an RSVP belongs to: its verified ticket ID, else the ticket its key names ("t:<id>"); "" = none
+    (a speaker matched by name, or an unverified name-only RSVP). Normalised. */
+export function rsvpTicketId(d) {
+  if (d?.ticketVerified && d?.ticketId) return normalizeTicketId(d.ticketId);
+  const key = String(d?.key || "");
+  return key.startsWith("t:") ? normalizeTicketId(key.slice(2)) : "";
+}
+
+const NO_TICKET_CODE = Object.freeze({ kind: "unknown", code: "", discount: null, label: "—" });
+/** The coupon code of an RSVP's ticket from `codes` (codesForTickets), or "—" with no ticket. */
+export const rsvpCode = (d, codes) => (codes instanceof Map ? codes.get(rsvpTicketId(d)) || NO_TICKET_CODE : undefined);
+
+/** A row of the admin table. `codes`: as rsvpListPayload's (adds `code`). */
+export function rsvpRow(d, codes = null) {
+  const code = rsvpCode(d, codes);
   return {
+    ...(code ? { code } : {}),
     id: String(d._id),
     name: nameOf(d),
     email: d.email || "",
@@ -684,10 +699,10 @@ export function rsvpRow(d) {
   };
 }
 
-/** Everything about one RSVP, for the drawer. */
-export function rsvpDetail(d) {
+/** Everything about one RSVP, for the drawer. `codes`: as rsvpListPayload's. */
+export function rsvpDetail(d, codes = null) {
   return {
-    ...rsvpRow(d),
+    ...rsvpRow(d, codes),
     firstName: d.firstName || "",
     lastName: d.lastName || "",
     ticketId: d.ticketId || "",
@@ -714,18 +729,19 @@ const KIND_LABEL = { ticket: "Ticket holder", speaker: "Speaker", none: "Not mat
 const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 19) : "");
 
 export const CSV_HEAD = [
-  "Updated (UTC)", "First name", "Last name", "Email", "Pass", "Pass verified", "Matched as", "Ticket ID",
+  "Updated (UTC)", "First name", "Last name", "Email", "Pass", "Pass verified", "Matched as", "Ticket ID", "Code",
   ...OPTION_KEYS.map(optionLabel), "Dietary", "Dietary (other)", "Accessibility", "Times submitted", "First RSVP (UTC)",
   "Entered by", "In headcounts",
 ];
 
-/** Spreadsheet for management: one Yes column per day/experience so catering can sum them. */
-export function rsvpsCsv(docs) {
+/** Spreadsheet for management: one Yes column per day/experience so catering can sum them.
+    `codes`: as rsvpListPayload's ("Code": the coupon code of the RSVP's ticket, "No code", a staff pass, or "—"). */
+export function rsvpsCsv(docs, codes = null) {
   const lines = docs.map((d) => {
     const picked = new Set([...(d.days || []), ...(d.options || [])]);
     return [
       stamp(d.updatedAt || d.createdAt), d.firstName, d.lastName, d.email, TIER_LABELS[d.tier] || d.tier,
-      !!d.tierVerified, KIND_LABEL[d.kind] || "", d.ticketId,
+      !!d.tierVerified, KIND_LABEL[d.kind] || "", d.ticketId, (rsvpCode(d, codes) || NO_TICKET_CODE).label,
       ...OPTION_KEYS.map((k) => (picked.has(k) ? "Yes" : "")),
       (d.dietary || []).map((k) => DIETARY_LABEL[k] || k).join("; "), d.dietaryOther, d.accessibility,
       d.submissions ?? 1, stamp(d.createdAt),
