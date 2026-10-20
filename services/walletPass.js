@@ -2,6 +2,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { PKPass } from "passkit-generator";
+import { typeInfo } from "./teamRoles.js";
+import { profileTagOf, profileTagOfPass } from "./profileTag.js";
 
 /* =========================================================
    Apple Wallet delegate pass (eventTicket)
@@ -10,6 +12,18 @@ import { PKPass } from "passkit-generator";
    colour as the background, orange labels, white values, and the
    same QR the website wallet and the door scanner use:
        TECHFEST:<ticketId>
+   Since Oct 20 2026 the pass is in the holder's Profile colour
+   (the organiser: "the pass in apple wallet is the same as the hue
+   they're getting in the profile section (golden pass for vip,
+   etc.)"): services/profileTag.js decides (VIP > Media > Speaker >
+   Staff > Volunteer > any other pass), WALLET_COLORS has the
+   background, values and labels for each, and someone with no tag
+   keeps the purple pass. On the light passes (VIP gold, Volunteer
+   orange, other passes green) the logo's words are dark
+   (assets/wallet/dark). Wallet draws the QR on its own white panel,
+   whatever the colours. A pass already in someone's Wallet keeps the
+   colours it was added with (no Wallet web service): adding it again
+   gets the new ones.
 
    Signing needs an Apple Developer "Pass Type ID" certificate.
    Configure on Render (base64 so newlines survive):
@@ -38,8 +52,48 @@ export const tierLabel = (key) => {
   return TIER_NAMES[/^all[- ]?access( pass)?$/.test(k) ? "power" : k] || `${String(key || "Delegate")} Pass`;
 };
 
-/** Pure: the pass.json-level props + fields. Exported for tests. */
-export function passContent({ ticketId, tier, name, purchaseDate }) {
+const rgb = (hex) => {
+  const n = parseInt(String(hex).replace("#", ""), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
+
+/** The pass's colours for each Profile tag (services/profileTag.js), the same hue as the Profile page. `logo`:
+    which logo the colour needs ("dark": the words in dark ink, for the light backgrounds). */
+export const WALLET_COLORS = Object.freeze({
+  vip: Object.freeze({ background: "#F5C400", foreground: "#3D2E00", label: "#5C4500", logo: "dark" }),
+  media: Object.freeze({ background: "#0B3D91", foreground: "#FFFFFF", label: "#C9D7F2", logo: "light" }),
+  speaker: Object.freeze({ background: "#D01F2F", foreground: "#FFFFFF", label: "#FAD4D8", logo: "light" }),
+  staff: Object.freeze({ background: "#7B2FD0", foreground: "#FFFFFF", label: "#E3D2F7", logo: "light" }),
+  volunteer: Object.freeze({ background: "#FF6B00", foreground: "#3A1500", label: "#5A2400", logo: "dark" }),
+  pass: Object.freeze({ background: "#18A957", foreground: "#052E16", label: "#0B4A26", logo: "dark" }),
+});
+/** No tag (no pass and none of the tags): the purple pass, as before. */
+export const DEFAULT_WALLET_COLORS = Object.freeze({ background: "#5926A7", foreground: "#FFFFFF", label: "#F47600", logo: "light" });
+
+/** { backgroundColor, foregroundColor, labelColor } in Wallet's "rgb(r, g, b)" and the logo, for a profileTag. */
+export function walletColorsFor(tag) {
+  const c = WALLET_COLORS[tag?.key] || DEFAULT_WALLET_COLORS;
+  return { backgroundColor: rgb(c.background), foregroundColor: rgb(c.foreground), labelColor: rgb(c.label), logo: c.logo };
+}
+
+/**
+ * The Profile tag of whoever holds the pass, from the records the route found (pure; the route loads them):
+ *   account   their User (role, types, typesOff, vip, tickets): the same tag GET /auth/me sends, with
+ *             `index` (services/exhibitorCache.js loadExhibitors) for a pass of theirs marked VIP / Media / exhibitor
+ *   attendee  a pass-only person's Attendee record (no account has the ticket)
+ * → { key, label } | null
+ */
+export function walletTagFor({ account = null, attendee = null, index = null } = {}) {
+  if (account) {
+    const { types, vip } = typeInfo(account, index);
+    return profileTagOf(account, { types, vip });
+  }
+  return attendee ? profileTagOfPass(attendee) : null;
+}
+
+/** Pure: the pass.json-level props + fields. Exported for tests. `tag`: the holder's profileTag (walletTagFor). */
+export function passContent({ ticketId, tier, name, purchaseDate, tag = null }) {
+  const colors = walletColorsFor(tag);
   return {
     props: {
       formatVersion: 1,
@@ -49,9 +103,10 @@ export function passContent({ ticketId, tier, name, purchaseDate }) {
       organizationName: "AtlasLink Markets Inc.",
       description: "The Tech Festival Canada 2026 — Delegate Pass",
       logoText: "TTFC 2026",
-      foregroundColor: "rgb(255, 255, 255)",
-      backgroundColor: "rgb(89, 38, 167)",   // #5926a7 — PDF spine
-      labelColor: "rgb(244, 118, 0)",        // #f47600 — PDF eyebrow
+      // The holder's Profile colour (WALLET_COLORS); no tag: #5926a7 (the PDF spine) with #f47600 labels (its eyebrow).
+      foregroundColor: colors.foregroundColor,
+      backgroundColor: colors.backgroundColor,
+      labelColor: colors.labelColor,
       sharingProhibited: true,
     },
     header: [{ key: "dates", label: "OCT", value: "26–27" }],
@@ -76,16 +131,21 @@ export function passContent({ ticketId, tier, name, purchaseDate }) {
   };
 }
 
-function loadAssets() {
+/** The pass images (icon, logo). `logo` "dark": the logo with its words in dark ink (assets/wallet/dark). */
+export function loadAssets({ logo = "light" } = {}) {
   const files = {};
   for (const f of fs.readdirSync(ASSET_DIR)) {
     if (f.endsWith(".png")) files[f] = fs.readFileSync(path.join(ASSET_DIR, f));
   }
+  if (logo === "dark") {
+    const dir = path.join(ASSET_DIR, "dark");
+    for (const f of fs.readdirSync(dir)) if (f.endsWith(".png")) files[f] = fs.readFileSync(path.join(dir, f));
+  }
   return files;
 }
 
-/** Builds and signs a .pkpass buffer. Throws when not configured. */
-export async function buildPass(input, certificates = null) {
+/** The pass, ready to sign (`certificates`: the Pass Type ID cert, else the env's). buildPass signs it. */
+export function makePass(input, certificates = null) {
   const certs = certificates || {
     wwdr: b64("WALLET_WWDR_CERT_B64"),
     signerCert: b64("WALLET_SIGNER_CERT_B64"),
@@ -93,7 +153,7 @@ export async function buildPass(input, certificates = null) {
     signerKeyPassphrase: process.env.WALLET_SIGNER_KEY_PASS || undefined,
   };
   const c = passContent(input);
-  const pass = new PKPass(loadAssets(), certs, c.props);
+  const pass = new PKPass(loadAssets({ logo: walletColorsFor(input?.tag).logo }), certs, c.props);
   pass.type = "eventTicket";
   pass.headerFields.push(...c.header);
   pass.primaryFields.push(...c.primary);
@@ -103,5 +163,10 @@ export async function buildPass(input, certificates = null) {
   pass.setBarcodes(c.barcode);
   pass.setRelevantDate(new Date(c.relevantDate));
   pass.setLocations(c.location);
-  return pass.getAsBuffer();
+  return pass;
+}
+
+/** Builds and signs a .pkpass buffer. Throws when not configured. */
+export async function buildPass(input, certificates = null) {
+  return makePass(input, certificates).getAsBuffer();
 }
