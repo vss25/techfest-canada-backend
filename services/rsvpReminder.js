@@ -12,6 +12,10 @@
    (the fragment never reaches a server; the page fills the form).
    It can go more than once: "Send to all" skips anyone reminded in
    the last REMINDER_COOLDOWN_MS, so a double click never doubles up.
+   Real sends carry a 1×1 open pixel signed for that address
+   (services/trackToken.js, People › RSVP email opened); previews and
+   test sends don't. The RSVP form itself is counted when it's opened
+   with a ticket (services/rsvpHandler.js), for every email ever sent.
 ========================================================= */
 
 import { Resend } from "resend";
@@ -21,6 +25,8 @@ import { C, CONTACT_EMAIL, FROM, LOGO_CID, SANS, SERIF, button, eyebrow, logoPng
 import { normalizeTicketId } from "./ticketAccess.js";
 import { personNameKey } from "./rsvp.js";
 import { RSVP_URL, displayTicketId } from "./speakerPassEmail.js";
+import { openPixelUrl, withPixel } from "./trackToken.js";
+import { noteTrackedSend } from "./engagementStore.js";
 
 export const REMINDER_CAMPAIGN = "rsvp-reminder-2026";
 export const REMINDER_COOLDOWN_MS = 20 * 60 * 60 * 1000;
@@ -111,9 +117,10 @@ export const SAMPLE_REMINDER = Object.freeze({
  * @param {string} [p.lastName]
  * @param {Array}  p.tickets   [{ ticketId, firstName, lastName }] still to RSVP
  * @param {string} [p.logoSrc] "cid:…" or a data: URI ("" = text wordmark)
+ * @param {string} [p.pixelSrc] a real send's open pixel ("" = none)
  * @returns {{ subject, preheader, html, text, links }}
  */
-export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets = [], logoSrc = "" } = {}) {
+export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets = [], logoSrc = "", pixelSrc = "" } = {}) {
   const first = greetingName({ firstName, lastName });
   const subject = first ? `${first}, a quick reminder to RSVP for TTFC 2026` : "A quick reminder to RSVP for TTFC 2026";
   const preheader = "Tell us which breakfasts, luncheons and evening events you're coming to. It takes about a minute.";
@@ -224,23 +231,30 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
     `${EVENT.venue}, ${EVENT.address}`,
   ].join("\n");
 
-  return { subject, preheader, html, text, links: links.map((l) => l.url) };
+  return { subject, preheader, html: withPixel(html, pixelSrc), text, links: links.map((l) => l.url) };
 }
 
-/** Subject/html/text for a row; `inline: true` puts the logo in as a data: URI (admin preview). */
-export function reminderEmailFor(row, { inline = true } = {}) {
+/** Subject/html/text for a row; `inline: true` puts the logo in as a data: URI (admin preview).
+    `track`: the address a real send goes to (its open pixel; `tracked` says whether it could be signed). */
+export function reminderEmailFor(row, { inline = true, track = "" } = {}) {
   const logoSrc = inline ? `data:image/png;base64,${logoPng().toString("base64")}` : `cid:${LOGO_CID}`;
-  return buildRsvpReminderEmail({ firstName: row?.firstName || "", lastName: row?.lastName || "", tickets: row?.tickets || [], logoSrc });
+  const pixelSrc = !inline && track ? openPixelUrl({ c: REMINDER_CAMPAIGN, e: track }) : "";
+  return {
+    ...buildRsvpReminderEmail({ firstName: row?.firstName || "", lastName: row?.lastName || "", tickets: row?.tickets || [], logoSrc, pixelSrc }),
+    tracked: !!pixelSrc,
+  };
 }
 
 let resendClient = null;
 const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
 
-/** Sends one reminder through Resend (logo inline, reply-to enquire@). Throws when Resend refuses it. */
-export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = resend() }) {
+/** Sends one reminder through Resend (logo inline, reply-to enquire@). Throws when Resend refuses it.
+    `track`: a real send (the open pixel for this address); test sends leave it off. */
+export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = resend(), track = false, noteTracked = noteTrackedSend }) {
   if (!to) throw new Error("Missing email");
   if (!row?.tickets?.length) throw new Error("No ticket to RSVP for");
-  const { subject, html, text } = reminderEmailFor(row, { inline: false });
+  const address = track ? String(to).trim().toLowerCase() : "";
+  const { subject, html, text, tracked } = reminderEmailFor(row, { inline: false, track: address });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,
@@ -253,6 +267,7 @@ export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = r
   });
   if (error) throw new Error(error.message || "Resend refused the email");
   if (!data?.id) throw new Error("Resend did not accept the email");
+  if (tracked) noteTracked?.({ campaign: REMINDER_CAMPAIGN, email: address, ticketId: "" });
   return data;
 }
 
@@ -300,7 +315,7 @@ export function makeReminderSender({ store, send = sendRsvpReminder, now = () =>
   return async function sendTo(r, by = "", { force = false } = {}) {
     if (!(await store.claim(r.email, { name: r.name || "", by, force, now: now() }))) return "skipped";
     try {
-      const data = await send({ to: r.email, row: r });
+      const data = await send({ to: r.email, row: r, track: true });
       const sentAt = now();
       await store.sent(r.email, { sentAt, resendId: data?.id || "" });
       return sentAt;

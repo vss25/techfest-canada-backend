@@ -54,7 +54,7 @@ test("the guest offer can't be switched on by anyone, management included; off i
   assert.deepEqual(contentAccess("flag.polls"), { managementOnly: false, locked: false });
 });
 
-test("I'm attending status: sent beats unconfirmed beats failed, newest send wins; nothing else is known", () => {
+test("I'm attending status: sent beats unconfirmed beats failed, newest send wins; opens, clicks and posts are tracked", () => {
   const idx = attendingIndex([
     { email: "Ana@Example.com", status: "failed", sentAt: daysAgo(6), sends: 0 },
     { email: "ana.work@example.com", status: "sent", sentAt: daysAgo(4), sends: 2 },
@@ -68,7 +68,8 @@ test("I'm attending status: sent beats unconfirmed beats failed, newest send win
   assert.equal(attendingStatusOf(["ben@example.com", "cy@example.com"], idx).status, "sending");
   assert.equal(attendingStatusOf(["cy@example.com"], idx).label, "Failed");
   assert.deepEqual(attendingStatusOf(["junk@example.com", "", null], idx), { status: "none", label: "Not sent", sentAt: null, nudges: 0, email: "" });
-  assert.deepEqual(ATTENDING_TRACKING, { opens: false, clicks: false, posts: false });
+  // Since Oct 19 2026 (services/engagement.js): the pixel, their page opened, and confirmed LinkedIn posts.
+  assert.deepEqual(ATTENDING_TRACKING, { opens: true, clicks: true, posts: true });
 });
 
 const pass = (ticketId, extra = {}) => ({ ticketId, hidden: false, ...extra });
@@ -88,6 +89,9 @@ test("LinkedIn nudge: the skip list, the cool-down and one email per address", (
     person("p10", "Ana Twin", "ana@example.com"),
     person("p11", "Jo Failed", "jo@example.com"),
     person("p12", "No name", "nn@example.com", { firstName: "", lastName: "" }),
+    // Posted through "Post to LinkedIn" (confirmed): left out. A phone share can't be confirmed: still nudged.
+    person("p13", "Kai Posted", "kai@example.com", { attendingEngagement: { stage: "posted", posts: 1 } }),
+    person("p14", "Lu Shared", "lu@example.com", { attendingEngagement: { stage: "shared", posts: 0, shares: 1 } }),
   ];
   const sends = [
     { email: "gus@example.com", status: "sent", sentAt: daysAgo(1) },
@@ -96,22 +100,21 @@ test("LinkedIn nudge: the skip list, the cool-down and one email per address", (
     { email: "jo@example.com", status: "failed" },
   ];
   const plan = planAttendingNudges(people, { optedOut: ["flo@example.com"], sends, now: NOW });
-  assert.deepEqual(plan.targets.map((t) => t.email), ["ana@example.com", "hal@example.com", "jo@example.com", "nn@example.com"]);
+  assert.deepEqual(plan.targets.map((t) => t.email), ["ana@example.com", "hal@example.com", "jo@example.com", "nn@example.com", "lu@example.com"]);
   assert.deepEqual(plan.targets[0], {
     email: "ana@example.com", name: "Ana Able", firstName: "Ana", lastName: "Able", title: "CTO", company: "Example Bank",
     people: [{ id: "p1", name: "Ana Able" }, { id: "p10", name: "Ana Twin" }],
   });
   assert.deepEqual(plan.skipped.map((s) => [s.name, s.reason]), [
     ["Ben Booth", "noPass"], ["Cy Hidden", "noPass"], ["Di Placeholder", "noEmail"], ["Ed Suspended", "banned"],
-    ["Flo Unsub", "unsubscribed"], ["Gus Recent", "recent"], ["Ivy Unconfirmed", "sending"],
+    ["Flo Unsub", "unsubscribed"], ["Gus Recent", "recent"], ["Ivy Unconfirmed", "sending"], ["Kai Posted", "posted"],
   ]);
   assert.equal(plan.skipped.find((s) => s.reason === "recent").label, "Emailed in the last 3 days");
   assert.deepEqual(plan.counts, {
-    matching: 12, emails: 4, people: 5, skipped: 7,
-    skippedBy: { noPass: 2, noEmail: 1, banned: 1, unsubscribed: 1, recent: 1, sending: 1 },
+    matching: 14, emails: 5, people: 6, skipped: 8,
+    skippedBy: { noPass: 2, noEmail: 1, banned: 1, unsubscribed: 1, recent: 1, sending: 1, posted: 1 },
   });
-  // "Already posted" isn't a reason: nobody records who posted.
-  assert.equal("posted" in NUDGE_SKIP_LABELS, false);
+  assert.equal(NUDGE_SKIP_LABELS.posted, "Already posted on LinkedIn");
   assert.deepEqual(nudgeRecipient({ name: "Kim Lee Park", firstName: "", lastName: "", jobTitle: "", company: "" }), { firstName: "Kim Lee", lastName: "Park", title: "", company: "" });
 });
 

@@ -256,7 +256,7 @@ test("LinkedIn nudge: one person (staff), the status in People, the cool-down; a
   assert.deepEqual(row.attending, { status: "none", label: "Not sent", sentAt: null, nudges: 0 });
   const prof = await call("GET", `/api/console/people/${anaId}`, { as: sam });
   assert.deepEqual([prof.body.outreach.attending.canSend, prof.body.outreach.attending.cooldownDays, prof.body.outreach.attending.tracking],
-    [true, 3, { opens: false, clicks: false, posts: false }]);
+    [true, 3, { opens: true, clicks: true, posts: true }]);
 
   const n = outbox.length;
   const r = await call("POST", `/api/console/people/${anaId}/nudge`, { as: sam });

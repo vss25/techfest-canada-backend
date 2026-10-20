@@ -34,7 +34,9 @@ import { attendingJob } from "../services/attendingNudge.js";
    CampaignSend (unique campaign + email) before Resend is called,
    "sent" and "sending" rows are skipped, "failed" ones are retried.
    Sends are spaced 600 ms apart (Resend allows ~2 a second).
-   Nothing here is called automatically.
+   Nothing here is called automatically. Real sends (not tests) carry
+   the person's tracking token: who opened it, opened their page and
+   posted shows in People (services/engagement.js).
 ========================================================= */
 
 const router = express.Router();
@@ -124,7 +126,7 @@ async function claim(r, by) {
 async function sendOne(r, by) {
   if (!(await claim(r, by))) { attendingJob.state.skipped++; return; }
   try {
-    const data = await sendAttendingEmail({ to: r.email, recipient: r });
+    const data = await sendAttendingEmail({ to: r.email, recipient: r, track: true });
     await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email },
       { $set: { status: "sent", sentAt: new Date(), resendId: data.id || "", error: "" } });
     attendingJob.state.sent++;
@@ -159,7 +161,7 @@ router.post("/send-one", requireManagement, async (req, res) => {
     return res.status(409).json({ code: "already_sent", error: "Someone else is sending to them right now, or they've had it." });
   }
   try {
-    const data = await sendAttendingEmail({ to: r.email, recipient: r });
+    const data = await sendAttendingEmail({ to: r.email, recipient: r, track: true });
     const sentAt = new Date();
     await CampaignSend.updateOne({ campaign: CAMPAIGN_KEY, email: r.email },
       { $set: { status: "sent", sentAt, resendId: data.id || "", error: "" } });

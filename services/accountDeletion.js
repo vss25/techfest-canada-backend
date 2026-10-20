@@ -17,6 +17,7 @@ import FormSubmission from "../models/FormSubmission.js";
 import Subscription from "../models/Subscription.js";
 import CampaignSend from "../models/CampaignSend.js";
 import EmailTracking from "../models/EmailTracking.js";
+import EmailEngagement from "../models/EmailEngagement.js";
 import Lead from "../models/Lead.js";
 import Nomination from "../models/Nomination.js";
 import Audience from "../models/Audience.js";
@@ -205,6 +206,14 @@ async function personOps(scope) {
       ops.push({ key: "rsvpDuplicatesUnflagged", label: "Possible duplicates of their RSVP (kept, no longer flagged)", model: Rsvp,
         filter: { duplicateOf: { $in: scope.rsvpIds } }, update: { $unset: { duplicateOf: "" } } });
     }
+  }
+  // Email opens, page visits, LinkedIn posts and RSVP form opens: under their addresses and their tickets.
+  const engagementOr = [
+    ...(emailRx.length ? [{ email: { $in: emailRx } }] : []),
+    ...(scope.ticketIds.length ? [{ ticketId: { $in: scope.ticketIds } }] : []),
+  ];
+  if (engagementOr.length) {
+    ops.push({ key: "emailEngagement", label: "Email opens, page visits, LinkedIn posts and RSVP form opens", model: EmailEngagement, filter: { $or: engagementOr } });
   }
   if (emailRx.length) {
     const byEmail = { email: { $in: emailRx } };

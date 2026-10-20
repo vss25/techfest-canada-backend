@@ -52,6 +52,11 @@
    Individual / by Staff / Unconfirmed), Is Exhibitor?, RSVP Email
    Sent? and VIP?. Each is worked out below (ticketValue, rsvpEmail,
    the VIP flag); none of them guesses.
+   Engagement (Oct 19 2026, services/engagement.js): who opened the
+   "I'm attending" email, opened their page and posted on LinkedIn, who
+   opened an RSVP email and who opened the RSVP form. They are more
+   values of the I'm Attending, RSVP Email Sent? and RSVP Status
+   filters, not filters of their own.
    Pure; unit-tested in test/people.test.js.
 ========================================================= */
 
@@ -72,6 +77,7 @@ import { EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, extras
 import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
 import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
+import { OPENS_NOTE, attendingEngagementOf, engagementIndex, rsvpEngagementOf } from "./engagement.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -296,9 +302,11 @@ function passNames(a) {
  *                              free: Set($0 sessions), upgrades: Map(normalised ticket ID → CAD) }; null = not read
  * @param {Array} [o.reminders] RSVP reminder sends [{ email, sentAt }] (CampaignSend "rsvp-reminder-2026")
  * @param {Array} [o.attending] "I'm attending" email sends [{ email, status, sentAt, sends }] (CampaignSend "attending-2026")
- * @returns {{ people: object[], byId: Map<string, object> }}  internal person records (see personRow / personDetail)
+ * @param {Array} [o.engagement] EmailEngagement rows (opens, page visits, posts, RSVP form opens)
+ * @returns {{ people: object[], byId: Map<string, object>, unattributedPosts: number }}  internal person records (see personRow /
+ *          personDetail); unattributedPosts: LinkedIn posts from "I'm attending" links that didn't say whose they were
  */
-export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [] } = {}) {
+export function buildPeople({ users = [], attendees = [], rsvps = [], speakers = [], companies = [], refunds = null, stripe = null, reminders = [], attending = [], engagement = [] } = {}) {
   const people = [];
   const alias = new Map();
   const byTicket = new Map();
@@ -439,9 +447,10 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     const at = r?.sentAt ? new Date(r.sentAt) : null;
     if (e && at && (!remindedAt.has(e) || remindedAt.get(e) < at)) remindedAt.set(e, at);
   }
-  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending) };
+  const engagementIdx = engagementIndex(engagement);
+  const ctx = { companiesByKey, refunds, exIdx, stripe: stripe ? { ...stripe, shared } : null, remindedAt, attendingIdx: attendingIndex(attending), engagementIdx };
   for (const p of people) Object.assign(p, summarize(p, ctx));
-  return { people, byId: alias };
+  return { people, byId: alias, unattributedPosts: engagementIdx.unattributedPosts };
 }
 
 /* ---------- One person's facts ---------- */
@@ -511,7 +520,7 @@ function rsvpEmailOf(p, remindedAt) {
   return { sent: true, at: mark.at || auto.at, via: ["Marked by staff", ...auto.via], mark, auto };
 }
 
-function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx }) {
+function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, attendingIdx, engagementIdx }) {
   const u = p.user;
   const tickets = [...p.tickets.values()].map((t) => ({ ...t, status: passStatus(t, refunds), value: ticketValue(t, stripe) }));
   const primary = primaryPass(tickets);
@@ -587,8 +596,11 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
     photoUrl,
     ...vipOf(p),
     rsvpEmail: rsvpEmailOf(p, remindedAt),
-    // The "I'm attending" email to any of their addresses (services/attendingNudge.js: opens, clicks and posts aren't tracked).
+    // The "I'm attending" email to any of their addresses (services/attendingNudge.js), and what they did with it.
     attending: attendingStatusOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], attendingIdx),
+    attendingEngagement: attendingEngagementOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], engagementIdx),
+    // Opens of the emails with their RSVP link, and the RSVP form opened with one of their tickets.
+    rsvpEngagement: rsvpEngagementOf({ emails: [email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], tickets: [...p.tickets.keys()] }, engagementIdx),
     search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...p.emails].filter(Boolean).join(" ")),
   };
 }
@@ -609,6 +621,20 @@ const passOut = (t) => (t ? {
 
 /** The person's ticket value band: "below" | "above" | "unknown" (a pass we can't price) | "none" (no pass). */
 const bandOf = (p) => (p.primary ? valueBand(p.primary.value) : "none");
+
+const NO_ENGAGEMENT = { attending: attendingEngagementOf([]), rsvp: rsvpEngagementOf({}) };
+const ATTENDING_VISITED = new Set(["posted", "shared", "manual", "visited"]);
+const stageOf = (p) => p.attendingEngagement?.stage || "";
+
+/** The directory's short form: the furthest "I'm attending" step, and the RSVP email / form. */
+function engagementRow(p) {
+  const a = p.attendingEngagement || NO_ENGAGEMENT.attending;
+  const r = p.rsvpEngagement || NO_ENGAGEMENT.rsvp;
+  return {
+    attending: { stage: a.stage, stageLabel: a.stageLabel, tracked: a.tracked, postedAt: a.postedAt, postUrl: a.postUrl },
+    rsvp: { emailOpened: r.emailOpened, lastOpenAt: r.lastOpenAt, tracked: r.tracked, formOpened: r.formOpened, formOpens: r.formOpens, lastFormAt: r.lastFormAt },
+  };
+}
 
 /** A row of the directory. */
 export function personRow(p) {
@@ -646,6 +672,8 @@ export function personRow(p) {
     attending: p.attending
       ? { status: p.attending.status, label: p.attending.label, sentAt: p.attending.sentAt, nudges: p.attending.nudges }
       : { status: "none", label: "Not sent", sentAt: null, nudges: 0 },
+    // What they did with it and with the RSVP emails (services/engagement.js); the profile has every count and time.
+    engagement: engagementRow(p),
     linkedinUrl: p.linkedinUrl,
     hasAccount: !!p.user,
     userId: p.user ? String(p.user._id) : "",
@@ -659,7 +687,12 @@ const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
 /** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
     ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar);
-    ?attending= yes (the "I'm attending" email went) | no (not sent, failed or unconfirmed). */
+    ?attending= yes (the "I'm attending" email went) | no (not sent, failed or unconfirmed).
+    Engagement values of the same filters (services/engagement.js):
+    ?attending= opened (the email, or anything after it) | visited (their page) | posted (a confirmed LinkedIn post) |
+      maybe (shared from a phone or took it to LinkedIn by hand: not confirmed) | noPost (opened the email or page, nothing after);
+    ?rsvpEmail= opened (an email with their RSVP link) | unopened (one went with the pixel, no open seen);
+    ?rsvp= form (opened the RSVP form with their ticket, no RSVP of their own). */
 export function filterPeople(people, query = {}) {
   const q = fold(String(query.q || "").trim()).slice(0, 100);
   const type = String(query.type || "").toLowerCase();
@@ -680,11 +713,32 @@ export function filterPeople(people, query = {}) {
     if (PASS_STATUSES.includes(status) && (p.primary?.status || "none") !== status) return false;
     const rs = rsvpStatusOf(p.rsvp).status;
     if (rsvp === "any" ? rs === "none" : RSVP_STATUSES.includes(rsvp) && rs !== rsvp) return false;
-    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.rsvpEmail.sent, flags.rsvpEmail) || !yesNo(p.vip, flags.vip)) return false;
-    if (!yesNo(p.attending?.status === "sent", flags.attending)) return false;
+    if (rsvp === "form" && !(p.rsvpEngagement?.formOpened && rs !== "attendee")) return false;
+    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.vip, flags.vip)) return false;
+    if (!ENGAGED.rsvpEmail(p, flags.rsvpEmail)) return false;
+    if (!ENGAGED.attending(p, flags.attending)) return false;
     return true;
   });
 }
+
+/** The I'm Attending and RSVP Email Sent? filters: yes / no as before, and the engagement values. */
+const ENGAGED = {
+  attending(p, want) {
+    const st = stageOf(p);
+    if (want === "opened") return !!st;
+    if (want === "visited") return ATTENDING_VISITED.has(st);
+    if (want === "posted") return st === "posted";
+    if (want === "maybe") return st === "shared" || st === "manual";
+    if (want === "nopost") return st === "opened" || st === "visited"; // ?attending=noPost (filters are read in lower case)
+    return yesNo(p.attending?.status === "sent", want);
+  },
+  rsvpEmail(p, want) {
+    const e = p.rsvpEngagement || NO_ENGAGEMENT.rsvp;
+    if (want === "opened") return e.emailOpened;
+    if (want === "unopened") return !!p.rsvpEmail.sent && e.tracked && !e.emailOpened;
+    return yesNo(p.rsvpEmail.sent, want);
+  },
+};
 
 export const SORTS = ["name", "company", "type", "pass", "status", "value", "rsvp", "rsvpEmail", "exhibitor", "vip", "attending"];
 const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), "en", { sensitivity: "base" });
@@ -724,6 +778,8 @@ export function peopleCounts(people) {
   const byRsvp = Object.fromEntries(RSVP_STATUSES.map((s) => [s, 0]));
   const byValue = { below: 0, above: 0, unknown: 0, none: 0 };
   let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0;
+  // Engagement (services/engagement.js): people, not events.
+  const engaged = { attendingOpened: 0, attendingVisited: 0, attendingPosted: 0, attendingMaybe: 0, rsvpEmailOpened: 0, rsvpFormOpened: 0, rsvpFormNotSent: 0 };
   const extras = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
   for (const p of people) {
     if (!p.types.length) byType.none += 1;
@@ -735,10 +791,20 @@ export function peopleCounts(people) {
     if (p.vip) vips += 1;
     if (p.rsvpEmail.sent) rsvpEmailSent += 1;
     if (p.attending?.status === "sent") attendingSent += 1;
+    const st = stageOf(p);
+    if (st) engaged.attendingOpened += 1;
+    if (ATTENDING_VISITED.has(st)) engaged.attendingVisited += 1;
+    if (st === "posted") engaged.attendingPosted += 1;
+    if (st === "shared" || st === "manual") engaged.attendingMaybe += 1;
+    if (p.rsvpEngagement?.emailOpened) engaged.rsvpEmailOpened += 1;
+    if (p.rsvpEngagement?.formOpened) {
+      engaged.rsvpFormOpened += 1;
+      if (rsvpStatusOf(p.rsvp).status !== "attendee") engaged.rsvpFormNotSent += 1;
+    }
     if (p.primary?.cxo) cxo += 1;
     for (const x of EXTRA_KEYS) if (p.primary?.extras?.[x]) extras[x] += 1;
   }
-  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, attendingSent, cxo, extras };
+  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, attendingSent, cxo, extras, ...engaged };
 }
 
 /**
@@ -922,6 +988,12 @@ export function personDetail(p, { management = false, cmsLogos = [], staffId = "
     suggestedDomain: suggestDomain(p, cmsLogos),
     specialEvents: specialEvents(p.rsvp),
     edit: editInfo(p, { management, staffId }),
+    // Every count and first / last time (services/engagement.js), and the caveat that goes with opens.
+    engagement: {
+      attending: p.attendingEngagement || NO_ENGAGEMENT.attending,
+      rsvp: p.rsvpEngagement || NO_ENGAGEMENT.rsvp,
+      note: OPENS_NOTE,
+    },
   };
 }
 

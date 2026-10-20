@@ -25,6 +25,7 @@ import { DEFAULT_MANUAL, buildExhibitorManual, cleanBooth, cleanManual, manualFi
 import { passEmailDefaults, passEmailFor, passVariant } from "../services/passEmail.js";
 import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor, mergeCopy, sameAsDefault, tierFor } from "../services/passEmailCopy.js";
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
+import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
 
 /* =========================================================
    Staff-issued passes, two kinds on the same routes:
@@ -174,12 +175,13 @@ export function issuedPassRouter(kindName = "issued") {
    * The email for a pass: `copy` (this send + this pass's own wording) over the template (`tpl`: an
    * unsaved one for Edit email's preview, else the saved one) over the built-in text.
    * `defaults`: what each of this pass's fields shows when its own is empty.
+   * `openPixel`: a real send's open pixel ("" = none).
    */
-  async function emailFor(a, copy, inline, tpl = null) {
+  async function emailFor(a, copy, inline, tpl = null, openPixel = "") {
     const t = tpl || (await template()).copy;
     const variant = passVariant(a, { copyFor: builtInCopy, template: t });
     const merged = mergeCopy(copy, t);
-    const e = await passEmailFor(issuedPassForEmail(a), { inline, copy: merged, variant });
+    const e = await passEmailFor({ ...issuedPassForEmail(a), openPixel }, { inline, copy: merged, variant });
     // The headings of the email's list (the wording staff set, else the pass's own list with its extras).
     const includes = (merged.includes?.length ? merged.includes : variant.includes).map((row) => (Array.isArray(row) ? row[0] : row));
     return { ...e, defaults: mergeCopy(t, e.defaults), includes };
@@ -409,8 +411,10 @@ export function issuedPassRouter(kindName = "issued") {
     const to = opts.to || passRecipients(a);
     if (!to.length) return res.status(400).json({ error: "Add an email address first." });
     const cc = opts.cc.filter((e) => !to.includes(e));
+    // The open pixel (People › RSVP email opened): only with the RSVP button and no cc (a cc'd copy would count as their open).
+    const track = passEmailPixel({ campaign: kind.campaign, email: a.email || to[0], ticketId: a.ticketId, cc, rsvp: issuedVariant(a).rsvp !== false });
     try {
-      const { subject, html, text, attachments } = await emailFor(a, opts.copy, false);
+      const { subject, html, text, attachments } = await emailFor(a, opts.copy, false, null, track.pixel);
       if (kind.manual) {
         const { buf, name } = await manualFor(a);
         attachments.push({ filename: name, content: buf.toString("base64"), content_type: "application/pdf" });
@@ -420,6 +424,7 @@ export function issuedPassRouter(kindName = "issued") {
         tags: [{ name: "campaign", value: kind.campaign }],
       });
       if (error || !data?.id) throw new Error(error?.message || "the email service refused it");
+      if (track.key) noteTrackedSend(track.key);
     } catch (err) {
       await audit(req, "send_failed", a.ticketId, `${a.name} → ${to.join(", ")}${staffNote(isManagement(req.user))}: ${err?.message || err}`);
       return res.status(502).json({ error: `Couldn't send: ${err?.message || err}` });

@@ -55,6 +55,7 @@ import rsvpRemindersRouter from "./routes/rsvpReminders.js";                    
 import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
 import purchaseEmailRouter from "./routes/purchaseEmail.js";                                         // Admin › Purchase email
 import peopleRouter, { companiesRouter } from "./routes/people.js";                   // Admin → People directory + company logos
+import engagementRouter from "./routes/engagement.js";                              // GET /api/t/o/<token>.gif: email open pixel
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -112,6 +113,9 @@ app.post("/api/attending/post", express.json({ limit: "9mb" }), attendingPostDra
 app.use("/api/console/companies", express.json({ limit: "4mb" }), companiesRouter);
 // Feed photos and profile photos arrive as base64 JSON.
 app.use(express.json({ limit: "1mb" }));
+
+// The email open pixel: before the kill switch, so an email never shows a broken image.
+app.use("/api/t", engagementRouter);
 
 /* ==========================================
    KILL SWITCH — site + app offline (staff routes keep working)

@@ -7,6 +7,9 @@
      https://www.thetechfestival.com/attending#fn=…&ln=…&title=…&co=…
    where they make a branded "I'm attending" image in the browser
    and post it to LinkedIn. The fragment never reaches a server.
+   Real sends add &r=<token> (services/trackToken.js): the page
+   sends it back when it's opened and when they post, so People
+   can show who did (services/engagement.js).
 
    Recipients (planRecipients): one per unique email across
    account tickets (User.tickets) and guest tickets (Attendee),
@@ -161,13 +164,15 @@ export function planRecipients({ users = [], guests = [], optedOut = [] } = {}) 
   return { recipients, skipped };
 }
 
-/** The personal page link: values in the fragment (#fn=…&ln=…&title=…&co=…), empty ones left out. */
-export function attendingLink({ firstName = "", lastName = "", title = "", company = "" } = {}, base = ATTENDING_URL) {
+/** The personal page link: values in the fragment (#fn=…&ln=…&title=…&co=…), empty ones left out.
+    `r`: a real send's tracking token (services/trackToken.js), last, so the page can say who opened it. */
+export function attendingLink({ firstName = "", lastName = "", title = "", company = "", r = "" } = {}, base = ATTENDING_URL) {
   const q = new URLSearchParams();
   for (const [k, v] of [["fn", firstName], ["ln", lastName], ["title", title], ["co", company]]) {
     const c = clean(v, 100);
     if (c) q.set(k, c);
   }
+  if (typeof r === "string" && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(r) && r.length <= 400) q.set("r", r);
   const frag = q.toString().replace(/\+/g, "%20"); // %20 reads the same everywhere ("+" can survive as a plus)
   return frag ? `${base}#${frag}` : base;
 }

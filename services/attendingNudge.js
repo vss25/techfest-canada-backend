@@ -15,16 +15,22 @@
    What can be known, per person (by their email addresses):
      Not sent · Sent (last send, and how many nudges) · Failed ·
      Unconfirmed (a send started but never confirmed: check Resend).
-   What can't: whether they opened the email, clicked the button or
-   posted. The email has no tracking pixel and its link goes straight
-   to the website; /attending draws the image in the browser and the
-   LinkedIn post (routes/attending.js) never says who posted. So
-   "already posted" can't be a reason to skip anyone (ATTENDING_TRACKING).
+   And since Oct 19 2026, for sends from then on (services/engagement.js,
+   ATTENDING_TRACKING): each send carries their signed token, in a 1×1
+   open pixel and in the /attending link (#…&r=). So People shows
+   whether they opened the email (an estimate: some mail apps load every
+   image, others none), opened their page (clicked), and what they did
+   there: posted through our "Post to LinkedIn" (confirmed by LinkedIn,
+   with the post's link), finished the phone's share sheet (can't say
+   it was LinkedIn) or took the image to LinkedIn by hand (can't see the
+   post). Emails sent before carry no token: for them none of this shows.
 
    Who a nudge goes to (planAttendingNudges, like the People page's
    RSVP reminder): people with a pass (not hidden, not a booth), a
    usable email, an account that isn't suspended, who haven't
-   unsubscribed, with no unconfirmed send, not emailed in the last
+   unsubscribed, who haven't posted on LinkedIn (a confirmed post: a
+   phone share or a post by hand can't be confirmed, so it isn't a
+   reason), with no unconfirmed send, not emailed in the last
    NUDGE_COOLDOWN_DAYS. One email per address.
 
    Pure apart from attendingJob (one run at a time on this server,
@@ -42,14 +48,15 @@ export const NUDGE_MAX = 500;
 
 export const ATTENDING_STATUSES = ["none", "sent", "failed", "sending"];
 export const ATTENDING_LABELS = Object.freeze({ none: "Not sent", sent: "Sent", failed: "Failed", sending: "Unconfirmed" });
-/** None of these are recorded anywhere (see above). */
-export const ATTENDING_TRACKING = Object.freeze({ opens: false, clicks: false, posts: false });
+/** Recorded for sends from Oct 19 2026 (see above): opens (pixel), clicks (their page opened) and confirmed posts. */
+export const ATTENDING_TRACKING = Object.freeze({ opens: true, clicks: true, posts: true });
 
 export const NUDGE_SKIP_LABELS = Object.freeze({
   noPass: "No pass",
   noEmail: "No email address",
   banned: "Account suspended",
   unsubscribed: "Unsubscribed from our emails",
+  posted: "Already posted on LinkedIn",
   sending: "A send to them wasn't confirmed (check Resend first)",
   recent: `Emailed in the last ${NUDGE_COOLDOWN_DAYS} days`,
 });
@@ -104,7 +111,8 @@ export function nudgeRecipient(p) {
 
 /**
  * Who a LinkedIn nudge would go to, and who's left out and why.
- * @param {Array} people   the filtered people (internal records from services/people.js buildPeople)
+ * @param {Array} people   the filtered people (internal records from services/people.js buildPeople;
+ *                          `attendingEngagement.posts`: confirmed LinkedIn posts)
  * @param {object} o
  * @param {Iterable<string>} o.optedOut  emails with Subscription.subscribed false
  * @param {Array}  o.sends      CampaignSend rows of the attending campaign ({ email, status, sentAt })
@@ -124,6 +132,7 @@ export function planAttendingNudges(people = [], { optedOut = [], sends = [], co
     if (!email) { skip(p, "noEmail"); continue; }
     if (p.user?.banned) { skip(p, "banned"); continue; }
     if (out.has(email)) { skip(p, "unsubscribed"); continue; }
+    if (p.attendingEngagement?.posts > 0) { skip(p, "posted"); continue; }
     const s = sendBy.get(email);
     if (s?.status === "sending") { skip(p, "sending"); continue; }
     if (s?.status === "sent" && s.sentAt && now - ms(s.sentAt) < cooldownMs) { skip(p, "recent"); continue; }
