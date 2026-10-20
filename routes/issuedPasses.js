@@ -14,9 +14,10 @@ import { LIVE_RSVPS } from "../services/rsvp.js";
 import { EXTRAS, EXTRA_SELECT, autoExtras, cleanExtras, extraLabel, extrasMeta } from "../services/passExtras.js";
 import { normalizeTicketId } from "../services/ticketAccess.js";
 import {
-  ISSUED_PROMO, ISSUE_TIERS, ISSUE_TIER_KEYS, defaultIssuedCopy, issuedPassDoc, issuedPassForEmail, issuedPassRow,
+  ISSUED_PROMO, ISSUE_TIERS, ISSUE_TIER_KEYS, MARK_TIERS, PASS_MARKS, defaultIssuedCopy, issuedPassDoc, issuedPassForEmail, issuedPassRow,
   issuedPassUpdate, issuedVariant, validateIssuedPass,
 } from "../services/issuedPasses.js";
+import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import {
   EXHIBITOR_PROMO, EXHIBITOR_TEMPLATE_KEY, EXHIBITOR_TIER, MANUAL_TEMPLATE_KEY, defaultExhibitorCopy,
   exhibitorBooth, exhibitorCopyFor,
@@ -42,13 +43,16 @@ import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js"
    email template and exhibitor passes stay management only.
 
    GET    /tiers                 → { tiers: [{ key, label, access, includes, rsvpReason, copy, autoExtras }], cc, defaultTier, defaultLabel,
-                                     fields, sections, placeholders, extras }   (fields: one pass's editable email wording;
-                                     extras: the pass extras [{ key, label, short, auto }], autoExtras: what each pass gets on Automatic)
+                                     fields, sections, placeholders, extras, marks, markTiers }   (fields: one pass's editable email wording;
+                                     extras: the pass extras [{ key, label, short, auto }], autoExtras: what each pass gets on Automatic;
+                                     marks: ["vip", "media"], markTiers: the pass the form picks for a mark, { vip, media, volunteer })
    GET    /                      → { rows, counts }
    POST   /preview               → { subject, html, text, includes } for an unsaved pass (same body as POST /)
    POST   /                      { name, email, tier, title?, company?, label?, rsvp?, booth?, zone?, passes?,
                                    extras?: { cxo?, lunch?, gala?, awards? } (each true | false | null = automatic),
                                    cxoBreakfast? (the same as extras.cxo),
+                                   vip?, media? (true / false: mark the pass's holder VIP / Media, Attendee.vip / .media;
+                                     both get the CxO Breakfasts on Automatic; Oct 20 2026),
                                    + any field of the email (services/passEmailCopy.js, one pass's level) }
                                    → 201 { row }   (a new ticket ID; not emailed)
    PATCH  /:id                   any of the fields above → { row }
@@ -80,7 +84,7 @@ const KINDS = {
 };
 
 const PASS_FIELDS = "name email alsoTo ticketId ticketType promoCode details issuedPass passEmailSentAt passEmailSentTo " +
-  `passEmailSentCount passEmailRsvp ${EXTRA_SELECT} claimedBy checkedIn purchaseDate createdAt`;
+  `passEmailSentCount passEmailRsvp ${EXTRA_SELECT} vip media claimedBy checkedIn purchaseDate createdAt`;
 const isId = (id) => /^[a-f0-9]{24}$/i.test(String(id || ""));
 
 let resendClient = null;
@@ -248,6 +252,8 @@ export function issuedPassRouter(kindName = "issued") {
     res.json({
       tiers: ISSUE_TIER_KEYS.map((key) => ({ key, ...ISSUE_TIERS[key], copy: cf(kind.defaultLabel || ISSUE_TIERS[key].label), autoExtras: autoExtras(key) })),
       extras: extrasMeta(),
+      // Mark as VIP / Media (saved on the pass) and the pass the form picks for each mark (Volunteer: Connect).
+      marks: PASS_MARKS, markTiers: MARK_TIERS,
       cc: DEFAULT_CC(),
       defaultTier: kind.defaultTier,
       defaultLabel: kind.defaultLabel,
@@ -336,7 +342,9 @@ export function issuedPassRouter(kindName = "issued") {
     }
     // The pass extras set to Yes or No on the new pass, e.g. ", CxO Breakfast Yes, Gala Dinner & Networking Reception Yes".
     const extrasNote = EXTRAS.filter((e) => typeof check.value[e.field] === "boolean")
-      .map((e) => `, ${e.key === "cxo" ? "CxO Breakfast" : e.label} ${check.value[e.field] ? "Yes" : "No"}`).join("");
+      .map((e) => `, ${e.key === "cxo" ? "CxO Breakfast" : e.label} ${check.value[e.field] ? "Yes" : "No"}`).join("")
+      + PASS_MARKS.filter((k) => check.value[k] === true).map((k) => `, ${k === "vip" ? "VIP" : "Media"} Yes`).join("");
+    if (PASS_MARKS.some((k) => check.value[k] === true)) clearExhibitorCache(); // the apps see the mark within the minute
     const wording = Object.keys(compact(check.value.copy || {}));
     await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}${staffNote(isManagement(req.user))}`);
     res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
@@ -358,6 +366,14 @@ export function issuedPassRouter(kindName = "issued") {
       extraChanges.push(e);
       if (set[e.field] === null) { delete set[e.field]; unset[e.field] = ""; }
     }
+    // VIP / Media on the pass: true sets it, null takes it off; the same as before is no change.
+    const markChanges = [];
+    for (const k of PASS_MARKS) {
+      if (!(k in set)) continue;
+      if ((set[k] === true) === (before[k] === true)) { delete set[k]; continue; }
+      markChanges.push(`${k === "vip" ? "VIP" : "Media"} ${before[k] === true ? "Yes" : "No"} → ${set[k] === true ? "Yes" : "No"}`);
+      if (set[k] === null) { delete set[k]; unset[k] = ""; }
+    }
     if (!Object.keys(set).length && !Object.keys(unset).length) return res.json({ row: issuedPassRow(before) });
     const a = await Attendee.findOneAndUpdate({ _id: before._id, ...SCOPE }, { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) }, { new: true }).select(PASS_FIELDS).lean();
     if (extraChanges.length && a.claimedBy) {
@@ -372,8 +388,10 @@ export function issuedPassRouter(kindName = "issued") {
     const wording = set["issuedPass.copy"] ? changedFields(before.issuedPass?.copy, set["issuedPass.copy"]) : [];
     const rowBefore = issuedPassRow(before).extras;
     const rowAfter = issuedPassRow(a).extras;
-    const fields = [...Object.keys(set).filter((k) => !EXTRAS.some((e) => e.field === k) && k !== "issuedPass.copy"),
+    if (markChanges.length) clearExhibitorCache();
+    const fields = [...Object.keys(set).filter((k) => !EXTRAS.some((e) => e.field === k) && !PASS_MARKS.includes(k) && k !== "issuedPass.copy"),
       ...extraChanges.map((e) => `${e.key === "cxo" ? "CxO Breakfast" : e.label} ${extraLabel(rowBefore[e.key].override ?? undefined, rowBefore[e.key].included)} → ${extraLabel(rowAfter[e.key].override ?? undefined, rowAfter[e.key].included)}`),
+      ...markChanges,
       ...(wording.length ? [`wording: ${wording.join(", ")}`] : [])];
     await audit(req, "edit", a.ticketId, `${a.name}: ${fields.join(", ") || "no changes"}`);
     res.json({ row: issuedPassRow(await tidyPassCopy(a)) });

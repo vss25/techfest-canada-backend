@@ -5,8 +5,9 @@
    they will by default have access to the breakfast." So, per pass:
      automatic  Yes for an Apex Pass and a Speaker Pass, and for anyone
                 whose person types include speaker (staff-set or from a
-                Speaker Pass), whatever their pass; No otherwise (Power
-                no longer includes it).
+                Speaker Pass) or media, and any VIP (Oct 20 2026),
+                whatever their pass; No otherwise (Power no longer
+                includes it).
      override   staff's per-pass switch "CxO Breakfast included":
                 true / false on the ticket record, unset = automatic.
                 Attendee.cxoBreakfast on a guest / issued / speaker pass,
@@ -33,12 +34,12 @@ export function cxoOverride(...records) {
   return undefined;
 }
 
-/** Automatic: an Apex or Speaker Pass, or a speaker-type holder. Booths never. */
-export const autoCxo = (ticketType, types = []) => autoExtras(ticketType, types).cxo;
+/** Automatic: an Apex or Speaker Pass, or a speaker- or media-type holder, or a VIP (`vip`). Booths never. */
+export const autoCxo = (ticketType, types = [], { vip = false } = {}) => autoExtras(ticketType, types, { vip }).cxo;
 
 /** Effective value for one pass: staff's switch when set, else automatic. */
-export function effectiveCxo({ ticketType = "", types = [], override } = {}) {
-  return typeof override === "boolean" ? override : autoCxo(ticketType, types);
+export function effectiveCxo({ ticketType = "", types = [], vip = false, override } = {}) {
+  return typeof override === "boolean" ? override : autoCxo(ticketType, types, { vip });
 }
 
 /** `cxoBreakfast` body value → true | false | null (automatic), or undefined when it isn't one of those. */

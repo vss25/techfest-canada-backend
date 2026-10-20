@@ -12,7 +12,11 @@
    `tiers`): Influence and up get the luncheons; Power, Apex and the
    internal Speaker Pass get the Gala and the Awards; the CxO
    Breakfasts go with Apex, the Speaker Pass and anyone of the
-   speaker type. Booths get none.
+   speaker type, and (Oct 20 2026, the organiser: "Media will be a
+   power pass with breakfast included by default, VIP will be power
+   pass with breakfast included by default") any VIP (the yes / no
+   flag, services/teamRoles.js isVip) and anyone of the media type,
+   whatever their pass. Booths get none.
    Staff's switch is stored on the ticket record, true / false
    (unset = automatic), in one field per extra: `cxoBreakfast` (the
    existing "CxO Breakfast included", unchanged), `luncheons`,
@@ -37,7 +41,7 @@ export { EXTRA_KEYS, EXTRA_OPTIONS };
 
 /** The extras, in the order the admin panel lists them. `field`: where staff's switch is stored. */
 export const EXTRAS = Object.freeze([
-  Object.freeze({ key: "cxo", field: "cxoBreakfast", label: "CxO Breakfasts", short: "CxO", auto: "Apex and Speaker Passes, and speakers on any pass" }),
+  Object.freeze({ key: "cxo", field: "cxoBreakfast", label: "CxO Breakfasts", short: "CxO", auto: "Apex and Speaker Passes, speakers, VIPs and media on any pass" }),
   Object.freeze({ key: "lunch", field: "luncheons", label: "Networking Luncheons", short: "Luncheons", auto: "Influence, Power, Apex and Speaker Passes" }),
   Object.freeze({ key: "gala", field: "galaDinner", label: "Gala Dinner & Networking Reception", short: "Gala", auto: "Power, Apex and Speaker Passes" }),
   Object.freeze({ key: "awards", field: "awardsNight", label: "Catalyst Awards Night", short: "Awards", auto: "Power, Apex and Speaker Passes" }),
@@ -62,17 +66,22 @@ export function extrasOverride(...records) {
   return out;
 }
 
-/** Automatic, per extra: the pass's own rule (CxO Breakfasts: also a speaker-type holder). Booths never. */
-export function autoExtras(ticketType, types = []) {
+/** The people who get the CxO Breakfasts on any pass: the speaker or media type, or a VIP (`vip`: the flag). */
+export const cxoPerson = (types = [], vip = false) => !!vip || (Array.isArray(types) && (types.includes("speaker") || types.includes("media")));
+
+/** Automatic, per extra: the pass's own rule (CxO Breakfasts: also a speaker- or media-type holder, or a VIP:
+    `vip`, the person's VIP flag). Booths never. */
+export function autoExtras(ticketType, types = [], { vip = false } = {}) {
   const booth = isBoothType(ticketType);
   const tier = tierFromTicketType(ticketType);
-  const speaker = Array.isArray(types) && types.includes("speaker");
-  return Object.fromEntries(EXTRA_KEYS.map((x) => [x, !booth && (AUTO_TIERS[x].includes(tier) || (x === "cxo" && speaker))]));
+  const person = cxoPerson(types, vip);
+  return Object.fromEntries(EXTRA_KEYS.map((x) => [x, !booth && (AUTO_TIERS[x].includes(tier) || (x === "cxo" && person))]));
 }
 
-/** Effective, per extra: staff's switch when it's set, else automatic. `override`: extrasOverride's shape. */
-export function effectiveExtras({ ticketType = "", types = [], override = {} } = {}) {
-  const auto = autoExtras(ticketType, types);
+/** Effective, per extra: staff's switch when it's set, else automatic. `override`: extrasOverride's shape;
+    `vip`: the holder is a VIP (their CxO Breakfasts are automatic). */
+export function effectiveExtras({ ticketType = "", types = [], vip = false, override = {} } = {}) {
+  const auto = autoExtras(ticketType, types, { vip });
   return Object.fromEntries(EXTRA_KEYS.map((x) => [x, typeof override?.[x] === "boolean" ? override[x] : auto[x]]));
 }
 
@@ -145,18 +154,19 @@ export const timesWording = (line) => String(line || "").replace(/^(\d+)x\s/, "$
  *   inclusions    everything it includes, the extras switched on or off for this pass, in the website's
  *                 wording ("2× Luncheons", "1× Gala Dinner & Networking Reception", "1× Awards Night",
  *                 "2× CxO Breakfasts", plus the rest of the pass's list); [] for a booth
- * `types`: their effective person types; `attendees`: Attendee rows for those ticket IDs (ticketId + the
- * extra fields), whose switches apply where the account's ticket has none. Staff's switches and the manual
- * ticket value stay out. `type` is as stored: connect | influence | power | apex | speaker, or a booth.
+ * `types`: their effective person types; `vip`: they're a VIP (services/teamRoles.js isVip); `attendees`: Attendee
+ * rows for those ticket IDs (ticketId + the extra fields), whose switches apply where the account's ticket has
+ * none. Staff's switches and the manual ticket value stay out. `type` is as stored: connect | influence | power |
+ * apex | speaker, or a booth.
  */
-export function ticketsWithExtras(tickets = [], { types = [], attendees = [] } = {}) {
+export function ticketsWithExtras(tickets = [], { types = [], vip = false, attendees = [] } = {}) {
   const byTicket = new Map();
   for (const a of attendees || []) if (a?.ticketId) byTicket.set(normalizeTicketId(a.ticketId), a);
   return (Array.isArray(tickets) ? tickets : []).map((t) => {
     const { manualValue, manualValueNote, manualValueBy, manualValueAt, ...rest } = t || {}; // eslint-disable-line no-unused-vars
     for (const f of EXTRA_FIELDS) delete rest[f];
     const booth = /^BOOTH-/i.test(String(t?.ticketId || "")) || isBoothType(t?.type);
-    const extras = effectiveExtras({ ticketType: t?.type, types, override: extrasOverride(t, byTicket.get(normalizeTicketId(t?.ticketId))) });
+    const extras = effectiveExtras({ ticketType: t?.type, types, vip, override: extrasOverride(t, byTicket.get(normalizeTicketId(t?.ticketId))) });
     return {
       ...rest,
       cxoBreakfast: !booth && extras.cxo,

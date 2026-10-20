@@ -21,6 +21,7 @@ import { effectiveCxo } from "./cxoBreakfast.js";
 import { EXTRAS, EXTRA_KEYS, autoExtras, cleanExtras, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
 import { extraOfRow } from "./passEmailCopy.js";
 import { tierKey } from "./ticketInfo.js";
+import { isMediaPass, isVipPass } from "./teamRoles.js";
 
 export const ISSUED_PROMO = "ISSUED";
 
@@ -127,7 +128,8 @@ const clean = (v, max = 120) => String(v ?? "").replace(/\s+/g, " ").trim().slic
 
 /**
  * Checks a create / edit body. `partial` (edits) only checks what's there.
- * Fields: name, email ("a@x, b@y"), tier, title, company, label, rsvp, subject, headline, message.
+ * Fields: name, email ("a@x, b@y"), tier, title, company, label, rsvp, subject, headline, message,
+ * vip / media (true / false: who the pass is for, PASS_MARKS).
  * → { ok: true, value } | { ok: false, error }
  */
 export function validateIssuedPass(body = {}, { partial = false } = {}) {
@@ -152,6 +154,12 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
   // "All Access Pass" and "Exhibitor Pass" are never printed (Oct 19 2026): the tier's own name is.
   if ("label" in body) value.label = printedLabel(clean(body.label, 40));
   if ("rsvp" in body) value.rsvp = body.rsvp !== false;
+  // Mark as VIP / Media (Oct 20 2026): saved on the pass (Attendee.vip, Attendee.media), like Admin › People.
+  for (const k of PASS_MARKS) {
+    if (!(k in body) || body[k] === undefined) continue;
+    if (typeof body[k] !== "boolean") return { ok: false, error: `${k === "vip" ? "VIP" : "Media"} must be Yes or No.` };
+    value[k] = body[k];
+  }
   // The pass extras (services/passExtras.js): `extras: { cxo, lunch, gala, awards }` and the older
   // `cxoBreakfast`, each true / false or null = automatic. Kept under their stored names (cxoBreakfast,
   // luncheons, galaDinner, awardsNight).
@@ -174,6 +182,16 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
 
 export const newIssuedTicketId = () => crypto.randomBytes(6).toString("hex");
 
+/** Who a pass can be marked as on Give a pass (Oct 20 2026): VIP and Media, saved on the pass (Attendee.vip,
+    Attendee.media; the account that claims it follows, services/teamRoles.js). Both get the CxO Breakfasts
+    on Automatic. Volunteer is a type on an app account (People, management), so it isn't one of these. */
+export const PASS_MARKS = Object.freeze(["vip", "media"]);
+/** The pass the Give a pass form picks first for a mark (staff can change it): VIP and Media → Power, Volunteer → Connect. */
+export const MARK_TIERS = Object.freeze({ vip: "power", media: "power", volunteer: "connect" });
+
+/** The pass's own marks as the CxO rule reads them: { types: ["media"] | [], vip }. */
+export const passHolder = (a) => ({ types: isMediaPass(a) ? ["media"] : [], vip: isVipPass(a) });
+
 /** The Attendee document for a new issued pass (`promo`: ISSUED, or EXHIBITOR for exhibitor passes). */
 export function issuedPassDoc(v, { ticketId = newIssuedTicketId(), by = "", now = new Date(), promo = ISSUED_PROMO } = {}) {
   const words = v.name.split(" ");
@@ -194,6 +212,8 @@ export function issuedPassDoc(v, { ticketId = newIssuedTicketId(), by = "", now 
       ...(v.booth ? { booth: { booth: "", zone: "", passes: "", ...v.booth } } : {}),
     },
     ...Object.fromEntries(EXTRAS.filter((e) => typeof v[e.field] === "boolean").map((e) => [e.field, v[e.field]])),
+    ...(v.vip === true ? { vip: true } : {}),
+    ...(v.media === true ? { media: true } : {}),
   };
 }
 
@@ -213,6 +233,7 @@ export function issuedPassUpdate(v, before) {
   if ("label" in v) set["issuedPass.label"] = v.label;
   if ("rsvp" in v) set["issuedPass.rsvp"] = v.rsvp;
   for (const e of EXTRAS) if (e.field in v) set[e.field] = v[e.field]; // null = automatic (the route $unsets it)
+  for (const k of PASS_MARKS) if (k in v) set[k] = v[k] ? true : null; // false = not marked (the route $unsets it)
   if (v.copy) set["issuedPass.copy"] = { ...(before?.issuedPass?.copy || {}), ...v.copy };
   if (v.booth) set["issuedPass.booth"] = { booth: "", zone: "", passes: "", ...(before?.issuedPass?.booth || {}), ...v.booth };
   return set;
@@ -234,8 +255,9 @@ export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
   const key = ISSUE_TIERS[t] ? t : "influence";
   const tier = ISSUE_TIERS[key];
   const label = printedLabel(a?.issuedPass?.label) || tier.label;
-  // The pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switch on this pass, else the pass's own rule.
-  const extras = effectiveExtras({ ticketType: key, override: extrasOverride(a) });
+  // The pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switch on this pass, else the pass's own rule
+  // (the CxO Breakfasts also when the pass is marked VIP or Media).
+  const extras = effectiveExtras({ ticketType: key, ...passHolder(a), override: extrasOverride(a) });
   const asSold = autoExtras(key);
   const rsvpReason = EXTRA_KEYS.every((x) => extras[x] === asSold[x]) ? tier.rsvpReason : rsvpReasonFor(key, extras);
   return { label, access: tier.access, includes: includesWithExtras(tier.includes, extras), rsvp: a?.issuedPass?.rsvp !== false, rsvpReason, extras, ...copyFor(label) };
@@ -255,9 +277,12 @@ export function issuedPassRow(a) {
     rsvp: a.issuedPass?.rsvp !== false,
     // "CxO Breakfast included": true / false = staff's switch, null = automatic; cxoEffective = what the pass gets.
     cxoBreakfast: typeof a.cxoBreakfast === "boolean" ? a.cxoBreakfast : null,
-    cxoEffective: effectiveCxo({ ticketType: key, override: a.cxoBreakfast }),
+    cxoEffective: effectiveCxo({ ticketType: key, ...passHolder(a), override: a.cxoBreakfast }),
     // Every pass extra: { <cxo|lunch|gala|awards>: { override: true | false | null, auto, included } }.
-    extras: extrasView(extrasOverride(a), autoExtras(key), effectiveExtras({ ticketType: key, override: extrasOverride(a) })),
+    extras: extrasView(extrasOverride(a), autoExtras(key, passHolder(a).types, passHolder(a)), effectiveExtras({ ticketType: key, ...passHolder(a), override: extrasOverride(a) })),
+    // Marked VIP / Media on this pass (Give a pass, Admin › People).
+    vip: isVipPass(a),
+    media: isMediaPass(a),
     copy: a.issuedPass?.copy || {},
     ticketId: a.ticketId,
     email: a.email || "",

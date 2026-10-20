@@ -12,9 +12,17 @@ import { sendResetPasswordEmail } from "../services/emailService.js";
 import { depositFromSession } from "../services/pavilionApplications.js";
 import { recordDeposit, linkDeposits } from "../services/pavilionDeposits.js";
 import { effectiveExtras, extrasOverride, EXTRA_SELECT } from "../services/passExtras.js";
-import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
+import { isSpeakerPass, typeInfo } from "../services/teamRoles.js";
+import { loadExhibitors } from "../services/exhibitorCache.js";
 import CampaignSend from "../models/CampaignSend.js";
 import { makePurchaseAlerter, alertStore, lazyResend } from "../services/purchaseAlert.js";
+
+/** The buyer's person types and VIP flag as the apps see them (a pass marked VIP or Media counts), for the
+    CxO Breakfasts on a new or upgraded pass (services/passExtras.js: speakers, VIPs and media on any pass). */
+async function holderOf(user) {
+  const { types, vip } = typeInfo(user, await loadExhibitors().catch(() => null));
+  return { types, vip };
+}
 
 const router = express.Router();
 
@@ -189,8 +197,9 @@ router.post("/stripe", async (req, res) => {
           if (email || user.email) {
             // The upgraded pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switches on this ticket
             // where set, else the new pass's rules (services/passExtras.js).
+            const holder = await holderOf(user);
             const extras = await Attendee.findOne({ ticketId }).select(EXTRA_SELECT).lean()
-              .then((a) => effectiveExtras({ ticketType: tier, types: effectiveTypes(user), override: extrasOverride(ticket, a) }))
+              .then((a) => effectiveExtras({ ticketType: tier, ...holder, override: extrasOverride(ticket, a) }))
               .catch(() => undefined);
             await sendTicketEmail({
               email: email || user.email,
@@ -208,8 +217,9 @@ router.post("/stripe", async (req, res) => {
         }
       } else if (!isBooth) {
         const ticketId = crypto.randomBytes(6).toString("hex");
-        // A speaker buying a pass gets the CxO Breakfasts with it (services/passExtras.js); else the pass's rules.
+        // A speaker, VIP or media buyer gets the CxO Breakfasts with it (services/passExtras.js); else the pass's rules.
         let buyerTypes = [];
+        let buyerVip = false;
         let onAccount = false;
 
         // If user purchased while logged in → attach ticket to account
@@ -218,7 +228,7 @@ router.post("/stripe", async (req, res) => {
           const user = await User.findById(userId);
 
           if (user) {
-            buyerTypes = effectiveTypes(user);
+            ({ types: buyerTypes, vip: buyerVip } = await holderOf(user));
 
             user.tickets.push({
               ticketId,
@@ -264,8 +274,8 @@ router.post("/stripe", async (req, res) => {
             firstName: details?.firstName,
             ticketId,
             tier,
-            cxoBreakfast: effectiveExtras({ ticketType: tier, types: buyerTypes }).cxo,
-            extras: effectiveExtras({ ticketType: tier, types: buyerTypes }),
+            cxoBreakfast: effectiveExtras({ ticketType: tier, types: buyerTypes, vip: buyerVip }).cxo,
+            extras: effectiveExtras({ ticketType: tier, types: buyerTypes, vip: buyerVip }),
           });
 
           console.log("📧 Ticket email sent to:", email);
