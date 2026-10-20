@@ -3,7 +3,8 @@ import jwt from "jsonwebtoken";
 import QRCode from "qrcode";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { buildPass, isConfigured } from "../services/walletPass.js";
+import { buildPass, isConfigured, walletTagFor } from "../services/walletPass.js";
+import { loadExhibitors } from "../services/exhibitorCache.js";
 import { verifyTicketSig, walletPassUrl } from "../services/walletLink.js";
 import { displayName } from "../services/attendeeDetails.js";
 import { escapeHtml } from "../services/ticketInfo.js";
@@ -17,7 +18,12 @@ import { signedInWithoutPassword } from "../services/signInMethod.js";
      or       ?sig=<hmac>  — the signed link in the ticket email/PDF,
               for guests without an account (services/walletLink.js)
    → application/vnd.apple.pkpass. 503 until the Pass Type ID cert
-     is configured — see services/walletPass.js.
+     is configured — see services/walletPass.js. The pass is in the
+     holder's Profile colour (Oct 20 2026, services/walletPass.js
+     walletTagFor): the account that has the ticket (its types, VIP
+     flag and passes, as GET /api/auth/me), else the pass-only
+     person's Attendee record (VIP / Media marks, Speaker Pass,
+     exhibitor, the pass type).
 
    GET /api/wallet/link/:ticketId
      Authorization: Bearer <user token>, same ticket rule as /pass.
@@ -53,13 +59,18 @@ Questions? <a style="color:#fff" href="mailto:enquire@thetechfestival.com">enqui
 </div></body></html>`);
 }
 
-/** Tier + display name for a ticket ID, from an account or a guest purchase. */
+// What the Profile colour needs from an account (services/profileTag.js via walletTagFor).
+const HOLDER_SELECT = "name role tickets types typesOff vip";
+/** Passes marked VIP / Media / exhibitor, for an account's colour (cached for a minute; none if it can't load). */
+const passMarks = () => loadExhibitors().catch(() => null);
+
+/** Tier + display name + whose ticket it is, for a ticket ID, from an account or a guest purchase. */
 async function findTicket(ticketId) {
-  const owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
+  const owner = await User.findOne({ "tickets.ticketId": ticketId }).select(HOLDER_SELECT);
   const t = owner?.tickets.find((x) => x.ticketId === ticketId);
-  if (t) return { tier: t.type, name: displayName(t.details, owner.name), purchaseDate: t.purchaseDate };
-  const a = await Attendee.findOne({ ticketId }).select("name ticketType details purchaseDate").lean();
-  if (a) return { tier: a.ticketType, name: displayName(a.details, a.name), purchaseDate: a.purchaseDate };
+  if (t) return { tier: t.type, name: displayName(t.details, owner.name), purchaseDate: t.purchaseDate, account: owner };
+  const a = await Attendee.findOne({ ticketId }).select("name ticketType details purchaseDate promoCode vip media exhibitor").lean();
+  if (a) return { tier: a.ticketType, name: displayName(a.details, a.name), purchaseDate: a.purchaseDate, attendee: a };
   return null;
 }
 
@@ -72,14 +83,14 @@ async function ticketForCaller(req, ticketId) {
   try { decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET); }
   catch { return { status: 401, error: "Invalid token" }; }
 
-  const user = await User.findById(decoded.id).select("name role tickets");
+  const user = await User.findById(decoded.id).select(HOLDER_SELECT);
   if (!user) return { status: 401, error: "Unauthorized" };
 
   let owner = user;
   let ticket = user.tickets.find((t) => t.ticketId === ticketId);
   // Staff may fetch anyone's pass, but only with a password sign-in (like the admin panel).
   if (!ticket && user.role === "admin" && !signedInWithoutPassword(decoded)) {
-    owner = await User.findOne({ "tickets.ticketId": ticketId }).select("name tickets");
+    owner = await User.findOne({ "tickets.ticketId": ticketId }).select(HOLDER_SELECT);
     ticket = owner?.tickets.find((t) => t.ticketId === ticketId);
   }
   if (!ticket) return { status: 404, error: "Ticket not found on this account" };
@@ -115,13 +126,17 @@ router.get("/pass/:ticketId", async (req, res) => {
       }
       const found = await findTicket(ticketId);
       if (!found) return sendProblem(req, res, 404, "We couldn't find this ticket.");
-      pass = { ticketId, ...found };
+      const { account, attendee, ...ticket } = found;
+      const tag = walletTagFor({ account, attendee, index: account ? await passMarks() : null });
+      pass = { ticketId, ...ticket, tag };
     } else {
       const found = await ticketForCaller(req, ticketId);
       if (found.error) return res.status(found.status).json({ error: found.error });
       const { owner, ticket } = found;
       if (!isConfigured()) return res.status(503).json({ error: "Apple Wallet passes are not set up yet" });
-      pass = { ticketId, tier: ticket.type, name: owner.name, purchaseDate: ticket.purchaseDate };
+      // The colour is the ticket holder's (staff fetching someone's pass get that person's colour).
+      const tag = walletTagFor({ account: owner, index: await passMarks() });
+      pass = { ticketId, tier: ticket.type, name: owner.name, purchaseDate: ticket.purchaseDate, tag };
     }
 
     const buf = await buildPass(pass);

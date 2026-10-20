@@ -77,6 +77,16 @@ const tag = (key) => ({ key, label: PROFILE_TAG_LABELS[key] });
  *   types, vip what the caller already worked out (GET /auth/me: services/rightsStore.js accessOf), so the
  *              answer agrees with the rest of the response; left out = worked out here from `attendees`
  */
+/**
+ * The tag for a pass-only person (no app account yet): their Attendee record as the pass (its ticket type) and the
+ * marks staff put on it: VIP (Attendee.vip), Media (Attendee.media), exhibitor (isExhibitorPass, staff's switch
+ * first), a Speaker Pass. The same precedence as profileTagOf. Apple Wallet's signed link uses it.
+ */
+export function profileTagOfPass(attendee) {
+  if (!attendee) return null;
+  return profileTagOf({ tickets: [] }, { attendees: [attendee] });
+}
+
 export function profileTagOf(user, { attendees = [], types, vip } = {}) {
   if (!user) return null;
   const rows = (Array.isArray(attendees) ? attendees : []).filter(Boolean);
