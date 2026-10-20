@@ -44,6 +44,9 @@ import {
   ATTENDING_CAMPAIGN, ATTENDING_TRACKING, NUDGE_COOLDOWN_DAYS, NUDGE_COOLDOWN_MS, NUDGE_MAX, NUDGE_SKIP_LABELS, attendingJob, planAttendingNudges,
 } from "../services/attendingNudge.js";
 import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
+import EmailTemplate from "../models/EmailTemplate.js";
+import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites } from "../services/appInvite.js";
+import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -149,7 +152,7 @@ async function loadStripe() {
 /* ---------- The directory, rebuilt at most every 20 s (and after every change made here) ---------- */
 const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", "company", "jobTitle", "title", "linkedin", "phone"];
 const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
-const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt createdAt avatarVersion",
+const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt appOnboarded createdAt avatarVersion",
   "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
   "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
   ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
@@ -469,10 +472,23 @@ const verdict = (plan, labels) => {
   return { canSend: false, reason: s?.reason || "unknown", label: s?.label || "Can't be sent right now" };
 };
 
+/** The app invite email to this person (services/appInvite.js): their row, sendable now or why not. */
+async function appInviteFor(p) {
+  const email = usableEmail(p.email);
+  const inputs = await inviteInputs({ Subscription, CampaignSend, EmailEngagement }, email ? [email] : []);
+  return planAppInvites([p], { ...inputs, mode: "one" }).rows[0] || null;
+}
+
 /** The profile's Emails card. */
 async function outreachFor(p) {
-  const { reminder, nudge, lastReminder } = await singlePlans(p);
+  const [{ reminder, nudge, lastReminder }, invite] = await Promise.all([singlePlans(p), appInviteFor(p)]);
   return {
+    // The app invite email (Website & app › App invite email): null = not part of TTFC 2026 (no pass or role).
+    appInvite: invite ? {
+      status: invite.status, sentAt: invite.sentAt, sends: invite.sends, opened: invite.opened, clicked: invite.clicked,
+      usingApp: invite.usingApp, usingAfter: invite.usingAfter, canSend: invite.willGet, reason: invite.reason, label: invite.label,
+      cooldownDays: APP_INVITE_COOLDOWN_DAYS, running: !!appInviteJob.state.running,
+    } : null,
     rsvpReminder: { ...verdict(reminder, REMINDER_SKIP_LABELS), lastSentAt: lastReminder, cooldownHours: REMINDER_COOLDOWN_MS / 3600000, running: !!reminderJob.state.running },
     attending: {
       ...(p.attending || { status: "none", sentAt: null, nudges: 0 }), ...verdict(nudge, NUDGE_SKIP_LABELS),
@@ -512,6 +528,27 @@ const sendOne = (kind) => wrap(async (req, res) => {
 });
 router.post("/:id/reminder", sendOne("reminder"));
 router.post("/:id/nudge", sendOne("nudge"));
+
+/** The app invite email to this one person (staff; the same rules and records as Website & app › App invite email). */
+router.post("/:id/app-invite", wrap(async (req, res) => {
+  const p = await findPerson(req.params.id, { maxAgeMs: 3000 });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  if (appInviteJob.state.running) return res.status(409).json({ code: "running", error: "A send to everyone is running. Try again when it finishes." });
+  const row = await appInviteFor(p);
+  if (!row) return res.status(409).json({ code: "notPart", error: "They have no pass or role at TTFC 2026." });
+  if (!row.willGet) return res.status(409).json({ code: row.reason, error: row.label });
+  if (!singleSends.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of single sends in an hour. Try again later." });
+  const note = staffNote(isManagement(req.user));
+  try {
+    const sentAt = await makeInviteSender({ CampaignSend, template: await loadInviteTemplate(EmailTemplate) })(row, String(req.user.email || req.user._id));
+    if (sentAt === "skipped") return res.status(409).json({ code: "skipped", error: "They were emailed very recently, or someone is sending to them right now." });
+    await audit(req, "people_app_invite_one", "person", p.id, `${p.name} <${row.email}>${note}`);
+    return res.json({ sent: true, email: row.email, sentAt });
+  } catch (err) {
+    await audit(req, "people_app_invite_one_failed", "person", p.id, `${p.name} <${row.email}>${note}: ${String(err?.message || err).slice(0, 200)}`);
+    return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
+  }
+}));
 
 const LINK = /^https?:\/\/[^\s<>"]+$/i;
 const PHONE = /^[+()\d][\d\s().+-]{5,24}$/;
