@@ -105,3 +105,27 @@ export async function codesForTickets(ticketIds, { User, Attendee, Promo }) {
   for (const [id, recs] of byId) out.set(id, codeView(codeOf(recs, { discounts })));
   return out;
 }
+
+/* ---------- Bought or given (Oct 20 2026) ----------
+   The organiser, on the app invite list: "see whether they purchased
+   ticket or alloted ticket". From a pass's code (codeView above):
+     bought   "Bought", or "Bought · SPRING20" with the coupon code they
+              used: through the website's checkout (a Stripe session)
+     given    any staff-made pass: "Given by staff" (issued),
+              "Complimentary", "Exhibitor" (an exhibitor's Connect Pass,
+              given by staff; never "Exhibitor Pass"), "Speaker Pass"
+     unknown  "Pass · not recorded": nothing on record says which */
+export const GIVEN_SHORT = Object.freeze({ ISSUED: "Given by staff", COMP: "Complimentary", EXHIBITOR: "Exhibitor", SPEAKER: "Speaker Pass" });
+const MARKER_OF_LABEL = new Map(Object.entries(STAFF_MARKERS).map(([k, v]) => [v, k]));
+
+/** A pass's code (codeView / codeOf) → { how: bought | issued | comp | exhibitor | speaker | unknown, group: bought | given | unknown, label, code, detail }. */
+export function howGot(code) {
+  const c = code || {};
+  if (c.kind === "code") return { how: "bought", group: "bought", label: `Bought · ${c.code}`, code: c.code, detail: `Bought on the website with ${c.label}` };
+  if (c.kind === "none") return { how: "bought", group: "bought", label: "Bought", code: "", detail: "Bought on the website, no coupon code" };
+  if (c.kind === "staff") {
+    const m = c.marker || MARKER_OF_LABEL.get(c.label) || "ISSUED";
+    return { how: m === "COMP" ? "comp" : m.toLowerCase(), group: "given", label: GIVEN_SHORT[m] || c.label, code: "", detail: STAFF_MARKERS[m] || c.label };
+  }
+  return { how: "unknown", group: "unknown", label: "Pass · not recorded", code: "", detail: "Nothing on record says whether it was bought or given" };
+}

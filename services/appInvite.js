@@ -29,12 +29,25 @@
    web app can say it was opened from this email (POST /api/t/v →
    a "visit"); the open pixel does the same for opens. Previews and
    test sends carry neither. Pure, unit-tested (test/app-invite.test.js).
+
+   Groups and a selection (Oct 20 2026, the organiser: "allow me to
+   send in groups of 10, 20, 50, 100, and select who i want to send to
+   and to see whether they purchased ticket or alloted ticket"): each
+   row says how they got their ticket (ticketOf: bought, with the
+   coupon code, or given by staff, from services/promoCodes.js howGot),
+   whether it can go to them again (sendAgain: sent over COOLDOWN_DAYS
+   ago, the single-send rule) and whether it can be picked (canSelect).
+   A group or a selection comes back from the page as a list of
+   emails; pickBatch keeps only the ones on the list that can get it
+   now, in that order, and says why the rest were dropped
+   (test/app-invite-batches.test.js).
 ========================================================= */
 
 import { EVENT } from "./ticketInfo.js";
 import { isPlaceholderEmail, usableEmail } from "./attendingCampaign.js";
 import { TYPE_LABELS } from "./teamRoles.js";
 import { TIER_LABELS } from "./rsvp.js";
+import { codeOf, codeView, howGot } from "./promoCodes.js";
 
 export const APP_INVITE_CAMPAIGN = "app-invite-2026";
 export const APP_URL = `${EVENT.website}/app/`;
@@ -61,7 +74,14 @@ export const SKIP_LABELS = Object.freeze({
   alreadySent: "Already sent",
   recent: `Emailed in the last ${COOLDOWN_DAYS} days`,
   duplicate: "Same email as someone above",
+  notListed: "Not on the list (no pass or role at TTFC 2026)",
 });
+
+/** Group sends: the sizes on offer, and from how many people the confirm asks to type SEND. */
+export const GROUP_SIZES = Object.freeze([10, 20, 50, 100]);
+export const TYPE_SEND_FROM = 50;
+/** The most emails one selection can carry. */
+export const MAX_BATCH = 2000;
 
 const TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 /** The button's link: the web app, with a real send's token in the fragment (never sent to a server by the browser). */
@@ -82,10 +102,44 @@ export const usesApp = (user) => !!(user && (user.appOnboarded === true || user.
 /** Passes that count (not hidden, not a booth). */
 const livePasses = (p) => (p?.passList || []).filter((t) => !t.hidden && !isBooth(t.ticketId));
 
+const TIER_RANK = { speaker: 5, apex: 4, power: 3, influence: 2, connect: 1 };
+const GROUP_RANK = { bought: 0, given: 1, unknown: 2 };
+/** A pass's code: People's (services/people.js) or worked out from its records. */
+const passCode = (t) => t?.code || (t?.codeSources ? codeView(codeOf(t.codeSources)) : null);
+
+/** Their passes, most relevant first: usable before refunded, bought before given, the biggest pass, the newest. → [{ t, h }] */
+export function relevantPasses(p) {
+  return livePasses(p).map((t) => ({ t, h: howGot(passCode(t)) })).sort((x, y) =>
+    ((x.t.status === "refunded") - (y.t.status === "refunded"))
+    || (GROUP_RANK[x.h.group] - GROUP_RANK[y.h.group])
+    || ((TIER_RANK[y.t.tier] || 0) - (TIER_RANK[x.t.tier] || 0))
+    || (ms(y.t.purchaseDate) - ms(x.t.purchaseDate)));
+}
+
+/**
+ * How they got their ticket, for the list's Ticket column: the most relevant pass, and how many more they hold.
+ * → { how: bought | issued | comp | exhibitor | speaker | unknown | none, group: bought | given | unknown | none,
+ *     label: "Bought · SPRING20" | "Given by staff" | … | "No ticket", code, detail, pass: "Power Pass", more,
+ *     groups: every pass's group (the Bought / Given filters match any of them), all: ["Power Pass · Bought · SPRING20", …] }
+ */
+export function ticketOf(p) {
+  const list = relevantPasses(p);
+  if (!list.length) {
+    return { how: "none", group: "none", label: "No ticket", code: "", detail: "No pass on record (a role only, e.g. a speaker without a pass yet)", pass: "", more: 0, groups: ["none"], all: [] };
+  }
+  const line = ({ t, h }) => `${TIER_LABELS[t.tier] || t.label || "Pass"} · ${h.label}${t.status === "refunded" ? " · refunded" : ""}`;
+  const { t, h } = list[0];
+  return {
+    how: h.how, group: h.group, label: `${h.label}${t.status === "refunded" ? " · refunded" : ""}`, code: h.code, detail: h.detail,
+    pass: TIER_LABELS[t.tier] || t.label || "Pass", more: list.length - 1,
+    groups: [...new Set(list.map((x) => x.h.group))], all: list.map(line),
+  };
+}
+
 /** What ties them to TTFC 2026, for the list: ["Power Pass", "Speaker", "VIP"]. [] = nothing (not a recipient). */
 export function rolesOf(p) {
   const out = [];
-  const passes = livePasses(p);
+  const passes = relevantPasses(p).map((x) => x.t);
   if (passes.length) out.push(TIER_LABELS[passes[0].tier] || passes[0].label || "Pass");
   const types = new Set(p?.types || []);
   if (p?.speaker) types.add("speaker");
@@ -156,8 +210,11 @@ export function planAppInvites(people = [], { optedOut = [], sends = [], engagem
     else if (mode === "all" && s?.status === "sent") reason = "alreadySent";
     else if (mode === "one" && s?.status === "sent" && s.sentAt && now - ms(s.sentAt) < cooldownMs) reason = "recent";
     if (email) seen.add(email);
+    // Already sent, nothing else in the way, and the single-send cool-down has passed: it can go again if picked.
+    const sendAgain = mode === "all" && reason === "alreadySent" && !!s?.sentAt && now - ms(s.sentAt) >= cooldownMs;
     rows.push({
-      id: p.id, name: p.name, email, firstName: String(p.firstName || "").split(" ")[0] || "", roles, usingApp,
+      id: p.id, name: p.name, email, firstName: String(p.firstName || "").split(" ")[0] || "", roles, usingApp, ticket: ticketOf(p),
+      sendAgain, canSelect: !reason || sendAgain,
       status: s?.status || "pending", sentAt: s?.sentAt || null, sends: s?.sends || 0, error: s?.error || "",
       opened: !!e?.opens, clicked: !!e?.visits,
       // Signed in after the email went (lastActiveAt is when they last used the app).
@@ -199,10 +256,54 @@ export function inviteStats(rows = []) {
 /** A made-up person for previews and test sends (never a real person). */
 export const SAMPLE_PERSON = Object.freeze({ email: "jane.doe@example.com", firstName: "Jane", name: "Jane Doe" });
 
-/** The one "send to everyone" at a time on this server ({ running, by, total, sent, failed, skipped, … }). */
+/**
+ * A group or a selection: the emails the page sent back, kept in that order, intersected with who can get it now
+ * (`plan`: planAppInvites in mode "all", read fresh). Never trusts the page: an email that isn't on the list, or
+ * can't get it now, is dropped and said why.
+ *   kind "next":     only people who'll get it (not sent yet), like the send to everyone
+ *   kind "selected": also people it can go to again (sendAgain: sent over COOLDOWN_DAYS ago)
+ * → { todo: plan rows to send, dropped: [{ email, name, reason, label }] }
+ */
+export function pickBatch(plan, emails = [], { kind = "selected" } = {}) {
+  const byEmail = new Map();
+  for (const r of plan?.rows || []) if (r.email && r.reason !== "duplicate" && !byEmail.has(r.email)) byEmail.set(r.email, r);
+  const todo = [];
+  const dropped = [];
+  const seen = new Set();
+  for (const raw of emails || []) {
+    const email = usableEmail(raw);
+    const key = email || String(raw ?? "").trim().toLowerCase().slice(0, 120);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const r = email ? byEmail.get(email) : null;
+    if (r && (r.willGet || (kind === "selected" && r.sendAgain))) { todo.push(r); continue; }
+    const reason = !r ? "notListed" : r.reason === "alreadySent" && kind === "selected" ? "recent" : r.reason || "notListed";
+    dropped.push({ email: key, name: r?.name || "", reason, label: SKIP_LABELS[reason] || r?.label || "" });
+  }
+  return { todo, dropped };
+}
+
+/** pickBatch's dropped → "2 already sent, 1 not on the list" (for the page's message). */
+export function droppedSummary(dropped = []) {
+  const by = new Map();
+  for (const d of dropped || []) {
+    const label = (SKIP_LABELS[d.reason] || d.label || "can't get it now").replace(/ \(.*\)$/, "");
+    by.set(label, (by.get(label) || 0) + 1);
+  }
+  return [...by].map(([label, n]) => `${n} ${label.charAt(0).toLowerCase()}${label.slice(1)}`).join(", ");
+}
+
+/** The one multi-person send at a time on this server (everyone, the failures, a group or a selection):
+    { running, kind: all | retry | next | selected, size, by, total, sent, failed, skipped, dropped, … }. */
 export const appInviteJob = {
-  state: { running: false, startedAt: null, finishedAt: null, by: "", from: "", total: 0, sent: 0, failed: 0, skipped: 0 },
+  state: { running: false, startedAt: null, finishedAt: null, by: "", from: "", kind: "", size: 0, total: 0, sent: 0, failed: 0, skipped: 0, dropped: 0 },
   view() { return { ...this.state }; },
-  start(by, from, total = 0) { this.state = { running: true, startedAt: new Date(), finishedAt: null, by, from, total, sent: 0, failed: 0, skipped: 0 }; },
+  start(by, from, total = 0, extra = {}) {
+    const before = this.state;
+    this.state = { running: true, startedAt: new Date(), finishedAt: null, by, from, kind: "all", size: 0, total, sent: 0, failed: 0, skipped: 0, dropped: 0, ...extra };
+    return before;
+  },
+  /** Undo a start that sent nothing (the last run's result stays on the page). */
+  restore(before) { if (before) this.state = before; },
   finish() { this.state = { ...this.state, running: false, finishedAt: new Date() }; },
 };
