@@ -190,11 +190,20 @@ router.get("/app-return", (req, res) => {
   res.send(appReturnHtml({ status: String(status), tier: String(tier), sessionId: String(sessionId) }));
 });
 
-/** Stripe metadata values must be strings and are capped at 500 chars. */
-function cleanMetadata(obj) {
+/* Keys the server sets on a checkout's metadata and the webhook trusts (who the ticket belongs to,
+   what was bought, the price, an upgrade's ticket). Never taken from the buyer's browser: a guest
+   sending their own `userId` would otherwise put a paid ticket on someone else's account. */
+export const RESERVED_METADATA = Object.freeze([
+  "userId", "client", "type", "tier", "basePrice", "taxMode", "taxPercent", "promoCode", "discount",
+  "upgradeFrom", "fromTier",
+]);
+
+/** Stripe metadata values must be strings and are capped at 500 chars. Reserved keys are dropped. */
+export function cleanMetadata(obj) {
   const out = {};
   if (!obj || typeof obj !== "object") return out;
   for (const [k, v] of Object.entries(obj)) {
+    if (RESERVED_METADATA.includes(k)) continue;
     if (v === undefined || v === null || v === "") continue;
     const value = Array.isArray(v) ? v.join("; ") : String(v);
     out[String(k).slice(0, 40)] = value.slice(0, 500);
