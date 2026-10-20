@@ -1,7 +1,7 @@
 import express from "express";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { verifyTrack } from "../services/trackToken.js";
-import { engagementKey } from "../services/engagement.js";
+import { CAMPAIGNS, engagementKey } from "../services/engagement.js";
 import { trackLater } from "../services/engagementStore.js";
 
 /* =========================================================
@@ -42,7 +42,24 @@ export function makeOpenPixel({ record = trackLater, perToken = makeLimiter({ ma
 
 export const openPixel = makeOpenPixel();
 
+/* POST /api/t/v { r }: the web app was opened from an email's button (Oct 20 2026: the app invite email's link
+   carries #r=<token>; the web app sends it back once, src/app/lib/inviteVisit.js). Recorded as a "visit" when the
+   token is ours and for an email whose button opens the app; anything else is ignored. Always 204 (text/plain or
+   JSON, so the page needs no CORS preflight), at most a few per token, rate-limited per IP. */
+export const VISIT_CAMPAIGNS = Object.freeze([CAMPAIGNS.appInvite]);
+export function makeAppVisit({ record = trackLater, perToken = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 }), perIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 }) } = {}) {
+  return function appVisit(req, res) {
+    res.set("Cache-Control", "no-store");
+    if (!perIp.hit(req.ip || "?")) return res.status(429).json({ error: "Too many requests." });
+    const r = typeof req.body?.r === "string" ? req.body.r : "";
+    const p = r ? verifyTrack(r) : null;
+    if (p && VISIT_CAMPAIGNS.includes(p.c) && p.e && perToken.hit(r)) record(engagementKey(p), "visit");
+    return res.status(204).end();
+  };
+}
+
 const router = express.Router();
 router.get("/o/:file", openPixel);
+router.post("/v", express.json({ type: ["application/json", "text/plain"], limit: "2kb" }), makeAppVisit());
 
 export default router;

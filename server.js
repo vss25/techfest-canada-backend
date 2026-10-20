@@ -51,6 +51,7 @@ import filesRouter from "./routes/files.js";           // post photos + profile 
 import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
 import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
 import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
+import appInviteRouter from "./routes/appInvite.js";                                // app invite email (admin console)
 import rsvpRemindersRouter from "./routes/rsvpReminders.js";                         // RSVP reminder email (admin console)
 import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
 import purchaseEmailRouter from "./routes/purchaseEmail.js";                                         // Admin › Purchase email
@@ -154,6 +155,7 @@ app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
+app.use("/api/console/app-invite", appInviteRouter); // app invite email: Website & app › App invite email (before the console router)
 app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards (before the console router)
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)

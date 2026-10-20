@@ -35,8 +35,9 @@ export const CAMPAIGNS = Object.freeze({
   issuedPass: "issued-pass-2026", // routes/issuedPasses.js KINDS.issued.campaign
   exhibitorPass: "exhibitor-pass-2026", // routes/issuedPasses.js KINDS.exhibitor.campaign
   rsvpForm: "rsvp-form",
+  appInvite: "app-invite-2026", // services/appInvite.js APP_INVITE_CAMPAIGN (Oct 20 2026: opens, and the web app opened from its button)
 });
-const PER_ADDRESS = new Set([CAMPAIGNS.attending, CAMPAIGNS.rsvpReminder]);
+const PER_ADDRESS = new Set([CAMPAIGNS.attending, CAMPAIGNS.rsvpReminder, CAMPAIGNS.appInvite]);
 
 /** The emails with the RSVP button, as People names them (services/people.js rsvpEmailOf uses the same words). */
 export const RSVP_EMAIL_LABELS = Object.freeze({
