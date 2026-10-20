@@ -205,8 +205,10 @@ test("a signed-in buyer and a $0 checkout with a 100% code: alerted, $0.00, the 
   assert.equal((await M.User.findById(sam._id).lean()).tickets.length, 1);
 });
 
-test("a booth: alerted and labelled Booth; two deliveries at the same moment still send one alert", { skip }, async () => {
+test("a booth: alerted and labelled Booth; two deliveries at the same moment send one alert, one buyer email and count one booth", { skip }, async () => {
   const n = alerts().length;
+  const buyerMails = () => outbox.filter((m) => !m.isAlert && m.to.includes("sales@acme.example.com")).length;
+  const soldBefore = (await M.TicketInventory.findOne({ tier: "booth-single" }).lean()).sold;
   const s = ticketSession("cs_test_booth1", {
     amount_subtotal: 500000, amount_total: 565000, total_details: { amount_discount: 0, amount_tax: 65000 },
     customer_details: { email: "sales@acme.example.com", name: "Acme Robotics Inc." },
@@ -222,6 +224,16 @@ test("a booth: alerted and labelled Booth; two deliveries at the same moment sti
   assert.match(a.text, /^Booth: Exhibition Booth — Single$/m);
   assert.match(a.text, /^Code: No code$/m);
   assert.equal(a.reply_to, "sales@acme.example.com");
+  assert.equal(buyerMails(), 1);
+  assert.equal((await M.TicketInventory.findOne({ tier: "booth-single" }).lean()).sold, soldBefore + 1);
+  const claim = await M.CampaignSend.findOne({ campaign: "booth-purchase-2026", email: "cs_test_booth1" }).lean();
+  assert.equal(claim?.status, "sent");
+  // Stripe delivering it once more, later: still nothing new.
+  assert.equal((await deliver(s, { eventId: "evt_b3" })).status, 200);
+  await sleep(300);
+  assert.equal(buyerMails(), 1);
+  assert.equal(alerts().length, n + 1);
+  assert.equal((await M.TicketInventory.findOne({ tier: "booth-single" }).lean()).sold, soldBefore + 1);
 });
 
 test("no alert for India Pavilion deposits or pass upgrades", { skip }, async () => {

@@ -32,6 +32,27 @@ const alertPurchase = makePurchaseAlerter({
   },
 });
 
+/* A booth leaves no ticket to look up, so each booth checkout claims one CampaignSend row first
+   (campaign BOOTH_CLAIM, the session id in `email`; the unique index in models/CampaignSend.js).
+   Stripe delivering the same event again, or twice at once, finds the row and stops before the code,
+   the booth count and the buyer's email are counted a second time. */
+export const BOOTH_CLAIM = "booth-purchase-2026";
+const boothKey = (session) => String(session.id).toLowerCase();
+
+/** True when this delivery is the first for the booth checkout (it made the claim row). */
+export async function claimBoothSession(session, model = CampaignSend) {
+  try {
+    await model.create({
+      campaign: BOOTH_CLAIM, email: boothKey(session), name: String(session.metadata?.tier || ""),
+      status: "sending", attempts: 1, lastTriedAt: new Date(),
+    });
+    return true;
+  } catch (err) {
+    if (err?.code === 11000) return false;
+    throw err;
+  }
+}
+
 // ⚠️ raw body required for Stripe - handle both Buffer and string
 router.post("/stripe", async (req, res) => {
 
@@ -103,6 +124,10 @@ router.post("/stripe", async (req, res) => {
           console.log("↩️  Ticket already issued for session", session.id);
           return res.json({ received: true });
         }
+      }
+      if (isBooth && !(await claimBoothSession(session))) {
+        console.log("↩️  Booth already confirmed for session", session.id);
+        return res.json({ received: true });
       }
       if (purchaseType === "upgrade") {
         const owner = userId ? await User.findById(userId).select("tickets").lean() : null;
@@ -275,6 +300,8 @@ router.post("/stripe", async (req, res) => {
         }
 
         console.log("✅ Booth purchase confirmed:", tier);
+        await CampaignSend.updateOne({ campaign: BOOTH_CLAIM, email: boothKey(session) },
+          { $set: { status: "sent", sentAt: new Date(), sends: 1 } }).catch(() => {});
         alertPurchase({ session, paidAt });
       }
 
