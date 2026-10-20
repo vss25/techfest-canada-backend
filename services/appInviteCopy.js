@@ -88,9 +88,10 @@ export const DEFAULT_COPY = Object.freeze({
   homeIntro: "It then opens like any other app, full screen.",
   iphoneTitle: "iPhone",
   iphoneSteps: Object.freeze([
+    // iOS 26 Safari keeps Share behind ••• and Add to Home Screen under View More; older iPhones show both directly.
     "Open the link in Safari.",
-    "Tap Share (the square with an arrow).",
-    "Tap Add to Home Screen, then Add.",
+    "Tap Share (the square with an arrow). On newer iPhones, tap ••• first.",
+    "Tap Add to Home Screen (under View More if you don't see it), then Add.",
   ]),
   androidTitle: "Android",
   androidSteps: Object.freeze([

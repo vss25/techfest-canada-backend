@@ -48,7 +48,7 @@ test("the email: greeting, why, the big button to the web app, home-screen steps
   assert.match(e.html, /href="https:\/\/www\.thetechfestival\.com\/app\/"/);
   assert.match(e.html, />Open the TTFC app</);
   assert.match(e.html, /Add it to your home screen/);
-  assert.match(e.html, /Tap Add to Home Screen, then Add\./);
+  assert.match(e.html, /Tap Add to Home Screen \(under View More if you don&#39;t see it\), then Add\.|Tap Add to Home Screen \(under View More if you don't see it\), then Add\./);
   assert.match(e.html, /Tap Install app/);
   assert.match(e.html, /Sign in with this email: jane\.doe@example\.com/);
   assert.match(e.html, /prefers-color-scheme: light/);          // the light version for mail apps that ask
