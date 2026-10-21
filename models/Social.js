@@ -71,9 +71,14 @@ const socialMessageSchema = new Schema({
   toUserId:   { type: Types.ObjectId, ref: "User", required: true, index: true },
   body:       { type: String, required: true, maxlength: 2000 },
   status:     { type: String, enum: STATUS, default: "approved" },
+  // Read receipts (Oct 21 2026): deliveredAt = the recipient's app fetched it (chat list or the chat),
+  // readAt = they opened the chat. Only approved messages get either (routes/social.js).
+  deliveredAt: Date,
   readAt:     Date,
 }, { timestamps: true });
 socialMessageSchema.index({ threadKey: 1, createdAt: 1 });
+// "Delivered" marking on every chat-list poll: { toUserId, deliveredAt: null } only walks what's still undelivered.
+socialMessageSchema.index({ toUserId: 1, deliveredAt: 1 });
 
 const sessionRegistrationSchema = new Schema({
   userId:    { type: Types.ObjectId, ref: "User", required: true },

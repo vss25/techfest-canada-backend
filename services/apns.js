@@ -40,7 +40,7 @@ export function buildPayload({ title = "", body = "", link = "", thread = "", ki
   alert.body = String(body || "").slice(0, 400);
   const aps = { alert, sound: "default" };
   if (thread) aps["thread-id"] = String(thread).slice(0, 64);
-  return { aps, link: String(link || ""), kind: String(kind || ""), id: String(id || "") };
+  return { aps, link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64) };
 }
 
 /** A user's token list after adding/refreshing one (newest last, capped). Pure. */

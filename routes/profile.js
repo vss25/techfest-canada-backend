@@ -5,6 +5,7 @@ import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile, mirrorProfileToTickets, consentPatch } from "../services/onboardingProfile.js";
 import { syncLinkedInItem } from "../services/contactCard.js";
+import { spotsOf, spotsPatch } from "../services/availability.js";
 
 /* =========================================================
    ATTENDEE PROFILE — GET / PATCH /api/profile
@@ -13,6 +14,9 @@ import { syncLinkedInItem } from "../services/contactCard.js";
    both PATCH { linkedinUrl, fieldOfWork } here. Until now the route didn't
    exist, so the website's call silently failed. Only the listed fields can
    be changed; name/email/password stay on /api/auth routes.
+   availabilitySpots ({ "d1-12": "Expo floor", … }, where they'll be per block) is checked
+   against availabilitySlots on every save (services/availability.js): send the three
+   together (availabilitySlots, availabilitySpots, meetingSpot).
 ========================================================= */
 
 const router = express.Router();
@@ -75,7 +79,7 @@ router.get("/", async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
   const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
-  res.json({ ...withCheckoutProfile(user.toObject(), claimed), avatarUrl: avatarPath(user._id, user.avatarVersion) });
+  res.json({ ...withCheckoutProfile(user.toObject(), claimed), availabilitySpots: spotsOf(user), avatarUrl: avatarPath(user._id, user.avatarVersion) });
 });
 
 /* Profile photo, shown to everyone on every device. Send
@@ -100,6 +104,8 @@ router.patch("/", async (req, res) => {
     const user = await requireUser(req, res);
     if (!user) return;
     const patch = { ...sanitizeProfilePatch(req.body), ...consentPatch(req.body, user) };
+    // Where they'll be per block: only blocks they picked (an older app unpicking a block drops its place too).
+    Object.assign(patch, spotsPatch(req.body, user, patch.availabilitySlots));
     if (!Object.keys(patch).length) {
       // Older apps' "Show me in the attendee list" switch: showing is a no-op, hiding is staff-only now.
       const self = selfHideReply(req.body);
@@ -109,6 +115,7 @@ router.patch("/", async (req, res) => {
     // The profile LinkedIn is also the first LinkedIn item on a saved contact card.
     const cardItems = patch.linkedinUrl !== undefined && patch.linkedinUrl !== user.linkedinUrl ? syncLinkedInItem(user, patch.linkedinUrl) : null;
     Object.assign(user, patch);
+    if (patch.availabilitySpots) user.markModified("availabilitySpots");
     if (cardItems) user.contactItems = cardItems;
     // Finishing the app's profile steps: copy the answers onto their tickets
     // (gaps only) so the admin panel's ticket list and export show them.
@@ -119,7 +126,7 @@ router.patch("/", async (req, res) => {
       }
     }
     await user.save();
-    res.json({ success: true, user });
+    res.json({ success: true, user: { ...user.toJSON(), availabilitySpots: spotsOf(user) } });
   } catch (err) {
     console.error("PROFILE PATCH ERROR:", err);
     res.status(500).json({ error: "Server error" });

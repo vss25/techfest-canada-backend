@@ -12,6 +12,7 @@
 
 import { passKind, isVipPass, strongerKind, boothOf, typesTier, storedTypes, PUBLIC_TYPES } from "./teamRoles.js";
 import { personAccess } from "./appRights.js";
+import { spotsOf } from "./availability.js";
 
 /** "TECHFEST:A1B2C3D4E5F6 " → "a1b2c3d4e5f6" */
 export function normalizeTicketId(raw) {
@@ -161,6 +162,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       tagline: u.tagline || "",
       availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
       meetingSpot: u.meetingSpot || "",
+      availabilitySpots: spotsOf(u),   // place per block; meetingSpot for the rest (services/availability.js)
       // Receive rights, same as userCard (routes/social.js corrects them per viewer).
       acceptsMessages: acc.rights.receiveMessages,
       acceptsRequests: acc.rights.receiveRequests,

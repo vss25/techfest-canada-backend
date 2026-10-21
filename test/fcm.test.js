@@ -4,18 +4,18 @@ import { buildFcmMessage, cleanFcmToken, upsertFcmToken, isDeadToken, parseServi
 
 const TOKEN = "dGVzdC10b2tlbg:APA91b" + "x".repeat(140);
 
-test("message: notification, Android channel/priority/tag and string data; long text is capped", () => {
+test("message: notification, Android channel/priority/tag and string data (thread too, so a tap opens the chat); long text is capped", () => {
   const { message } = buildFcmMessage(TOKEN, { title: "Riley Chen", body: "x".repeat(900), thread: "dm.1", link: "ttfc://tab/network", kind: "dm", id: "m1" });
   assert.equal(message.token, TOKEN);
   assert.equal(message.notification.title, "Riley Chen");
   assert.equal(message.notification.body.length, 400);
   assert.equal(message.android.priority, "HIGH");
   assert.deepEqual(message.android.notification, { channel_id: "ttfc_updates", tag: "dm.1" });
-  assert.deepEqual(message.data, { link: "ttfc://tab/network", kind: "dm", id: "m1" });
+  assert.deepEqual(message.data, { link: "ttfc://tab/network", kind: "dm", id: "m1", thread: "dm.1" });
   const bare = buildFcmMessage(TOKEN, { body: "hi", id: 42 }).message;
   assert.equal(bare.notification.title, undefined);
   assert.equal(bare.android.notification.tag, undefined);
-  assert.deepEqual(bare.data, { link: "", kind: "", id: "42" });
+  assert.deepEqual(bare.data, { link: "", kind: "", id: "42", thread: "" });
   for (const v of Object.values(bare.data)) assert.equal(typeof v, "string");
 });
 

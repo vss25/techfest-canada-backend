@@ -14,9 +14,11 @@ import { makeLimiter } from "../services/ticketAccess.js";
 import { isHidden } from "../services/appHide.js";
 import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apns.js";
 import { cleanFcmToken, upsertFcmToken, isConfigured as fcmConfigured } from "../services/fcm.js";
+import * as webPush from "../services/webPush.js";
 
 const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batches per IP per minute
 const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });   // staff alerts per reporter
+const webPushLimiter = makeLimiter({ max: 30, windowMs: 10 * 60 * 1000 });   // web push subscribes per account
 
 /* =========================================================
    /api/app — things every iOS client needs:
@@ -33,6 +35,10 @@ const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });  
    POST   /push-token    register this phone for push
                          iOS { token, env } · Android { token, platform: "android" }
    DELETE /push-token    stop pushing to this phone { token } (sign out)
+   GET    /webpush-key   the web app's Web Push key { publicKey } (no sign-in needed)
+   POST   /webpush       push to this browser { subscription: { endpoint, keys: { p256dh, auth } } }
+                         → { ok, pushing: true }
+   DELETE /webpush       stop pushing to this browser { endpoint } (sign out)
 ========================================================= */
 
 const router = express.Router();
@@ -169,6 +175,36 @@ router.delete("/push-token", async (req, res) => {
   if (apnsToken) pull.apnsTokens = { token: apnsToken };
   if (fcmToken) pull.fcmTokens = { token: fcmToken };
   if (Object.keys(pull).length) await User.updateOne({ _id: me._id }, { $pull: pull });
+  res.json({ ok: true });
+});
+
+/* Web Push for the web app (services/webPush.js). The key pair is made once and kept, so `pushing`
+   is always true. A browser's endpoint belongs to one account: subscribing takes it off any other. */
+router.get("/webpush-key", async (req, res) => {
+  try {
+    const publicKey = await webPush.publicKey();
+    res.set("Cache-Control", "public, max-age=300");
+    res.json({ publicKey });
+  } catch (err) {
+    console.error("WEB PUSH KEY ERROR:", err?.message || err);
+    res.status(503).json({ error: "Notifications aren't available right now. Try again later." });
+  }
+});
+
+router.post("/webpush", async (req, res) => {
+  const me = await requireUser(req, res); if (!me) return;
+  const sub = webPush.cleanSubscription(req.body?.subscription);
+  if (!sub) return res.status(400).json({ error: "subscription with an https endpoint and keys required" });
+  if (!webPushLimiter.hit(String(me._id))) return res.status(429).json({ error: "Slow down" });
+  await webPush.subscribe(me._id, sub, { ua: req.headers["user-agent"] });
+  res.json({ ok: true, pushing: webPush.isConfigured() });
+});
+
+router.delete("/webpush", async (req, res) => {
+  const me = await requireUser(req, res); if (!me) return;
+  const endpoint = webPush.cleanEndpoint(req.body?.endpoint);
+  if (!endpoint) return res.status(400).json({ error: "endpoint required" });
+  await webPush.unsubscribe(me._id, endpoint);
   res.json({ ok: true });
 });
 

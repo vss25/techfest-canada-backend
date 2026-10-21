@@ -68,7 +68,8 @@ export function buildFcmMessage(token, { title = "", body = "", link = "", threa
       token,
       notification,
       android: { priority: "HIGH", notification: androidNote },
-      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || "") },
+      // `thread` ("dm.<senderId>", "group.<id>"…) so a tap can open that chat.
+      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64) },
     },
   };
 }

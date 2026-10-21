@@ -19,7 +19,7 @@ import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
-  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO,
+  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
@@ -208,7 +208,7 @@ router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const [users, guests] = await Promise.all([
     User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
-      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff vip").lean(),
+      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot availabilitySpots messagesOff requestsOff types typesOff vip").lean(),
     Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode exhibitor vip issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
   const { exhibitors, matrix } = req.ctx;
@@ -555,12 +555,36 @@ router.post("/connections/in-person", async (req, res) => {
   res.json(await connectionDTO(c, req));
 });
 
-/* ================= MESSAGES ================= */
+/* ================= MESSAGES =================
+   Read receipts (Oct 21 2026): a message to me is delivered once my app fetches it (the chat list, or the
+   chat with or without ?peek=1) and read once the chat is on screen (GET /messages/:userId without peek; the
+   apps' background refreshes send peek=1). Only approved ones, only from people I can see (never from someone
+   hidden from the app or anyone blocked either way). The sender sees ✓ / ✓✓ / blue ✓✓ from deliveredAt /
+   readAt on their own messages (messageDTO). Someone hidden from the app, or blocked by the other person,
+   can't tell: their messages read as delivered, never read. */
+
+/** Their messages to me can't reveal anything to me: I'm hidden from the app, or one of us blocked the other. */
+const receiptsMasked = (req, otherId) => !!req.appHidden || req.blocked.has(String(otherId));
+
+/** Everything addressed to me that I may see has reached my app: one update on the { toUserId, deliveredAt }
+    index, which only walks what's still undelivered (nothing, on most polls). A read message keeps its readAt. */
+async function markDelivered(req) {
+  const filter = { toUserId: req.user._id, deliveredAt: null, status: "approved" };
+  if (req.unseen.size) filter.fromUserId = { $nin: oids(req.unseen) };
+  try {
+    await SocialMessage.updateMany(filter, [{ $set: { deliveredAt: { $ifNull: ["$readAt", new Date()] } } }], { updatePipeline: true });
+  } catch (err) {
+    console.error("MESSAGE DELIVERED ERROR:", err?.message || err);
+  }
+}
 
 router.get("/messages", async (req, res) => {
   const me = req.user._id;
+  await markDelivered(req);
   const recent = await SocialMessage.aggregate([
-    { $match: { $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "hidden" } } },
+    // Mine (not ones staff took down) and approved ones to me: someone's held message isn't shown or counted
+    // as unread until a moderator approves it, the same as in the chat itself.
+    { $match: { $or: [{ fromUserId: me, status: { $ne: "hidden" } }, { toUserId: me, status: "approved" }] } },
     { $sort: { createdAt: -1 } },
     { $group: {
       _id: "$threadKey",
@@ -577,9 +601,11 @@ router.get("/messages", async (req, res) => {
   const threads = await Promise.all(shown.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
     const other = await User.findById(otherId).select(CARD_SELECT).lean();
+    const { id, ...lastMessage } = messageDTO(t.last, me, { masked: receiptsMasked(req, otherId) });
     return {
       user: (await cardsFor(req.user, [other]))[0] || { id: String(otherId), name: "Attendee" },
-      lastMessage: { body: t.last.body, sentByMe: String(t.last.fromUserId) === String(me), createdAt: t.last.createdAt },
+      // { body, sentByMe, status, createdAt, deliveredAt, readAt }: the apps put the ticks before the preview.
+      lastMessage,
       unread: t.unread,
     };
   }));
@@ -593,11 +619,18 @@ router.get("/messages/:userId", async (req, res) => {
   const filter = { threadKey: key, $or: [{ status: "approved" }, { fromUserId: req.user._id }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
   const msgs = await SocialMessage.find(filter).sort({ createdAt: 1 }).limit(500).lean();
-  await SocialMessage.updateMany({ threadKey: key, toUserId: req.user._id, readAt: null }, { $set: { readAt: new Date() } });
-  res.json(msgs.map((m) => ({
-    id: String(m._id), body: m.body, sentByMe: String(m.fromUserId) === String(req.user._id),
-    status: m.status, createdAt: m.createdAt, readAt: m.readAt,
-  })));
+  const now = new Date();
+  if (req.query.peek === "1") {
+    // ?peek=1: the apps refreshing a chat in the background (launch, foreground, a timer). Delivered, not read.
+    await SocialMessage.updateMany({ threadKey: key, toUserId: req.user._id, status: "approved", deliveredAt: null },
+      [{ $set: { deliveredAt: { $ifNull: ["$readAt", now] } } }], { updatePipeline: true });
+  } else {
+    // The chat on screen: their approved messages to me are read now, and delivered if they weren't yet.
+    await SocialMessage.updateMany({ threadKey: key, toUserId: req.user._id, status: "approved", readAt: null },
+      [{ $set: { readAt: now, deliveredAt: { $ifNull: ["$deliveredAt", now] } } }], { updatePipeline: true });
+  }
+  const masked = receiptsMasked(req, req.params.userId);
+  res.json(msgs.map((m) => messageDTO(m, req.user._id, { masked })));
 });
 
 router.post("/messages/:userId", async (req, res) => {
@@ -628,8 +661,23 @@ router.post("/messages/:userId", async (req, res) => {
   if (status === "approved" && !req.appHidden) {
     pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) }, { from: req.user._id });
   }
-  res.status(201).json({ id: String(m._id), body: m.body, sentByMe: true, status: m.status, createdAt: m.createdAt });
+  res.status(201).json(messageDTO(m.toObject(), req.user._id, { masked: req.appHidden }));
 });
+
+/* A held message a moderator approves reaches the phone then (the push it would have had when sent), unless one of
+   them has blocked the other since; services/push.js drops it when the sender is hidden from the app. */
+async function pushApprovedMessage(m) {
+  try {
+    const [from, blocked] = await Promise.all([
+      User.findById(m.fromUserId).select("name").lean(),
+      Block.exists({ $or: [{ userId: m.fromUserId, blockedId: m.toUserId }, { userId: m.toUserId, blockedId: m.fromUserId }] }),
+    ]);
+    if (!from || blocked) return;
+    pushToUsers([m.toUserId], { title: from.name, body: m.body, link: "ttfc://tab/network", thread: `dm.${m.fromUserId}`, kind: "dm", id: String(m._id) }, { from: m.fromUserId });
+  } catch (err) {
+    console.error("APPROVED MESSAGE PUSH ERROR:", err?.message || err);
+  }
+}
 
 /* ================= SESSIONS: REGISTRATIONS ================= */
 
@@ -860,6 +908,7 @@ router.post("/admin/:type/:id/status", needRight("moderate"), async (req, res) =
   if (Model === SocialComment && was !== "approved" && status === "approved") {
     await SocialPost.updateOne({ _id: doc.postId }, { $inc: { commentCount: 1 } });
   }
+  if (Model === SocialMessage && was === "held" && status === "approved") pushApprovedMessage(doc);
   res.json({ ok: true, id: String(doc._id), status });
 });
 
