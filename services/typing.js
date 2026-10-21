@@ -19,14 +19,15 @@ export function stopTyping(scope, id, userId) {
   rooms.get(`${scope}:${id}`)?.delete(String(userId));
 }
 
-/** Names typing in a room in the last few seconds, excluding `viewerId`. */
-export function whoIsTyping(scope, id, viewerId, now = Date.now()) {
+/** Names typing in a room in the last few seconds, excluding `viewerId` and anyone in `skip` (user ids: blocks and
+    people hidden from the app, whom this viewer doesn't see). */
+export function whoIsTyping(scope, id, viewerId, now = Date.now(), skip = null) {
   const room = rooms.get(`${scope}:${id}`);
   if (!room) return [];
   const out = [];
   for (const [uid, v] of room) {
     if (now - v.at > TTL_MS) { room.delete(uid); continue; }
-    if (uid !== String(viewerId)) out.push(v.name);
+    if (uid !== String(viewerId) && !skip?.has(uid)) out.push(v.name);
   }
   if (!room.size) rooms.delete(`${scope}:${id}`);
   return out.slice(0, 5);

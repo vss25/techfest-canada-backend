@@ -11,6 +11,7 @@ import { cleanEvent, eventPlatform, CONTENT_KEYS } from "../services/adminHelper
 import { deleteAccount } from "../services/accountDeletion.js";
 import { trimBody } from "../services/socialHelpers.js";
 import { makeLimiter } from "../services/ticketAccess.js";
+import { isHidden } from "../services/appHide.js";
 import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apns.js";
 import { cleanFcmToken, upsertFcmToken, isConfigured as fcmConfigured } from "../services/fcm.js";
 
@@ -89,7 +90,9 @@ router.post("/report", async (req, res) => {
 
 /* Everyone with the moderate right (staff accounts always, plus any type the
    App rights matrix lets moderate) gets "Content reported" in its app inbox (and
-   a push). The report is always saved; past 10 in 10 min from one person the alerts stop. */
+   a push). The report is always saved; past 10 in 10 min from one person the alerts stop.
+   A person hidden from the app (services/appHide.js) alerts nobody: their reports are
+   saved and listed in App moderation, labelled. */
 const MAX_REPORT_ALERTS = 500;
 async function moderators() {
   const ctx = await rightsContext();
@@ -98,6 +101,7 @@ async function moderators() {
 }
 async function alertStaff(me, report) {
   try {
+    if (await isHidden(me._id)) return;
     if (!reportAlertLimiter.hit(String(me._id))) return;
     const staff = await moderators();
     const rows = buildReportNotifications({
@@ -107,7 +111,7 @@ async function alertStaff(me, report) {
     if (!rows.length) return;
     await AppNotification.insertMany(rows);
     const [{ title, body, link }] = rows;
-    pushToUsers(rows.map((r) => r.userId), { title, body, link, thread: "reports", kind: "report", id: String(report._id) });
+    pushToUsers(rows.map((r) => r.userId), { title, body, link, thread: "reports", kind: "report", id: String(report._id) }, { from: me._id });
   } catch (err) {
     console.error("REPORT ALERT ERROR:", err?.message || err);
   }

@@ -59,6 +59,14 @@ const ticketSchema = new mongoose.Schema({
   manualValueAt: { type: Date }
 });
 
+/** Admin › People › Hide from app: when, who (staff) and their private note. */
+export const hideSchema = new mongoose.Schema({
+  at:     { type: Date, required: true },
+  by:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  byName: { type: String, default: "" },
+  reason: { type: String, default: "", maxlength: 500 },
+}, { _id: false });
+
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -131,6 +139,9 @@ const userSchema = new mongoose.Schema(
     rsvpEmailMarkAt: { type: Date, select: false },
     banned:       { type: Boolean, default: false },      // set from the admin console
     bannedReason: { type: String, default: "" },
+    // Hidden from the app (shadow mode, services/appHide.js, Oct 21 2026): staff hid them in Admin › People. They see
+    // the app as usual; nobody else sees them or anything they do. Unset = not hidden. Staff-only: never in /auth/me.
+    appHidden:    { type: hideSchema, default: undefined, select: false },
     lastActiveAt: { type: Date },
     appOnboarded: { type: Boolean, default: false },      // finished the app's profile steps once
     // Everything else the app's profile collects (editable from the admin panel too).
@@ -177,6 +188,8 @@ const userSchema = new mongoose.Schema(
     timestamps: true
   }
 );
+
+userSchema.index({ "appHidden.at": 1 }, { sparse: true });   // the hidden set (services/appHide.js)
 
 const User = mongoose.model("User", userSchema);
 

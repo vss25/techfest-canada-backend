@@ -33,7 +33,8 @@ export function followerIds(d) {
 export const legacyFollowers = (d) => followerIds({ authorId: d?.authorId, unfollowed: d?.unfollowed });
 
 export const isFollowing = (d, viewerId) => !!viewerId && followerIds(d).includes(str(viewerId));
-export const followerCount = (d) => followerIds(d).length;
+/** How many follow it; `shadow` (people hidden from the app, services/appHide.js) aren't counted for this viewer. */
+export const followerCount = (d, shadow = null) => followerIds(d).filter((id) => !shadow?.has(id)).length;
 
 /** Should posting a reply make this person a follower? (No if already following or opted out.) */
 export function shouldAutoFollow(d, userId) {
@@ -147,12 +148,13 @@ export function createPushThrottle({ gapMs = PUSH_GAP_MS, maxEntries = 100000 } 
   };
 }
 
-/** What the app gets for one discussion (list, create, staff queue). Never the follower list itself. */
-export function discussionDTO(d, viewer) {
+/** What the app gets for one discussion (list, create, staff queue). Never the follower list itself.
+    `shadow` / `hiddenReplies`: people hidden from the app and their approved replies here, left out of this viewer's counts. */
+export function discussionDTO(d, viewer, { shadow = null, hiddenReplies = 0 } = {}) {
   return {
     id: str(d._id), title: d.title, body: d.body, tags: d.tags || [],
-    authorId: str(d.authorId), authorName: d.authorName, replyCount: d.replyCount || 0,
+    authorId: str(d.authorId), authorName: d.authorName, replyCount: Math.max(0, (d.replyCount || 0) - hiddenReplies),
     status: d.status, mine: str(d.authorId) === str(viewer), createdAt: d.createdAt,
-    following: isFollowing(d, viewer), followerCount: followerCount(d),
+    following: isFollowing(d, viewer), followerCount: followerCount(d, shadow),
   };
 }

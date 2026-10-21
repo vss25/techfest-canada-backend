@@ -79,6 +79,7 @@ import { usableEmail } from "./attendingCampaign.js";
 import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
 import { OPENS_NOTE, attendingEngagementOf, engagementIndex, rsvpEngagementOf } from "./engagement.js";
 import { codeOf, codeView, discountMap } from "./promoCodes.js";
+import { personHide } from "./appHideRules.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -613,6 +614,9 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
     attendingEngagement: attendingEngagementOf([email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], engagementIdx),
     // Opens of the emails with their RSVP link, and the RSVP form opened with one of their tickets.
     rsvpEngagement: rsvpEngagementOf({ emails: [email, ...p.emails, ...(u ? [realEmail(u.email)] : [])], tickets: [...p.tickets.keys()] }, engagementIdx),
+    // Hidden from the app (shadow mode, services/appHide.js): the flag on their account or a pass of theirs,
+    // the earliest one ({ at, by, byName, reason }), or null.
+    appHidden: personHide({ user: u, attendees: p.attendees }),
     // The coupon codes they bought with count too: typing SPRING20 lists who used it.
     search: fold([name, email, company, jobTitle, s?.name, ...tickets.map((t) => t.ticketId), ...tickets.filter((t) => t.code.kind === "code").map((t) => t.code.code), ...p.emails].filter(Boolean).join(" ")),
   };
@@ -695,6 +699,8 @@ export function personRow(p) {
     userId: p.user ? String(p.user._id) : "",
     photoUrl: p.photoUrl,
     suggestedDomain: suggestDomain(p),
+    // Hidden from the app: since when and by whom (the profile adds the private reason), or null.
+    appHidden: p.appHidden ? { at: p.appHidden.at, byName: p.appHidden.byName } : null,
   };
 }
 
@@ -708,7 +714,8 @@ const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
     ?attending= opened (the email, or anything after it) | visited (their page) | posted (a confirmed LinkedIn post) |
       maybe (shared from a phone or took it to LinkedIn by hand: not confirmed) | noPost (opened the email or page, nothing after);
     ?rsvpEmail= opened (an email with their RSVP link) | unopened (one went with the pixel, no open seen);
-    ?rsvp= form (opened the RSVP form with their ticket, no RSVP of their own). */
+    ?rsvp= form (opened the RSVP form with their ticket, no RSVP of their own).
+    ?appHidden= yes | no (hidden from the app, services/appHide.js). */
 export function filterPeople(people, query = {}) {
   const q = fold(String(query.q || "").trim()).slice(0, 100);
   const type = String(query.type || "").toLowerCase();
@@ -718,7 +725,7 @@ export function filterPeople(people, query = {}) {
   const value = String(query.value || "").toLowerCase();
   const flags = {
     exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase(),
-    attending: String(query.attending || "").toLowerCase(),
+    attending: String(query.attending || "").toLowerCase(), appHidden: String(query.appHidden || "").toLowerCase(),
   };
   const words = q ? q.split(/\s+/).filter(Boolean) : [];
   return people.filter((p) => {
@@ -730,7 +737,7 @@ export function filterPeople(people, query = {}) {
     const rs = rsvpStatusOf(p.rsvp).status;
     if (rsvp === "any" ? rs === "none" : RSVP_STATUSES.includes(rsvp) && rs !== rsvp) return false;
     if (rsvp === "form" && !(p.rsvpEngagement?.formOpened && rs !== "attendee")) return false;
-    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.vip, flags.vip)) return false;
+    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.vip, flags.vip) || !yesNo(p.appHidden, flags.appHidden)) return false;
     if (!ENGAGED.rsvpEmail(p, flags.rsvpEmail)) return false;
     if (!ENGAGED.attending(p, flags.attending)) return false;
     return true;
@@ -795,7 +802,7 @@ export function peopleCounts(people) {
   const byStatus = Object.fromEntries(PASS_STATUSES.map((s) => [s, 0]));
   const byRsvp = Object.fromEntries(RSVP_STATUSES.map((s) => [s, 0]));
   const byValue = { below: 0, above: 0, unknown: 0, none: 0 };
-  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0;
+  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0, appHidden = 0;
   // Engagement (services/engagement.js): people, not events.
   const engaged = { attendingOpened: 0, attendingVisited: 0, attendingPosted: 0, attendingMaybe: 0, rsvpEmailOpened: 0, rsvpFormOpened: 0, rsvpFormNotSent: 0 };
   const extras = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
@@ -807,6 +814,7 @@ export function peopleCounts(people) {
     byValue[bandOf(p)] += 1;
     if (p.exhibitor) exhibitors += 1;
     if (p.vip) vips += 1;
+    if (p.appHidden) appHidden += 1;
     if (p.rsvpEmail.sent) rsvpEmailSent += 1;
     if (p.attending?.status === "sent") attendingSent += 1;
     const st = stageOf(p);
@@ -822,7 +830,7 @@ export function peopleCounts(people) {
     if (p.primary?.cxo) cxo += 1;
     for (const x of EXTRA_KEYS) if (p.primary?.extras?.[x]) extras[x] += 1;
   }
-  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, rsvpEmailSent, attendingSent, cxo, extras, ...engaged };
+  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, appHidden, rsvpEmailSent, attendingSent, cxo, extras, ...engaged };
 }
 
 /**
@@ -1009,6 +1017,7 @@ export function personDetail(p, { management = false, cmsLogos = [], staffId = "
     suggestedDomain: suggestDomain(p, cmsLogos),
     specialEvents: specialEvents(p.rsvp),
     edit: editInfo(p, { management, staffId }),
+    appHidden: p.appHidden ? { at: p.appHidden.at, byName: p.appHidden.byName, reason: p.appHidden.reason } : null,
     // Every count and first / last time (services/engagement.js), and the caveat that goes with opens.
     engagement: {
       attending: p.attendingEngagement || NO_ENGAGEMENT.attending,
