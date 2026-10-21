@@ -5,7 +5,9 @@ import { AppContent } from "../models/Admin.js";
    Stored in AppContent under "site.kill"; cached for 10 s so
    every request doesn't hit the database. While it's on, only
    staff routes, sign-in, payments webhooks and /api/status
-   keep working, so staff can always switch it back off.
+   keep working, so staff can always switch it back off. The
+   Catalyst Awards jury portal (/api/jury) keeps working too:
+   jurors are judging, not using the public site.
 ========================================================= */
 
 const KEY = "site.kill";
@@ -35,7 +37,7 @@ export async function setKillState({ enabled, message, by }) {
 
 /** Paths that must keep working while the site is off. Pure, exported for tests. */
 export function allowedWhileOff(path) {
-  return /^\/api\/(status|console|cms|admin|webhook|checkin)(\/|$)/.test(path)
+  return /^\/api\/(status|console|cms|admin|webhook|checkin|jury)(\/|$)/.test(path)
     || /^\/api\/auth\/(login|me|refresh)(\/|$)/.test(path);
 }
 

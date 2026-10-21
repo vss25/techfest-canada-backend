@@ -32,6 +32,8 @@ import campaignAutomationRoutes from "./routes/campaignAutomation.js";
 import promosRouter from "./routes/promos.js";
 import nominationsRouter from "./routes/nominations.js";
 import nominationsAdminRouter from "./routes/nominationsAdmin.js";                 // Catalyst Awards nominations (admin console)
+import juryRouter from "./routes/jury.js";                                           // Catalyst Awards jury portal (website /awards/jury-admin)
+import juryAdminRouter from "./routes/juryAdmin.js";                                // Catalyst Awards jury: jurors, allocation, rubric, results (admin console)
 import pavilionRouter from "./routes/pavilion.js";
 import linkedinRouter from "./routes/linkedin.js";
 import mediaRouter from "./routes/media.js"; // 👈 NEW — press & media accreditation
@@ -132,6 +134,7 @@ app.get("/api/auth/linkedin/callback", attendingLinkedinCallback);
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
+app.use("/api/jury", juryRouter);       // the jury portal: jury tokens only (services/juryAuth.js)
 app.use("/api/payments", paymentRoutes);
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
@@ -157,6 +160,7 @@ app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (websit
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
 app.use("/api/console/app-invite", appInviteRouter); // app invite email: Website & app › App invite email (before the console router)
 app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards (before the console router)
+app.use("/api/console/jury", juryAdminRouter); // Catalyst Awards jury (before the console router)
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
