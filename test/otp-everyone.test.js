@@ -83,6 +83,8 @@ before(() => {
     return chain(users.find((u) => matches(u, { email: q.email })) || null);
   });
   mock.method(User, "findById", (id) => chain(users.find((u) => String(u._id) === String(id)) || null));
+  // The hidden-from-app set (services/appHide.js) that every social request reads: nobody is hidden here.
+  mock.method(User, "find", () => chain([]));
   mock.method(User.prototype, "save", async function () { if (!users.includes(this)) users.push(this); return this; });
 
   mock.method(Attendee, "find", (f = {}) => chain(f.email ? guests.filter((g) => matches(g, { email: f.email })) : []));

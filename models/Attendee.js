@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { hideSchema } from "./User.js";
 
 const attendeeSchema = new mongoose.Schema(
   {
@@ -64,6 +65,9 @@ const attendeeSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    // Hidden from the app (shadow mode, services/appHide.js): staff hid the person who holds this pass. Whoever
+    // claims it or holds it later is hidden too, so a pass-only person stays hidden when they sign in.
+    appHidden: { type: hideSchema, default: undefined, select: false },
     // Set when this guest ticket is linked to an app/website account.
     claimedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -134,6 +138,8 @@ const attendeeSchema = new mongoose.Schema(
     timestamps: true
   }
 );
+
+attendeeSchema.index({ "appHidden.at": 1 }, { sparse: true });   // the hidden set (services/appHide.js)
 
 const Attendee = mongoose.model("Attendee", attendeeSchema);
 

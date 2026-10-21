@@ -47,6 +47,10 @@ import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites } from "../services/appInvite.js";
 import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
+import { accessOf } from "../services/rightsStore.js";
+import {
+  HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
+} from "../services/appHide.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -153,14 +157,14 @@ async function loadStripe() {
 const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", "company", "jobTitle", "title", "linkedin", "phone"];
 const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
 const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt appOnboarded createdAt avatarVersion",
-  "+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt",
+  `+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt ${HIDE_SELECT}`,
   "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
   ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
   "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
 const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
   "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip media", ...EXTRA_FIELDS,
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
-  "companyLogoUrl createdAt", ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
+  "companyLogoUrl createdAt", HIDE_SELECT, ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");
 
 const ENGAGEMENT_SELECT = "campaign email ticketId opens firstOpenAt lastOpenAt visits firstVisitAt lastVisitAt posts postedAt lastPostedAt postUrl "
   + "shares sharedAt lastSharedAt manuals manualAt lastManualAt trackedAt";
@@ -415,6 +419,70 @@ router.get("/eligible", wrap(async (req, res) => {
   res.json({ ...eligibleCounts(d.people), extras: extrasMeta(), builtAt: d.builtAt });
 }));
 
+/* ---------- Hide from app (shadow mode, services/appHide.js) ----------
+   Staff hide someone who's trying to cause trouble: they see the app as usual, nobody else sees
+   them or anything they do, and they aren't told. Management and moderators (every staff account
+   has the moderate right). Accounts and pass-only people (their passes carry it, so they stay
+   hidden when they sign in); never a staff account or yourself. Unhiding shows everything again;
+   `removeWhileHidden` first soft-deletes what they posted while hidden. Audited app_hide /
+   app_hide_reason / app_unhide. */
+
+const PLAIN_WHILE = Object.fromEntries(WHILE_HIDDEN.map((k) => [k.key, k.label]));
+
+/** May this staff member hide people from the app? */
+async function canHideFromApp(req) {
+  if (isManagement(req.user)) return true;
+  return !!(await accessOf(req.user)).rights.moderate;
+}
+
+/** Why this person can't be hidden (or shown again) by this staff member, or "". */
+function hideBlock(p, req) {
+  if (p.user?.role === "admin") return "Staff accounts can't be hidden from the app. Take away their staff access first.";
+  if (p.user && String(p.user._id) === String(req.user._id)) return "You can't hide yourself.";
+  if (!p.user && !p.attendees.length) return "They have no app account and no pass, so there's nothing to hide.";
+  return "";
+}
+
+/** The profile's "Hide from app" block. Showing someone again is never blocked. */
+async function appHideFor(p, req) {
+  const h = p.appHidden;
+  const block = h ? "" : hideBlock(p, req);
+  return {
+    hidden: !!h, at: h?.at || null, byName: h?.byName || "", reason: h?.reason || "",
+    onApp: !!p.user, canChange: !block && await canHideFromApp(req), why: block,
+    // What they did while hidden (what "also remove" would take away): only for an account.
+    whileHidden: h && p.user ? await whileHiddenCounts([p.user._id], h.at) : null,
+    labels: PLAIN_WHILE,
+  };
+}
+
+/** The pass rows of these accounts that aren't attached to the person (claimed or held later), to clear on unhide. */
+async function linkedPasses(userIds) {
+  if (!userIds.length) return [];
+  const users = await User.find({ _id: { $in: userIds } }).select("tickets.ticketId").lean();
+  const ticketIds = users.flatMap((u) => (u.tickets || []).map((t) => t.ticketId)).filter(Boolean);
+  const rows = await Attendee.find({ $or: [{ claimedBy: { $in: userIds } }, { ticketId: { $in: ticketIds } }], "appHidden.at": { $exists: true } })
+    .select("_id").lean();
+  return rows.map((r) => r._id);
+}
+
+const countsLine = (c) => WHILE_HIDDEN.filter((k) => c[k.key]).map((k) => `${k.label.toLowerCase()} ${c[k.key]}`).join(", ") || "nothing";
+
+/** Everyone hidden from the app (App moderation › Hidden people), newest first. */
+router.get("/app-hidden", wrap(async (req, res) => {
+  const d = await directory({ fresh: req.query.refresh === "1" });
+  const hidden = d.people.filter((p) => p.appHidden).sort((a, b) => new Date(b.appHidden.at) - new Date(a.appHidden.at));
+  const canChange = await canHideFromApp(req);
+  const rows = await Promise.all(hidden.map(async (p) => ({
+    ...personRow(p),
+    appHidden: { at: p.appHidden.at, byName: p.appHidden.byName, reason: p.appHidden.reason },
+    onApp: !!p.user,
+    whileHidden: p.user ? await whileHiddenCounts([p.user._id], p.appHidden.at) : null,
+    canChange,
+  })));
+  res.json({ rows, total: rows.length, labels: PLAIN_WHILE, canChange, builtAt: d.builtAt });
+}));
+
 router.get("/:id", wrap(async (req, res) => {
   // A profile is opened to check or change something: at most a few seconds old (an RSVP sent
   // from /rsvp a moment ago shows), where the list can be 20 s old.
@@ -440,6 +508,7 @@ router.get("/:id", wrap(async (req, res) => {
     // Their app contact card, read only: [{ kind, label, value, shareByDefault }] (each person picks what they share).
     contactCard: contactItemsFor(card).map((it) => ({ kind: it.kind, label: it.label, value: it.value, shareByDefault: it.shareByDefault })),
     outreach,
+    appHide: await appHideFor(p, req),
   });
 }));
 
@@ -548,6 +617,48 @@ router.post("/:id/app-invite", wrap(async (req, res) => {
     await audit(req, "people_app_invite_one_failed", "person", p.id, `${p.name} <${row.email}>${note}: ${String(err?.message || err).slice(0, 200)}`);
     return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
   }
+}));
+
+/** Hide from app: POST { reason? }. Already hidden → only the private reason changes. */
+router.post("/:id/app-hide", wrap(async (req, res) => {
+  if (!(await canHideFromApp(req))) return res.status(403).json({ error: "Only management and moderators can hide people from the app." });
+  const p = await findPerson(req.params.id, { fresh: true });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const block = hideBlock(p, req);
+  if (block) return res.status(409).json({ code: "not_allowed", error: block });
+  const reason = cleanReason(req.body?.reason);
+  const userIds = p.user ? [p.user._id] : [];
+  const attendeeIds = p.attendees.map((a) => a._id);
+  if (p.appHidden) {
+    if (reason !== (p.appHidden.reason || "")) {
+      await setHideReason({ userIds, attendeeIds, reason });
+      await audit(req, "app_hide_reason", "person", p.id, `${p.name}: ${reason || "(no reason)"}`);
+    }
+  } else {
+    await setHidden({ userIds, attendeeIds, hide: { at: new Date(), by: req.user._id, byName: req.user.name || "", reason } });
+    await audit(req, "app_hide", "person", p.id, `${p.name}${p.user ? "" : " (pass only, not on the app yet)"}: ${reason || "(no reason)"}`);
+  }
+  invalidate();
+  const fresh = await findPerson(p.id, { fresh: true });
+  res.json({ ok: true, appHide: await appHideFor(fresh || p, req) });
+}));
+
+/** Show again: POST { removeWhileHidden: true | false }. true soft-deletes what they posted while hidden first. */
+router.post("/:id/app-unhide", wrap(async (req, res) => {
+  if (!(await canHideFromApp(req))) return res.status(403).json({ error: "Only management and moderators can hide people from the app." });
+  const p = await findPerson(req.params.id, { fresh: true });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  if (!p.appHidden) return res.status(409).json({ code: "not_hidden", error: "They aren't hidden from the app." });
+  const userIds = p.user ? [p.user._id] : [];
+  const remove = req.body?.removeWhileHidden === true;
+  const removed = remove && userIds.length ? await removeWhileHidden(userIds, p.appHidden.at, { by: req.user._id }) : null;
+  const attendeeIds = [...p.attendees.map((a) => a._id), ...(await linkedPasses(userIds))];
+  await setHidden({ userIds, attendeeIds, hide: null });
+  await audit(req, "app_unhide", "person", p.id,
+    `${p.name}: hidden since ${new Date(p.appHidden.at).toISOString().slice(0, 16)}; ${removed ? `removed what they posted while hidden (${countsLine(removed)})` : "kept what they posted while hidden"}`);
+  invalidate();
+  const fresh = await findPerson(p.id, { fresh: true });
+  res.json({ ok: true, removed, appHide: await appHideFor(fresh || p, req) });
 }));
 
 const LINK = /^https?:\/\/[^\s<>"]+$/i;

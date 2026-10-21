@@ -76,6 +76,7 @@ import { runSearch } from "../services/adminSearch.js";
 import { makeSearchSources } from "../services/adminSearchSources.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { directory as peopleDirectory } from "./people.js";
+import { HIDE_SELECT, hiddenState, oids, personHide } from "../services/appHide.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -189,10 +190,13 @@ router.get("/users", async (req, res) => {
       User.countDocuments(filter),
     ]);
   }
+  const hidden = await hiddenState();
   res.json({ total, page, users: rows.map((u) => ({
     id: String(u._id), name: u.name, email: u.email, role: u.role, jobTitle: u.jobTitle, organization: u.organization,
     topics: u.topics || [], tickets: (u.tickets || []).length, banned: !!u.banned, provider: u.provider,
     directoryHidden: !!u.directoryHidden, messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff,
+    // Hidden from the app (shadow mode, services/appHide.js): set from their People profile.
+    appHidden: hidden.ids.has(String(u._id)),
     types: typeInfo(u, exhibitors).types,
     vip: typeInfo(u, exhibitors).vip,
     lastActiveAt: u.lastActiveAt, createdAt: u.createdAt,
@@ -201,9 +205,15 @@ router.get("/users", async (req, res) => {
 
 router.get("/users/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
-  const u = await User.findById(req.params.id).select("-password -resetPasswordToken -resetPasswordExpires").lean();
+  const u = await User.findById(req.params.id).select(`-password -resetPasswordToken -resetPasswordExpires ${HIDE_SELECT}`).lean();
   if (!u) return res.status(404).json({ error: "Not found" });
   const id = u._id;
+  // Hidden from the app: the flag on the account or on a pass they claimed or hold (services/appHide.js).
+  const ticketIds = (u.tickets || []).map((t) => t.ticketId).filter(Boolean);
+  const hiddenPasses = await Attendee.find({ $or: [{ claimedBy: id }, { ticketId: { $in: ticketIds } }], "appHidden.at": { $exists: true } })
+    .select(HIDE_SELECT).lean();
+  const hide = personHide({ user: u, attendees: hiddenPasses });
+  delete u.appHidden;
   const [events, posts, comments, connections, msgCount, regs, groups, discussions, reportsAbout, reportsBy] = await Promise.all([
     AppEvent.find({ userId: id }).sort({ at: -1 }).limit(500).lean(),
     SocialPost.find({ authorId: id }).sort({ createdAt: -1 }).limit(50).lean(),
@@ -221,7 +231,8 @@ router.get("/users/:id", async (req, res) => {
   const peerName = Object.fromEntries(peers.map((p) => [String(p._id), `${p.name}${p.organization ? " · " + p.organization : ""}`]));
   res.json({
     // types / typesOff (stored), autoTypes, holdsPass, effectiveTypes and rights: services/appRights.js consoleTypes.
-    user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff, ...consoleTypes(u, ctx) },
+    user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff, ...consoleTypes(u, ctx),
+      appHidden: hide ? { at: hide.at, byName: hide.byName, reason: hide.reason } : null },
     activity: summarize(events),
     events: events.slice(0, 200),
     posts, comments, discussions, groups: groups.map((g) => g.name),
@@ -318,9 +329,11 @@ router.get("/users/:id/threads", async (req, res) => {
   const others = await User.find({ _id: { $in: otherIds } }).select("name").lean();
   const nm = Object.fromEntries(others.map((o) => [String(o._id), o.name]));
   await audit(req, "list_threads", "user", req.params.id);
+  const hidden = await hiddenState();
   res.json(rows.map((r) => {
     const other = r._id.split(":").find((x) => x !== req.params.id);
-    return { threadKey: r._id, otherId: other, otherName: nm[other] || "Deleted user", last: r.last, at: r.at, count: r.n };
+    return { threadKey: r._id, otherId: other, otherName: nm[other] || "Deleted user", last: r.last, at: r.at, count: r.n,
+             otherHidden: hidden.ids.has(other) };
   }));
 });
 
@@ -334,8 +347,10 @@ router.get("/threads/:key", async (req, res) => {
   ]);
   const nm = Object.fromEntries(users.map((u) => [String(u._id), u.name]));
   await audit(req, "view_messages", "thread", key, `${nm[a] || a} ↔ ${nm[b] || b}`);
+  // fromHidden: the sender is hidden from the app now, so the other person doesn't see it (services/appHide.js).
+  const hidden = await hiddenState();
   res.json(msgs.map((m) => ({ id: String(m._id), from: nm[String(m.fromUserId)] || "Deleted user", fromId: String(m.fromUserId),
-                              body: m.body, status: m.status, at: m.createdAt })));
+                              body: m.body, status: m.status, at: m.createdAt, fromHidden: hidden.ids.has(String(m.fromUserId)) })));
 });
 
 /* ---------- Activity stream ---------- */
@@ -367,13 +382,20 @@ const MODELS = {
   discussion: [Discussion, "title"], reply: [DiscussionReply, "body"], group: [CommunityGroup, "name"],
   groupMessage: [GroupMessage, "body"], question: [SessionQuestion, "body"],
 };
+/** Who wrote each kind (the person a "Hidden from app" label is about). */
+const AUTHOR = { post: "authorId", comment: "authorId", message: "fromUserId", discussion: "authorId", reply: "authorId", group: "ownerId", groupMessage: "authorId", question: "authorId" };
 
+/* `authorHidden`: written by someone hidden from the app, so nobody else in the app sees it (services/appHide.js).
+   `?hidden=1`: only those. */
 router.get("/content/:type", async (req, res) => {
   const m = MODELS[req.params.type]; if (!m || req.params.type === "message") return res.status(404).json({ error: "Unknown type" });
   const filter = req.query.status ? { status: String(req.query.status) } : {};
   if (req.query.q) filter[m[1]] = rx(req.query.q);
+  const hidden = await hiddenState();
+  const author = AUTHOR[req.params.type];
+  if (req.query.hidden === "1") filter[author] = { $in: oids(hidden.ids) };
   const rows = await m[0].find(filter).sort({ createdAt: -1 }).limit(200).lean();
-  res.json(rows.map((r) => ({ ...r, id: String(r._id) })));
+  res.json(rows.map((r) => ({ ...r, id: String(r._id), authorHidden: hidden.ids.has(String(r[author])) })));
 });
 
 router.patch("/content/:type/:id", async (req, res) => {
@@ -406,13 +428,16 @@ router.delete("/content/:type/:id", async (req, res) => {
 /* ---------- Reports ---------- */
 router.get("/reports", async (req, res) => {
   const rows = await Report.find({ status: String(req.query.status || "open") }).sort({ createdAt: -1 }).limit(200).lean();
+  const hidden = await hiddenState();
   const out = [];
   for (const r of rows) {
     const m = MODELS[r.targetType];
     let preview = "";
     if (m && isId(r.targetId)) { const doc = await m[0].findById(r.targetId).lean(); preview = doc ? String(doc[m[1]] || "") : "(deleted)"; }
     if (r.targetType === "user" && isId(r.targetId)) { const u = await User.findById(r.targetId).select("name").lean(); preview = u?.name || "(deleted)"; }
-    out.push({ ...r, id: String(r._id), preview: preview.slice(0, 300) });
+    // reporterHidden: sent by someone hidden from the app (no alert went to anyone); targetHidden: about a hidden person.
+    out.push({ ...r, id: String(r._id), preview: preview.slice(0, 300),
+               reporterHidden: hidden.ids.has(String(r.reporterId)), targetHidden: r.targetType === "user" && hidden.ids.has(String(r.targetId)) });
   }
   res.json(out);
 });

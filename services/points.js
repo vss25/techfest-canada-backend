@@ -25,6 +25,7 @@ import {
 } from "../models/Social.js";
 import { avatarPath } from "./socialHelpers.js";
 import { SANITY_PROJECT } from "./rsvp.js";
+import { hiddenState, onHiddenChange, oids } from "./appHide.js";
 
 /* ================= RULES & LEVELS ================= */
 
@@ -267,14 +268,18 @@ export function clampLimit(v, { def = 10, max = 50 } = {}) {
 /* ================= MONGO: GATHERING COUNTS ================= */
 
 const DAY = { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };   // UTC
-/** Size of an id array with the owner's own id left out (self-likes, the auto-upvote). */
-const fromOthers = (field, owner) => ({
-  $size: { $filter: { input: { $ifNull: [field, []] }, cond: { $ne: ["$$this", owner] } } },
+/** Size of an id array with the owner's own id left out (self-likes, the auto-upvote), and anyone in `hidden`. */
+const fromOthers = (field, owner, hidden = []) => ({
+  $size: { $filter: { input: { $ifNull: [field, []] }, cond: hidden.length
+    ? { $and: [{ $ne: ["$$this", owner] }, { $not: [{ $in: ["$$this", hidden] }] }] }
+    : { $ne: ["$$this", owner] } } },
 });
 
 /** One aggregation per collection, grouped by person. With `oid` they only
-    read that person's records (each match is on an indexed field). */
-export function countPipelines(oid = null) {
+    read that person's records (each match is on an indexed field). `hidden`
+    (ObjectIds of people hidden from the app, services/appHide.js): their likes,
+    upvotes and connections earn nobody anything. */
+export function countPipelines(oid = null, hidden = []) {
   const match = (field, extra = {}) => ({ $match: { ...(oid ? { [field]: oid } : {}), ...extra } });
   return {
     saved: [
@@ -288,17 +293,18 @@ export function countPipelines(oid = null) {
     ],
     questions: [
       match("authorId", { status: "approved" }),
-      { $group: { _id: "$authorId", items: { $push: { s: "$sessionId", up: fromOthers("$upvotes", "$authorId") } } } },
+      { $group: { _id: "$authorId", items: { $push: { s: "$sessionId", up: fromOthers("$upvotes", "$authorId", hidden) } } } },
     ],
     // Each connection counts for both people: once as "sent" for fromUserId.
     connections: [
       { $match: oid ? { $or: [{ fromUserId: oid }, { toUserId: oid }] } : {} },
       { $project: { status: 1, kind: 1, side: [
-        { u: "$fromUserId", sent: { $literal: 1 } },
-        { u: "$toUserId", sent: { $literal: 0 } },
+        { u: "$fromUserId", sent: { $literal: 1 }, ...(hidden.length ? { o: "$toUserId" } : {}) },
+        { u: "$toUserId", sent: { $literal: 0 }, ...(hidden.length ? { o: "$fromUserId" } : {}) },
       ] } },
       { $unwind: "$side" },
       ...(oid ? [{ $match: { "side.u": oid } }] : []),
+      ...(hidden.length ? [{ $match: { "side.o": { $nin: hidden } } }] : []),
       { $group: {
         _id: "$side.u",
         sent: { $sum: "$side.sent" },
@@ -308,7 +314,7 @@ export function countPipelines(oid = null) {
     ],
     posts: [
       match("authorId", { status: "approved" }),
-      { $group: { _id: { u: "$authorId", day: DAY }, n: { $sum: 1 }, likes: { $push: fromOthers("$likes", "$authorId") } } },
+      { $group: { _id: { u: "$authorId", day: DAY }, n: { $sum: 1 }, likes: { $push: fromOthers("$likes", "$authorId", hidden) } } },
       { $group: { _id: "$_id.u", perDay: { $push: "$n" }, likes: { $push: "$likes" } } },
     ],
     comments: [
@@ -379,8 +385,8 @@ export function makeAgendaCache({
 
 const agenda = makeAgendaCache();
 
-async function queryCounts(oid = null) {
-  const p = countPipelines(oid);
+async function queryCounts(oid = null, hidden = []) {
+  const p = countPipelines(oid, hidden);
   const [sessions, saved, votes, questions, connections, posts, comments] = await Promise.all([
     agenda.get(),
     SessionRegistration.aggregate(p.saved),
@@ -401,9 +407,11 @@ export async function pointsFor(userId, { user } = {}) {
   const scored = (c) => ({ ...scoreFromCounts(c), activity: activityFromCounts(c) });
   if (!isObjectId(userId)) return scored(emptyCounts());
   const oid = new mongoose.Types.ObjectId(String(userId));
+  // Hidden people's likes, upvotes and connections don't count (a hidden person's own actions still do, for them).
+  const hidden = oids([...(await hiddenState()).ids].filter((id) => id !== String(oid)));
   const [u, map] = await Promise.all([
     user || User.findById(oid).select("linkedinUrl topics").lean(),
-    queryCounts(oid),
+    queryCounts(oid, hidden),
   ]);
   return scored({ ...(map.get(String(oid)) || emptyCounts()), ...profileCounts(u) });
 }
@@ -416,8 +424,11 @@ let pending = null;
 let generation = 0;
 
 async function buildBoard() {
-  const map = await queryCounts();
+  // People hidden from the app (services/appHide.js) aren't on it, and what they did counts for nobody on it.
+  const hidden = oids((await hiddenState()).ids);
+  const map = await queryCounts(null, hidden);
   const users = await User.find({
+    ...(hidden.length ? { _id: { $nin: hidden } } : {}),
     role: { $ne: "admin" },          // onLeaderboard below also catches "Admin"
     banned: { $ne: true },
     hideFromLeaderboard: { $ne: true },
@@ -456,12 +467,19 @@ export async function rankedBoard() {
   return pending;
 }
 
-/** The top `limit` (1…50), leaving out ids in `exclude` (ranks unchanged). */
-export async function leaderboard(limit = 10, { exclude } = {}) {
+/** The top `limit` (1…50), leaving out ids in `exclude` (ranks unchanged). `self` ({ user, points, level }): a person
+    hidden from the app sees themself where they'd be, though they're left off everyone else's board. */
+export async function leaderboard(limit = 10, { exclude, self = null } = {}) {
   const skip = exclude instanceof Set ? exclude : new Set((exclude || []).map(String));
-  const rows = await rankedBoard();
+  let rows = await rankedBoard();
+  if (self?.user && self.points > 0 && onLeaderboard(self.user) && !rows.some((r) => r.user.id === String(self.user._id))) {
+    rows = rankRows([...rows, { user: leaderboardCard(self.user), points: self.points, level: self.level }]);
+  }
   return rows.filter((r) => !skip.has(r.user.id)).slice(0, clampLimit(limit));
 }
+
+/* Someone was hidden or shown again: the board is rebuilt on the next read. */
+onHiddenChange(() => { generation += 1; cache = { at: 0, rows: null }; });
 
 /** Someone just opted out: take them off the cached board now rather than in a
     minute. (Opting back in shows up on the next rebuild; not rebuilding on every

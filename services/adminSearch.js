@@ -191,7 +191,8 @@ export function peopleItems(people = [], pq) {
     const score = exact ? EXACT : textScore(pq, personFields(p));
     if (!score) continue;
     const work = [p.jobTitle, p.company].filter(Boolean).join(", ");
-    const badges = [...(p.types || []).filter((t) => t !== "attendee").map((t) => TYPE_LABELS[t] || t), ...(p.vip ? ["VIP"] : [])].slice(0, 3);
+    // "Hidden from app" first, so staff searching for someone see it straight away (services/appHide.js).
+    const badges = [...(p.appHidden ? ["Hidden from app"] : []), ...(p.types || []).filter((t) => t !== "attendee").map((t) => TYPE_LABELS[t] || t), ...(p.vip ? ["VIP"] : [])].slice(0, 3);
     out.push({
       type: "person", id: p.id, title: p.name, score, exact: !!exact,
       subtitle: join(work, p.email, p.primary ? p.primary.label : KIND_LABELS[p.kind] || ""),

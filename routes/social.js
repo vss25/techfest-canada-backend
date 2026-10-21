@@ -34,6 +34,9 @@ import {
 } from "../services/contactCard.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import {
+  viewerHide, isHiddenGuest, postForViewer, postsForViewer, hiddenCommentCounts, hiddenAmong, visible, unseenOf, oids,
+} from "../services/appHide.js";
+import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
   parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
 } from "../services/socialActivity.js";
@@ -68,12 +71,32 @@ async function requireUser(req, res, next) {
     const acc = personAccess(user, req.ctx);
     req.types = acc.types;
     req.rights = acc.rights;
+    // Hide from app (services/appHide.js): req.appHidden = they're hidden, so what they do reaches nobody (they
+    // can't tell); req.shadow = the hidden people they don't see (none for staff and moderators); req.unseen =
+    // blocks + shadow, for every read of other people and their things.
+    let hide;
+    try { hide = await viewerHide(user, req.rights); } catch (err) {
+      console.error("APP HIDE ERROR:", err?.message || err);
+      return res.status(503).json({ error: "Something went wrong. Try again." });
+    }
+    req.hide = hide;
+    req.appHidden = hide.self;
+    req.shadow = hide.ids;
+    req.unseen = unseenOf(req.blocked, hide.ids);
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
   }
 }
 router.use(requireUser);
+
+/** 404 for a hidden person's things, the same answer as for something that isn't there. */
+const isShadowed = (req, userId) => !!userId && req.shadow.has(String(userId));
+/** A post's likes, like count, comment count and mentions as this viewer counts them (services/appHide.js). */
+async function postView(req, post) {
+  if (!req.shadow.size || !post) return post;
+  return postForViewer(post, req.shadow, await hiddenCommentCounts([post], req.shadow));
+}
 
 /** 403 with a readable line unless the signed-in person has `right`. */
 const needRight = (right) => (req, res, next) => (req.rights[right] ? next() : res.status(403).json({ error: rightError(right, req.ctx.flags) }));
@@ -164,7 +187,7 @@ function shareFromBody(req) {
 router.get("/users", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const filter = {
-    _id: { $ne: req.user._id },
+    _id: { $nin: [req.user._id, ...oids(req.shadow)] },
     directoryHidden: { $ne: true }, banned: { $ne: true },
     $or: [{ jobTitle: { $ne: "" } }, { organization: { $ne: "" } }, { "tickets.0": { $exists: true } },
       // Staff and volunteers on the app are listed (Network → Staff) even with an empty profile.
@@ -174,7 +197,7 @@ router.get("/users", async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
-  const users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.blocked.has(String(u._id)));
+  const users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.unseen.has(String(u._id)));
   res.json(await cardsFor(req.user, users));
 });
 
@@ -189,9 +212,12 @@ router.get("/attendees", async (req, res) => {
     Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode exhibitor vip issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
   ]);
   const { exhibitors, matrix } = req.ctx;
-  let people = buildDirectory(users, guests, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix });
+  // Hidden people (and their passes not on the app yet) aren't in anyone else's directory.
+  const listed = req.shadow.size ? users.filter((u) => !req.shadow.has(String(u._id))) : users;
+  const passes = req.hide.passes.size || req.hide.emails.size ? guests.filter((g) => !isHiddenGuest(g, req.hide)) : guests;
+  let people = buildDirectory(listed, passes, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
-  people = people.filter((p) => !req.blocked.has(p.id));
+  people = people.filter((p) => !req.unseen.has(p.id));
   const shown = new Set(people.map((p) => p.id));
   const access = await contactAccess(req.user, users.filter((u) => shown.has(String(u._id))), req.ctx);
   res.json(people.map((p) => applyAccess(p, access)));
@@ -203,7 +229,7 @@ router.get("/attendees", async (req, res) => {
    with me), myShare / mySharePicked (what I share with them), connectionId / -Status. */
 router.get("/users/:id", async (req, res) => {
   const id = String(req.params.id);
-  if (!isObjectId(id) || req.blocked.has(id)) return res.status(404).json({ error: "Not found" });
+  if (!isObjectId(id) || req.unseen.has(id)) return res.status(404).json({ error: "Not found" });
   const u = await User.findById(id).select(`${PROFILE_SELECT} ${CONTACT_SELECT} directoryHidden banned`).lean();
   if (!u || u.banned) return res.status(404).json({ error: "Not found" });
   // Hidden people stay reachable from an existing chat or connection, but can't be looked up cold.
@@ -229,7 +255,7 @@ router.get("/users/:id", async (req, res) => {
    card item ids. Any time, from their profile or the chat header. */
 router.put("/users/:id/share", async (req, res) => {
   const id = String(req.params.id);
-  if (!isObjectId(id) || id === String(req.user._id)) return res.status(404).json({ error: "Not found" });
+  if (!isObjectId(id) || id === String(req.user._id) || isShadowed(req, id)) return res.status(404).json({ error: "Not found" });
   if (!req.rights.shareContact) return res.status(403).json({ error: SHARE_OFF_ERROR });
   if (!shareSaves.hit(String(req.user._id))) return res.status(429).json({ error: TOO_FAST });
   const ids = cleanShareIds(req.body?.share, contactItemsFor(req.user));
@@ -250,8 +276,9 @@ router.get("/feed", async (req, res) => {
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
   // Rank the recent window by engagement (with a small daily shuffle), then trim.
   const recent = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(300).lean())
-    .filter((p) => !req.blocked.has(String(p.authorId)));
-  const posts = rankFeed(recent, req.user._id).slice(0, limit);
+    .filter((p) => !req.unseen.has(String(p.authorId)));
+  // Likes and comments from hidden people don't count for this viewer (nor in the ranking).
+  const posts = rankFeed(await postsForViewer(recent, req.shadow), req.user._id).slice(0, limit);
   const avatars = await avatarVersions(posts.map((p) => p.authorId));
   const staff = req.rights.deleteAnyPost;
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars, { staff })));
@@ -298,8 +325,8 @@ router.post("/feed", needRight("post"), async (req, res) => {
     mentions,
     status,
   });
-  // Held posts aren't visible to anyone else yet, so nobody hears about them.
-  if (status === "approved") {
+  // Held posts aren't visible to anyone else yet, so nobody hears about them; nor about a hidden person's.
+  if (status === "approved" && !req.appHidden) {
     recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
   }
@@ -310,9 +337,9 @@ router.post("/feed", needRight("post"), async (req, res) => {
 router.get("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const post = await SocialPost.findById(req.params.id).lean();
-  if (!canViewPost(post, req.user, req.blocked, req.rights)) return res.status(404).json({ error: "Not found" });
+  if (!canViewPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: "Not found" });
   const avatars = await avatarVersions([post.authorId]);
-  res.json(postDTO(post, req.user._id, avatars, { staff: req.rights.deleteAnyPost }));
+  res.json(postDTO(await postView(req, post), req.user._id, avatars, { staff: req.rights.deleteAnyPost }));
 });
 
 /* The author deletes their own post (gone, with its comments); people with
@@ -320,7 +347,7 @@ router.get("/feed/:id", async (req, res) => {
 router.delete("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const post = await SocialPost.findById(req.params.id);
-  if (!post) return res.status(404).json({ error: "Not found" });
+  if (!post || isShadowed(req, post.authorId)) return res.status(404).json({ error: "Not found" });
   const mode = removeMode(post, req.user, req.rights);
   if (!mode) return res.status(403).json({ error: "You can only delete your own posts." });
   if (mode === "author") {
@@ -341,26 +368,31 @@ router.delete("/feed/:id", async (req, res) => {
 
 router.post("/feed/:id/like", async (req, res) => {
   const post = await SocialPost.findById(req.params.id);
-  if (!post || post.status === "hidden") return res.status(404).json({ error: "Not found" });
+  if (!post || post.status === "hidden" || isShadowed(req, post.authorId)) return res.status(404).json({ error: "Not found" });
   const t = toggleLike({ likes: post.likes, everLiked: post.everLiked, actorId: req.user._id });
   post.likes = t.likes;
   post.everLiked = t.everLiked;
   post.likeCount = t.likes.length;
   await post.save();
-  // Only someone's first-ever like tells the author (not an unlike + relike).
-  if (t.firstLike) {
+  // Only someone's first-ever like tells the author (not an unlike + relike); a hidden person's never does.
+  if (t.firstLike && !req.appHidden) {
     recordActivity(buildActivity({ kind: "like", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
   }
-  res.json({ liked: t.liked, likeCount: post.likeCount });
+  res.json({ liked: t.liked, likeCount: Math.max(0, post.likeCount - hiddenAmong(post.likes, req.shadow)) });
 });
 
 router.get("/feed/:id/comments", async (req, res) => {
+  // A hidden person's post has no comments for anyone else (the post itself is "not found").
+  if (req.shadow.size && isObjectId(req.params.id)) {
+    const post = await SocialPost.findById(req.params.id).select("authorId").lean();
+    if (post && isShadowed(req, post.authorId)) return res.json([]);
+  }
   const comments = await SocialComment.find({
     postId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }],
   }).sort({ createdAt: 1 }).lean();
-  const shown = comments.filter((c) => !req.blocked.has(String(c.authorId)));
+  const shown = comments.filter((c) => !req.unseen.has(String(c.authorId)));
   // Each author's kind now (the directory's), so a speaker keeps their badge whatever their pass says.
   const authors = new Map((await User.find({ _id: { $in: [...new Set(shown.map((c) => String(c.authorId)))] } }).select(CARD_SELECT).lean())
     .map((u) => [String(u._id), u]));
@@ -371,19 +403,23 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
   const post = await SocialPost.findById(req.params.id);
-  if (!post || post.status === "hidden") return res.status(404).json({ error: "Not found" });
+  if (!post || post.status === "hidden" || isShadowed(req, post.authorId)) return res.status(404).json({ error: "Not found" });
   const status = await statusFor(body, req.user._id, "comment");
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
     authorTier: authorTier(req), body, status,
   });
   if (status === "approved") {
+    // Counted as usual (so the person who wrote it sees the count go up); other viewers' counts leave hidden people out.
     post.commentCount += 1;
     await post.save();
-    recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
-      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+    if (!req.appHidden) {
+      recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
+        refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+    }
   }
-  res.status(201).json({ ...commentDTO(c.toObject(), req.user, req.ctx), commentCount: post.commentCount });
+  const counted = req.shadow.size ? (await hiddenCommentCounts([post], req.shadow)).get(String(post._id)) || 0 : 0;
+  res.status(201).json({ ...commentDTO(c.toObject(), req.user, req.ctx), commentCount: Math.max(0, post.commentCount - counted) });
 });
 
 /* ================= CONNECTIONS ================= */
@@ -398,7 +434,7 @@ async function connectionDTO(c, req) {
   // accepted, only from people whose types share them (shareContact), never across a block.
   const share = shareFields(c, {
     viewer, viewerRights: req.rights, other, otherRights: other ? rightsFor(other, req.ctx) : null,
-    blocked: req.blocked?.has(String(otherId)),
+    blocked: (req.unseen || req.blocked)?.has(String(otherId)),
   });
   const inPerson = c.status === "accepted" && c.kind === "inPerson";
   const email = legacyEmail(share.sharedContact);
@@ -417,8 +453,10 @@ async function connectionDTO(c, req) {
 
 router.get("/connections", async (req, res) => {
   const me = req.user._id;
-  const all = await SocialConnection.find({ $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "declined" } })
-    .sort({ updatedAt: -1 }).lean();
+  const all = (await SocialConnection.find({ $or: [{ fromUserId: me }, { toUserId: me }], status: { $ne: "declined" } })
+    .sort({ updatedAt: -1 }).lean())
+    // Hidden people aren't in anyone else's connections, requests either way included.
+    .filter((c) => !isShadowed(req, String(c.fromUserId) === String(me) ? c.toUserId : c.fromUserId));
   const items = await Promise.all(all.map((c) => connectionDTO(c, req)));
   res.json({
     accepted: items.filter((c) => c.status === "accepted"),
@@ -430,6 +468,8 @@ router.get("/connections", async (req, res) => {
 router.post("/connections/request", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
+  // A hidden person can't be asked: the same answer as someone who isn't there.
+  if (isShadowed(req, toUserId)) return res.status(404).json({ error: "User not found" });
   const target = await User.findById(toUserId).select(`_id lastActiveAt appOnboarded ${RIGHTS_SELECT}`);
   if (!target) return res.status(404).json({ error: "User not found" });
   if (!isOnApp(target)) return res.status(409).json({ error: "They haven't joined the app yet. You can connect once they sign in." });
@@ -443,8 +483,8 @@ router.post("/connections/request", async (req, res) => {
     if (accepting) { existing.status = "accepted"; existing.respondedAt = new Date(); }
     if (share) setShare(existing, req.user._id, share);
     if (accepting || share) await existing.save();
-    if (accepting) {
-      pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) });
+    if (accepting && !req.appHidden) {
+      pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) }, { from: req.user._id });
     }
     return res.json(await connectionDTO(existing, req));
   }
@@ -457,22 +497,23 @@ router.post("/connections/request", async (req, res) => {
   const c = new SocialConnection({ fromUserId: req.user._id, toUserId, note: trimBody(req.body?.note, 300) });
   if (share) setShare(c, req.user._id, share);
   await c.save();
-  if (!req.blocked.has(toUserId)) {
-    pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
+  // A hidden person's request is saved (they see it as sent) but never reaches anyone.
+  if (!req.blocked.has(toUserId) && !req.appHidden) {
+    pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id });
   }
   res.status(201).json(await connectionDTO(c, req));
 });
 
 router.post("/connections/:id/respond", async (req, res) => {
   const c = await SocialConnection.findById(req.params.id);
-  if (!c || String(c.toUserId) !== String(req.user._id)) return res.status(404).json({ error: "Not found" });
+  if (!c || String(c.toUserId) !== String(req.user._id) || isShadowed(req, c.fromUserId)) return res.status(404).json({ error: "Not found" });
   c.status = req.body?.accept ? "accepted" : "declined";
   c.respondedAt = new Date();
   const share = c.status === "accepted" ? shareFromBody(req) : null;
   if (share) setShare(c, req.user._id, share);
   await c.save();
-  if (c.status === "accepted") {
-    pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) });
+  if (c.status === "accepted" && !req.appHidden) {
+    pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id });
   }
   res.json(await connectionDTO(c, req));
 });
@@ -493,6 +534,8 @@ router.post("/connections/:id/withdraw", async (req, res) => {
 router.post("/connections/in-person", async (req, res) => {
   const toUserId = String(req.body?.toUserId || "");
   if (!toUserId || toUserId === String(req.user._id)) return res.status(400).json({ error: "toUserId required" });
+  // A hidden person's connect QR works like an unknown code: no connection, nothing shown.
+  if (isShadowed(req, toUserId)) return res.status(404).json({ error: "User not found" });
   if (req.blocked.has(toUserId)) return res.status(403).json({ error: "You can't connect with this person." });
   const target = await User.findById(toUserId).select(`_id ${RIGHTS_SELECT} ${CONTACT_SELECT}`).lean();
   if (!target) return res.status(404).json({ error: "User not found" });
@@ -529,8 +572,9 @@ router.get("/messages", async (req, res) => {
     { $sort: { "last.createdAt": -1 } },
     { $limit: 100 },
   ]);
-  const visible = recent.filter((t) => !req.blocked.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
-  const threads = await Promise.all(visible.map(async (t) => {
+  // A chat with a hidden person isn't in anyone else's list (nor its unread count).
+  const shown = recent.filter((t) => !req.unseen.has(String(String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId)));
+  const threads = await Promise.all(shown.map(async (t) => {
     const otherId = String(t.last.fromUserId) === String(me) ? t.last.toUserId : t.last.fromUserId;
     const other = await User.findById(otherId).select(CARD_SELECT).lean();
     return {
@@ -543,7 +587,7 @@ router.get("/messages", async (req, res) => {
 });
 
 router.get("/messages/:userId", async (req, res) => {
-  if (req.blocked.has(String(req.params.userId))) return res.json([]);
+  if (req.unseen.has(String(req.params.userId))) return res.json([]);
   const key = threadKey(req.user._id, req.params.userId);
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { threadKey: key, $or: [{ status: "approved" }, { fromUserId: req.user._id }] };
@@ -561,7 +605,7 @@ router.post("/messages/:userId", async (req, res) => {
   if (!body) return res.status(400).json({ error: "body required" });
   if (!req.rights.sendMessages) return res.status(403).json({ error: RIGHT_ERRORS.sendMessages });
   const to = await User.findById(req.params.userId).select(`_id ${RIGHTS_SELECT}`);
-  if (!to) return res.status(404).json({ error: "User not found" });
+  if (!to || isShadowed(req, to._id)) return res.status(404).json({ error: "User not found" });
   if (req.blocked.has(String(to._id))) return res.status(403).json({ error: "You can't message this person." });
   // Without receiveMessages (types such as VIP, or the staff switch): only staff / moderators,
   // accepted connections, or a reply to someone who wrote first.
@@ -579,9 +623,10 @@ router.post("/messages/:userId", async (req, res) => {
   const m = await SocialMessage.create({
     threadKey: threadKey(req.user._id, to._id), fromUserId: req.user._id, toUserId: to._id, body, status,
   });
-  // Held messages wait for a moderator; only approved ones reach the phone.
-  if (status === "approved") {
-    pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) });
+  // Held messages wait for a moderator; only approved ones reach the phone. A hidden person's are saved and shown
+  // to them as sent, but the other person never gets them (left out of their chats, unread counts and pushes).
+  if (status === "approved" && !req.appHidden) {
+    pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) }, { from: req.user._id });
   }
   res.status(201).json({ id: String(m._id), body: m.body, sentByMe: true, status: m.status, createdAt: m.createdAt });
 });
@@ -591,7 +636,10 @@ router.post("/messages/:userId", async (req, res) => {
 router.get("/sessions/registrations", async (req, res) => {
   const [mine, counts] = await Promise.all([
     SessionRegistration.find({ userId: req.user._id }).select("sessionId").lean(),
-    SessionRegistration.aggregate([{ $group: { _id: "$sessionId", n: { $sum: 1 } } }]),
+    SessionRegistration.aggregate([
+      ...(req.shadow.size ? [{ $match: { userId: { $nin: oids(req.shadow) } } }] : []),
+      { $group: { _id: "$sessionId", n: { $sum: 1 } } },
+    ]),
   ]);
   const countMap = {};
   for (const c of counts) countMap[c._id] = c.n;
@@ -603,7 +651,7 @@ router.post("/sessions/:id/register", async (req, res) => {
   const existing = await SessionRegistration.findOne({ userId: req.user._id, sessionId });
   if (existing) await existing.deleteOne();
   else await SessionRegistration.create({ userId: req.user._id, sessionId });
-  const count = await SessionRegistration.countDocuments({ sessionId });
+  const count = await SessionRegistration.countDocuments({ sessionId, ...(req.shadow.size ? { userId: { $nin: oids(req.shadow) } } : {}) });
   res.json({ registered: !existing, count });
 });
 
@@ -624,9 +672,10 @@ const requireSessionFeature = (feature) => async (req, res, next) => {
   res.status(403).json({ error: OFF_ERRORS[feature] });
 };
 
-const questionDTO = (q, me) => ({
+/** `shadow`: hidden people whose upvotes don't count for this viewer. */
+const questionDTO = (q, me, shadow) => ({
   id: String(q._id), sessionId: q.sessionId, authorId: String(q.authorId), authorName: q.authorName,
-  body: q.body, upvotes: (q.upvotes || []).length,
+  body: q.body, upvotes: visible(q.upvotes, shadow).length,
   upvotedByMe: (q.upvotes || []).some((u) => String(u) === String(me)),
   sentByMe: String(q.authorId) === String(me), status: q.status, createdAt: q.createdAt,
 });
@@ -637,7 +686,7 @@ router.get("/sessions/:id/questions", async (req, res) => {
     sessionId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id }],
   }).sort({ createdAt: -1 }).limit(200).lean();
-  res.json(qs.map((q) => questionDTO(q, req.user._id)));
+  res.json(qs.filter((q) => !isShadowed(req, q.authorId)).map((q) => questionDTO(q, req.user._id, req.shadow)));
 });
 
 router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed right now."), requireSessionFeature("qa"), async (req, res) => {
@@ -652,13 +701,13 @@ router.post("/sessions/:id/questions", requireSwitch(QA_KEY, "Q&A is closed righ
 
 router.post("/sessions/questions/:qid/upvote", requireSwitch(QA_KEY, "Q&A is closed right now."), async (req, res) => {
   const q = await SessionQuestion.findById(req.params.qid);
-  if (!q) return res.status(404).json({ error: "Not found" });
+  if (!q || isShadowed(req, q.authorId)) return res.status(404).json({ error: "Not found" });
   if (!(await sessionAllows(q.sessionId, "qa"))) return res.status(403).json({ error: OFF_ERRORS.qa });
   const me = String(req.user._id);
   const i = q.upvotes.findIndex((u) => String(u) === me);
   if (i >= 0) q.upvotes.splice(i, 1); else q.upvotes.push(req.user._id);
   await q.save();
-  res.json(questionDTO(q, req.user._id));
+  res.json(questionDTO(q, req.user._id, req.shadow));
 });
 
 /* ================= SESSIONS: POLLS ================= */
@@ -668,7 +717,8 @@ router.get("/sessions/:id/polls/:pollId/results", async (req, res) => {
   if (!seesAllLive(req) && !(await sessionAllows(req.params.id, "polls"))) {
     return res.json({ counts: tally([], optionCount), total: 0, myVote: null });
   }
-  const votes = await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean();
+  const votes = (await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean())
+    .filter((v) => !isShadowed(req, v.userId));   // hidden people's votes don't count for anyone else
   const mine = votes.find((v) => String(v.userId) === String(req.user._id));
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
@@ -682,7 +732,8 @@ router.post("/sessions/:id/polls/:pollId/vote", requireSwitch(POLLS_KEY, "Polls 
   } catch (err) {
     if (err?.code !== 11000) throw err;   // already voted → return results as-is
   }
-  const votes = await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean();
+  const votes = (await SessionVote.find({ sessionId: req.params.id, pollId: req.params.pollId }).select("optionIndex userId").lean())
+    .filter((v) => !isShadowed(req, v.userId));
   const mine = votes.find((v) => String(v.userId) === String(req.user._id));
   res.json({ counts: tally(votes, optionCount), total: votes.length, myVote: mine ? mine.optionIndex : null });
 });
@@ -703,10 +754,12 @@ router.get("/points/me", async (req, res) => {
 });
 
 router.get("/points/leaderboard", async (req, res) => {
-  const [entries, { score, rank }] = await Promise.all([
-    leaderboard(clampLimit(req.query.limit), { exclude: req.blocked }),
-    standingFor(req.user),
-  ]);
+  const limit = clampLimit(req.query.limit);
+  // Hidden people aren't on anyone else's board; a hidden person still sees themself on theirs.
+  const [entries, { score, rank }] = req.appHidden
+    ? await standingFor(req.user).then(async (st) => [
+      await leaderboard(limit, { exclude: req.unseen, self: { user: req.user, points: st.score.total, level: st.score.level } }), st])
+    : await Promise.all([leaderboard(limit, { exclude: req.unseen }), standingFor(req.user)]);
   res.json({ entries, me: { rank, points: score.total } });
 });
 
@@ -729,7 +782,7 @@ const seenTimes = (u) => ({ feed: u.activitySeen?.feed, discussions: u.activityS
 router.get("/activity/unread", async (req, res) => {
   const seen = seenTimes(req.user);
   const [feed, discussions] = await Promise.all(ACTIVITY_SECTIONS.map((s) =>
-    ActivityEvent.countDocuments(unreadFilter(req.user._id, s, seen, req.blocked))));
+    ActivityEvent.countDocuments(unreadFilter(req.user._id, s, seen, req.unseen))));
   res.json({ feed, discussions });
 });
 
@@ -746,7 +799,7 @@ router.get("/activity", async (req, res) => {
   if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
   const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
   const filter = { userId: req.user._id, section };
-  if (req.blocked.size) filter.actorId = { $nin: [...req.blocked] };
+  if (req.unseen.size) filter.actorId = { $nin: [...req.unseen] };
   const rows = await ActivityEvent.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
   res.json(rows.map(activityDTO));
 });
