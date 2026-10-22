@@ -191,3 +191,36 @@ export function canViewPost(post, user, blocked = new Set(), rights = null) {
   if (author || hasRight(user, rights, "moderate")) return true;
   return (post.status || "approved") === "approved";
 }
+
+/**
+ * Can this viewer like or comment on a post? Exactly when they can see it (canViewPost: every post their feed
+ * shows, their own held ones, and anything a moderator opens), unless staff took it down (status "hidden").
+ * One rule for the feed, the post page, likes and comments (Oct 22 2026), so a post someone can see never
+ * answers "not found" when they react to it. `unseen`: blocks + the hidden people they don't see.
+ */
+export function canInteractPost(post, user, unseen = new Set(), rights = null) {
+  return !!post && post.status !== "hidden" && canViewPost(post, user, unseen, rights);
+}
+
+/** What like / comment answer (404) for a post that's gone, taken down, or not visible to them. */
+export const POST_GONE = "This post isn't available any more.";
+
+/** How long a repeat of the same post counts as a retry (POST /social/feed). */
+export const REPEAT_POST_MS = 2 * 60_000;
+
+/**
+ * Is `next` ({ body, linkUrl, imageData, media }) the same post as `prev` sent again? A retry after the answer was
+ * lost (venue Wi-Fi, a slow photo upload) used to post a second copy; deleting one of the two then left "not found"
+ * on screens that still showed it. Same text and link, and the same number of photos and videos (a retry uploads
+ * them again under new names); a photo-only post must carry the very same photos.
+ */
+export function isRepeatPost(prev, next) {
+  if (!prev || !next) return false;
+  const body = String(next.body || "");
+  if (String(prev.body || "") !== body || String(prev.linkUrl || "") !== String(next.linkUrl || "")) return false;
+  const items = (p) => (p.media || []).length + (p.imageData ? 1 : 0);
+  if (items(prev) !== items(next)) return false;
+  if (body.trim()) return true;
+  const keys = (p) => [(p.imageData || ""), ...(p.media || []).map((m) => m.publicId || m.url || "")].join("|");
+  return keys(prev) === keys(next);
+}

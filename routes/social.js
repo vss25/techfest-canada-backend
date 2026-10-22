@@ -13,13 +13,14 @@ import AppNotification from "../models/AppNotification.js";
 import ActivityEvent, { recordActivity } from "../models/ActivityEvent.js";
 import { pushToUsers } from "../services/push.js";
 import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
-import { rankFeed } from "../services/feedRank.js";
+import { rankFeed, PINNED_MS } from "../services/feedRank.js";
+import { avatarUrls } from "../services/avatars.js";
 import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
-  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO,
+  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO, avatarFor,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 import { onRegistration } from "../services/sessionGroups.js";
@@ -40,7 +41,7 @@ import {
 } from "../services/appHide.js";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
-  parseSection, activityDTO, removeMode, canViewPost, isObjectId, ACTIVITY_SECTIONS,
+  parseSection, activityDTO, removeMode, canViewPost, canInteractPost, POST_GONE, isRepeatPost, REPEAT_POST_MS, isObjectId, ACTIVITY_SECTIONS,
 } from "../services/socialActivity.js";
 
 /* =========================================================
@@ -117,14 +118,6 @@ async function statusFor(text, userId, context) {
 const isAdmin = (u) => u.role === "admin";
 /** The tier stored on the signed-in person's new post or comment: only "Speaker" or "Exhibitor" (their type). */
 const authorTier = (req) => typesTier(req.types);
-
-/** authorId → avatarVersion for the people who have a profile photo. */
-async function avatarVersions(ids) {
-  const uniq = [...new Set(ids.map(String))];
-  if (!uniq.length) return new Map();
-  const rows = await User.find({ _id: { $in: uniq }, avatarVersion: { $gt: 0 } }).select("avatarVersion").lean();
-  return new Map(rows.map((u) => [String(u._id), u.avatarVersion]));
-}
 
 /* ================= ME / DIRECTORY ================= */
 
@@ -217,7 +210,7 @@ router.get("/attendees", async (req, res) => {
   // Hidden people (and their passes not on the app yet) aren't in anyone else's directory.
   const listed = req.shadow.size ? users.filter((u) => !req.shadow.has(String(u._id))) : users;
   const passes = req.hide.passes.size || req.hide.emails.size ? guests.filter((g) => !isHiddenGuest(g, req.hide)) : guests;
-  let people = buildDirectory(listed, passes, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix });
+  let people = buildDirectory(listed, passes, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix, avatarOf: avatarFor });
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
   people = people.filter((p) => !req.unseen.has(p.id));
   const shown = new Set(people.map((p) => p.id));
@@ -275,17 +268,34 @@ router.put("/users/:id/share", async (req, res) => {
 
 /* ================= FEED ================= */
 
+/* Which posts: the newest `limit` this viewer may see, plus official announcements from the last 48 h (pinned on
+   top). The ranking (engagement, a small daily shuffle) only orders them. Until Oct 22 2026 the newest 300 were
+   ranked and the top `limit` kept, so a post could drop out of a feed it had just been in when others gained likes
+   or the day's shuffle changed (and a brand-new one with no likes could miss a busy feed). Now a post leaves the
+   page only once `limit` newer posts are there, or when it's deleted, taken down or its author can't be seen. */
 router.get("/feed", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100);
   const since = req.query.since ? new Date(String(req.query.since)) : null;
+  const after = since && !isNaN(since) ? since : null;
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
-  if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  // Rank the recent window by engagement (with a small daily shuffle), then trim.
-  const recent = (await SocialPost.find(filter).sort({ createdAt: -1 }).limit(300).lean())
-    .filter((p) => !req.unseen.has(String(p.authorId)));
+  if (req.unseen.size) filter.authorId = { $nin: oids(req.unseen) };
+  const pinCutoff = new Date(Date.now() - PINNED_MS);
+  const [newest, pinned] = await Promise.all([
+    SocialPost.find(after ? { ...filter, createdAt: { $gt: after } } : filter).sort({ createdAt: -1 }).limit(limit).lean(),
+    SocialPost.find({ ...filter, kind: "announcement", createdAt: { $gt: after && after > pinCutoff ? after : pinCutoff } })
+      .sort({ createdAt: -1 }).limit(10).lean(),
+  ]);
+  const seen = new Set(newest.map((p) => String(p._id)));
+  let page = [...newest, ...pinned.filter((p) => !seen.has(String(p._id)))];
+  // More than `limit` with the extra announcements: the oldest other posts make room.
+  if (page.length > limit) {
+    const extra = page.length - limit;
+    const drop = new Set(newest.filter((p) => p.kind !== "announcement").slice(-extra).map((p) => String(p._id)));
+    page = page.filter((p) => !drop.has(String(p._id)));
+  }
   // Likes and comments from hidden people don't count for this viewer (nor in the ranking).
-  const posts = rankFeed(await postsForViewer(recent, req.shadow), req.user._id).slice(0, limit);
-  const avatars = await avatarVersions(posts.map((p) => p.authorId));
+  const posts = rankFeed(await postsForViewer(page, req.shadow), req.user._id);
+  const avatars = await avatarUrls(posts.map((p) => p.authorId));
   const staff = req.rights.deleteAnyPost;
   res.json(posts.map((p) => postDTO(p, req.user._id, avatars, { staff })));
 });
@@ -310,6 +320,12 @@ router.post("/feed", needRight("post"), async (req, res) => {
   const media = cleanMedia(req.body?.media, cloudinaryConfig().cloudName);
   if (!body && !imageData && !media.length) return res.status(400).json({ error: "Write something or add a photo" });
   const linkUrl = trimBody(req.body?.linkUrl, 500);
+  const mine = new Map([[String(req.user._id), avatarFor(req.user)]]);
+  // The same post sent again within two minutes (a retry after a lost answer): that post back, not a second copy.
+  const recent = await SocialPost.find({ authorId: req.user._id, body, linkUrl, status: { $ne: "hidden" },
+    createdAt: { $gt: new Date(Date.now() - REPEAT_POST_MS) } }).sort({ createdAt: -1 }).limit(3).lean();
+  const repeat = recent.find((p) => isRepeatPost(p, { body, linkUrl, imageData, media }));
+  if (repeat) return res.status(201).json(postDTO(repeat, req.user._id, mine, { staff: req.rights.deleteAnyPost }));
   // @mentions: user ids must be real accounts; speaker ids are Sanity ids.
   let mentions = cleanMentions(req.body?.mentions);
   const mentionIds = mentionedUserIds(mentions);
@@ -336,7 +352,7 @@ router.post("/feed", needRight("post"), async (req, res) => {
     recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
   }
-  res.status(201).json(postDTO(post, req.user._id, new Map([[String(req.user._id), req.user.avatarVersion]]), { staff: req.rights.deleteAnyPost }));
+  res.status(201).json(postDTO(post, req.user._id, mine, { staff: req.rights.deleteAnyPost }));
 });
 
 /** One post (opened from an activity row, a mention or a shared link). */
@@ -344,7 +360,7 @@ router.get("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const post = await SocialPost.findById(req.params.id).lean();
   if (!canViewPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: "Not found" });
-  const avatars = await avatarVersions([post.authorId]);
+  const avatars = await avatarUrls([post.authorId]);
   res.json(postDTO(await postView(req, post), req.user._id, avatars, { staff: req.rights.deleteAnyPost }));
 });
 
@@ -372,25 +388,40 @@ router.delete("/feed/:id", async (req, res) => {
   res.json({ ok: true, id: String(post._id), removed: "hidden" });
 });
 
+/* Likes and comments: anyone who can see the post (canInteractPost, the same rule as the feed and GET /feed/:id).
+   Written atomically: until Oct 22 2026 both saved the whole post, so two likes at once failed one with a 500
+   (a version clash) and two comments at once lost one from commentCount. */
 router.post("/feed/:id/like", async (req, res) => {
-  const post = await SocialPost.findById(req.params.id);
-  if (!post || post.status === "hidden" || isShadowed(req, post.authorId)) return res.status(404).json({ error: "Not found" });
-  const t = toggleLike({ likes: post.likes, everLiked: post.everLiked, actorId: req.user._id });
-  post.likes = t.likes;
-  post.everLiked = t.everLiked;
-  post.likeCount = t.likes.length;
-  await post.save();
-  // Only someone's first-ever like tells the author (not an unlike + relike); a hidden person's never does.
-  if (t.firstLike && !req.appHidden) {
-    recordActivity(buildActivity({ kind: "like", section: "feed", actorId: req.user._id, actorName: req.user.name,
-      refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: POST_GONE });
+  const me = req.user._id;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const post = await SocialPost.findById(req.params.id).select("authorId status likes").lean();
+    if (!canInteractPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: POST_GONE });
+    const wasLiked = (post.likes || []).some((l) => String(l) === String(me));
+    // Only if it's still as read (else another tap of theirs won the race: read again).
+    const before = await SocialPost.findOneAndUpdate(
+      { _id: post._id, likes: wasLiked ? me : { $ne: me } },
+      wasLiked
+        ? { $pull: { likes: me }, $addToSet: { everLiked: me }, $inc: { likeCount: -1 } }
+        : { $addToSet: { likes: me, everLiked: me }, $inc: { likeCount: 1 } },
+      { returnDocument: "before", projection: { likes: 1, everLiked: 1 } },
+    ).lean();
+    if (!before) continue;
+    const t = toggleLike({ likes: before.likes || [], everLiked: before.everLiked || [], actorId: me });
+    // Only someone's first-ever like tells the author (not an unlike + relike); a hidden person's never does.
+    if (t.firstLike && !req.appHidden) {
+      recordActivity(buildActivity({ kind: "like", section: "feed", actorId: me, actorName: req.user.name,
+        refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+    }
+    return res.json({ liked: t.liked, likeCount: Math.max(0, t.likes.length - hiddenAmong(t.likes, req.shadow)) });
   }
-  res.json({ liked: t.liked, likeCount: Math.max(0, post.likeCount - hiddenAmong(post.likes, req.shadow)) });
+  res.status(409).json({ error: "That didn't go through. Try again." });
 });
 
 router.get("/feed/:id/comments", async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.json([]);
   // A hidden person's post has no comments for anyone else (the post itself is "not found").
-  if (req.shadow.size && isObjectId(req.params.id)) {
+  if (req.shadow.size) {
     const post = await SocialPost.findById(req.params.id).select("authorId").lean();
     if (post && isShadowed(req, post.authorId)) return res.json([]);
   }
@@ -408,8 +439,9 @@ router.get("/feed/:id/comments", async (req, res) => {
 router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
-  const post = await SocialPost.findById(req.params.id);
-  if (!post || post.status === "hidden" || isShadowed(req, post.authorId)) return res.status(404).json({ error: "Not found" });
+  if (!isObjectId(req.params.id)) return res.status(404).json({ error: POST_GONE });
+  let post = await SocialPost.findById(req.params.id).select("authorId status commentCount").lean();
+  if (!canInteractPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: POST_GONE });
   const status = await statusFor(body, req.user._id, "comment");
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
@@ -417,8 +449,13 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
   });
   if (status === "approved") {
     // Counted as usual (so the person who wrote it sees the count go up); other viewers' counts leave hidden people out.
-    post.commentCount += 1;
-    await post.save();
+    post = await SocialPost.findOneAndUpdate({ _id: post._id }, { $inc: { commentCount: 1 } },
+      { returnDocument: "after", projection: { authorId: 1, commentCount: 1 } }).lean();
+    // Deleted while the comment was being checked: take the comment back.
+    if (!post) {
+      await SocialComment.deleteOne({ _id: c._id });
+      return res.status(404).json({ error: POST_GONE });
+    }
     if (!req.appHidden) {
       recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
         refId: post._id, recipients: [post.authorId], blocked: req.blocked }));

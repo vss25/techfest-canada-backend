@@ -5,6 +5,7 @@ import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { startSessionGroups } from "./services/sessionGroups.js";
+import { startSpeakerPhotos } from "./services/speakerPhotoStore.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
 import { migrateVipTypeOnce } from "./services/vipFlag.js";
 import { migratePassNamesOnce } from "./services/passNames.js";
@@ -192,12 +193,16 @@ app.get("/", (req, res) => {
 /* ==========================================
    DATABASE
 ========================================== */
+// Reads from the primary whatever MONGO_URI says (options here win over the URI's), so a post, comment or message
+// someone just wrote is always found by the next request (no read-after-write gap on a lagging secondary).
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI, { readPreference: "primary" })
   .then(() => {
     console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
     // Every minute, one server: session chats 30 min before each agenda session (services/sessionGroups.js).
     startSessionGroups();
+    // Speakers' website photos as their avatar until they upload one: loaded now, then every 10 min (services/speakerPhotoStore.js).
+    startSpeakerPhotos();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.

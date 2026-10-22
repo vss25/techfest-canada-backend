@@ -88,16 +88,19 @@ export const DEFAULT_COPY = Object.freeze({
   homeIntro: "It then opens like any other app, full screen.",
   iphoneTitle: "iPhone",
   iphoneSteps: Object.freeze([
-    // iOS 26 Safari keeps Share behind ••• and Add to Home Screen under View More; older iPhones show both directly.
-    "Open the link in Safari.",
-    "Tap Share (the square with an arrow). On newer iPhones, tap ••• first.",
-    "Tap Add to Home Screen (under View More if you don't see it), then Add.",
+    // The web app's install sheet says the same (Oct 22 2026: a speaker on a new iPhone couldn't find the button).
+    // No fixed position: Safari's Bottom and Top layouts (and every older iPhone) show Share, a square with an
+    // arrow, in the toolbar; the Compact layout keeps it in a menu: iOS 26 in ••• next to the address bar, iOS 27 in
+    // the page menu (≡) at its left end (its right-hand button is now Tabs). Add to Home Screen can be under View
+    // More. Links opened in Instagram, LinkedIn or Gmail open in that app's own browser, which can't add it.
+    "Open thetechfestival.com/app in Safari. In Instagram, LinkedIn, Gmail etc., tap ••• then Open in Safari, or copy the link into Safari.",
+    "Tap Share (the square with an arrow). No Share button? Tap ••• next to the address bar (iOS 26), or ≡ at the left end of the address bar (iOS 27), then Share.",
+    "Tap Add to Home Screen, then Add. Not showing? Tap View More or scroll down; leave Open as Web App on.",
   ]),
   androidTitle: "Android",
   androidSteps: Object.freeze([
-    "Open the link in Chrome.",
-    "Tap the ⋮ menu at the top right.",
-    "Tap Install app (or Add to Home screen).",
+    "Open thetechfestival.com/app in Chrome.",
+    "Tap ⋮ then Add to Home screen (or Install app), then Install.",
   ]),
   signIn: "Sign in with this email: {email}. We'll send you a sign-in link and a 6-digit code.",
   playText: "Prefer the Android app?",

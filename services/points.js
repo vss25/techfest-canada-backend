@@ -23,7 +23,7 @@ import {
   SocialPost, SocialComment, SocialConnection,
   SessionRegistration, SessionQuestion, SessionVote,
 } from "../models/Social.js";
-import { avatarPath } from "./socialHelpers.js";
+import { avatarFor } from "./socialHelpers.js";
 import { SANITY_PROJECT } from "./rsvp.js";
 import { hiddenState, onHiddenChange, oids } from "./appHide.js";
 
@@ -234,7 +234,7 @@ export function leaderboardCard(user) {
     name: user?.name || "",
     organization: user?.organization || "",
     jobTitle: user?.jobTitle || "",
-    avatarUrl: avatarPath(id, user?.avatarVersion),
+    avatarUrl: avatarFor(user),   // uploaded photo, else a speaker's website photo
   };
 }
 
@@ -441,7 +441,7 @@ async function buildBoard() {
         { $or: [{ linkedinUrl: LINKEDIN_RX }, { "topics.2": { $exists: true } }] },
       ] },
     ],
-  }).select("name jobTitle organization avatarVersion linkedinUrl topics role banned hideFromLeaderboard directoryHidden").lean();
+  }).select("name jobTitle organization avatarVersion tickets.ticketId linkedinUrl topics role banned hideFromLeaderboard directoryHidden").lean();
 
   const rows = [];
   for (const u of users) {

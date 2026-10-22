@@ -2,6 +2,7 @@ import { deliveryMedia } from "./cloudinary.js";
 import { publicTier, typesTier } from "./teamRoles.js";
 import { personAccess } from "./appRights.js";
 import { spotsOf } from "./availability.js";
+import { speakerPhotoFor } from "./speakerPhotos.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -38,6 +39,13 @@ export function tierName(key) {
 /** Public URL path of a profile photo ("" when none). */
 export function avatarPath(userId, version) {
   return version ? `/api/files/avatar/${userId}?v=${version}` : "";
+}
+
+/** A person's avatar URL: their uploaded photo, else (a speaker) their website photo (services/speakerPhotos.js), else "".
+    Reads name, avatarVersion and whichever of _id, tickets and email the document has. */
+export function avatarFor(user) {
+  if (!user) return "";
+  return avatarPath(user._id || user.id, user.avatarVersion) || speakerPhotoFor(user);
 }
 
 /** Public URL path of a post's photo ("" when none). */
@@ -81,7 +89,7 @@ export function userCard(user, { exhibitors = null, matrix = undefined, self = f
     availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
     meetingSpot: user.meetingSpot || "",
     availabilitySpots: spotsOf(user),
-    avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
+    avatarUrl: avatarFor(user),
     onApp: isOnApp(user),
     // Their receive rights (types + staff switches, services/appRights.js). False only hides the
     // Message / Connect buttons; routes correct it per viewer and the server still decides.
@@ -143,15 +151,20 @@ export function commentDTO(c, author = null, ctx = {}) {
   return {
     id: String(c._id), postId: String(c.postId), authorId: String(c.authorId),
     authorName: c.authorName,
+    // Their photo now (an uploaded one, else a speaker's website photo), like a post's authorAvatarUrl.
+    authorAvatarUrl: author ? avatarFor(author) : "",
     authorTier: acc ? typesTier(acc.types) : stored,
     kind: acc ? acc.kind : stored === "Speaker" ? "speaker" : stored === "Exhibitor" ? "exhibitor" : "",
     body: c.body, status: c.status, createdAt: c.createdAt,
   };
 }
 
-/** What the app sees for a post. `avatars` maps authorId → avatarVersion.
+/** What the app sees for a post. `avatars` maps authorId → their avatar URL (routes/social.js avatarUrls), or an
+    avatarVersion (a number) for the uploaded photo only.
     The photo itself is fetched from imageUrl, so the feed stays small.
     `staff`: the viewer may delete any post (deleteAnyPost), so canRemove is true on every post. */
+const avatarOf = (id, v) => (typeof v === "string" ? v : avatarPath(id, v));
+
 export function postDTO(post, viewerId, avatars = new Map(), { staff = false } = {}) {
   const me = String(viewerId || "");
   // Cloudinary media first; a legacy inline photo shows as a one-item list.
@@ -172,7 +185,7 @@ export function postDTO(post, viewerId, avatars = new Map(), { staff = false } =
     imageData: "",
     imageUrl: postImagePath(post) || (media.find((m) => m.type === "image")?.url ?? ""),
     media,
-    authorAvatarUrl: avatarPath(post.authorId, avatars.get(String(post.authorId))),
+    authorAvatarUrl: avatarOf(post.authorId, avatars.get(String(post.authorId))),
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
     likedByMe: (post.likes || []).some((l) => String(l) === me),

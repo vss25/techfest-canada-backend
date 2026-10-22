@@ -150,10 +150,11 @@ export function createPushThrottle({ gapMs = PUSH_GAP_MS, maxEntries = 100000 } 
 
 /** What the app gets for one discussion (list, create, staff queue). Never the follower list itself.
     `shadow` / `hiddenReplies`: people hidden from the app and their approved replies here, left out of this viewer's counts. */
-export function discussionDTO(d, viewer, { shadow = null, hiddenReplies = 0 } = {}) {
+export function discussionDTO(d, viewer, { shadow = null, hiddenReplies = 0, authorAvatarUrl = "" } = {}) {
   return {
     id: str(d._id), title: d.title, body: d.body, tags: d.tags || [],
-    authorId: str(d.authorId), authorName: d.authorName, replyCount: Math.max(0, (d.replyCount || 0) - hiddenReplies),
+    authorId: str(d.authorId), authorName: d.authorName, authorAvatarUrl: authorAvatarUrl || "",
+    replyCount: Math.max(0, (d.replyCount || 0) - hiddenReplies),
     status: d.status, mine: str(d.authorId) === str(viewer), createdAt: d.createdAt,
     following: isFollowing(d, viewer), followerCount: followerCount(d, shadow),
   };

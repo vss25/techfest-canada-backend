@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, seenAt, unreadFilter,
   countUnread, parseSection, activityDTO, buildReportNotifications, reportLink, removeMode, canViewPost, MAX_MENTIONS,
+  canInteractPost, POST_GONE, isRepeatPost, REPEAT_POST_MS,
 } from "../services/socialActivity.js";
 import { postDTO, publicProfile } from "../services/socialHelpers.js";
 
@@ -222,4 +223,47 @@ test("publicProfile shows what they filled in, never email/phone/role/tickets", 
   assert.deepEqual([p.fieldOfWork, p.jobLevel, p.objectives, p.tagline, p.country], ["Engineering", "C-level", ["Find partners"], "Robots", "Canada"]);
   for (const k of ["email", "phone", "role", "tickets", "gender", "salutation"]) assert.equal(k in p, false, k);
   assert.equal(publicProfile(null), null);
+});
+
+/* ---------- reacting to a post, retried posts (Oct 22 2026) ---------- */
+
+test("canInteractPost: whoever can see a post can like and comment on it; nobody can on a removed one", () => {
+  const NIC = "e".repeat(24);
+  const OTHER = "f".repeat(24);
+  const author = { _id: NIC };
+  const viewer = { _id: OTHER };
+  const moderator = { _id: S };
+  const modRights = { moderate: true };
+  const approved = { _id: "p1", authorId: NIC, status: "approved" };
+  const held = { ...approved, status: "held" };
+  const removed = { ...approved, status: "hidden" };
+  assert.equal(canInteractPost(approved, viewer), true);
+  assert.equal(canInteractPost({ _id: "p0", authorId: NIC }, viewer), true);   // older posts without a status
+  assert.equal(canInteractPost(held, author), true);                           // the author sees their own held post
+  assert.equal(canInteractPost(held, viewer), false);
+  assert.equal(canInteractPost(held, moderator, new Set(), modRights), true);
+  for (const who of [author, viewer, moderator]) assert.equal(canInteractPost(removed, who, new Set(), modRights), false);
+  // Blocked either way, or hidden from the app (in `unseen`): not there for them.
+  assert.equal(canInteractPost(approved, viewer, new Set([NIC])), false);
+  assert.equal(canInteractPost(approved, author, new Set([NIC])), true);
+  assert.equal(canInteractPost(null, viewer), false);
+  assert.equal(POST_GONE, "This post isn't available any more.");
+});
+
+test("isRepeatPost: the same post sent again (a retry) is recognised; a different one never is", () => {
+  const text = { body: "FOUR DAYS TO GO!!!!", linkUrl: "", imageData: "", media: [{ type: "image", publicId: "ttfc/feed/a1", url: "u1" }] };
+  // A retry uploads the photo again under a new name: same text, same number of items → the same post.
+  assert.equal(isRepeatPost(text, { ...text, media: [{ type: "image", publicId: "ttfc/feed/b2", url: "u2" }] }), true);
+  assert.equal(isRepeatPost({ body: "Hi", linkUrl: "" }, { body: "Hi", linkUrl: "" }), true);
+  assert.equal(isRepeatPost(text, { ...text, body: "FOUR DAYS TO GO!!!" }), false);
+  assert.equal(isRepeatPost(text, { ...text, linkUrl: "https://example.com" }), false);
+  assert.equal(isRepeatPost(text, { ...text, media: [] }), false);
+  assert.equal(isRepeatPost(text, { ...text, media: [...text.media, { type: "image", publicId: "x" }] }), false);
+  // Photo-only posts must carry the very same photos.
+  const photo = { body: "", linkUrl: "", imageData: "data:image/jpeg;base64,AAAA", media: [] };
+  assert.equal(isRepeatPost(photo, { ...photo }), true);
+  assert.equal(isRepeatPost(photo, { ...photo, imageData: "data:image/jpeg;base64,BBBB" }), false);
+  assert.equal(isRepeatPost({ body: "", media: [{ publicId: "a" }] }, { body: "", media: [{ publicId: "b" }] }), false);
+  assert.equal(isRepeatPost(null, photo), false);
+  assert.equal(REPEAT_POST_MS, 120_000);
 });

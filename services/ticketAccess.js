@@ -134,7 +134,11 @@ function addPassKind(entry, g, off = []) {
   }
 }
 
-export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null, matrix = undefined } = {}) {
+/** An account's uploaded photo ("" when none): buildDirectory's default `avatarOf` (routes/social.js passes
+    services/socialHelpers.js avatarFor, which falls back to a speaker's website photo). */
+const uploadedAvatar = (u) => (u.avatarVersion ? `/api/files/avatar/${u._id}?v=${u.avatarVersion}` : "");
+
+export function buildDirectory(users, guests, { excludeUserId = null, excludeEmail = "", exhibitors = null, matrix = undefined, avatarOf = uploadedAvatar } = {}) {
   const offById = new Map();   // entry id → that account's typesOff
   const byEmail = new Map();
   const skipEmail = String(excludeEmail || "").toLowerCase();
@@ -158,7 +162,7 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
       linkedinUrl: u.linkedinUrl || "",
       country: u.country || "",
       topics: Array.isArray(u.topics) ? u.topics : [],
-      avatarUrl: u.avatarVersion ? `/api/files/avatar/${u._id}?v=${u.avatarVersion}` : "",
+      avatarUrl: avatarOf(u),
       tagline: u.tagline || "",
       availabilitySlots: Array.isArray(u.availabilitySlots) ? u.availabilitySlots : [],
       meetingSpot: u.meetingSpot || "",

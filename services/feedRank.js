@@ -10,6 +10,8 @@ import crypto from "node:crypto";
 ========================================================= */
 
 const HOUR = 3_600_000;
+/** How long an official announcement stays pinned on top (routes/social.js adds them to the page that long). */
+export const PINNED_MS = 48 * HOUR;
 
 /** Stable 0.8–1.2 multiplier per (post, viewer, UTC day). */
 export function jitter(postId, viewerId, now) {
@@ -29,7 +31,7 @@ export function rankFeed(posts, viewerId, now = Date.now()) {
   const me = String(viewerId || "");
   const tier = (p) => {
     const age = now - new Date(p.createdAt).getTime();
-    if (p.kind === "announcement" && age < 48 * HOUR) return 0;
+    if (p.kind === "announcement" && age < PINNED_MS) return 0;
     if (String(p.authorId) === me && age < HOUR) return 1;
     return 2;
   };

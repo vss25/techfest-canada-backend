@@ -127,7 +127,8 @@ test("public badges: comments and cards carry the person's kind; tier says Speak
   assert.equal(SPEAKER_TIER, "Speaker"); // older apps lower-case it and look for "speaker"
   assert.deepEqual([commentDTO(c, plain).kind, commentDTO(c, plain).authorTier], ["", ""]);
   assert.deepEqual([commentDTO({ ...c, authorTier: "Speaker Pass" }, null).kind, commentDTO({ ...c, authorTier: "Speaker Pass" }, null).authorTier], ["speaker", "Speaker"]);
-  assert.deepEqual(Object.keys(commentDTO(c, plain)).sort(), ["authorId", "authorName", "authorTier", "body", "createdAt", "id", "kind", "postId", "status"]);
+  // authorAvatarUrl (Oct 22 2026): their photo, never anything private.
+  assert.deepEqual(Object.keys(commentDTO(c, plain)).sort(), ["authorAvatarUrl", "authorId", "authorName", "authorTier", "body", "createdAt", "id", "kind", "postId", "status"]);
   assert.deepEqual([userCard(speaker).kind, userCard(speaker).tier, userCard(speaker, { self: true }).tier], ["speaker", "Speaker", "Speaker Pass"]);
   assert.equal(typesTier(["exhibitor"]), "Exhibitor");
 });
