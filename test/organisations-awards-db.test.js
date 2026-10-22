@@ -112,6 +112,7 @@ before(async () => {
   app.use("/api/app", routes.appOrganisationsRouter);
   app.use("/api/app", awards.default);
   app.use("/api/console/organisations", routes.consoleOrganisationsRouter);
+  app.use("/api/console/companies", (await import("../routes/people.js")).companiesRouter);
   app.use("/api/console", await imp("../routes/console.js"));
   app.use("/api/social", await imp("../routes/social.js"));
   server = app.listen(0, "127.0.0.1");
@@ -279,6 +280,36 @@ test("admin: staff only; the merged list with sources, counts and merged keys", 
   assert.equal(JSON.stringify(body).includes("@"), false);
 });
 
+test("admin: add a logo to any attending organisation (no Company record yet), by its key; both lists show it at once", { skip }, async () => {
+  const before = (await ok(call("GET", "/api/console/organisations?fresh=1", { as: U.mia }))).body;
+  assert.equal(before.counts.total, before.orgs.length);
+  assert.equal(before.counts.missingLogo, before.orgs.filter((o) => !o.logo).length);
+  const org = before.orgs.find((o) => !o.logo && !o.partnerId && !o.hidden && !o.company);
+  assert.ok(org, "an organisation with no logo and no Company record");
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  // Saved under the organisation's key, whatever name the panel sends (kept in the database here: no Cloudinary or Sanity;
+  // the apps only take https logo links, as API_URL is on Render).
+  const api = process.env.API_URL;
+  process.env.API_URL = "https://api.example.test";
+  const saved = (await ok(call("POST", "/api/console/companies/logo", { as: U.mia, body: { key: org.key, name: `${org.name} (display)`, data: PNG } }))).body;
+  if (api === undefined) delete process.env.API_URL; else process.env.API_URL = api;
+  assert.match(saved.logoUrl, /^https:\/\/api\.example\.test\/api\/files\/company-logo\/[a-f0-9]{24}$/);
+  assert.equal((await M.Company.findOne({ nameKey: org.key }).lean()).logoSource, "upload");
+  // No ?fresh=1: the save dropped this server's copy, so the next read has it (other servers: within the minute).
+  const after = (await ok(call("GET", "/api/console/organisations", { as: U.mia }))).body;
+  assert.deepEqual([after.orgs.find((o) => o.key === org.key).logo, after.orgs.find((o) => o.key === org.key).logoSource], [saved.logoUrl, "company"]);
+  assert.equal(after.counts.missingLogo, before.counts.missingLogo - 1);
+  const app = (await ok(call("GET", "/api/app/organisations"))).body;
+  assert.equal([...app.featured, ...app.attending].find((o) => o.key === org.key).logo, saved.logoUrl);
+  // A key that isn't one (spaces, capitals): the name decides, as before.
+  assert.equal((await call("POST", "/api/console/companies/logo", { as: U.mia, body: { key: "Not A Key ", name: "", data: PNG } })).status, 400);
+  // Remove it: the monogram again, at once.
+  await ok(call("POST", "/api/console/companies/logo/clear", { as: U.mia, body: { key: org.key, name: org.name } }));
+  const cleared = (await ok(call("GET", "/api/console/organisations", { as: U.mia }))).body;
+  assert.equal(cleared.orgs.find((o) => o.key === org.key).logo, "");
+  assert.equal(cleared.counts.missingLogo, before.counts.missingLogo);
+});
+
 test("admin: hide and show an organisation; merge X into Y and undo it; loops refused; all audited", { skip }, async () => {
   await ok(call("POST", "/api/console/organisations/hide", { as: U.mia, body: { key: "tailspin toys", hidden: true, name: "Tailspin Toys" } }));
   assert.equal(find(await orgs(), "tailspin toys"), undefined);                                     // at once on this server
@@ -350,10 +381,11 @@ test("awards: applications for signed-in pass holders only (401 / 403 otherwise)
   assert.deepEqual([r.body.enabled, r.body.total, r.body.categoriesCount], [true, 4, 3]);
   assert.deepEqual(r.body.items.map((i) => i.nomineeName), ["Ada Example", "Northwind Health", "Second Look Co", "Zed Team"]);
   const ada = r.body.items[0];
-  assert.deepEqual([ada.nomineeType, ada.nomineeTitle, ada.selfNominated, ada.applicantName], ["Individual", "Chief Scientist", true, "Ada Example"]);
+  assert.deepEqual([ada.nomineeType, ada.nomineeTitle], ["Individual", "Chief Scientist"]);
+  assert.deepEqual(Object.keys(ada).filter((k) => /applicant|selfNominat|nominator/i.test(k)), []);   // who applied stays private (Oct 22 2026)
   assert.equal(r.body.items[1].nomineeWebsite, "https://northwind-health.ca/");
   assert.equal(r.body.items[3].nomineeWebsite, "");                                                          // not http(s)
-  for (const s of ["@", "555", "linkedin", "Secret", "colleague", "Nominator Org", "private", "Healthcare", "Energy", "rising", "AI & Machine",
+  for (const s of ["@", "555", "linkedin", "Secret", "colleague", "Nominator Org", "Pat Nominator", "private", "Healthcare", "Energy", "rising", "AI & Machine",
     "pending", "shortlisted", "status", "pillar", "sector", "category", "Rejected Co"]) {
     assert.equal(r.text.toLowerCase().includes(s.toLowerCase()), false, s);
   }

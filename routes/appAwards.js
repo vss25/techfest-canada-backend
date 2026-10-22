@@ -15,7 +15,7 @@ import { APPLICATIONS_KEY, NOMINATION_SELECT, applicationsPayload, summaryPayloa
    GET /applications   signed-in pass holders (staff and volunteer accounts too):
                        { enabled, total, categoriesCount, items: [{ id, nomineeName,
                        nomineeType, nomineeTitle, nomineeOrganisation, nomineeLocation,
-                       nomineeWebsite, applicantName, selfNominated, submittedAt }] }
+                       nomineeWebsite, submittedAt }] } (never who applied, since Oct 22 2026)
                        sorted by nominee name. 401 without a valid sign-in, 403 for a
                        suspended account or one with no pass. Cache-Control private, 60 s.
    Site settings › "Show award applications in the app" (site.award_applications,

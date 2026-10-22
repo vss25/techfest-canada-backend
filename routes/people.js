@@ -92,8 +92,10 @@ import {
                               allowOutsidePass?, basedOn?, rsvpId? } (an RSVP the attendee sent: add only)
    /api/console/companies
      GET    /candidates     ?name= &domain= : logos found on the internet + ours (rate limited)
-     POST   /logo           { name, domain?, url? | data?, source?, personId?, forPerson? }
-     POST   /logo/clear     { name } (company default) | { personId } (that person's own logo)
+     POST   /logo           { name, key?, domain?, url? | data?, source?, personId?, forPerson? }
+                            key: an attending organisation's key (GET /api/console/organisations), so the logo is that
+                            organisation's whatever its display name; a Company record is made when there's none yet
+     POST   /logo/clear     { name, key? } (company default) | { personId } (that person's own logo)
    ---------------------------------------------------------
    How people are joined, pass and RSVP status: services/people.js.
    Staff RSVPs and who wins over whom: services/rsvpStaff.js.
@@ -1156,6 +1158,12 @@ const CMS_TYPE = { partner: "partner", sponsor: "sponsor", sponsorMarquee: "spon
 
 const apiBase = (req) => process.env.API_URL || `${req.protocol}://${req.get("host")}`;
 
+/** An organisation key sent by Admin › Attending organisations ("" when it isn't one: then the name decides). */
+const orgKeyFrom = (v) => {
+  const k = typeof v === "string" ? v.trim() : "";
+  return k && k.length <= 120 && companyKey(k) === k ? k : "";
+};
+
 /** Logos already hosted by us: no fetch, no second copy. */
 function ourHosted(url, req) {
   const u = String(url || "");
@@ -1206,7 +1214,7 @@ companiesRouter.post("/logo", wrap(async (req, res) => {
     return res.status(409).json({ error: "This person has no account or pass yet, so a logo of their own can't be saved. Set the company's logo instead." });
   }
   const name = cleanCompanyName(b.name || person?.company || "");
-  const key = companyKey(name);
+  const key = orgKeyFrom(b.key) || companyKey(name);
   if (!forPerson && !key) return res.status(400).json({ error: "Add the company name first", field: "name" });
   const typedDomain = String(b.domain || "").trim();
   const d = typedDomain ? cleanDomain(typedDomain) : null;
@@ -1277,7 +1285,7 @@ companiesRouter.post("/logo/clear", wrap(async (req, res) => {
     await audit(req, "person_logo_clear", "person", person.id, `${person.name}: back to the company's logo`);
   } else {
     const name = cleanCompanyName(b.name);
-    const key = companyKey(name);
+    const key = orgKeyFrom(b.key) || companyKey(name);
     if (!key) return res.status(400).json({ error: "Which company?" });
     const r = await Company.updateOne({ nameKey: key }, { $set: { logoUrl: "", logoSource: "", logoStore: "", logoRef: "", sourceUrl: "", updatedBy: clean(req.user.name, 120), updatedById: String(req.user._id) } });
     if (!r.matchedCount) return res.status(404).json({ error: "That company has no logo yet" });

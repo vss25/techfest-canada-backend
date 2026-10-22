@@ -105,3 +105,16 @@ export function profileTagOf(user, { attendees = [], types } = {}) {
   if (has("exhibitor") && (!best || best === "connect")) return { key: "pass", label: EXHIBITOR_LABEL };
   return best ? { key: "pass", label: PASS_LABELS[best] } : null;
 }
+
+/** "Delegate": a pass holder's tag on someone else's profile (Oct 22 2026). */
+export const DELEGATE_LABEL = "Delegate";
+
+/**
+ * Someone else's profile (GET /api/social/users/:id): the same colour band, but which of the four passes a person
+ * holds stays theirs (their own Profile shows it): any pass → "Delegate". Media, Speaker, Staff, Volunteer and
+ * Exhibitor show as they are.
+ */
+export function publicProfileTag(t) {
+  if (!t) return null;
+  return t.key === "pass" && t.label !== EXHIBITOR_LABEL ? { key: "pass", label: DELEGATE_LABEL } : t;
+}
