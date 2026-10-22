@@ -37,6 +37,7 @@ import {
 import { companyKey, cleanCompanyName, cleanDomain, companyDTO, domainOfUrl, LOGO_SOURCES } from "../services/companies.js";
 import { findLogoCandidates, safeFetch } from "../services/logoFetch.js";
 import { prepareLogo, storeLogo, chooseStore, decodeLogoDataUrl } from "../services/logoStore.js";
+import { forgetOrganisations } from "../services/organisations.js";
 import { CONTACT_SELECT, contactItemsFor, syncLinkedInItem } from "../services/contactCard.js";
 import { usableEmail } from "../services/attendingCampaign.js";
 import { sendAttendingEmail } from "../services/attendingEmail.js";
@@ -1262,6 +1263,7 @@ companiesRouter.post("/logo", wrap(async (req, res) => {
     await audit(req, "company_logo", "company", key, `${name}: default logo (${source}, ${stored.store})${sourceUrl ? ` from ${sourceUrl.slice(0, 200)}` : ""}`);
   }
   invalidate();
+  forgetOrganisations();   // the apps' organisations list shows the new logo at once (services/organisations.js)
   res.json({ ok: true, logoUrl: stored.url, store: stored.store, company: companyDTO(company), forPerson });
 }));
 
@@ -1282,6 +1284,7 @@ companiesRouter.post("/logo/clear", wrap(async (req, res) => {
     await audit(req, "company_logo_clear", "company", key, `${name}: default logo removed`);
   }
   invalidate();
+  forgetOrganisations();
   res.json({ ok: true });
 }));
 

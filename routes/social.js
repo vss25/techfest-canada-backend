@@ -22,6 +22,8 @@ import {
   publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
+import { onRegistration } from "../services/sessionGroups.js";
+import { orgKeyResolver } from "../services/organisations.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
 import { cardsFor } from "../services/cards.js";
@@ -219,8 +221,12 @@ router.get("/attendees", async (req, res) => {
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
   people = people.filter((p) => !req.unseen.has(p.id));
   const shown = new Set(people.map((p) => p.id));
-  const access = await contactAccess(req.user, users.filter((u) => shown.has(String(u._id))), req.ctx);
-  res.json(people.map((p) => applyAccess(p, access)));
+  const [access, orgKeyOf] = await Promise.all([
+    contactAccess(req.user, users.filter((u) => shown.has(String(u._id))), req.ctx),
+    orgKeyResolver(),
+  ]);
+  // `orgKey`: their organisation's key in GET /api/app/organisations ("" for none), for "who's coming" on its page.
+  res.json(people.map((p) => ({ ...applyAccess(p, access), orgKey: orgKeyOf(p.organization, p.name) })));
 });
 
 /* One person's profile page: everything they filled in for others to see
@@ -694,11 +700,14 @@ router.get("/sessions/registrations", async (req, res) => {
   res.json({ mine: mine.map((r) => r.sessionId), counts: countMap });
 });
 
+/* Toggle. The session's chat follows (services/sessionGroups.js): once it exists, registering before the session
+   ends adds them to it; un-registering before it starts takes them out. */
 router.post("/sessions/:id/register", async (req, res) => {
   const sessionId = String(req.params.id);
   const existing = await SessionRegistration.findOne({ userId: req.user._id, sessionId });
   if (existing) await existing.deleteOne();
   else await SessionRegistration.create({ userId: req.user._id, sessionId });
+  await onRegistration(req.user._id, sessionId, !existing);
   const count = await SessionRegistration.countDocuments({ sessionId, ...(req.shadow.size ? { userId: { $nin: oids(req.shadow) } } : {}) });
   res.json({ registered: !existing, count });
 });
@@ -803,20 +812,26 @@ router.get("/points/me", async (req, res) => {
 
 router.get("/points/leaderboard", async (req, res) => {
   const limit = clampLimit(req.query.limit);
-  // Hidden people aren't on anyone else's board; a hidden person still sees themself on theirs.
-  const [entries, { score, rank }] = req.appHidden
-    ? await standingFor(req.user).then(async (st) => [
-      await leaderboard(limit, { exclude: req.unseen, self: { user: req.user, points: st.score.total, level: st.score.level } }), st])
-    : await Promise.all([leaderboard(limit, { exclude: req.unseen }), standingFor(req.user)]);
-  res.json({ entries, me: { rank, points: score.total } });
+  // Hidden people aren't on anyone else's board; a hidden person still sees themself on theirs. Someone who just
+  // switched "Show me on the leaderboard" back on sees themself at once too (others on the next rebuild, ≤ 60 s).
+  // standingFor loads the cached board first, so leaderboard() reuses it.
+  const st = await standingFor(req.user);
+  const entries = await leaderboard(limit, { exclude: req.unseen, self: { user: req.user, points: st.score.total, level: st.score.level } });
+  res.json({ entries, me: { rank: st.rank, points: st.score.total } });
 });
 
+/* "Show me on the leaderboard" (Oct 21 2026: the apps flip it on the first tap and trust this answer).
+   { hideFromLeaderboard: true|false } → { hideFromLeaderboard } as saved in the database (read back from the
+   write, never echoed). Idempotent: the same value again changes nothing and answers the same. One write, no
+   recount: opting out takes them off the cached board now, opting in shows on the next rebuild. */
 router.patch("/points/prefs", async (req, res) => {
   const hide = req.body?.hideFromLeaderboard;
   if (typeof hide !== "boolean") return res.status(400).json({ error: "hideFromLeaderboard must be true or false" });
-  await User.updateOne({ _id: req.user._id }, { $set: { hideFromLeaderboard: hide } });
-  if (hide) dropFromBoard(req.user._id);
-  res.json({ hideFromLeaderboard: hide });
+  const saved = await User.findOneAndUpdate({ _id: req.user._id }, { $set: { hideFromLeaderboard: hide } },
+    { returnDocument: "after", projection: { hideFromLeaderboard: 1 } }).lean();
+  if (!saved) return res.status(401).json({ error: "Unauthorized" });
+  if (saved.hideFromLeaderboard === true) dropFromBoard(req.user._id);
+  res.json({ hideFromLeaderboard: saved.hideFromLeaderboard === true });
 });
 
 /* ================= MY ACTIVITY =================

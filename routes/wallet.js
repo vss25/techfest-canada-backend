@@ -20,10 +20,10 @@ import { signedInWithoutPassword } from "../services/signInMethod.js";
    → application/vnd.apple.pkpass. 503 until the Pass Type ID cert
      is configured — see services/walletPass.js. The pass is in the
      holder's Profile colour (Oct 20 2026, services/walletPass.js
-     walletTagFor): the account that has the ticket (its types, VIP
-     flag and passes, as GET /api/auth/me), else the pass-only
-     person's Attendee record (VIP / Media marks, Speaker Pass,
-     exhibitor, the pass type).
+     walletTagFor): the account that has the ticket (its types and
+     passes, as GET /api/auth/me), else the pass-only person's
+     Attendee record (Media mark, Speaker Pass, exhibitor, the pass
+     type). No VIP gold since Oct 21 2026 (services/profileTag.js).
 
    GET /api/wallet/link/:ticketId
      Authorization: Bearer <user token>, same ticket rule as /pass.

@@ -13,10 +13,10 @@ import {
 import { buildPeople, personRow, rsvpRulesFor, filterPeople } from "../services/people.js";
 import { makeLookup } from "../services/rsvpHandler.js";
 
-/* The app Profile page's colour (Oct 20 2026): VIP gold > Media dark blue > Speaker red > Staff purple >
-   Volunteer orange > any other pass holder green (their pass, or "Exhibitor") > no colour. The Media type,
-   "Staff" for the type that said "Organizer", and the CxO Breakfasts for VIPs and media on any pass.
-   Fictional people, example.com addresses. */
+/* The app Profile page's colour (Oct 20 2026): Media dark blue > Speaker red > Staff purple > Volunteer orange >
+   any other pass holder green (their pass, or "Exhibitor") > no colour. VIP gold was dropped on Oct 21 2026 ("Don't
+   label anyone as VIP"): a VIP gets their next tag. The Media type, "Staff" for the type that said "Organizer", and
+   the CxO Breakfasts for VIPs and media on any pass (the VIP flag still counts there). Fictional people, example.com. */
 
 const pass = (type, ticketId = `${type.slice(0, 3)}000000001`) => ({ ticketId, type, purchaseDate: new Date("2026-10-01") });
 const person = (extra = {}) => ({ _id: "u1", name: "Pat Person", role: "user", tickets: [], ...extra });
@@ -24,18 +24,18 @@ const tagOf = (u, opts) => profileTagOf(u, opts);
 
 /* ---------- the contract ---------- */
 
-test("profileTag: keys, labels and colours in the order they win", () => {
-  assert.deepEqual(PROFILE_TAG_KEYS, ["vip", "media", "speaker", "staff", "volunteer", "pass"]);
-  assert.deepEqual(PROFILE_TAG_LABELS, { vip: "VIP", media: "Media", speaker: "Speaker", staff: "Staff", volunteer: "Volunteer" });
+test("profileTag: keys, labels and colours in the order they win (no VIP)", () => {
+  assert.deepEqual(PROFILE_TAG_KEYS, ["media", "speaker", "staff", "volunteer", "pass"]);
+  assert.deepEqual(PROFILE_TAG_LABELS, { media: "Media", speaker: "Speaker", staff: "Staff", volunteer: "Volunteer" });
   assert.deepEqual(PROFILE_TAG_COLORS, {
-    vip: { bg: "#F5C400", text: "#3D2E00" }, media: { bg: "#0B3D91", text: "#FFFFFF" }, speaker: { bg: "#D01F2F", text: "#FFFFFF" },
+    media: { bg: "#0B3D91", text: "#FFFFFF" }, speaker: { bg: "#D01F2F", text: "#FFFFFF" },
     staff: { bg: "#7B2FD0", text: "#FFFFFF" }, volunteer: { bg: "#FF6B00", text: "#3A1500" }, pass: { bg: "#18A957", text: "#052E16" },
   });
   assert.equal(tagOf(null), null);
 });
 
 test("profileTag: each tag on its own", () => {
-  assert.deepEqual(tagOf(person({ vip: true, tickets: [pass("power")] })), { key: "vip", label: "VIP" });
+  assert.deepEqual(tagOf(person({ vip: true, tickets: [pass("power")] })), { key: "pass", label: "Power" });   // VIP: never a tag
   assert.deepEqual(tagOf(person({ types: ["media"], tickets: [pass("power")] })), { key: "media", label: "Media" });
   assert.deepEqual(tagOf(person({ types: ["speaker"], tickets: [pass("influence")] })), { key: "speaker", label: "Speaker" });
   assert.deepEqual(tagOf(person({ tickets: [pass("speaker")] })), { key: "speaker", label: "Speaker" });   // a Speaker Pass
@@ -46,10 +46,10 @@ test("profileTag: each tag on its own", () => {
   assert.deepEqual(tagOf(person({ tickets: [pass("apex")] })), { key: "pass", label: "Apex" });
 });
 
-test("profileTag: the organiser's precedence — VIP overrules everything, media beats speaker, staff beats volunteer", () => {
-  // "All VIPs are speakers … VIP overrules everything."
-  assert.equal(tagOf(person({ vip: true, types: ["speaker"], tickets: [pass("speaker")] })).key, "vip");
-  assert.equal(tagOf(person({ vip: true, types: ["media", "speaker", "staff", "volunteer"], role: "admin" })).key, "vip");
+test("profileTag: the organiser's precedence — media beats speaker, staff beats volunteer; VIP counts for nothing", () => {
+  // Oct 21 2026: "Don't label anyone as VIP." A VIP speaker is a speaker; a VIP with every type is media.
+  assert.equal(tagOf(person({ vip: true, types: ["speaker"], tickets: [pass("speaker")] })).key, "speaker");
+  assert.equal(tagOf(person({ vip: true, types: ["media", "speaker", "staff", "volunteer"], role: "admin" })).key, "media");
   // "Some speakers are media. So, media colors takes precedence over speaker color."
   assert.equal(tagOf(person({ types: ["speaker", "media"], tickets: [pass("power")] })).key, "media");
   assert.equal(tagOf(person({ types: ["media"], tickets: [pass("speaker")] })).key, "media");
@@ -65,16 +65,23 @@ test("profileTag: the organiser's precedence — VIP overrules everything, media
   assert.equal(tagOf(person({ role: "admin", types: ["media"] })).key, "media");
 });
 
-test("profileTag: VIP from the account flag or from a pass of theirs; the account's No wins", () => {
-  assert.equal(tagOf(person({ vip: true })).key, "vip");                                         // a VIP with no pass yet
+test("profileTag: the VIP flag, from the account or a pass of theirs, never shows — they get their next tag", () => {
+  assert.equal(tagOf(person({ vip: true })), null);                                              // a VIP with no pass yet: no colour
   const claimed = { ticketId: "pow000000001", ticketType: "power", claimedBy: "u1", vip: true };
-  assert.equal(tagOf(person({ tickets: [pass("power")] }), { attendees: [claimed] }).key, "vip");
+  assert.deepEqual(tagOf(person({ tickets: [pass("power")] }), { attendees: [claimed] }), { key: "pass", label: "Power" });
   assert.equal(tagOf(person({ vip: false, tickets: [pass("power")] }), { attendees: [claimed] }).label, "Power");
-  assert.equal(tagOf(person({ types: ["vip"], tickets: [pass("power")] })).key, "vip");          // an old stored VIP type
-  // What the caller worked out wins (GET /auth/me passes accessOf's types and vip).
-  assert.equal(tagOf(person({ tickets: [pass("power")] }), { vip: true }).key, "vip");
-  assert.equal(tagOf(person({ vip: true, tickets: [pass("power")] }), { vip: false }).label, "Power");
+  assert.equal(tagOf(person({ types: ["vip"], tickets: [pass("power")] })).label, "Power");      // an old stored VIP type
+  assert.equal(tagOf(person({ vip: true, role: "volunteer" })).key, "volunteer");
+  assert.equal(tagOf(person({ vip: true, role: "admin" })).key, "staff");
+  // What the caller worked out: `types` still wins; a `vip` from an older caller is ignored.
+  assert.equal(tagOf(person({ tickets: [pass("power")] }), { vip: true }).label, "Power");
   assert.equal(tagOf(person({ tickets: [pass("power")] }), { types: ["media"] }).key, "media");
+  assert.equal(tagOf(person({ vip: true, tickets: [pass("speaker")] }), { types: ["speaker"], vip: true }).key, "speaker");
+  // No key or label anywhere says VIP.
+  for (const u of [person({ vip: true }), person({ vip: true, tickets: [pass("apex")] }), person({ vip: true, types: ["exhibitor"] })]) {
+    const t = tagOf(u, { attendees: [claimed] });
+    assert.ok(!t || (t.key !== "vip" && !/vip/i.test(t.label)), JSON.stringify(t));
+  }
 });
 
 test("profileTag: Media from a pass staff marked Media, unless switched off on the account", () => {

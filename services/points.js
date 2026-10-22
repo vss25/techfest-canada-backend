@@ -467,13 +467,20 @@ export async function rankedBoard() {
   return pending;
 }
 
-/** The top `limit` (1…50), leaving out ids in `exclude` (ranks unchanged). `self` ({ user, points, level }): a person
-    hidden from the app sees themself where they'd be, though they're left off everyone else's board. */
+/** The top `limit` (1…50), leaving out ids in `exclude` (ranks unchanged). `self` ({ user, points, level }): the
+    viewer's own row follows their account as it is now, whatever the cached board says: a person hidden from the app
+    or who just switched "Show me on the leaderboard" back on sees themself where they'd be; one who just switched it
+    off (on this server or another) doesn't see themself. */
 export async function leaderboard(limit = 10, { exclude, self = null } = {}) {
   const skip = exclude instanceof Set ? exclude : new Set((exclude || []).map(String));
   let rows = await rankedBoard();
-  if (self?.user && self.points > 0 && onLeaderboard(self.user) && !rows.some((r) => r.user.id === String(self.user._id))) {
-    rows = rankRows([...rows, { user: leaderboardCard(self.user), points: self.points, level: self.level }]);
+  if (self?.user) {
+    const id = String(self.user._id);
+    const listed = rows.some((r) => r.user.id === id);
+    if (!onLeaderboard(self.user) && listed) rows = rankRows(rows.filter((r) => r.user.id !== id));
+    else if (self.points > 0 && onLeaderboard(self.user) && !listed) {
+      rows = rankRows([...rows, { user: leaderboardCard(self.user), points: self.points, level: self.level }]);
+    }
   }
   return rows.filter((r) => !skip.has(r.user.id)).slice(0, clampLimit(limit));
 }

@@ -4,6 +4,7 @@ dotenv.config();
 import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
+import { startSessionGroups } from "./services/sessionGroups.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
 import { migrateVipTypeOnce } from "./services/vipFlag.js";
 import { migratePassNamesOnce } from "./services/passNames.js";
@@ -46,6 +47,8 @@ import walletRouter from "./routes/wallet.js";       // Apple Wallet passes (iOS
 import ticketAuthRouter from "./routes/ticketAuth.js"; // ticket-ID sign-in + claim (iOS app)
 import emailLinkRouter from "./routes/emailLink.js";   // "email me a sign-in link" (app + website)
 import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
+import { appOrganisationsRouter, consoleOrganisationsRouter } from "./routes/appOrganisations.js"; // the apps' organisations list + Admin › Attending organisations
+import appAwardsRouter from "./routes/appAwards.js";   // Catalyst Awards numbers + applications in the apps
 import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter, { siteFileBody, uploadSiteFile } from "./routes/cms.js"; // edit Sanity speakers/partners from the admin panel
 import { requireManagementAdmin } from "./middleware/adminAuth.js";
@@ -155,6 +158,8 @@ app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
+app.use("/api/app", appOrganisationsRouter); // GET /organisations (no sign-in)
+app.use("/api/app", appAwardsRouter);        // GET /awards/summary (no sign-in), /awards/applications (pass holders)
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
@@ -166,6 +171,7 @@ app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (befo
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
 app.use("/api/console/purchase-email", purchaseEmailRouter); // the purchase confirmation's wording (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
+app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
 app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id, /company-logo/:id
 app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no login)
@@ -190,6 +196,8 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
+    // Every minute, one server: session chats 30 min before each agenda session (services/sessionGroups.js).
+    startSessionGroups();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.
