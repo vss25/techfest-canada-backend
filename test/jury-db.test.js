@@ -1,6 +1,6 @@
 /* The Catalyst Awards jury through the real routes, against a real (throwaway) MongoDB: jurors (management adds,
    staff look), allocation (per juror, in bulk, balanced; pending / rejected skipped; unassign and give back),
-   signing in (password, emailed code, forgot password) with generic answers and rate limits, the isolation of jury
+   signing in (emailed one-time code only; password routes answer 410) with generic answers and rate limits, the isolation of jury
    tokens from everything else (and of staff / app tokens from the jury API), what a juror sees (no contact details,
    only their own allocations and scores), draft → submit → edit → resubmit with the audit, conflicts of interest,
    the deadline lock, rubric changes that keep earlier scores, the results maths and CSV, removing a juror, and the
@@ -81,7 +81,7 @@ before(async () => {
   const app = express();
   app.use(express.json());
   const capture = async ({ to, code }) => { codes.push({ to, code }); };
-  app.use("/api/jury", createJuryRouter({ sendCode: capture, limits: { loginPerIp: 1000, loginPerEmail: 1000, codePerIp: 1000, codePerEmail: 1000, verifyPerIp: 1000, passwordPerJuror: 1000 } }));
+  app.use("/api/jury", createJuryRouter({ sendCode: capture, limits: { codePerIp: 1000, codePerEmail: 1000, verifyPerIp: 1000 } }));
   app.use("/api/jury-limits", createJuryRouter({ sendCode: capture }));
   app.use("/api/jury-mail", (await import("../routes/jury.js")).default); // the real code email (through the stubbed Resend)
   app.use("/api/auth", (await import("../routes/auth.js")).default);
@@ -145,11 +145,12 @@ const allFours = { innovation: 4, impact: 4, traction: 4, team: 4, fit: 4 };
 const all = (v) => ({ innovation: v, impact: v, traction: v, team: v, fit: v });
 const assignment = (who, n) => M.JuryAssignment.findOne({ juror: JR[who].id, nomination: N[n]._id }).lean();
 
-test("jurors: management adds them (a password optional), staff can look but not change, duplicates refused", { skip }, async () => {
+test("jurors: management adds them (no passwords: a password in the body is ignored), staff can look but not change, duplicates refused", { skip }, async () => {
   const a = await admin("POST", "/jurors", { name: "Ava Juror", email: "Ava.Juror@Example.com", organisation: "Example University", title: "Professor", password: PW_AVA });
   assert.equal(a.status, 201, JSON.stringify(a.body));
   assert.equal(a.body.juror.email, "ava.juror@example.com");
-  assert.equal(a.body.juror.hasPassword, true);
+  assert.equal(a.body.juror.hasPassword, false);
+  assert.ok(!(await M.Juror.findById(a.body.juror.id).select("+passwordHash").lean()).passwordHash);
   JR.ava = { id: a.body.juror.id, email: "ava.juror@example.com" };
   const b = await admin("POST", "/jurors", { name: "Ben Juror", email: "ben.juror@example.com" });
   assert.equal(b.status, 201);
@@ -160,7 +161,6 @@ test("jurors: management adds them (a password optional), staff can look but not
 
   assert.equal((await admin("POST", "/jurors", { name: "Ava Again", email: "ava.juror@example.com" })).status, 409);
   assert.equal((await admin("POST", "/jurors", { name: "No Email", email: "nope" })).status, 400);
-  assert.match((await admin("POST", "/jurors", { name: "Short Pw", email: "short.pw@example.com", password: "short" })).body.error, /at least 10/);
   assert.equal((await call("POST", "/api/console/jury/jurors", { as: U.sam, body: { name: "Staff Try", email: "staff.try@example.com" } })).status, 403);
   assert.equal((await call("PATCH", `/api/console/jury/jurors/${JR.ben.id}`, { as: U.sam, body: { name: "x" } })).status, 403);
   assert.equal((await call("DELETE", `/api/console/jury/jurors/${JR.ben.id}`, { as: U.sam })).status, 403);
@@ -221,19 +221,17 @@ test("allocation: shortlisted by default, pending and rejected skipped, per juro
   assert.ok(!(await admin("GET", "/nominations")).body.rows.some((x) => x.nomineeName === "Pending Example"));
 });
 
-test("password sign-in: one answer for every failure; the jury token opens only the jury API, staff and app tokens never open it", { skip }, async () => {
-  const refused = "That email and password don't match. Try again, or sign in with a code instead.";
-  for (const body of [
-    { email: JR.ava.email, password: "wrong password!!" },
-    { email: "nobody@example.com", password: PW_AVA },
-    { email: JR.ben.email, password: PW_AVA }, // a juror without a password
-  ]) {
+test("passwords are gone: login and set-password answer 410; a code session opens only the jury API, staff and app tokens never open it", { skip }, async () => {
+  for (const body of [{ email: JR.ava.email, password: PW_AVA }, { email: "nobody@example.com", password: "anything long enough" }, {}]) {
     const r = await call("POST", "/api/jury/auth/login", { body });
-    assert.equal(r.status, 401);
-    assert.equal(r.body.error, refused);
+    assert.equal(r.status, 410);
+    assert.equal(r.body.error, "Jurors sign in with a one-time 6-digit code by email.");
+    assert.ok(!r.body.token);
   }
-  assert.equal((await call("POST", "/api/jury/auth/login", { body: { email: JR.ava.email } })).status, 400);
-  const ok = await call("POST", "/api/jury/auth/login", { body: { email: "AVA.JUROR@example.com", password: PW_AVA } });
+  codes.length = 0;
+  await call("POST", "/api/jury/auth/code", { body: { email: "AVA.JUROR@example.com" } });
+  await sleep(30);
+  const ok = await call("POST", "/api/jury/auth/code/verify", { body: { email: JR.ava.email, code: codes[0].code } });
   assert.equal(ok.status, 200);
   TOK.ava = ok.body.token;
   assert.equal(ok.body.juror.name, "Ava Juror");
@@ -241,7 +239,9 @@ test("password sign-in: one answer for every failure; the jury token opens only 
   assert.equal(me.status, 200);
   assert.equal(me.body.progress.assigned, 3);
   assert.equal(me.body.rubric.criteria.length, 5);
-  assert.equal(me.body.signedInWith, "password");
+  assert.equal(me.body.signedInWith, "code");
+  assert.equal((await jury("ava", "POST", "/password", { password: "a long new passphrase" })).status, 410);
+  assert.equal((await jury("ava", "GET", "/me")).status, 200); // the session is untouched
 
   // The juror's token is refused everywhere else.
   for (const url of ["/api/console/jury/overview", "/api/console/jury/results", "/api/console/nominations", `/api/console/nominations/${id(N.n1)}`,
@@ -311,24 +311,6 @@ test("code sign-in: emailed only to active jurors, the same answers for anyone, 
   const cy = await call("POST", "/api/jury/auth/code/verify", { body: { email: JR.cy.email, code: cyCode } });
   assert.equal(cy.status, 200);
   TOK.cy = cy.body.token;
-});
-
-test("forgot password: a code session sets one without the old password; other sessions end; a password session needs the current one", { skip }, async () => {
-  const old = TOK.ben;
-  assert.match((await jury("ben", "POST", "/password", { password: "short" })).body.error, /at least 10/);
-  assert.match((await jury("ben", "POST", "/password", { password: "ben.juror@example.com" })).body.error, /email address/);
-  const set = await jury("ben", "POST", "/password", { password: "bens new passphrase" });
-  assert.equal(set.status, 200);
-  assert.equal(set.body.juror.hasPassword, true);
-  TOK.ben = set.body.token;
-  assert.equal((await call("GET", "/api/jury/me", { token: old })).status, 401);
-  assert.equal((await jury("ben", "GET", "/me")).status, 200);
-  assert.equal((await call("POST", "/api/jury/auth/login", { body: { email: JR.ben.email, password: "bens new passphrase" } })).status, 200);
-
-  assert.match((await jury("ava", "POST", "/password", { password: "another long passphrase" })).body.error, /current password/);
-  const ava = await jury("ava", "POST", "/password", { password: "another long passphrase", currentPassword: PW_AVA });
-  assert.equal(ava.status, 200);
-  TOK.ava = ava.body.token;
 });
 
 test("the juror's list and a nominee: only their own allocations, no contact details, prev / next", { skip }, async () => {
@@ -656,10 +638,8 @@ test("emails: invite and reminder only on a management click, from enquire@, wor
   assert.equal((await call("POST", "/api/jury-mail/auth/code/verify", { body: { email: JR.ava.email, code } })).status, 200);
 });
 
-test("rate limits: wrong passwords, code requests and code checks are capped", { skip }, async () => {
+test("rate limits: code requests and code checks are capped", { skip }, async () => {
   let last;
-  for (let i = 0; i < 9; i++) last = await call("POST", "/api/jury-limits/auth/login", { body: { email: JR.cy.email, password: "not the password" } });
-  assert.equal(last.status, 429);
   for (let i = 0; i < 6; i++) last = await call("POST", "/api/jury-limits/auth/code", { body: { email: "limits@example.com" } });
   assert.equal(last.status, 429);
   for (let i = 0; i < 41; i++) last = await call("POST", "/api/jury-limits/auth/code/verify", { body: { email: "limits@example.com", code: "123456" } });
@@ -670,7 +650,7 @@ test("removing a juror ends their sessions, takes their allocations off and thei
   const del = await admin("DELETE", `/jurors/${JR.ben.id}`);
   assert.equal(del.body.removed, true);
   assert.equal((await jury("ben", "GET", "/me")).status, 401);
-  assert.equal((await call("POST", "/api/jury/auth/login", { body: { email: JR.ben.email, password: "bens new passphrase" } })).status, 401);
+  assert.equal((await call("POST", "/api/jury/auth/login", { body: { email: JR.ben.email, password: "anything long enough" } })).status, 410);
   assert.ok(!(await admin("GET", "/overview")).body.jurors.some((j) => j.name === "Ben Juror"));
   const n1 = (await admin("GET", "/results")).body.rows.find((x) => x.id === id(N.n1));
   assert.equal(n1.submitted, 1);
