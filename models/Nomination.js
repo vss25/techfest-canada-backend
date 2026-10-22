@@ -3,6 +3,16 @@ import mongoose from "mongoose";
 /* A Catalyst Awards nomination (website form, services/nominations.js).
    Only the category and nominee name are required: nominations recovered
    from the emails sent before Oct 2026 can be missing other fields. */
+// What the nominator submitted (category + the nominee's focus), kept when staff change them.
+const submittedSchema = new mongoose.Schema({
+  categoryType: { type: String, default: "" },
+  pillar: { type: String, default: "" },
+  sector: { type: String, default: "" },
+  specialAward: { type: String, default: "" },
+  nomineeSector: { type: String, default: "" },
+  nomineePillar: { type: String, default: "" },
+}, { _id: false });
+
 const nominationSchema = new mongoose.Schema({
   // ═════ SECTION 1 — Award Category ═════
   categoryType: { type: String, enum: ["matrix", "special"], required: true },
@@ -16,6 +26,8 @@ const nominationSchema = new mongoose.Schema({
   nomineeTitle: { type: String, default: "" },
   nomineeOrganisation: { type: String, trim: true },
   nomineeSector: { type: String, default: "" },
+  // The startup's focus pillar (staff set it in the admin panel; the form doesn't ask). "" = none.
+  nomineePillar: { type: String, default: "" },
   nomineeLocation: { type: String, trim: true },
   nomineeWebsite: { type: String, default: "" },
   nomineeLinkedIn: { type: String, default: "" },
@@ -52,6 +64,16 @@ const nominationSchema = new mongoose.Schema({
     index: true,
   },
   adminNotes: { type: String, default: "" },
+  /* Category and focus changed by staff (Admin → Catalyst Awards → Nominations, "Edit category & focus";
+     services/nominations.js). The live fields above are what everything reads (jury, results, award counts,
+     CSV, filters); `submitted` keeps what came in, copied once, at the first change. */
+  submitted: { type: submittedSchema, default: undefined },
+  categoryChangedBy: { type: String, default: "" },
+  categoryChangedAt: { type: Date, default: null },
+  categoryNote: { type: String, default: "" },
+  focusChangedBy: { type: String, default: "" },
+  focusChangedAt: { type: Date, default: null },
+  focusNote: { type: String, default: "" },
   statusChangedAt: { type: Date, default: null },
   updatedBy: { type: String, default: "" },
   submittedAt: { type: Date, default: Date.now },

@@ -23,13 +23,15 @@
        and the balanced plan ("each nomination to N jurors").
      - What a juror sees of a nomination: the nominee and the
        statements, never anyone's email or phone, never the nominator's
-       name ("Self-nominated" / "Nominated by {organisation}").
+       name ("Self-nominated" / "Nominated by {organisation}"). The
+       category and focus as they are now: when staff change them, never
+       what was submitted or who changed it.
    Pure (no database), unit-tested in test/jury.test.js. Routes:
    routes/jury.js (the portal) and routes/juryAdmin.js (the admin).
 ========================================================= */
 
 import crypto from "crypto";
-import { SPECIAL_AWARDS, categoryLabel, categoryShort } from "./nominations.js";
+import { SPECIAL_AWARDS, categoryLabel, categoryShort, focusLabel } from "./nominations.js";
 
 export const SCORE_MIN = 1;
 export const SCORE_MAX = 5;
@@ -395,6 +397,8 @@ export function nomineeForJury(n = {}) {
     nomineeTitle: n.nomineeTitle || "",
     nomineeOrganisation: n.nomineeOrganisation || "",
     nomineeSector: n.nomineeSector || "",
+    nomineePillar: n.nomineePillar || "",
+    focus: focusLabel(n), // "<pillar> · <sector>": the live values only (never what was submitted or who changed it)
     nomineeLocation: n.nomineeLocation || "",
     website: safeLink(n.nomineeWebsite),
     linkedin: safeLink(n.nomineeLinkedIn),
