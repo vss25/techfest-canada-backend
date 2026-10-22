@@ -8,9 +8,10 @@ import { loadSwag, loadAnnounced, loadSnapshot, currentWinners, announceWinners,
    "Win the TTFC swag kit" (Oct 22 2026), services/swag.js and services/swagRules.js.
 
    Public (no sign-in), mounted at /api/app/swag:
-     GET /  → { enabled, title, kits, cutoff, announce (ISO), cutoffLabel ("3:00 PM on Tuesday, October 27"),
-               cutoffShort ("Oct 27, 3 PM"), announceLabel, rules (with {kits} {cutoff} {announce} filled in),
-               phase: "open" | "closed" | "announced", announced, rulesUrl, photoUrl, installUrl }   Cache-Control 60 s.
+     GET /  → { enabled, title, kits, cutoff, announce (ISO), cutoffLabel ("4:00 PM on Monday, October 26"),
+               cutoffShort ("Oct 26, 4 PM"), announceLabel, rules (with {kits} {cutoff} {announce} filled in),
+               phase: "open" | "closed" | "announced", announced, appOnly: true, pitch ("Only people using the TTFC app can win"),
+               rulesUrl, photoUrl, installUrl }   Cache-Control 60 s.
 
    Admin (staff read, management announces), mounted at /api/console/swag:
      GET  /           → { settings (as public), winners: [{ userId, name, organization, points, rank }], live, takenAt,

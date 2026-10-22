@@ -6,22 +6,22 @@ import {
   SWAG_DEFAULTS, swagSettings, cleanSwagContent, fillSwag, longTime, shortTime, publicSwag, swagPhase, swagEligible, pickWinners, WINNER_NOTE,
 } from "../services/swagRules.js";
 import { CONTENT_KEYS, cleanContent } from "../services/adminHelpers.js";
-import { DEFAULT_COPY, wordingToSave, fillSwagInvite, TEMPLATE_KEY } from "../services/swagInviteCopy.js";
-import { DEFAULT_COPY as INVITE_COPY } from "../services/appInviteCopy.js";
-import { buildSwagInviteEmail, swagInviteEmailFor, swagInviteLink, swagJpg, APP_SWAG_CAMPAIGN, SWAG_CID } from "../services/swagInviteEmail.js";
-import { CAMPAIGNS, engagementKey } from "../services/engagement.js";
-import { VISIT_CAMPAIGNS } from "../routes/engagement.js";
+import { DEFAULT_COPY, FIELDS, PLACEHOLDERS, fillInvite } from "../services/appInviteCopy.js";
+import { buildAppInviteEmail, appInviteEmailFor, swagJpg, SWAG_CID } from "../services/appInviteEmail.js";
+import { CAMPAIGNS } from "../services/engagement.js";
+import { APP_INVITE_CAMPAIGN, APP_INVITE_SWAG_KEY, inviteSendKey, planAppInvites, pickBatch } from "../services/appInvite.js";
 
 const defaults = swagSettings({});
 
-test("settings: off until management turns it on; 3 kits; 3 PM and 4 PM on Oct 27 (Toronto); stored as app content keys", () => {
+test("settings: off until management turns it on; 3 kits; Day 1 4 PM and 5 PM (Toronto); stored as app content keys", () => {
   assert.deepEqual(Object.keys(SWAG_DEFAULTS), ["swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules"]);
   for (const k of Object.keys(SWAG_DEFAULTS)) assert.equal(CONTENT_KEYS[k], SWAG_DEFAULTS[k], k);   // GET /api/app/content carries them
   assert.deepEqual([defaults.enabled, defaults.kits, defaults.title], [false, 3, "Win the TTFC swag kit"]);
-  assert.equal(defaults.cutoff.toISOString(), "2026-10-27T19:00:00.000Z");
-  assert.equal(defaults.announce.toISOString(), "2026-10-27T20:00:00.000Z");
-  assert.equal(longTime(defaults.cutoff), "3:00 PM on Tuesday, October 27");
-  assert.equal(shortTime(defaults.cutoff), "Oct 27, 3 PM");
+  assert.equal(defaults.cutoff.toISOString(), "2026-10-26T20:00:00.000Z");
+  assert.equal(defaults.announce.toISOString(), "2026-10-26T21:00:00.000Z");
+  assert.equal(longTime(defaults.cutoff), "4:00 PM on Monday, October 26");
+  assert.equal(longTime(defaults.announce), "5:00 PM on Monday, October 26");
+  assert.equal(shortTime(defaults.cutoff), "Oct 26, 4 PM");
   assert.equal(swagSettings({ "swag.enabled": true, "swag.kits": "5" }).kits, 5);
   assert.equal(swagSettings({ "swag.kits": "zero" }).kits, 3);
 });
@@ -36,14 +36,16 @@ test("saving: kits 1–50, times with their offset; the rest as usual", () => {
   assert.equal(cleanSwagContent("site.announcement", "x"), undefined);
 });
 
-test("the rules: {kits}, {cutoff}, {announce} filled in; phases", () => {
+test("the rules: only app users can win, first; {kits}, {cutoff}, {announce} filled in; phases; the pitch", () => {
   const rules = fillSwag(defaults.rulesText, defaults);
-  assert.match(rules, /^Earn points in the TTFC app by connecting, saving sessions, posting and taking part\. The top 3 people on the leaderboard at 3:00 PM on Tuesday, October 27 each win a TTFC swag kit\./);
-  assert.match(rules, /Winners are told in the app at 4:00 PM on Tuesday, October 27 and collect their kit at the registration desk, Harbour Ballroom foyer/);
+  assert.match(rules, /^Only people using the TTFC app can win\. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part\. The top 3 people on the leaderboard at 4:00 PM on Monday, October 26 each win a TTFC swag kit\./);
+  assert.match(rules, /TTFC staff, volunteers and their families can't win\./);
+  assert.match(rules, /Winners are told in the app at the end of Day 1 \(5:00 PM on Monday, October 26\) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question\./);
   assert.match(rules, /No purchase necessary\. Prizes have no cash value and can't be exchanged\.$/);
   const p = publicSwag(defaults, { now: new Date("2026-10-26T12:00:00Z") });
-  assert.deepEqual([p.enabled, p.kits, p.phase, p.cutoffShort, p.rulesUrl, p.installUrl], [false, 3, "open", "Oct 27, 3 PM", "https://www.thetechfestival.com/swag", "https://www.thetechfestival.com/app/install"]);
-  assert.equal(swagPhase(defaults, { now: new Date("2026-10-27T19:00:00Z") }), "closed");
+  assert.deepEqual([p.enabled, p.kits, p.phase, p.cutoffShort, p.rulesUrl, p.installUrl], [false, 3, "open", "Oct 26, 4 PM", "https://www.thetechfestival.com/swag", "https://www.thetechfestival.com/app/install"]);
+  assert.deepEqual([p.appOnly, p.pitch], [true, "Only people using the TTFC app can win"]);
+  assert.equal(swagPhase(defaults, { now: new Date("2026-10-26T20:00:00Z") }), "closed");
   assert.equal(swagPhase(defaults, { announced: true }), "announced");
   assert.deepEqual(WINNER_NOTE, { title: "You won a TTFC swag kit!", body: "Collect it at the registration desk." });
 });
@@ -62,38 +64,59 @@ test("who can win: on the leaderboard with a pass of their own; never staff, vol
   assert.deepEqual(pickWinners(rows, (id) => id !== "u2", 3).map((w) => [w.userId, w.rank]), [["u1", 1], ["u3", 3], ["u4", 4]]);
 });
 
-test("the email: subject, preheader, the photo inline (CID swag-kit) linked to the rules, utm link, install steps, rules line", () => {
-  assert.equal(TEMPLATE_KEY, "app-swag-email");
-  assert.equal(APP_SWAG_CAMPAIGN, "app-swag-2026");
-  assert.equal(DEFAULT_COPY.subject, "Get the TTFC app — and you could win the swag kit");
-  assert.equal(DEFAULT_COPY.preheader, "Top earners on the app leaderboard win a TTFC swag kit");
-  assert.deepEqual([DEFAULT_COPY.iphoneSteps, DEFAULT_COPY.androidSteps], [INVITE_COPY.iphoneSteps, INVITE_COPY.androidSteps]);
-  assert.equal(swagInviteLink(), "https://www.thetechfestival.com/app/install?utm_source=email&utm_campaign=app-swag");
-  assert.equal(swagInviteLink("abc.def"), "https://www.thetechfestival.com/app/install?utm_source=email&utm_campaign=app-swag#r=abc.def");
-  const e = buildSwagInviteEmail({ swag: defaults, firstName: "Jane", email: "jane@example.com", photoSrc: `cid:${SWAG_CID}` });
-  assert.equal(e.subject, DEFAULT_COPY.subject);
+const on = swagSettings({ "swag.enabled": true });
+
+test("the app invite carries the offer while the contest is on: the photo, the key point, Day 1, its subject", () => {
+  for (const k of ["swagSubject", "swagHeadline", "swagOnly", "swagText"]) assert.ok(FIELDS.some((f) => f.key === k && f.section === "swag"), k);
+  assert.deepEqual(PLACEHOLDERS, ["{firstName}", "{email}", "{kits}", "{cutoff}", "{announce}"]);
+  assert.deepEqual([DEFAULT_COPY.swagSubject, DEFAULT_COPY.swagHeadline, DEFAULT_COPY.swagOnly, DEFAULT_COPY.swagText], [
+    "Get the TTFC app — only app users can win the swag kit",
+    "Download the app to win the TTFC swag kit",
+    "Only people using the TTFC app can win — download it, sign in and earn points.",
+    "The top {kits} on the app's leaderboard win. Winners are announced at the end of Day 1 ({announce}).",
+  ]);
+  const e = buildAppInviteEmail({ firstName: "Jane", email: "jane@example.com", swag: on, swagSrc: `cid:${SWAG_CID}` });
+  assert.equal(e.subject, "Get the TTFC app — only app users can win the swag kit");
   assert.match(e.html, /<a href="https:\/\/www\.thetechfestival\.com\/swag" target="_blank"[^>]*><img src="cid:swag-kit" width="560" alt="TTFC swag kit: backpack, bottle, mug, notebook, umbrella and more"/);
-  assert.match(e.html, /Earn points by connecting, saving sessions and posting — the top 3 at 3:00 PM on Tuesday, October 27 win a TTFC swag kit\./);
-  assert.match(e.html, /href="https:\/\/www\.thetechfestival\.com\/app\/install\?utm_source=email&amp;utm_campaign=app-swag"/);
-  assert.match(e.html, />Get the app</);
-  assert.match(e.html, /No purchase necessary\. <a href="https:\/\/www\.thetechfestival\.com\/swag"/);
-  assert.match(e.html, /Sign in with this email: jane@example\.com/);
-  assert.match(e.text, /Read the rules: https:\/\/www\.thetechfestival\.com\/swag/);
-  assert.match(e.text, /iPhone:\n {2}1\. Open thetechfestival\.com\/app in Safari\./);
-  // A real send: the logo, the light logo and the photo as attachments (the JPEG as supplied); previews inline.
-  const real = swagInviteEmailFor({ firstName: "Jane", email: "jane@example.com" }, { inline: false, swag: defaults });
+  assert.match(e.html, />Download the app to win the TTFC swag kit</);
+  assert.match(e.html, />Only people using the TTFC app can win — download it, sign in and earn points\.</);
+  assert.match(e.html, /The top 3 on the app&#39;s leaderboard win\. Winners are announced at the end of Day 1 \(5:00 PM on Monday, October 26\)\./);
+  assert.match(e.html, /No purchase necessary · <a href="https:\/\/www\.thetechfestival\.com\/swag"[^>]*>Rules<\/a>/);
+  // Right after the intro, before what's in the app and the home-screen steps; the same layout otherwise.
+  const at = (s2) => e.html.indexOf(s2);
+  assert.ok(at("Download the app to win") > at("nothing to download") && at("Download the app to win") < at("What&#39;s in it"));
+  assert.ok(at("cid:swag-kit") < at("Add it to your home screen"));
+  assert.match(e.text, /DOWNLOAD THE APP TO WIN THE TTFC SWAG KIT\nOnly people using the TTFC app can win/);
+  // Off: the invite as it was (no block, the usual subject), word for word.
+  const off = buildAppInviteEmail({ firstName: "Jane", email: "jane@example.com" });
+  assert.equal(off.subject, "Your TTFC 2026 app is ready");
+  assert.equal(off.html.includes("swag"), false);
+  assert.equal(buildAppInviteEmail({ firstName: "Jane", email: "jane@example.com", swag: null }).html, off.html);
+  // A real send attaches the photo (as supplied) only while it's on; previews inline it.
+  const real = appInviteEmailFor({ firstName: "Jane", email: "jane@example.com" }, { inline: false, swag: on });
   const photo = real.attachments.find((a) => a.content_id === "swag-kit");
-  assert.equal(photo.content_type, "image/jpeg");
-  assert.equal(Buffer.from(photo.content, "base64").length, swagJpg().length);
+  assert.deepEqual([photo.content_type, Buffer.from(photo.content, "base64").length], ["image/jpeg", swagJpg().length]);
   assert.equal(swagJpg().length, fs.statSync(new URL("../assets/email/swag-kit.jpg", import.meta.url)).size);
-  assert.match(swagInviteEmailFor({ firstName: "Jane" }, { swag: defaults }).html, /src="data:image\/jpeg;base64,/);
-  // Staff's wording: only what differs is kept; placeholders.
-  assert.deepEqual(wordingToSave({ subject: DEFAULT_COPY.subject, heading: "New heading" }), { heading: "New heading" });
-  assert.equal(fillSwagInvite("{firstName}: top {kits} by {cutoff}", { kits: 5, cutoff: "noon" }), "there: top 5 by noon");
+  assert.equal(appInviteEmailFor({ firstName: "Jane" }, { inline: false, swag: defaults }).attachments.some((a) => a.content_id === "swag-kit"), false);   // off
+  assert.match(appInviteEmailFor({ firstName: "Jane" }, { swag: on }).html, /src="data:image\/jpeg;base64,/);
+  assert.equal(fillInvite("{firstName}: top {kits} by {cutoff}, told {announce}", { kits: 5, cutoff: "noon", announce: "1 PM" }), "there: top 5 by noon, told 1 PM");
+  assert.equal(fillInvite("{kits}", {}), "{kits}");
 });
 
-test("tracking like the app invite: one row per address, the web app's visit counts", () => {
-  assert.equal(CAMPAIGNS.appSwag, "app-swag-2026");
-  assert.deepEqual(engagementKey({ c: "app-swag-2026", e: "Jane@Example.com", t: "con1" }), { campaign: "app-swag-2026", email: "jane@example.com", ticketId: "" });
-  assert.ok(VISIT_CAMPAIGNS.includes("app-swag-2026"));
+test("this version's own claims: people who got the earlier invite and still aren't on the app can get it once", () => {
+  assert.deepEqual([APP_INVITE_SWAG_KEY, inviteSendKey(true), inviteSendKey(false)], ["app-invite-2026-swag", "app-invite-2026-swag", APP_INVITE_CAMPAIGN]);
+  assert.equal(CAMPAIGNS.appSwag, undefined);   // no separate campaign any more
+  const people = [
+    { id: "u-1", name: "Gus Got-Earlier", email: "gus@example.com", passList: [{ ticketId: "con1", tier: "connect", purchaseDate: "2026-10-01" }] },
+    { id: "u-2", name: "Hal Got-This", email: "hal@example.com", passList: [{ ticketId: "con2", tier: "connect", purchaseDate: "2026-10-01" }] },
+  ];
+  const earlier = [{ email: "gus@example.com", status: "sent", sentAt: new Date("2026-10-21") }, { email: "hal@example.com", status: "sent", sentAt: new Date("2026-10-21") }];
+  const plan = planAppInvites(people, { sends: [{ email: "hal@example.com", status: "sent", sentAt: new Date() }], earlierSends: earlier, swag: true });
+  const [gus, hal] = plan.rows;
+  assert.deepEqual([gus.willGet, gus.version, String(gus.earlierSentAt.toISOString?.() || gus.earlierSentAt)], [true, "swag", "2026-10-21T00:00:00.000Z"]);
+  assert.deepEqual([hal.willGet, hal.reason, hal.label], [false, "alreadySent", "Already got this version"]);
+  assert.deepEqual(pickBatch(plan, ["hal@example.com"], { kind: "next" }).dropped.map((d) => d.label), ["Already got this version"]);
+  // Off: the earlier invite's own records, as before.
+  const off = planAppInvites(people, { sends: earlier });
+  assert.deepEqual(off.rows.map((r) => [r.reason, r.label, r.version, r.earlierSentAt]), [["alreadySent", "Already sent", "standard", null], ["alreadySent", "Already sent", "standard", null]]);
 });

@@ -1,9 +1,10 @@
 /* "Win the TTFC swag kit" (Oct 22 2026) through the real routes, against a real (throwaway) MongoDB: the public
    settings; management-only switches; the winners from the leaderboard kept at the cutoff (staff, volunteers,
    moderators, people without a pass and anyone suspended since are passed over); "Announce winners" only on
-   management's confirmed click (in-app notification + push, once); and the campaign email to people not on the app yet
-   (its own send records, the photo inline as CID swag-kit, re-checked per person before it goes, management only,
-   off while the contest is off). Resend is a stubbed fetch, pushes are watched: nothing leaves the machine. Starts a
+   management's confirmed click (in-app notification + push, once); and the offer inside the app invite email while the
+   contest is on (its subject, the photo inline as CID swag-kit, its own send key so people who got the earlier invite
+   and still aren't on the app get this version once, re-checked per person before it goes; the plain invite while it's
+   off). Resend is a stubbed fetch, pushes are watched: nothing leaves the machine. Starts a
    local mongod in a temp folder on a free port and stops it after; skipped when the binary isn't there
    (TTFC_TEST_MONGOD, else ~/.cache/mongodb-binaries/mongod-arm64-darwin-8.2.6). Fictional people, example.com. */
 import { test, before, after } from "node:test";
@@ -48,7 +49,7 @@ let base = "";
 let jwt;
 let mongoose;
 let S;   // services/swag.js
-let A;   // routes/appSwag.js
+let SEND;   // services/appInviteSend.js
 const M = {};
 const U = {};
 const pushes = [];
@@ -72,14 +73,14 @@ before(async () => {
   Object.assign(M, await import("../models/Admin.js"), await import("../models/Social.js"));
   await Promise.all([M.CampaignSend.init(), M.AppContent.init()]);
   S = await import("../services/swag.js");
-  A = await import("../routes/appSwag.js");
+  SEND = await import("../services/appInviteSend.js");
   const swag = await import("../routes/swag.js");
   const { default: express } = await import("express");
   const app = express();
   app.use(express.json());
   app.use("/api/app/swag", swag.publicRouter);
   app.use("/api/console/swag", swag.adminRouter);
-  app.use("/api/console/app-swag", A.default);
+  app.use("/api/console/app-invite", (await import("../routes/appInvite.js")).default);
   app.use("/api/console", await imp("../routes/console.js"));
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
@@ -104,6 +105,8 @@ before(async () => {
     mk("gus", { name: "Gus Newcomer", email: "gus@example.com", tickets: pass("con120000006") }),
   ]);
   await M.Attendee.create({ name: "Zoe Passonly", email: "zoe@example.com", ticketId: "con120000007", ticketType: "connect", purchaseDate: new Date("2026-10-02") });
+  // Gus got the earlier app invite (still not on the app); Zoe never got one.
+  await M.CampaignSend.create({ campaign: "app-invite-2026", email: "gus@example.com", status: "sent", sentAt: new Date(Date.now() - 2 * 3_600_000), sends: 1 });
   // Points: 10 a post (3 a day), +20 LinkedIn, +10 three topics, 3 a comment.
   const posts = async (u, n) => {
     for (let i = 0; i < n; i++) {
@@ -148,19 +151,25 @@ const idOf = (u) => String(u._id);
 const setting = (as, key, value) => call("PUT", `/api/console/app-content/${key}`, { as, body: { value } });
 async function waitJob() {
   for (let i = 0; i < 60; i++) {
-    const job = (await ok(call("GET", "/api/console/app-swag/recipients", { as: U.mia }))).job;
+    const job = (await ok(call("GET", "/api/console/app-invite/recipients", { as: U.mia }))).job;
     if (!job.running) return job;
     await pause(250);
   }
   throw new Error("the send didn't finish");
 }
 
-test("public settings: off by default, the rules filled in; nothing can be sent or announced while it's off", { skip }, async () => {
+test("public settings: off by default, the rules filled in, the pitch; the app invite is the plain one while it's off", { skip }, async () => {
   const p = await ok(call("GET", "/api/app/swag"));
-  assert.deepEqual([p.enabled, p.kits, p.title, p.phase, p.announced], [false, 3, "Win the TTFC swag kit", "open", false]);
-  assert.match(p.rules, /The top 3 people on the leaderboard at 3:00 PM on Tuesday, October 27 each win a TTFC swag kit\./);
-  const batch = await call("POST", "/api/console/app-swag/send-batch", { as: U.mia, body: { kind: "selected", emails: ["gus@example.com"], confirm: "CONFIRM" } });
-  assert.deepEqual([batch.status, batch.body.code], [409, "swag_off"]);
+  assert.deepEqual([p.enabled, p.kits, p.title, p.phase, p.announced, p.appOnly, p.pitch], [false, 3, "Win the TTFC swag kit", "open", false, true, "Only people using the TTFC app can win"]);
+  assert.match(p.rules, /^Only people using the TTFC app can win\./);
+  assert.match(p.rules, /The top 3 people on the leaderboard at 4:00 PM on Monday, October 26 each win a TTFC swag kit\./);
+  const t = await ok(call("GET", "/api/console/app-invite/template", { as: U.sam }));
+  assert.deepEqual([t.swagOn, t.version, t.swag.pitch], [false, "standard", "Only people using the TTFC app can win"]);
+  const pv = await ok(call("POST", "/api/console/app-invite/preview", { as: U.sam, body: {} }));
+  assert.deepEqual([pv.subject, pv.html.includes("swag")], ["Your TTFC 2026 app is ready", false]);
+  const list = await ok(call("GET", "/api/console/app-invite/recipients?refresh=1", { as: U.sam }));
+  assert.deepEqual([list.version, list.sendKey], ["standard", "app-invite-2026"]);
+  assert.deepEqual([list.rows.find((r) => r.name.startsWith("Gus")).reason, list.rows.find((r) => r.name.startsWith("Gus")).label], ["alreadySent", "Already sent"]);
   const ann = await call("POST", "/api/console/swag/announce", { as: U.mia, body: { confirm: "ANNOUNCE", userIds: [] } });
   assert.deepEqual([ann.status, ann.body.code], [409, "swag_off"]);
 });
@@ -213,47 +222,46 @@ test("the winners: the top 3 who can win, from the leaderboard kept at the cutof
   await M.User.updateOne({ _id: U.ben._id }, { $set: { banned: false } });
 });
 
-test("the campaign email: only people not on the app yet, management only, the photo inline, its own records", { skip }, async () => {
-  const list = await ok(call("GET", "/api/console/app-swag/recipients", { as: U.sam }));
-  const row = (name) => list.rows.find((r) => r.name.startsWith(name));
-  assert.equal(list.campaign, "app-swag-2026");
-  assert.deepEqual([row("Gus").canSelect, row("Zoe").canSelect], [true, true]);
-  assert.deepEqual([row("Ann").usingApp, row("Ann").canSelect, row("Ann").reason], [true, false, "usingApp"]);
-  // Wording: management only.
-  assert.equal((await call("PUT", "/api/console/app-swag/template", { as: U.sam, body: { heading: "x" } })).status, 403);
-  const t = await ok(call("PUT", "/api/console/app-swag/template", { as: U.mia, body: { heading: "The app is here." } }));
-  assert.deepEqual([t.copy, t.defaults.subject, t.swag.enabled], [{ heading: "The app is here." }, "Get the TTFC app — and you could win the swag kit", true]);
-  const pv = await ok(call("POST", "/api/console/app-swag/preview", { as: U.sam, body: {} }));
-  assert.match(pv.html, /The app is here\./);
+test("the app invite while the contest is on: the swag version, its own claims, the photo inline, re-checked per person", { skip }, async () => {
+  // (The contest was switched on above.)
+  const t = await ok(call("GET", "/api/console/app-invite/template", { as: U.sam }));
+  assert.deepEqual([t.swagOn, t.version, t.defaults.swagSubject], [true, "swag", "Get the TTFC app — only app users can win the swag kit"]);
+  assert.ok(["swagSubject", "swagHeadline", "swagOnly", "swagText"].every((k) => t.fields.some((f) => f.key === k)));
+  const pv = await ok(call("POST", "/api/console/app-invite/preview", { as: U.sam, body: {} }));
+  assert.equal(pv.subject, "Get the TTFC app — only app users can win the swag kit");
+  assert.match(pv.html, /Only people using the TTFC app can win — download it, sign in and earn points\./);
   assert.match(pv.html, /src="data:image\/jpeg;base64,/);
-  // A test to yourself: no tracking, nothing recorded.
+  // The list: this version's own claims. Gus got the earlier invite but isn't on the app: he can get this one.
+  const list = await ok(call("GET", "/api/console/app-invite/recipients?refresh=1", { as: U.sam }));
+  assert.deepEqual([list.version, list.sendKey], ["swag", "app-invite-2026-swag"]);
+  const row = (name) => list.rows.find((r) => r.name.startsWith(name));
+  assert.deepEqual([row("Gus").willGet, row("Gus").version, !!row("Gus").earlierSentAt], [true, "swag", true]);
+  assert.deepEqual([row("Zoe").willGet, row("Zoe").earlierSentAt], [true, null]);
+  assert.deepEqual([row("Ann").canSelect, row("Ann").reason], [false, "usingApp"]);
+  // Management sends to Gus, Zoe and Ann (Ann is on the app: dropped).
   sent.length = 0;
-  await ok(call("POST", "/api/console/app-swag/send-test", { as: U.sam, body: {} }));
-  assert.deepEqual([sent[0].to, sent[0].subject.startsWith("[Test] "), /#r=/.test(sent[0].html)], ["sam.staff@example.com", true, false]);
-  // Staff can't send to people; management picks Gus, Zoe and Ann (Ann is on the app: dropped).
-  assert.equal((await call("POST", "/api/console/app-swag/send-batch", { as: U.sam, body: { kind: "selected", emails: ["gus@example.com"], confirm: "CONFIRM" } })).status, 403);
-  sent.length = 0;
-  const b = await ok(call("POST", "/api/console/app-swag/send-batch", { as: U.mia, body: { kind: "selected", emails: ["gus@example.com", "zoe@example.com", "ann@example.com"], confirm: "CONFIRM" } }), 202);
+  const b = await ok(call("POST", "/api/console/app-invite/send-batch", { as: U.mia, body: { kind: "selected", emails: ["gus@example.com", "zoe@example.com", "ann@example.com"], confirm: "CONFIRM" } }), 202);
   assert.deepEqual([b.toSend, b.dropped.map((d) => [d.email, d.reason])], [2, [["ann@example.com", "usingApp"]]]);
   const job = await waitJob();
   assert.deepEqual([job.sent, job.failed], [2, 0]);
-  assert.deepEqual(sent.map((m) => m.to).sort(), ["gus@example.com", "zoe@example.com"]);
   const m = sent.find((x) => x.to === "gus@example.com");
-  assert.deepEqual([m.from, m.reply_to, m.subject], ["The Tech Festival Canada <enquire@thetechfestival.com>", "enquire@thetechfestival.com", "Get the TTFC app — and you could win the swag kit"]);
+  assert.deepEqual([m.from, m.subject], ["The Tech Festival Canada <enquire@thetechfestival.com>", "Get the TTFC app — only app users can win the swag kit"]);
   assert.ok(m.attachments.some((a) => a.content_id === "swag-kit" && a.content_type === "image/jpeg"));
   assert.match(m.html, /src="cid:swag-kit"/);
-  assert.match(m.html, /href="https:\/\/www\.thetechfestival\.com\/app\/install\?utm_source=email&amp;utm_campaign=app-swag#r=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"/);
-  assert.match(m.html, /\/api\/t\/o\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.gif/);   // the open pixel
-  assert.equal(await M.CampaignSend.countDocuments({ campaign: "app-swag-2026", status: "sent" }), 2);
-  assert.equal(await M.CampaignSend.countDocuments({ campaign: "app-invite-2026" }), 0);   // the app invite's own records untouched
-  // Each person gets it once.
-  const again = await call("POST", "/api/console/app-swag/send-batch", { as: U.mia, body: { kind: "next", size: 10, emails: ["gus@example.com"], confirm: "CONFIRM" } });
+  assert.match(m.html, /Winners are announced at the end of Day 1/);
+  assert.match(m.html, /href="https:\/\/www\.thetechfestival\.com\/app\/#r=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"/);   // the app invite's own link and tracking
+  assert.equal(await M.CampaignSend.countDocuments({ campaign: "app-invite-2026-swag", status: "sent" }), 2);
+  assert.equal(await M.CampaignSend.countDocuments({ campaign: "app-invite-2026" }), 1);   // the earlier send stays recorded
+  // Each person gets this version once.
+  const after = await ok(call("GET", "/api/console/app-invite/recipients?refresh=1", { as: U.sam }));
+  assert.deepEqual([after.rows.find((r) => r.name.startsWith("Gus")).reason, after.rows.find((r) => r.name.startsWith("Gus")).label], ["alreadySent", "Already got this version"]);
+  const again = await call("POST", "/api/console/app-invite/send-batch", { as: U.mia, body: { kind: "next", size: 10, emails: ["gus@example.com"], confirm: "CONFIRM" } });
   assert.deepEqual([again.status, again.body.code], [409, "none"]);
 });
 
 test("checked again just before it goes: someone who signed in to the app since is skipped", { skip }, async () => {
   const mails = [];
-  const sendTo = A.makeSwagSender({ template: { copy: {} }, swag: await S.loadSwag(), send: async (x) => { mails.push(x.to); return { id: "re_x" }; } });
+  const sendTo = SEND.makeInviteSender({ CampaignSend: M.CampaignSend, template: { copy: {} }, swag: await S.loadSwag(), recheck: true, send: async (x) => { mails.push([x.to, !!x.swag]); return { id: "re_x" }; } });
   await M.User.create({ name: "Liv Late", email: "liv@example.com", tickets: [{ ticketId: "con120000009", type: "connect" }] });
   const row = { id: "a-x", name: "Liv Late", email: "liv@example.com", firstName: "Liv" };
   await M.User.updateOne({ email: "liv@example.com" }, { $set: { lastActiveAt: new Date() } });   // signed in meanwhile
@@ -262,5 +270,6 @@ test("checked again just before it goes: someone who signed in to the app since 
   assert.equal(await M.CampaignSend.countDocuments({ email: "liv@example.com" }), 0);
   await M.User.updateOne({ email: "liv@example.com" }, { $unset: { lastActiveAt: 1 } });
   assert.ok((await sendTo(row, "mia")) instanceof Date);
-  assert.deepEqual(mails, ["liv@example.com"]);
+  assert.deepEqual(mails, [["liv@example.com", true]]);
+  assert.equal(await M.CampaignSend.countDocuments({ campaign: "app-invite-2026-swag", email: "liv@example.com" }), 1);
 });

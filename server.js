@@ -9,7 +9,6 @@ import { startSpeakerPhotos } from "./services/speakerPhotoStore.js";
 import { startDigests } from "./services/digest.js";
 import { startSwagSnapshot } from "./services/swag.js";
 import { publicRouter as swagPublicRouter, adminRouter as swagAdminRouter } from "./routes/swag.js";   // "Win the TTFC swag kit"
-import appSwagRouter from "./routes/appSwag.js";                                                      // its email to people not on the app yet
 import { attendeeRouter as sosAttendeeRouter, staffRouter as sosStaffRouter } from "./routes/sos.js";   // Help & SOS
 import digestAdminRouter, { publicRouter as digestPublicRouter } from "./routes/digest.js";   // "What you missed" emails
 import { appRouter as linkedinAppRouter, publicRouter as linkedinSharePageRouter, linkedinShareCallback } from "./routes/linkedinShare.js";
@@ -179,7 +178,6 @@ app.use("/api/app", appApiRouter);          // /events, /content, /report, /bloc
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
 app.use("/api/console/app-invite", appInviteRouter);
-app.use("/api/console/app-swag", appSwagRouter); // "Win the swag kit" email: people not on the app yet (before the console router)
 app.use("/api/console/swag", swagAdminRouter); // the swag kit winners: review, announce (before the console router) // app invite email: Website & app › App invite email (before the console router)
 app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards (before the console router)
 app.use("/api/console/jury", juryAdminRouter); // Catalyst Awards jury (before the console router)

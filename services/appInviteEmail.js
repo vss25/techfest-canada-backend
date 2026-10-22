@@ -28,6 +28,7 @@ import { C, SANS, SERIF, LOGO_CID, button, logoPng, stripe } from "./attendingEm
 import { DEFAULT_OPTIONS, effectiveCopy, fillInvite } from "./appInviteCopy.js";
 import { APP_INVITE_CAMPAIGN, PLAY_STORE_URL, appInviteLink, appStoreUrl } from "./appInvite.js";
 import { pixelUrlFor, signTrack, withPixel } from "./trackToken.js";
+import { SWAG_PAGE, longTime } from "./swagRules.js";
 import { noteTrackedSend } from "./engagementStore.js";
 
 export const ENQUIRE_EMAIL = "enquire@thetechfestival.com";
@@ -37,6 +38,15 @@ const LOGO_DARK_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "
 let darkLogo = null;
 export const logoDarkPng = () => (darkLogo ||= fs.readFileSync(LOGO_DARK_FILE));
 export const FROM = `The Tech Festival Canada <${ENQUIRE_EMAIL}>`;
+
+/** The swag kit photo (Oct 22 2026): the 600 × 508 JPEG as supplied, inline as CID "swag-kit" while the contest is on. */
+export const SWAG_CID = "swag-kit";
+const SWAG_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets", "email", "swag-kit.jpg");
+let swagPhoto = null;
+export const swagJpg = () => (swagPhoto ||= fs.readFileSync(SWAG_FILE));
+
+/** The swag kit's photo description (alt text). */
+export const SWAG_ALT = "TTFC swag kit: backpack, bottle, mug, notebook, umbrella and more";
 
 /** Plain text → HTML: escaped, placeholders filled, line breaks kept, a blank line = a new paragraph. */
 const para = (text, vars, style) => fillInvite(text, vars).split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
@@ -54,16 +64,22 @@ const line = (text, vars) => esc(fillInvite(text, vars));
  * @param {string} [p.logoLightSrc] the same for the light version (dark words; "" = the light logo everywhere)
  * @param {string} [p.pixelSrc]   a real send's open pixel ("" = none)
  * @param {string} [p.storeUrl]   the iPhone app's App Store link ("" = no App Store line)
+ * @param {object} [p.swag]       the swag kit contest while it's on (services/swagRules.js swagSettings), else null:
+ *                                the swag block after the intro and the swag subject
+ * @param {string} [p.swagSrc]    the swag photo: "cid:swag-kit" or a data: URI
  * @returns {{ subject, preheader, html, text, link }}
  */
-export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firstName = "", email = "", link = "", logoSrc = "", logoLightSrc = "", pixelSrc = "", storeUrl = appStoreUrl() } = {}) {
+export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firstName = "", email = "", link = "", logoSrc = "", logoLightSrc = "", pixelSrc = "", storeUrl = appStoreUrl(), swag = null, swagSrc = "" } = {}) {
   const c = effectiveCopy(copy);
-  const vars = { firstName: String(firstName || "").trim(), email: String(email || "").trim() };
+  const vars = {
+    firstName: String(firstName || "").trim(), email: String(email || "").trim(),
+    ...(swag ? { kits: swag.kits, cutoff: longTime(swag.cutoff), announce: longTime(swag.announce) } : {}),
+  };
   const url = link || appInviteLink();
   const opts = { ...DEFAULT_OPTIONS, ...(options || {}) };
   const showPlay = opts.play !== false && !!c.playText;
   const showStore = opts.appStore !== false && !!storeUrl && !!c.appStoreText;
-  const subject = fillInvite(c.subject, vars);
+  const subject = fillInvite(swag && c.swagSubject ? c.swagSubject : c.subject, vars);
   const preheader = fillInvite(c.preheader, vars);
   const body = `font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0 0 14px;`;
 
@@ -148,6 +164,21 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
           </td>
         </tr>
 
+        ${swag ? `<!-- The swag kit: only app users can win -->
+        <tr>
+          <td class="pad" style="padding:18px 44px 0;">
+            <table role="presentation" class="panel" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.panel}" style="background:${C.panel};border:2px solid ${C.orange};border-radius:16px;border-collapse:separate;">
+              ${swagSrc ? `<tr><td style="padding:0;"><a href="${esc(SWAG_PAGE)}" target="_blank" style="display:block;text-decoration:none;"><img src="${esc(swagSrc)}" width="560" alt="${esc(SWAG_ALT)}" style="display:block;width:100%;max-width:560px;height:auto;border:0;outline:none;border-radius:14px 14px 0 0;"></a></td></tr>` : ""}
+              <tr><td style="padding:20px 24px 18px;">
+                <div class="hd" style="font-family:${SANS};font-size:22px;line-height:28px;font-weight:800;color:${C.white};margin:0 0 10px;">${line(c.swagHeadline, vars)}</div>
+                <div class="hd" style="font-family:${SANS};font-size:16px;line-height:24px;font-weight:800;color:${C.orange};margin:0 0 10px;">${line(c.swagOnly, vars)}</div>
+                ${c.swagText ? para(c.swagText, vars, `font-family:${SANS};font-size:15px;line-height:23px;color:${C.text};margin:0 0 10px;`) : ""}
+                <div class="mut" style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};">No purchase necessary · <a href="${esc(SWAG_PAGE)}" target="_blank" class="lk" style="color:${C.white};font-weight:700;text-decoration:underline;">Rules</a></div>
+              </td></tr>
+            </table>
+          </td>
+        </tr>` : ""}
+
         <!-- What's in it -->
         ${(c.features || []).length ? `<tr>
           <td class="pad" style="padding:14px 44px 0;">
@@ -225,6 +256,7 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
     "",
     t(c.intro),
     "",
+    ...(swag ? [t(c.swagHeadline).toUpperCase(), t(c.swagOnly), ...(c.swagText ? [t(c.swagText)] : []), `No purchase necessary. Rules: ${SWAG_PAGE}`, ""] : []),
     ...((c.features || []).length ? [c.featuresTitle ? t(c.featuresTitle).toUpperCase() : "", ...c.features.map((x) => `  • ${t(x)}`), ""] : []),
     `${t(c.button)}:`,
     url,
@@ -254,27 +286,34 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
   return { subject, preheader, html: withPixel(html, pixelSrc), text, link: url };
 }
 
-/** data: logo for previews; cid: + the attachment for a real send. */
-const inlineLogos = () => ({
+/** data: logo (and swag photo) for previews; cid: + the attachments for a real send. */
+const inlineLogos = (swagOn) => ({
   logoSrc: `data:image/png;base64,${logoPng().toString("base64")}`,
   logoLightSrc: `data:image/png;base64,${logoDarkPng().toString("base64")}`,
+  ...(swagOn ? { swagSrc: `data:image/jpeg;base64,${swagJpg().toString("base64")}` } : {}),
 });
-const logoAttachments = () => [
+const logoAttachments = (swagOn) => [
   { filename: "ttfc-2026.png", content: logoPng().toString("base64"), content_type: "image/png", content_id: LOGO_CID },
   { filename: "ttfc-2026-light.png", content: logoDarkPng().toString("base64"), content_type: "image/png", content_id: LOGO_DARK_CID },
+  ...(swagOn ? [{ filename: "ttfc-swag-kit.jpg", content: swagJpg().toString("base64"), content_type: "image/jpeg", content_id: SWAG_CID }] : []),
 ];
 
 /**
  * The email for one person. `inline`: data: URIs (admin preview). `track`: the address a real send goes to;
  * its token goes in the button's link and the open pixel (`tracked` says whether it could be signed).
- * Never for previews or test sends. `copy` / `options`: the saved (or a draft's) wording and switches.
+ * Never for previews or test sends. `copy` / `options`: the saved (or a draft's) wording and switches. `swag`: the
+ * contest's settings while it's on (else null): the swag block, its subject and the photo.
  */
-export function appInviteEmailFor(person, { inline = true, track = "", copy = {}, options = DEFAULT_OPTIONS, storeUrl = appStoreUrl() } = {}) {
-  const base = { copy, options, storeUrl, firstName: person?.firstName || "", email: person?.email || "" };
-  if (inline) return { ...buildAppInviteEmail({ ...base, ...inlineLogos() }), attachments: [], tracked: false };
+export function appInviteEmailFor(person, { inline = true, track = "", copy = {}, options = DEFAULT_OPTIONS, storeUrl = appStoreUrl(), swag = null } = {}) {
+  const on = !!swag?.enabled;
+  const base = { copy, options, storeUrl, firstName: person?.firstName || "", email: person?.email || "", swag: on ? swag : null };
+  if (inline) return { ...buildAppInviteEmail({ ...base, ...inlineLogos(on) }), attachments: [], tracked: false };
   const token = track ? signTrack({ c: APP_INVITE_CAMPAIGN, e: track }) : "";
   const extra = token ? { link: appInviteLink(token), pixelSrc: pixelUrlFor(token) } : {};
-  return { ...buildAppInviteEmail({ ...base, logoSrc: `cid:${LOGO_CID}`, logoLightSrc: `cid:${LOGO_DARK_CID}`, ...extra }), attachments: logoAttachments(), tracked: !!token };
+  return {
+    ...buildAppInviteEmail({ ...base, logoSrc: `cid:${LOGO_CID}`, logoLightSrc: `cid:${LOGO_DARK_CID}`, ...(on ? { swagSrc: `cid:${SWAG_CID}` } : {}), ...extra }),
+    attachments: logoAttachments(on), tracked: !!token,
+  };
 }
 
 let resendClient = null;
@@ -285,10 +324,10 @@ const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
  * Throws when Resend refuses it. `subjectPrefix` marks test sends ("[Test] "). `track`: a real send.
  * @returns {Promise<{ id: string }>}
  */
-export async function sendAppInviteEmail({ to, person, copy = {}, options = DEFAULT_OPTIONS, subjectPrefix = "", client = resend(), track = false, noteTracked = noteTrackedSend }) {
+export async function sendAppInviteEmail({ to, person, copy = {}, options = DEFAULT_OPTIONS, swag = null, subjectPrefix = "", client = resend(), track = false, noteTracked = noteTrackedSend }) {
   if (!to) throw new Error("Missing email");
   const address = track ? String(to).trim().toLowerCase() : "";
-  const { subject, html, text, attachments, tracked } = appInviteEmailFor({ ...person, email: to }, { inline: false, track: address, copy, options });
+  const { subject, html, text, attachments, tracked } = appInviteEmailFor({ ...person, email: to }, { inline: false, track: address, copy, options, swag });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,

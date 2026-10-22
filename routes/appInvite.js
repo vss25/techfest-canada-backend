@@ -11,7 +11,7 @@ import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 import { usableEmail } from "../services/attendingCampaign.js";
 import {
   APP_INVITE_CAMPAIGN, APP_URL, COOLDOWN_DAYS, GROUP_SIZES, MAX_BATCH, PLAY_STORE_URL, SAMPLE_PERSON, TYPE_SEND_FROM, appInviteJob, appStoreUrl,
-  droppedSummary, inviteStats, pickBatch, planAppInvites,
+  droppedSummary, inviteStats, inviteSendKey, pickBatch, planAppInvites,
 } from "../services/appInvite.js";
 import {
   DEFAULT_COPY, DEFAULT_OPTIONS, FIELDS, OPTIONS, PLACEHOLDERS, SECTIONS, changedWording, cleanCopy, cleanOptions, wordingToSave,
@@ -19,6 +19,8 @@ import {
 import { appInviteEmailFor, sendAppInviteEmail } from "../services/appInviteEmail.js";
 import { inviteInputs, loadInviteTemplate, makeInviteSender, saveInviteTemplate } from "../services/appInviteSend.js";
 import { directory } from "./people.js";
+import { loadSwag } from "../services/swag.js";
+import { publicSwag } from "../services/swagRules.js";
 
 /* =========================================================
    /api/console/app-invite: the app invite email (Oct 20 2026,
@@ -71,15 +73,19 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => 
 
 const skipUsingOf = (v) => !(v === false || v === "0" || v === "false");
 
-/** Everyone it could go to now (the People directory), with their send status. */
+/** Everyone it could go to now (the People directory), with their send status for the version that goes now
+    (the swag version's own sends while the contest is on). → the plan plus `swag` (the contest's settings). */
 async function currentPlan({ skipUsing = true, mode = "all", fresh = false } = {}) {
-  const [d, inputs] = await Promise.all([directory({ fresh }), inviteInputs(MODELS)]);
-  return planAppInvites(d.people, { ...inputs, skipUsing, mode });
+  const swag = await loadSwag();
+  const [d, inputs] = await Promise.all([directory({ fresh }), inviteInputs(MODELS, null, { swag: swag.enabled })]);
+  return { ...planAppInvites(d.people, { ...inputs, skipUsing, mode, swag: swag.enabled }), swag };
 }
 
 async function templatePayload(req) {
-  const t = await loadInviteTemplate(EmailTemplate);
+  const [t, swag] = await Promise.all([loadInviteTemplate(EmailTemplate), loadSwag()]);
   return {
+    // The swag kit contest (services/swagRules.js): while it's on the email carries the swag block and swagSubject.
+    swagOn: swag.enabled, swag: publicSwag(swag), version: swag.enabled ? "swag" : "standard",
     copy: t.copy, options: t.options, defaults: DEFAULT_COPY, defaultOptions: DEFAULT_OPTIONS,
     fields: FIELDS, sections: SECTIONS, optionsMeta: OPTIONS, placeholders: PLACEHOLDERS,
     appStoreUrl: appStoreUrl(), playUrl: PLAY_STORE_URL, appUrl: APP_URL,
@@ -109,7 +115,7 @@ router.put("/template", requireManagement, wrap(async (req, res) => {
 
 router.post("/preview", wrap(async (req, res) => {
   const b = req.body && typeof req.body === "object" ? req.body : {};
-  const { copy, options } = await draftOf(b);
+  const [{ copy, options }, swag] = await Promise.all([draftOf(b), loadSwag()]);
   let person = SAMPLE_PERSON;
   if (b.as) {
     const as = usableEmail(b.as);
@@ -117,7 +123,7 @@ router.post("/preview", wrap(async (req, res) => {
     if (!row) return res.status(404).json({ error: "That email isn't on the list." });
     person = row;
   }
-  const e = appInviteEmailFor(person, { inline: true, copy, options });
+  const e = appInviteEmailFor(person, { inline: true, copy, options, swag });
   res.json({ subject: e.subject, preheader: e.preheader, html: e.html, text: e.text, to: person.email });
 }));
 
@@ -128,8 +134,11 @@ router.get("/recipients", wrap(async (req, res) => {
     counts: plan.counts,
     stats: inviteStats(plan.rows),
     skipUsing,
-    rows: plan.rows.map(({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error }) =>
-      ({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error })),
+    // Which version goes now: "swag" (the contest is on; sends claimed under APP_INVITE_SWAG_KEY, so people who got
+    // the earlier invite can get it once) or "standard".
+    version: plan.swag.enabled ? "swag" : "standard", sendKey: inviteSendKey(plan.swag.enabled),
+    rows: plan.rows.map(({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error, version, earlierSentAt }) =>
+      ({ id, name, email, roles, ticket, usingApp, status, sentAt, sends, opened, clicked, usingAfter, willGet, sendAgain, canSelect, reason, label, error, version, earlierSentAt })),
     job: appInviteJob.view(),
     cooldownDays: COOLDOWN_DAYS,
     groupSizes: GROUP_SIZES,
@@ -141,9 +150,9 @@ router.post("/send-test", wrap(async (req, res) => {
   const to = usableEmail(req.user?.email);
   if (!to) return res.status(400).json({ error: "Your staff account has no email address to send a test to." });
   if (!testPerStaff.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of test emails. Try again in an hour." });
-  const { copy, options } = await draftOf(req.body || {});
+  const [{ copy, options }, swag] = await Promise.all([draftOf(req.body || {}), loadSwag()]);
   try {
-    await sendAppInviteEmail({ to, person: { ...SAMPLE_PERSON, email: to }, copy, options, subjectPrefix: "[Test] " });
+    await sendAppInviteEmail({ to, person: { ...SAMPLE_PERSON, email: to }, copy, options, swag: swag.enabled ? swag : null, subjectPrefix: "[Test] " });
   } catch (err) {
     await audit(req, "app_invite_test_failed", `${to}: ${err?.message || err}`);
     return res.status(502).json({ error: `Couldn't send: ${err?.message || "the email service refused it"}` });
@@ -160,7 +169,7 @@ export async function sendInviteToOne(email, { by = "", fresh = true } = {}) {
   if (!row) return { status: 404, body: { error: "That email isn't on the list (people with a pass or a role at TTFC 2026)." } };
   if (!row.willGet) return { status: 409, body: { code: row.reason, error: row.label } };
   const template = await loadInviteTemplate(EmailTemplate);
-  const sentAt = await makeInviteSender({ CampaignSend, template })(row, by);
+  const sentAt = await makeInviteSender({ CampaignSend, template, swag: plan.swag })(row, by);
   if (sentAt === "skipped") return { status: 409, body: { code: "skipped", error: "They were emailed very recently, or someone is sending to them right now." } };
   return { status: 200, body: { sent: true, email, sentAt } };
 }
@@ -180,16 +189,20 @@ router.post("/send-one", wrap(async (req, res) => {
   }
 }));
 
-/** Sends `todo` one by one in the background (the job is already started), then audits `<doneAction>`. */
-function runInBackground(req, todo, template, doneAction) {
+/** Sends `todo` one by one in the background (the job is already started), then audits `<doneAction>`. `swag`: the
+    contest's settings (the swag version while it's on); `recheck`: skip anyone who signed in to the app since the list
+    was read (when the send skips people already using the app), counted as usingApp. */
+function runInBackground(req, todo, template, doneAction, { swag = null, recheck = false } = {}) {
   const by = String(req.user.email || req.user._id);
-  const sendTo = makeInviteSender({ CampaignSend, template });
+  const sendTo = makeInviteSender({ CampaignSend, template, swag, recheck });
   (async () => {
     try {
       await sendSequentially(todo, async (r) => {
         try {
           const out = await sendTo(r, by);
-          if (out === "skipped") appInviteJob.state.skipped++; else appInviteJob.state.sent++;
+          if (out === "usingApp") appInviteJob.state.usingApp = (appInviteJob.state.usingApp || 0) + 1;
+          else if (out === "skipped") appInviteJob.state.skipped++;
+          else appInviteJob.state.sent++;
         } catch (err) {
           appInviteJob.state.failed++;
           throw err;
@@ -200,7 +213,7 @@ function runInBackground(req, todo, template, doneAction) {
     } finally {
       appInviteJob.finish();
       const s = appInviteJob.state;
-      await audit(req, doneAction, `sent ${s.sent}, failed ${s.failed}, skipped ${s.skipped} of ${s.total}`);
+      await audit(req, doneAction, `sent ${s.sent}, failed ${s.failed}, skipped ${s.skipped}${s.usingApp ? `, now using the app ${s.usingApp}` : ""} of ${s.total}${swag?.enabled ? " (swag version)" : ""}`);
     }
   })();
 }
@@ -211,11 +224,12 @@ router.post("/send-all", requireManagement, wrap(async (req, res) => {
   if (appInviteJob.state.running) return res.status(409).json({ error: "A send is already running.", job: appInviteJob.view() });
   const skipUsing = b.skipUsing !== false;
   const mode = b.only === "failed" ? "failed" : "all";
-  appInviteJob.start(req.user.name || req.user.email || "", mode === "failed" ? "app-invite-retry" : "app-invite", 0, { kind: mode === "failed" ? "retry" : "all" });
-  let todo, template;
+  appInviteJob.start(req.user.name || req.user.email || "", mode === "failed" ? "app-invite-retry" : "app-invite", 0, { kind: mode === "failed" ? "retry" : "all", usingApp: 0 });
+  let todo, template, swag;
   try {
     const plan = await currentPlan({ skipUsing, mode, fresh: true });
     todo = plan.targets;
+    swag = plan.swag;
     template = await loadInviteTemplate(EmailTemplate);
   } catch (err) {
     appInviteJob.finish();
@@ -224,7 +238,7 @@ router.post("/send-all", requireManagement, wrap(async (req, res) => {
   appInviteJob.state.total = todo.length;
   await audit(req, mode === "failed" ? "app_invite_retry_start" : "app_invite_send_all_start", `${todo.length} to send${skipUsing ? ", skipping people already using the app" : ""}`);
   res.status(202).json({ started: true, toSend: todo.length, job: appInviteJob.view() });
-  runInBackground(req, todo, template, "app_invite_send_all_done");
+  runInBackground(req, todo, template, "app_invite_send_all_done", { swag, recheck: skipUsing });
 }));
 
 /** A group ("Send next N") or the people ticked on the page: see the header. */
@@ -245,10 +259,12 @@ router.post("/send-batch", requireManagement, wrap(async (req, res) => {
   }
   if (appInviteJob.state.running) return res.status(409).json({ error: "A send is already running.", job: appInviteJob.view() });
   const skipUsing = b.skipUsing !== false;
-  const before = appInviteJob.start(req.user.name || req.user.email || "", `app-invite-${kind}`, 0, { kind, size: kind === "next" ? size : 0 });
-  let pick, template;
+  const before = appInviteJob.start(req.user.name || req.user.email || "", `app-invite-${kind}`, 0, { kind, size: kind === "next" ? size : 0, usingApp: 0 });
+  let pick, template, swag;
   try {
-    pick = pickBatch(await currentPlan({ skipUsing, mode: "all", fresh: true }), emails, { kind });
+    const plan = await currentPlan({ skipUsing, mode: "all", fresh: true });
+    pick = pickBatch(plan, emails, { kind });
+    swag = plan.swag;
     template = await loadInviteTemplate(EmailTemplate);
   } catch (err) {
     appInviteJob.restore(before);
@@ -264,7 +280,7 @@ router.post("/send-batch", requireManagement, wrap(async (req, res) => {
   await audit(req, `app_invite_send_${kind}_start`,
     `${what}: ${todo.length} to send${dropped.length ? `, ${dropped.length} dropped (${[...new Set(dropped.map((d) => d.reason))].join(", ")})` : ""}${skipUsing ? ", skipping people already using the app" : ""}`);
   res.status(202).json({ started: true, toSend: todo.length, dropped, droppedText: droppedSummary(dropped), job: appInviteJob.view() });
-  runInBackground(req, todo, template, `app_invite_send_${kind}_done`);
+  runInBackground(req, todo, template, `app_invite_send_${kind}_done`, { swag, recheck: skipUsing });
 }));
 
 export default router;
