@@ -14,6 +14,7 @@ import { accessOf } from "../services/rightsStore.js";
 import { ticketsWithExtras, EXTRA_FIELDS, EXTRA_SELECT } from "../services/passExtras.js";
 import { profileTagOf } from "../services/profileTag.js";
 import { spotsOf } from "../services/availability.js";
+import { avatarFor } from "../services/socialHelpers.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -164,6 +165,8 @@ router.get("/me", async (req, res) => {
     res.json({
       ...profile, tickets: ticketsWithExtras(profile.tickets, { types, vip, attendees: switched }), types, rights,
       availabilitySpots: spotsOf(profile),   // where they'll be per block (services/availability.js)
+      // Their uploaded photo, else (a speaker) their website photo: the apps read avatarUrl before avatarVersion.
+      avatarUrl: avatarFor(user),
       profileTag: profileTagOf(user.toObject(), { types, vip }),
     });
 

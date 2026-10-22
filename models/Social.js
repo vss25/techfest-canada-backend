@@ -46,6 +46,8 @@ const socialCommentSchema = new Schema({
   authorTier: { type: String, default: "" },
   body:       { type: String, required: true, maxlength: 2000 },
   status:     { type: String, enum: STATUS, default: "approved" },
+  /** @mentions, as on posts (Oct 22 2026): { type: "user" | "speaker", id, name }, ≤10. */
+  mentions:   { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: undefined },
 }, { timestamps: true });
 socialCommentSchema.index({ authorId: 1 });   // points (services/points.js)
 

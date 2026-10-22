@@ -6,12 +6,11 @@ import { moderateText, isConfigured as moderationConfigured } from "../services/
 import { trimBody, CARD_SELECT } from "../services/socialHelpers.js";
 import { cardsFor } from "../services/cards.js";
 import { Block } from "../models/Admin.js";
-import { pushToUsers } from "../services/push.js";
 import { recordActivity } from "../models/ActivityEvent.js";
 import { buildActivity, isObjectId } from "../services/socialActivity.js";
 import {
   discussionDTO, followerIds, legacyFollowers, shouldAutoFollow, followUpdate, parseFollow, wantsFollowing,
-  followingFilter, canSeeDiscussion, isFollowing, followerCount, fanOutRecipients, replyPush, createPushThrottle, MAX_FANOUT,
+  followingFilter, canSeeDiscussion, isFollowing, followerCount, fanOutRecipients, MAX_FANOUT,
 } from "../services/discussionFollow.js";
 import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing.js";
 import { personAccess, rightError } from "../services/appRights.js";
@@ -19,6 +18,11 @@ import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import { viewerHide, isHidden, hiddenReplyCounts, visible, unseenOf } from "../services/appHide.js";
 import { SessionRegistration } from "../models/Social.js";
 import { membershipUpdate } from "../services/sessionGroups.js";
+import { avatarUrls, authorAvatar } from "../services/avatars.js";
+import { avatarFor, mentionList } from "../services/socialHelpers.js";
+import { notifyDiscussionReply, notifyGroupMessage, notifyMentions, resolveMentions } from "../services/notify.js";
+import { mentionedUserIds } from "../services/socialActivity.js";
+import GroupSeen from "../models/GroupSeen.js";
 
 /* =========================================================
    /api/community — discussions (threaded replies) and groups
@@ -37,7 +41,8 @@ async function requireUser(req, res, next) {
     const h = req.headers.authorization;
     if (!h) return res.status(401).json({ error: "Unauthorized" });
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select(RIGHTS_SELECT);
+    // + avatarVersion and email: their own avatar on what they post (avatarFor), as routes/social.js has them.
+    const user = await User.findById(decoded.id).select(`${RIGHTS_SELECT} avatarVersion email`);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
     req.user = user;
@@ -69,8 +74,10 @@ const isShadowed = (req, userId) => !!userId && req.shadow.has(String(userId));
 const isHiddenAuthor = async (userId, viewerId) => String(userId) !== String(viewerId) && isHidden(userId);
 /** Discussion cards for this viewer: replies and followers from hidden people don't count. */
 async function discussionsFor(req, list) {
-  const replies = await hiddenReplyCounts(list, req.shadow);
-  return list.map((d) => discussionDTO(d, me(req), { shadow: req.shadow, hiddenReplies: replies.get(String(d._id)) || 0 }));
+  const [replies, avatars] = await Promise.all([hiddenReplyCounts(list, req.shadow), avatarUrls(list.map((d) => d.authorId))]);
+  return list.map((d) => discussionDTO(d, me(req), {
+    shadow: req.shadow, hiddenReplies: replies.get(String(d._id)) || 0, authorAvatarUrl: authorAvatar(avatars, d.authorId),
+  }));
 }
 /** Moderators (the moderate right; staff accounts always) approve, see pending items and any group's chat. */
 const isModerator = (req) => !!req.rights.moderate;
@@ -87,13 +94,22 @@ async function statusFor(text, userId, context, fallback = "approved") {
   }
 }
 
+/** Activity rows (the dot on Discussions) and pushes for the people a discussion or reply @mentions. → ids pushed. */
+function mentionActivity(req, mentions, discussionId, body, where) {
+  const ids = mentionedUserIds(mentions).filter((id) => !req.shadow.has(id));
+  recordActivity(buildActivity({ kind: "mention", section: "discussions", actorId: req.user._id, actorName: req.user.name,
+    refId: discussionId, recipients: ids, blocked: req.blocked }));
+  return notifyMentions({ actor: req.user, mentions, where, refId: discussionId, body, blocked: req.blocked, shadow: req.shadow });
+}
+
 /* ================= DISCUSSIONS ================= */
 
 /* Following (rules in services/discussionFollow.js): the author follows on
    create, a replier on their first reply unless they unfollowed before.
    Each approved reply gives every other follower an activity row (the dot on
-   Discussions) and a push, at most one push per follower per thread per 10 min. */
-const discussionPushes = createPushThrottle();
+   Discussions) and a push, at most one push per follower per thread per 10 min
+   (kept in MongoDB since Oct 22 2026, services/notify.js, so every server agrees);
+   the person it answers and the people it @mentions hear at once. */
 
 /* Threads from before following existed have no list yet: write it out
    (their author, unless they opted out) before the first $addToSet/$pull. */
@@ -114,13 +130,17 @@ router.post("/discussions", needRight("startDiscussions"), async (req, res) => {
   const body = trimBody(req.body?.body, 4000);
   if (title.length < 4 || !body) return res.status(400).json({ error: "title and body required" });
   const flagged = (await statusFor(`${title}\n${body}`, req.user._id, "discussion", "pending")) === "held";
+  const mentions = await resolveMentions(req.body?.mentions);
   const d = await Discussion.create({
     authorId: req.user._id, authorName: req.user.name, title, body,
     tags: Array.isArray(req.body?.tags) ? req.body.tags.filter((t) => typeof t === "string").slice(0, 6) : [],
     status: flagged ? "held" : (isModerator(req) ? "approved" : "pending"),
     followers: [req.user._id],
+    ...(mentions.length ? { mentions } : {}),
   });
-  res.status(201).json(discussionDTO(d, me(req)));
+  // @mentions are heard about once it's visible (a moderator's thread is approved at once; others wait for review).
+  if (d.status === "approved" && !req.appHidden) mentionActivity(req, mentions, d._id, `${title}: ${body}`, "discussion");
+  res.status(201).json(discussionDTO(d, me(req), { authorAvatarUrl: avatarFor(req.user) }));
 });
 
 /* Follow / unfollow: { follow: true|false } → { ok, following, followerCount }.
@@ -149,9 +169,11 @@ router.get("/discussions/:id/replies", async (req, res) => {
     discussionId: req.params.id,
     $or: [{ status: "approved" }, { authorId: req.user._id }],
   }).sort({ createdAt: 1 }).lean();
-  res.json(replies.filter((r) => !req.unseen.has(String(r.authorId))).map((r) => ({
+  const shown = replies.filter((r) => !req.unseen.has(String(r.authorId)));
+  const avatars = await avatarUrls(shown.map((r) => r.authorId));
+  res.json(shown.map((r) => ({
     id: String(r._id), discussionId: String(r.discussionId), parentId: r.parentId ? String(r.parentId) : null,
-    authorId: String(r.authorId), authorName: r.authorName, body: r.body, status: r.status,
+    authorId: String(r.authorId), authorName: r.authorName, authorAvatarUrl: authorAvatar(avatars, r.authorId), mentions: mentionList(r.mentions), body: r.body, status: r.status,
     mine: String(r.authorId) === me(req), createdAt: r.createdAt,
   })));
 });
@@ -162,14 +184,18 @@ router.post("/discussions/:id/replies", needRight("comment"), async (req, res) =
   const d = await Discussion.findById(req.params.id);
   if (!d || d.status !== "approved" || isShadowed(req, d.authorId)) return res.status(404).json({ error: "Not found" });
   let parentId = null;
+  let parentAuthorId = null;
   if (req.body?.parentId) {
-    const parent = await DiscussionReply.findOne({ _id: req.body.parentId, discussionId: d._id });
+    const parent = isObjectId(req.body.parentId) ? await DiscussionReply.findOne({ _id: req.body.parentId, discussionId: d._id }) : null;
     if (!parent) return res.status(400).json({ error: "parent reply not found" });
     parentId = parent._id;
+    parentAuthorId = parent.status === "approved" ? parent.authorId : null;
   }
   const status = await statusFor(body, req.user._id, "discussion-reply");
+  const mentions = await resolveMentions(req.body?.mentions);
   const r = await DiscussionReply.create({
     discussionId: d._id, parentId, authorId: req.user._id, authorName: req.user.name, body, status,
+    ...(mentions.length ? { mentions } : {}),
   });
   // Replying follows the thread (held replies too: it's still their conversation), unless they opted out.
   if (shouldAutoFollow(d, me(req))) {
@@ -190,16 +216,23 @@ router.post("/discussions/:id/replies", needRight("comment"), async (req, res) =
       if (capped) console.warn(`DISCUSSION FAN-OUT CAPPED: ${d._id} has ${total} followers to tell, told the first ${MAX_FANOUT}`);
       recordActivity(buildActivity({ kind: "reply", section: "discussions", actorId: req.user._id, actorName: req.user.name,
         refId: d._id, recipients: to, blocked: req.blocked }));
-      const pushTo = discussionPushes.take(String(d._id), to);
-      if (pushTo.length) {
-        pushToUsers(pushTo, replyPush({ discussionId: d._id, title: fresh?.title || d.title, actorName: req.user.name, body }), { from: req.user._id });
+      // In a hidden person's discussion only its author hears, so no mention pushes there.
+      const said = authorHidden ? [] : mentions;
+      if (said.length) {
+        recordActivity(buildActivity({ kind: "mention", section: "discussions", actorId: req.user._id, actorName: req.user.name,
+          refId: d._id, recipients: mentionedUserIds(said).filter((id) => !req.shadow.has(id) && !to.includes(id)), blocked: req.blocked }));
       }
+      notifyDiscussionReply({
+        discussion: { _id: d._id, title: fresh?.title || d.title }, actor: req.user, body, followers: to, mentions: said,
+        parentAuthorId: !authorHidden || String(parentAuthorId) === String(d.authorId) ? parentAuthorId : null,
+        blocked: req.blocked, shadow: req.shadow,
+      });
     }
     replyCount -= (await hiddenReplyCounts([d], req.shadow)).get(String(d._id)) || 0;
   }
   res.status(201).json({
     id: String(r._id), discussionId: String(d._id), parentId: parentId ? String(parentId) : null,
-    authorId: me(req), authorName: r.authorName, body: r.body, status: r.status, mine: true,
+    authorId: me(req), authorName: r.authorName, authorAvatarUrl: avatarFor(req.user), mentions: mentionList(r.mentions), body: r.body, status: r.status, mine: true,
     createdAt: r.createdAt, replyCount: Math.max(0, replyCount),
   });
 });
@@ -331,9 +364,16 @@ router.get("/groups/:id/messages", async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : null;
   const filter = { groupId: g._id, $or: [{ status: "approved" }, { authorId: req.user._id }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
-  const msgs = await GroupMessage.find(filter).sort({ createdAt: 1 }).limit(500).lean();
-  res.json(msgs.filter((m) => !req.unseen.has(String(m.authorId))).map((m) => ({
+  const msgs = (await GroupMessage.find(filter).sort({ createdAt: 1 }).limit(500).lean()).filter((m) => !req.unseen.has(String(m.authorId)));
+  const avatars = await avatarUrls(msgs.map((m) => m.authorId));
+  // They've seen this chat up to now (the "What you missed" email counts only later messages); not for ?peek=1 refreshes.
+  if (req.query.peek !== "1") {
+    GroupSeen.updateOne({ userId: req.user._id, groupId: g._id }, { $max: { at: new Date() } }, { upsert: true })
+      .catch((err) => { if (err?.code !== 11000) console.error("GROUP SEEN ERROR:", err?.message || err); });
+  }
+  res.json(msgs.map((m) => ({
     id: String(m._id), groupId: String(m.groupId), authorId: String(m.authorId), authorName: m.authorName,
+    authorAvatarUrl: authorAvatar(avatars, m.authorId), mentions: mentionList(m.mentions),
     body: m.body, status: m.status, mine: String(m.authorId) === me(req), createdAt: m.createdAt,
   })));
 });
@@ -343,7 +383,8 @@ router.post("/groups/:id/messages", async (req, res) => {
   const body = trimBody(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: "body required" });
   const status = await statusFor(body, req.user._id, "group-message");
-  const m = await GroupMessage.create({ groupId: g._id, authorId: req.user._id, authorName: req.user.name, body, status });
+  const mentions = await resolveMentions(req.body?.mentions);
+  const m = await GroupMessage.create({ groupId: g._id, authorId: req.user._id, authorName: req.user.name, body, status, ...(mentions.length ? { mentions } : {}) });
   // A hidden person's group messages reach nobody (left out of everyone else's chat, no push).
   if (status === "approved" && !req.appHidden) {
     // Everyone else in the group, minus anyone who blocked (or was blocked by) the author. In a hidden
@@ -352,11 +393,12 @@ router.post("/groups/:id/messages", async (req, res) => {
     const skip = new Set([me(req), ...blocks.map((b) => String(String(b.userId) === me(req) ? b.blockedId : b.userId))]);
     const ownerHidden = await isHiddenAuthor(g.ownerId, me(req));
     const to = (g.members || []).filter((id) => !skip.has(String(id)) && (!ownerHidden || String(id) === String(g.ownerId)));
-    pushToUsers(to, { title: g.name, body: `${req.user.name}: ${body}`, link: "ttfc://tab/network", thread: `group.${g._id}`, kind: "gm", id: String(m._id) }, { from: req.user._id });
+    // People it @mentions hear at once; everyone else at most once per 10 minutes per chat (services/notify.js).
+    notifyGroupMessage({ group: g, actor: req.user, message: m, to, mentions, blocked: skip, shadow: req.shadow });
   }
   res.status(201).json({
     id: String(m._id), groupId: String(g._id), authorId: me(req), authorName: m.authorName,
-    body: m.body, status: m.status, mine: true, createdAt: m.createdAt,
+    authorAvatarUrl: avatarFor(req.user), mentions: mentionList(m.mentions), body: m.body, status: m.status, mine: true, createdAt: m.createdAt,
   });
 });
 

@@ -5,6 +5,10 @@ import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { startSessionGroups } from "./services/sessionGroups.js";
+import { startSpeakerPhotos } from "./services/speakerPhotoStore.js";
+import { startDigests } from "./services/digest.js";
+import digestAdminRouter, { publicRouter as digestPublicRouter } from "./routes/digest.js";   // "What you missed" emails
+import { appRouter as linkedinAppRouter, publicRouter as linkedinSharePageRouter, linkedinShareCallback } from "./routes/linkedinShare.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
 import { migrateVipTypeOnce } from "./services/vipFlag.js";
 import { migratePassNamesOnce } from "./services/passNames.js";
@@ -134,6 +138,8 @@ app.use(killSwitchMiddleware);
 ========================================== */
 // "I'm attending" LinkedIn photo: its callbacks (state "ttfc-att.…") share the registered redirect URI; others fall through.
 app.get("/api/auth/linkedin/callback", attendingLinkedinCallback);
+// "Share on LinkedIn" from the apps (state "ttfc-shr.…", routes/linkedinShare.js): the same registered redirect URI.
+app.get("/api/auth/linkedin/callback", linkedinShareCallback);
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
@@ -158,6 +164,9 @@ app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
+app.use("/api/app/digest", digestPublicRouter); // "What you missed" email: one-click unsubscribe (no sign-in)
+app.use("/api/app", linkedinAppRouter);       // GET /attending-link, POST /linkedin/share (signed in)
+app.use("/api/linkedin-share", linkedinSharePageRouter); // the website's /share/linkedin page (the link's token)
 app.use("/api/app", appOrganisationsRouter); // GET /organisations (no sign-in)
 app.use("/api/app", appAwardsRouter);        // GET /awards/summary (no sign-in), /awards/applications (pass holders)
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
@@ -170,6 +179,7 @@ app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder em
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
 app.use("/api/console/purchase-email", purchaseEmailRouter); // the purchase confirmation's wording (before the console router)
+app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
@@ -192,12 +202,18 @@ app.get("/", (req, res) => {
 /* ==========================================
    DATABASE
 ========================================== */
+// Reads from the primary whatever MONGO_URI says (options here win over the URI's), so a post, comment or message
+// someone just wrote is always found by the next request (no read-after-write gap on a lagging secondary).
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI, { readPreference: "primary" })
   .then(() => {
     console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
     // Every minute, one server: session chats 30 min before each agenda session (services/sessionGroups.js).
     startSessionGroups();
+    // Speakers' website photos as their avatar until they upload one: loaded now, then every 10 min (services/speakerPhotoStore.js).
+    startSpeakerPhotos();
+    // Every minute, one server: "What you missed" emails, while staff have them switched on (services/digest.js).
+    startDigests();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.

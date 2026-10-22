@@ -33,15 +33,19 @@ export function isConfigured() {
 export const cleanToken = (t) => (typeof t === "string" && /^[a-f0-9]{64,200}$/i.test(t.trim()) ? t.trim().toLowerCase() : "");
 export const cleanEnv = (v) => (v === "sandbox" ? "sandbox" : "production");
 
-/** The aps payload for one notification. Pure, unit-tested. */
-export function buildPayload({ title = "", body = "", link = "", thread = "", kind = "", id = "" } = {}) {
+/** The aps payload for one notification. Pure, unit-tested. `url`: the web app route (services/webPush.js webUrlFor). */
+export function buildPayload({ title = "", body = "", link = "", thread = "", kind = "", id = "", url = "" } = {}) {
   const alert = {};
   if (title) alert.title = String(title).slice(0, 120);
   alert.body = String(body || "").slice(0, 400);
   const aps = { alert, sound: "default" };
   if (thread) aps["thread-id"] = String(thread).slice(0, 64);
-  return { aps, link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64) };
+  return { aps, link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64), url: String(url || "") };
 }
+
+/** apns-collapse-id from the push's thread (≤ 64 bytes): a newer push about the same post / chat replaces the older
+    one on the phone. "" = none. Pure. */
+export const collapseId = (thread) => (Buffer.byteLength(String(thread || "")) <= 64 ? String(thread || "") : "");
 
 /** A user's token list after adding/refreshing one (newest last, capped). Pure. */
 export function upsertToken(list = [], token, envName, now = new Date()) {
@@ -74,10 +78,12 @@ function session(envName) {
 function sendOne({ token, env: envName }, payload) {
   return new Promise((resolve) => {
     try {
+      const collapse = collapseId(payload.thread);
       const req = session(cleanEnv(envName)).request({
         ":method": "POST", ":path": `/3/device/${token}`,
         authorization: `bearer ${providerToken()}`,
         "apns-topic": env().bundleId, "apns-push-type": "alert", "apns-priority": "10",
+        ...(collapse ? { "apns-collapse-id": collapse } : {}),
       });
       let status = 0, data = "";
       req.setEncoding("utf8");
@@ -114,11 +120,12 @@ export function pushToUsers(userIds, note) {
   })().catch((err) => console.error("APNS error:", err.message));
 }
 
-/** Everyone on the app with a registered phone (announcements). */
-export function pushToEveryone(note) {
+/** Everyone on the app with a registered phone (announcements). `pref`: leave out who switched it off. */
+export function pushToEveryone(note, { pref = "" } = {}) {
   if (!isConfigured()) return;
   (async () => {
-    const ids = (await User.find({ "apnsTokens.0": { $exists: true }, banned: { $ne: true } }).select("_id").lean()).map((u) => u._id);
+    const ids = (await User.find({ "apnsTokens.0": { $exists: true }, banned: { $ne: true }, ...(pref ? { [`notifyPrefs.${pref}`]: { $ne: false } } : {}) })
+      .select("_id").lean()).map((u) => u._id);
     for (let i = 0; i < ids.length; i += 200) pushToUsers(ids.slice(i, i + 200), note);
   })().catch((err) => console.error("APNS broadcast error:", err.message));
 }

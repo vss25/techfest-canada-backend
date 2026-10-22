@@ -15,6 +15,8 @@ const discussionSchema = new Schema({
   title:      { type: String, required: true, maxlength: 200 },
   body:       { type: String, required: true, maxlength: 4000 },
   tags:       { type: [String], default: [] },
+  /** @mentions, as on feed posts (Oct 22 2026): { type: "user" | "speaker", id, name }, ≤10. */
+  mentions:   { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: undefined },
   replyCount: { type: Number, default: 0 },
   status:     { type: String, enum: STATUS, default: "pending", index: true },   // new threads go to review
   // Who hears about new replies (activity dot + push). The author is added on
@@ -33,6 +35,8 @@ const discussionReplySchema = new Schema({
   authorName:   { type: String, required: true },
   body:         { type: String, required: true, maxlength: 2000 },
   status:       { type: String, enum: STATUS, default: "approved" },
+  /** @mentions, as on feed posts (Oct 22 2026): { type: "user" | "speaker", id, name }, ≤10. */
+  mentions:     { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: undefined },
 }, { timestamps: true });
 
 const groupSchema = new Schema({
@@ -63,6 +67,8 @@ const groupMessageSchema = new Schema({
   authorName: { type: String, required: true },
   body:       { type: String, required: true, maxlength: 2000 },
   status:     { type: String, enum: STATUS, default: "approved" },
+  /** @mentions, as on feed posts (Oct 22 2026): { type: "user" | "speaker", id, name }, ≤10. */
+  mentions:   { type: [{ _id: false, type: { type: String, enum: ["user", "speaker"] }, id: String, name: String }], default: undefined },
 }, { timestamps: true });
 groupMessageSchema.index({ groupId: 1, createdAt: 1 });
 

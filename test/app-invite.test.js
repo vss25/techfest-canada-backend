@@ -48,15 +48,20 @@ test("the email: greeting, why, the big button to the web app, home-screen steps
   assert.match(e.html, /href="https:\/\/www\.thetechfestival\.com\/app\/"/);
   assert.match(e.html, />Open the TTFC app</);
   assert.match(e.html, /Add it to your home screen/);
-  assert.match(e.html, /Tap Add to Home Screen \(under View More if you don&#39;t see it\), then Add\.|Tap Add to Home Screen \(under View More if you don't see it\), then Add\./);
-  assert.match(e.html, /Tap Install app/);
+  // iOS 26 and 27 proof (the web app's install sheet says the same): no fixed position, the Share button by its look,
+  // else the ••• (iOS 26) or ≡ (iOS 27) menu by the address bar; in-app browsers first open it in Safari.
+  for (const step of DEFAULT_COPY.iphoneSteps) assert.ok(e.html.includes(step.replace(/'/g, "&#39;")) || e.html.includes(step), step);
+  assert.match(e.html, /No Share button\? Tap ••• next to the address bar \(iOS 26\), or ≡ at the left end of the address bar \(iOS 27\), then Share\./);
+  assert.match(e.html, /In Instagram, LinkedIn, Gmail etc\., tap ••• then Open in Safari, or copy the link into Safari\./);
+  assert.match(e.html, /Not showing\? Tap View More or scroll down; leave Open as Web App on\./);
+  assert.match(e.html, /Tap ⋮ then Add to Home screen \(or Install app\), then Install\./);
   assert.match(e.html, /Sign in with this email: jane\.doe@example\.com/);
   assert.match(e.html, /prefers-color-scheme: light/);          // the light version for mail apps that ask
   assert.doesNotMatch(e.html, /\/api\/t\/o\//);                  // no pixel without a real send
   assert.equal(e.link, APP_URL);
   // Plain text: the link and every step.
   assert.match(e.text, /Open the TTFC app:\nhttps:\/\/www\.thetechfestival\.com\/app\//);
-  assert.match(e.text, /iPhone:\n {2}1\. Open the link in Safari\./);
+  assert.match(e.text, /iPhone:\n {2}1\. Open thetechfestival\.com\/app in Safari\./);
   assert.match(e.text, /Sign in with this email: jane\.doe@example\.com/);
   // No name: "Hi there,". Staff's text is plain text, never HTML.
   assert.match(buildAppInviteEmail({ email: "x@example.com" }).html, /Hi there,/);

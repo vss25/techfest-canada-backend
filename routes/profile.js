@@ -1,7 +1,8 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
-import { avatarPath, cleanImageData } from "../services/socialHelpers.js";
+import { avatarPath, avatarFor, cleanImageData } from "../services/socialHelpers.js";
+import { speakerPhotoFor } from "../services/speakerPhotos.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile, mirrorProfileToTickets, consentPatch } from "../services/onboardingProfile.js";
 import { syncLinkedInItem } from "../services/contactCard.js";
@@ -79,18 +80,19 @@ router.get("/", async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
   const claimed = await Attendee.find({ claimedBy: user._id, details: { $exists: true } }).select("details purchaseDate").lean();
-  res.json({ ...withCheckoutProfile(user.toObject(), claimed), availabilitySpots: spotsOf(user), avatarUrl: avatarPath(user._id, user.avatarVersion) });
+  res.json({ ...withCheckoutProfile(user.toObject(), claimed), availabilitySpots: spotsOf(user), avatarUrl: avatarFor(user) });
 });
 
 /* Profile photo, shown to everyone on every device. Send
-   { avatarData: "data:image/jpeg;base64,…" } (≤150 KB) or "" to remove. */
+   { avatarData: "data:image/jpeg;base64,…" } (≤150 KB) or "" to remove. Without one, a speaker
+   shows their website photo (services/speakerPhotos.js): that's the avatarUrl a removal answers. */
 router.put("/avatar", async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
   const raw = req.body?.avatarData;
   if (raw === "" || raw === null) {
     await User.updateOne({ _id: user._id }, { $set: { avatarData: "", avatarVersion: 0 } });
-    return res.json({ avatarUrl: "" });
+    return res.json({ avatarUrl: speakerPhotoFor(user) });
   }
   const data = cleanImageData(raw, 150_000);
   if (!data) return res.status(400).json({ error: "Send a JPEG or PNG under 150 KB" });

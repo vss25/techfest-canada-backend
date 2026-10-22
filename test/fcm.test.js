@@ -11,12 +11,13 @@ test("message: notification, Android channel/priority/tag and string data (threa
   assert.equal(message.notification.body.length, 400);
   assert.equal(message.android.priority, "HIGH");
   assert.deepEqual(message.android.notification, { channel_id: "ttfc_dm", tag: "dm.1" });
-  assert.deepEqual(message.data, { link: "ttfc://tab/network", kind: "dm", id: "m1", thread: "dm.1" });
+  assert.deepEqual(message.data, { link: "ttfc://tab/network", kind: "dm", id: "m1", thread: "dm.1", url: "" });
+  assert.equal(buildFcmMessage("tok", { kind: "comment", thread: "post.p1", url: "/app/post/p1" }).message.data.url, "/app/post/p1");
   const bare = buildFcmMessage(TOKEN, { body: "hi", id: 42 }).message;
   assert.equal(bare.notification.title, undefined);
   assert.equal(bare.android.notification.tag, undefined);
   assert.equal(bare.android.notification.channel_id, "ttfc_updates");
-  assert.deepEqual(bare.data, { link: "", kind: "", id: "42", thread: "" });
+  assert.deepEqual(bare.data, { link: "", kind: "", id: "42", thread: "", url: "" });
   for (const v of Object.values(bare.data)) assert.equal(typeof v, "string");
 });
 

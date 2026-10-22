@@ -262,7 +262,7 @@ test("a chat message pushes to every browser of the recipient: title, body, thre
     assert.deepEqual(one.keys, { p256dh: s.p256dh, auth: s.auth });
     assert.deepEqual(one.payload, {
       title: "Ann Writer", body: "Meet at the Coffee bar?", link: "ttfc://tab/network", thread: `dm.${idOf(ann)}`, kind: "dm",
-      id: m.id, url: `/app/chat/${idOf(ann)}`, from: idOf(ann),
+      id: m.id, url: `/app/chat/${idOf(ann)}`, tag: `dm.${idOf(ann)}`, from: idOf(ann),
     });
     assert.equal(one.options.TTL, 43200);
     assert.equal(one.options.urgency, "high");

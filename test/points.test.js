@@ -33,6 +33,8 @@ test("RULES lists every rule once with its points and caps", () => {
     "feed.post": [10, 3, "day", null],
     "feed.comment": [3, 10, "day", null],
     "feed.likes": [1, 25, "post", null],
+    "linkedin.attending": [50, 1, "total", null],
+    "linkedin.share": [15, 5, "total", null],
   });
   assert.equal(new Set(RULES.map((r) => r.key)).size, RULES.length);
   for (const r of RULES) assert.ok(r.label && r.description, `${r.key} has a label and description`);
@@ -59,11 +61,12 @@ test("activity: what was done per rule, before caps, every rule key (zeros too)"
     ...emptyCounts(), hasLinkedin: true, topics: ["AI", "ai ", "Quantum", "Robotics"], sessionsSaved: 14, sessionsAttended: 2,
     votesPerSession: [5, 1], questionsApproved: 3, upvotesPerQuestion: [12, 0, 1], requestsSent: 25, connections: 7,
     inPersonConnections: 4, postsPerDay: { "2026-10-26": 5, "2026-10-27": 1 }, commentsPerDay: [12], likesPerPost: [30, 2],
+    linkedinAttending: true, linkedinShares: 7,
   };
   assert.deepEqual(activityFromCounts(counts), {
     "profile.linkedin": 1, "profile.topics": 3, "session.saved": 14, "session.attended": 2, "live.vote": 6,
     "live.question": 3, "live.upvoted": 13, "network.request": 25, "network.connection": 7, "network.inPerson": 4,
-    "feed.post": 6, "feed.comment": 12, "feed.likes": 32,
+    "feed.post": 6, "feed.comment": 12, "feed.likes": 32, "linkedin.attending": 1, "linkedin.share": 7,
   });
   // The breakdown still counts only up to each cap.
   const s = scoreFromCounts(counts);
@@ -71,6 +74,8 @@ test("activity: what was done per rule, before caps, every rule key (zeros too)"
   assert.equal(pts(s, "feed.post").count, 4);
   assert.equal(pts(s, "live.vote").count, 4);
   assert.equal(activityFromCounts({ sessionsSaved: -3, connections: "x", postsPerDay: [2.7, -1] })["feed.post"], 2);
+  // LinkedIn (Oct 22 2026): the attending post once (+50), shares once each up to 5 (+15).
+  assert.deepEqual([pts(s, "linkedin.attending").points, pts(s, "linkedin.share").count, pts(s, "linkedin.share").points], [50, 5, 75]);
 });
 
 /* ================= each rule ================= */
