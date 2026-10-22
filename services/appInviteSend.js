@@ -34,12 +34,12 @@ export async function saveInviteTemplate(EmailTemplate, copy, options, by = "") 
 }
 
 /** What planAppInvites needs besides the people: unsubscribes, this campaign's sends and engagement (optionally for some emails). */
-export async function inviteInputs({ Subscription, CampaignSend, EmailEngagement }, emails = null) {
+export async function inviteInputs({ Subscription, CampaignSend, EmailEngagement }, emails = null, { campaign = APP_INVITE_CAMPAIGN } = {}) {
   const only = Array.isArray(emails) ? { email: { $in: emails } } : {};
   const [optedOut, sends, engagement] = await Promise.all([
     Subscription.find({ subscribed: false, ...only }).select("email").lean(),
-    CampaignSend.find({ campaign: APP_INVITE_CAMPAIGN, ...only }).select("email status sentAt sends error").lean(),
-    EmailEngagement.find({ campaign: APP_INVITE_CAMPAIGN, ...only }).select("campaign email opens visits lastOpenAt lastVisitAt").lean(),
+    CampaignSend.find({ campaign, ...only }).select("email status sentAt sends error").lean(),
+    EmailEngagement.find({ campaign, ...only }).select("campaign email opens visits lastOpenAt lastVisitAt").lean(),
   ]);
   return { optedOut: optedOut.map((s) => s.email), sends, engagement };
 }

@@ -39,6 +39,8 @@ export const GUEST_OFFER_UNLOCKED = false;
 /** App content keys only management may change (PUT /console/app-content/:key). */
 export const MANAGEMENT_CONTENT_KEYS = Object.freeze([
   "site.ticket_sales_open", "site.ticket_sales_message", "flag.upgrades", ...GUEST_OFFER_KEYS,
+  // The swag kit contest's terms (services/swagRules.js): management sets them and turns it on.
+  "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules",
 ]);
 const MANAGEMENT_SET = new Set(MANAGEMENT_CONTENT_KEYS);
 

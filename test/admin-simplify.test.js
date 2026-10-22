@@ -21,9 +21,11 @@ test("staff can't change the selling switches or the guest offer; they keep the 
   assert.deepEqual(MANAGEMENT_CONTENT_KEYS, [
     "site.ticket_sales_open", "site.ticket_sales_message", "flag.upgrades",
     "flag.guestOffer", "offer.guest_code", "offer.guest_discount", "offer.guest_ends", "offer.guest_passes",
+    "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules",
   ]);
+  const VALID = { "swag.kits": "5", "swag.cutoff": "2026-10-27T15:00:00-04:00", "swag.announce": "2026-10-27T16:00:00-04:00" };
   for (const key of MANAGEMENT_CONTENT_KEYS) {
-    const v = typeof CONTENT_KEYS[key] === "boolean" ? false : "x";
+    const v = typeof CONTENT_KEYS[key] === "boolean" ? false : VALID[key] || "x";
     assert.deepEqual(edit(key, v, false), { status: 403, code: "management_only", error: "Only management can change this." }, key);
     assert.equal(edit(key, v, true), null, key);
   }
