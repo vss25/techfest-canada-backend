@@ -73,7 +73,9 @@ consoleOrganisationsRouter.get("/", wrap(async (req, res) => {
     if (!s?.aliasOf) aliases.push({ from, into, builtin: true, off: !!s?.aliasOff, by: s?.aliasOff ? s.updatedBy || "" : "", at: s?.aliasOff ? s.updatedAt : null });
   }
   for (const s of settings) if (s.aliasOf) aliases.push({ from: s.key, into: s.aliasOf, builtin: false, off: false, by: s.updatedBy || "", at: s.updatedAt || null });
-  res.json({ updatedAt: v.updatedAt, cmsOk: v.cmsOk, orgs: v.rows, aliases });
+  // At the top of the page (Oct 22 2026): how many there are and how many still have no logo (a monogram).
+  const counts = { total: v.rows.length, missingLogo: v.rows.filter((o) => !o.logo).length };
+  res.json({ updatedAt: v.updatedAt, cmsOk: v.cmsOk, orgs: v.rows, aliases, counts });
 }));
 
 consoleOrganisationsRouter.post("/hide", wrap(async (req, res) => {

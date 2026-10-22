@@ -27,6 +27,7 @@ import {
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 import { onRegistration } from "../services/sessionGroups.js";
 import { orgKeyResolver } from "../services/organisations.js";
+import { profileTagOf, publicProfileTag } from "../services/profileTag.js";
 import { canMessage, canRequest, messagesOffError, requestsOffError } from "../services/contactSwitches.js";
 import { contactAccess, applyAccess } from "../services/contactAccess.js";
 import { cardsFor } from "../services/cards.js";
@@ -242,14 +243,21 @@ router.get("/users/:id", async (req, res) => {
     ]);
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
   }
-  const [access, conn] = await Promise.all([
+  const [access, conn, orgKeyOf] = await Promise.all([
     contactAccess(req.user, [u], req.ctx),
     self ? null : SocialConnection.findOne({ $or: [{ fromUserId: req.user._id, toUserId: u._id }, { fromUserId: u._id, toUserId: req.user._id }] }).lean(),
+    orgKeyResolver(),
   ]);
   const profile = applyAccess(publicProfile(u, { exhibitors: req.ctx.exhibitors, matrix: req.ctx.matrix, self }), access);
   // What they share with me and what I share with them (accepted connections show details).
   const share = shareFields(conn, { viewer: req.user, viewerRights: req.rights, other: u, otherRights: rightsFor(u, req.ctx) });
-  res.json({ ...profile, connectionId: conn ? String(conn._id) : "", connectionStatus: conn?.status || "", ...share });
+  // Their profile colour (services/profileTag.js; a pass holder's tier only on their own), and their organisation's
+  // key in GET /api/app/organisations, as on People list rows (Oct 22 2026).
+  const tag = profileTagOf(u, { types: personAccess(u, req.ctx).types });
+  res.json({
+    ...profile, profileTag: self ? tag : publicProfileTag(tag), orgKey: orgKeyOf(u.organization, u.name),
+    connectionId: conn ? String(conn._id) : "", connectionStatus: conn?.status || "", ...share,
+  });
 });
 
 /* What I share with someone I'm connected to (or asked to connect): `share` = my contact

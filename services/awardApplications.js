@@ -15,10 +15,12 @@
    nomination with no readable category (an old emailed one without a
    pillar or sector) is listed but counts no category.
 
-   One item per eligible nomination: the nominee's public basics and
-   who applied. Never the category, status, emails, phones, LinkedIn,
-   statements, declarations, staff notes, the nominator's title /
-   organisation / relationship or anything from the jury. Built from
+   One item per eligible nomination: the nominee's public basics.
+   Since Oct 22 2026 not who applied either (the organiser: "hide who
+   nominated the person or company"): no applicant name, no
+   "self-nominated", and the nominator's fields aren't even read.
+   Never the category, status, emails, phones, LinkedIn, statements,
+   declarations, staff notes or anything from the jury. Built from
    an explicit list of fields (applicationItem), so a field added to
    the Nomination model later can't leak. Links only when http(s).
 
@@ -36,8 +38,7 @@ export const NOMINEE_TYPES = Object.freeze(["Individual", "Organisation", "Team 
 
 /** Only these leave the server, in this order. */
 export const ITEM_FIELDS = Object.freeze([
-  "id", "nomineeName", "nomineeType", "nomineeTitle", "nomineeOrganisation", "nomineeLocation", "nomineeWebsite",
-  "applicantName", "selfNominated", "submittedAt",
+  "id", "nomineeName", "nomineeType", "nomineeTitle", "nomineeOrganisation", "nomineeLocation", "nomineeWebsite", "submittedAt",
 ]);
 
 const line = (v, max = 200) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -96,8 +97,6 @@ export function applicationItem(n) {
     nomineeOrganisation: line(n?.nomineeOrganisation),
     nomineeLocation: line(n?.nomineeLocation),
     nomineeWebsite: safeWebsite(n?.nomineeWebsite),
-    applicantName: line(n?.nominatorName),
-    selfNominated: n?.selfNomination === true,
     submittedAt: when ? new Date(when).toISOString() : null,
   };
 }
@@ -126,4 +125,4 @@ export function summaryPayload(nominations = [], { enabled = true } = {}) {
 /** What's read from the database: nothing private beyond what applicationItem needs (nominatorName for the
     applicant's name, the category fields only for counting). */
 export const NOMINATION_SELECT = "status categoryType pillar sector specialAward nomineeName nomineeType nomineeTitle "
-  + "nomineeOrganisation nomineeLocation nomineeWebsite nominatorName selfNomination submittedAt createdAt";
+  + "nomineeOrganisation nomineeLocation nomineeWebsite submittedAt createdAt";

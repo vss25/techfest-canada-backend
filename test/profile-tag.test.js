@@ -283,3 +283,12 @@ test("Admin › People: Media from a pass-only person's pass and an account's ty
   assert.equal(rsvpRulesFor({ primary: null, types: [], vip: true, rsvps: [], dupRsvps: [] }).cxo, true);
   assert.equal(rsvpRulesFor({ primary: null, types: ["volunteer"], vip: false, rsvps: [], dupRsvps: [] }).cxo, undefined);
 });
+
+test("someone else's profile: the same colour, but a pass holder's tier stays theirs (Oct 22 2026)", async () => {
+  const { publicProfileTag, DELEGATE_LABEL } = await import("../services/profileTag.js");
+  assert.deepEqual(publicProfileTag({ key: "pass", label: "Power" }), { key: "pass", label: DELEGATE_LABEL });
+  assert.equal(DELEGATE_LABEL, "Delegate");
+  assert.deepEqual(publicProfileTag({ key: "pass", label: "Exhibitor" }), { key: "pass", label: "Exhibitor" });
+  for (const key of ["media", "speaker", "staff", "volunteer"]) assert.equal(publicProfileTag({ key, label: key }).key, key);
+  assert.equal(publicProfileTag(null), null);
+});

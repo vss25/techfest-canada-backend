@@ -52,14 +52,16 @@ test("categoriesCount: distinct pillar × sector pairs and special awards among 
   assert.equal(categoriesCount([]), 0);
 });
 
-test("items: only the public basics and the applicant; nothing private, no category, no status", () => {
+test("items: only the nominee's public basics; not who applied, nothing private, no category, no status", () => {
   const item = applicationItem(nom());
   assert.deepEqual(Object.keys(item), [...ITEM_FIELDS]);
   assert.deepEqual(item, {
     id: item.id, nomineeName: "Northwind Health", nomineeType: "Organisation", nomineeTitle: "", nomineeOrganisation: "Northwind Health",
-    nomineeLocation: "Toronto, ON", nomineeWebsite: "https://northwind.example/", applicantName: "Pat Nominator", selfNominated: false,
-    submittedAt: "2026-09-01T12:00:00.000Z",
+    nomineeLocation: "Toronto, ON", nomineeWebsite: "https://northwind.example/", submittedAt: "2026-09-01T12:00:00.000Z",
   });
+  // Oct 22 2026: who nominated them stays private too.
+  for (const k of ["applicantName", "selfNominated"]) assert.equal(k in item, false, k);
+  assert.equal(JSON.stringify(applicationsPayload([nom()])).includes("Pat Nominator"), false);
   const text = JSON.stringify(applicationsPayload([nom(), nom({ categoryType: "special", specialAward: "rising" })]));
   for (const [k, v] of Object.entries(PRIVATE)) {
     if (typeof v === "string") assert.equal(text.includes(v), false, `${k} leaked`);
@@ -69,19 +71,19 @@ test("items: only the public basics and the applicant; nothing private, no categ
     assert.equal(text.includes(k), false, `${k} leaked`);
   }
   // The database read never asks for the private fields either.
-  for (const k of ["Email", "Phone", "LinkedIn", "statement", "declaration", "adminNotes", "nominatorTitle", "nominatorOrganisation", "nominatorRelationship", "signature"]) {
+  for (const k of ["Email", "Phone", "LinkedIn", "statement", "declaration", "adminNotes", "nominatorName", "selfNomination", "nominatorTitle", "nominatorOrganisation", "nominatorRelationship", "signature"]) {
     assert.equal(NOMINATION_SELECT.includes(k), false, k);
   }
 });
 
-test("items: self-nominated, nominee types, sorted by nominee name", () => {
+test("items: nominee types, sorted by nominee name (self-nominated or not, it doesn't show)", () => {
   const p = applicationsPayload([
     nom({ nomineeName: "zed robotics", nomineeType: "Team / Project" }), nom({ nomineeName: "Ada Lovelace", nomineeType: "Individual", selfNomination: true, nominatorName: "Ada Lovelace" }),
     nom({ nomineeName: "Bea Example", nomineeType: "Something else" }), nom({ nomineeName: "Gone Co", status: "rejected" }), nom({ nomineeName: "  " }),
   ]);
   assert.deepEqual(p.items.map((i) => i.nomineeName), ["Ada Lovelace", "Bea Example", "zed robotics"]);
   assert.deepEqual(p.items.map((i) => i.nomineeType), ["Individual", "Individual", "Team / Project"]);
-  assert.deepEqual([p.items[0].selfNominated, p.items[0].applicantName], [true, "Ada Lovelace"]);
+  assert.deepEqual([p.items[0].selfNominated, p.items[0].applicantName], [undefined, undefined]);
   assert.equal(p.total, 3);
   assert.equal(p.enabled, true);
 });
