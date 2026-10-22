@@ -7,7 +7,8 @@ import {
   validateRsvp, resolvePass, rsvpKeys, rsvpsFilter, summarizeRsvps, rsvpRow, rsvpDetail, rsvpsCsv, CSV_HEAD, optionLabel,
   nameVariants, ticketPersonNames, newEditToken, hashEditToken, planRsvpMerge, lastNameIs, rsvpListPayload,
 } from "../services/rsvp.js";
-import { buildRsvpEmail, parseRsvpAgenda, agendaTimes, clock12 } from "../services/rsvp.js";
+import { buildRsvpEmail, rsvpAlertRow, parseRsvpAgenda, agendaTimes, clock12 } from "../services/rsvp.js";
+import Rsvp from "../models/Rsvp.js";
 import { makeLookup, makeRsvpHandlers, publicLookup, cached, TOO_MANY, resolveRsvpDuplicate } from "../services/rsvpHandler.js";
 import { makeLimiter, makeGuessLimiter } from "../services/ticketAccess.js";
 
@@ -1166,6 +1167,87 @@ test("submit: each saved RSVP is passed to notify; a failing email never blocks 
   assert.equal(row.editTokenHash, undefined);
   const mail = buildRsvpEmail(row, { updated: false });
   assert.match(mail.subject, /Jane Doe/);
+});
+
+/* Oct 22 2026: "[RSVP] Someone · Power Pass", Ticket ID empty, Days / Special events / Dietary / Accessibility None,
+   for every FIRST RSVP. The live store's insert (Rsvp.create) hands back a Mongoose document, and spreading one
+   copies none of its fields, so only the pass reached the email. The memory store above returns plain objects,
+   which is why the test above never saw it. test/rsvp-alert-db.test.js runs the same through the real route. */
+test("rsvpAlertRow: a Mongoose document becomes the plain saved row (the \"Someone\" alert); incomplete rows get none", () => {
+  const doc = new Rsvp({ key: "t:abc123def", firstName: "Jane", lastName: "Doe", name: "Jane Doe", ticketId: "ABC123DEF",
+    ticketVerified: true, days: ["day1", "day2"], options: ["gala"], dietary: ["vegan"], editTokenHash: "f".repeat(64) });
+  const pass = { ok: true, kind: "ticket", tier: "power", tierVerified: true };
+  // What the alert used to be built from: the spread document has none of the RSVP's fields.
+  const { _id, editTokenHash, ...spread } = doc;
+  assert.equal(spread.firstName, undefined);
+  const old = buildRsvpEmail({ ...spread, ...pass });
+  assert.equal(old.subject, "[RSVP] Someone · Power Pass");
+  assert.match(old.text, /Ticket ID: \nDays: None\nSpecial events: None\nDietary: None\nAccessibility: None/);
+
+  const row = rsvpAlertRow(doc, pass);
+  assert.deepEqual([row.firstName, row.lastName, row.ticketId, row.days, row.options, row.dietary, row.tier, row.kind],
+    ["Jane", "Doe", "ABC123DEF", ["day1", "day2"], ["gala"], ["vegan"], "power", "ticket"]);
+  for (const k of ["_id", "editTokenHash", "__v", "$__", "_doc"]) assert.equal(k in row, false, k);
+  const mail = buildRsvpEmail(row);
+  assert.equal(mail.subject, "[RSVP] Jane Doe · Power Pass");
+  assert.match(mail.text, /Name: Jane Doe\nPass: Power Pass\nTicket ID: ABC123DEF\nDays: Day 1[^\n]*, Day 2[^\n]*\nSpecial events: Gala Dinner/);
+  // A plain row (an update's .lean()) is the same.
+  assert.deepEqual(rsvpAlertRow(doc.toObject(), pass), row);
+
+  // Never an alert for a row that isn't one person's complete RSVP.
+  const ok = { firstName: "Jane", lastName: "Doe", days: ["day1"] };
+  for (const bad of [null, undefined, "row", {}, { tier: "power" }, { ...ok, firstName: "", lastName: " " }, { ...ok, firstName: "...", lastName: "" },
+    { ...ok, days: [] }, { ...ok, days: undefined }, { ...ok, days: ["day9"] }, { ...ok, spam: true }, { ...ok, duplicateOf: "r1" },
+    new Rsvp({ key: "t:x", tier: "power" })]) {
+    assert.equal(rsvpAlertRow(bad, pass), null, JSON.stringify(bad));
+  }
+  assert.ok(rsvpAlertRow({ ...ok, firstName: "" }, pass)); // a last name is a name
+});
+
+test("submit: a store that hands back Mongoose documents (the live one) still sends the person's RSVP", async () => {
+  const sent = [];
+  const mem = memoryStore();
+  const store = { ...mem, insert: async (doc) => { const { _id, ...saved } = await mem.insert(doc); return new Rsvp(saved); } };
+  const { run } = submitter({ requireTicket: true, store, notify: async (row, o) => { sent.push([row, o.updated]); } });
+  const r = await run({ ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala", "lunch_d1"], dietary: ["vegan"] });
+  assert.equal(r.statusCode, 201);
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(sent.length, 1);
+  const [row, updated] = sent[0];
+  assert.equal(updated, false);
+  assert.deepEqual([row.firstName, row.lastName, row.ticketId, row.days, row.options, row.dietary, row.tier],
+    ["Jane", "Doe", "ABC123DEF", ["day1", "day2"], ["lunch_d1", "gala"], ["vegan"], "power"]);
+  assert.equal(row.editTokenHash, undefined);
+  const mail = buildRsvpEmail(row, { updated });
+  assert.equal(mail.subject, "[RSVP] Jane Doe · Power Pass");
+  assert.doesNotMatch(mail.text, /Someone|Days: None/);
+});
+
+test("submit: nothing is saved or emailed without a name, a day and a matching ticket ID", async () => {
+  const sent = [];
+  const { run, store } = submitter({ requireTicket: true, notify: async (row) => { sent.push(row); } });
+  const T = { ...GOOD, ticketId: "abc123def", tier: "power", options: ["gala"] };
+  const bad = [
+    [{}, "firstName"], [{ tier: "power" }, "firstName"], [{ ...T, firstName: "", lastName: "" }, "firstName"],
+    [{ ...T, lastName: "" }, "lastName"], [{ ...T, days: [] }, "days"], [{ ...T, days: undefined }, "days"],
+    [{ ...T, ticketId: "" }, "ticketId"], [{ ...T, ticketId: "nope00000" }, "ticketId"], [{ ...T, lastName: "Smith" }, "ticketId"],
+  ];
+  for (const [body, field] of bad) {
+    const res = await run(body, `7.7.7.${bad.findIndex((b) => b[0] === body)}`);
+    assert.deepEqual([res.statusCode, res.body.field], [400, field], JSON.stringify(body));
+  }
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(store.rows.length, 0);
+  assert.equal(sent.length, 0);
+
+  // A row the store hands back without its fields is never emailed as "Someone".
+  const errors = [];
+  const empty = { ...memoryStore(), insert: async () => ({ _id: "r1" }) };
+  const h = submitter({ requireTicket: true, store: empty, log: { error: (...a) => errors.push(a.join(" ")) }, notify: async (row) => { sent.push(row); } });
+  assert.equal((await h.run(T)).statusCode, 201);
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(sent.length, 0);
+  assert.match(errors.join("\n"), /RSVP EMAIL SKIPPED/);
 });
 
 test("speakers can't RSVP for the pre-matched meetings or the Scotch lounge (Apex only)", () => {

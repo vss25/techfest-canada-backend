@@ -834,6 +834,25 @@ export function planRsvpMerge(keep, dup) {
 /* ---------- Email to the team (enquire@) for each RSVP ---------- */
 const escHtml = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+/**
+ * What the team's alert is built from: the saved RSVP as a plain object, with the pass it was checked against
+ * (`final`: kind, tier…) on top, minus the row id and the edit token's hash. Pure.
+ * A Mongoose document (what Rsvp.create() hands back) keeps its fields behind getters over `_doc`, so spreading
+ * one copies none of them: every first RSVP reached the team as "[RSVP] Someone · Power Pass" with no ticket ID
+ * and no days (Oct 2026). Documents are turned into plain objects first.
+ * null when it isn't one real person's complete RSVP (a bot's or possible duplicate's row, no name, or no day):
+ * no alert goes out for it.
+ */
+export function rsvpAlertRow(saved, final = null) {
+  const plain = saved && typeof saved.toObject === "function" ? saved.toObject() : saved;
+  if (!plain || typeof plain !== "object" || plain.spam || plain.duplicateOf) return null;
+  const { _id, editTokenHash, __v, ...row } = plain;
+  const out = { ...row, ...(final && typeof final === "object" ? final : {}) };
+  if (!foldName(out.firstName) && !foldName(out.lastName)) return null;
+  if (!Array.isArray(out.days) || !out.days.some((d) => DAY_KEYS.includes(d))) return null;
+  return out;
+}
+
 /** Subject, HTML and text for the team's copy of one RSVP. Every value is escaped. Pure. */
 export function buildRsvpEmail(r, { updated = false } = {}) {
   const name = [r.firstName, r.lastName].filter(Boolean).join(" ") || "Someone";

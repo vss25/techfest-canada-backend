@@ -52,7 +52,7 @@ import { cleanText, isHoneypotFilled, botReason } from "./brochureDownloads.js";
 import {
   cleanLookup, foldName, personNameKey, matchSpeaker, matchHolder, tierFromTicketType, fullNameMatches, lastNameIs,
   validateRsvp, resolvePass, checkOptions, rsvpKeys, rsvpOptionsPayload, newEditToken, hashEditToken, planRsvpMerge,
-  optionLabel, extraOptionsFor, allowedExperiences, TIER_LABELS, EXPERIENCE_KEYS, DAY_KEYS,
+  optionLabel, extraOptionsFor, allowedExperiences, rsvpAlertRow, TIER_LABELS, EXPERIENCE_KEYS, DAY_KEYS,
 } from "./rsvp.js";
 import { effectiveExtras } from "./passExtras.js";
 
@@ -411,11 +411,14 @@ export function makeRsvpHandlers({
       }
 
       // No row id, and `updated` only for the person who proved the RSVP is theirs. The team email gets the
-      // saved RSVP (name, days, options) with the pass it was checked against (`final`: kind, tier).
+      // saved RSVP (name, ticket, days, options) with the pass it was checked against (`final`: kind, tier),
+      // as a plain object even when the store hands back a Mongoose document (rsvpAlertRow), and only for a
+      // complete RSVP of a real person: never a "Someone" with no ticket and no days.
       const { saved, final } = result;
       if (notify && saved && !saved.duplicateOf) {
-        const { _id, editTokenHash, ...row } = saved;
-        Promise.resolve().then(() => notify({ ...row, ...(final || {}) }, { updated: !!result.updated })).catch((err) => log.error?.("RSVP EMAIL ERROR:", err?.message || err));
+        const row = rsvpAlertRow(saved, final);
+        if (row) Promise.resolve().then(() => notify(row, { updated: !!result.updated })).catch((err) => log.error?.("RSVP EMAIL ERROR:", err?.message || err));
+        else log.error?.("RSVP EMAIL SKIPPED: the saved RSVP has no name or no day");
       }
       return res.status(201).json({
         ...OK, updated: result.updated, editToken: result.token,
