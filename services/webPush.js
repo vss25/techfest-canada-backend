@@ -21,7 +21,7 @@ const KEY_ID = "vapid";
 const MAX_SUBS_PER_USER = 5;
 const MAX_ENDPOINT = 1000;
 const TIMEOUT_MS = 10_000;
-const HIGH = new Set(["dm", "gm"]);   // chats: deliver now, even to a phone that's saving battery
+const HIGH = new Set(["dm", "gm", "sos"]);   // chats: deliver now, even to a phone that's saving battery
 
 const str = (v) => String(v ?? "");
 /** base64url without padding (browsers send that; plain base64 is turned into it). */
@@ -146,6 +146,8 @@ const TAB_ROUTES = {
   profile: "/app/profile", ticket: "/app/profile/pass", chats: "/app/chats", notifications: "/app/notifications",
 };
 const seg = (v) => (/^[A-Za-z0-9_-]{1,64}$/.test(str(v)) ? str(v) : "");
+/** A path inside the web app (/app/…), nothing else. */
+const APP_ROUTE = /^\/app(\/[A-Za-z0-9_\-/]{0,200})?$/;
 
 /** The web app page a push opens (its router lives under /app/). The service worker may build its own
     from `thread`, `kind` and `from`; this is the default. Pure. */
@@ -174,12 +176,13 @@ export function webUrlFor({ link = "", thread = "", kind = "" } = {}) {
 /** The JSON a push carries: { title, body, link, thread, kind, id, url, tag, from? }. `from` = whose action it
     is (the sender of a chat message). `tag` (the thread, else the kind): the service worker shows the notification
     with it, so a newer one about the same post / chat replaces the older one. Pure. */
-export function buildWebPayload({ title = "", body = "", link = "", thread = "", kind = "", id = "" } = {}, { from = "" } = {}) {
+export function buildWebPayload({ title = "", body = "", link = "", thread = "", kind = "", id = "", url = "" } = {}, { from = "" } = {}) {
   const out = {
     title: str(title).slice(0, 120),
     body: str(body).slice(0, 400),
     link: str(link), thread: str(thread).slice(0, 64), kind: str(kind), id: str(id),
-    url: webUrlFor({ link, thread, kind }),
+    // A web app route the sender chose (e.g. Help & SOS: "/app/staff/sos/<id>", "/app/help"), else worked out here.
+    url: APP_ROUTE.test(str(url)) ? str(url) : webUrlFor({ link, thread, kind }),
     tag: (str(thread) || str(kind)).slice(0, 64),
   };
   const sender = str(from) || (/^dm\.(.+)$/.exec(str(thread)) || [])[1] || "";

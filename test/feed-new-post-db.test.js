@@ -321,7 +321,11 @@ test("a speaker without an uploaded photo shows their website photo everywhere; 
     assert.equal((await ok(call("GET", `/api/social/feed/${s.post}`, { as: U.ben }))).authorAvatarUrl, want, "post page");
     const comments = await ok(call("GET", `/api/social/feed/${s.post}/comments`, { as: U.ben }));
     assert.ok(comments.some((c) => c.authorId === nicoleId));
-    for (const c of comments.filter((x) => x.authorId === nicoleId)) assert.equal(c.authorAvatarUrl, want, "comment");
+    for (const c of comments.filter((x) => x.authorId === nicoleId)) {
+      assert.equal(c.authorAvatarUrl, want, "comment");
+      assert.equal(c.authorSpeakerId, "spk-nicole", "a comment's speaker author → their speaker page");
+    }
+    assert.ok(comments.filter((x) => x.authorId !== nicoleId).every((x) => x.authorId && x.authorSpeakerId === ""), "others: their profile by authorId");
     assert.equal((await ok(call("GET", `/api/social/users/${nicoleId}`, { as: U.ben }))).avatarUrl, want, "profile card");
     assert.equal((await ok(call("GET", "/api/social/attendees", { as: U.ben }))).find((p) => p.id === nicoleId)?.avatarUrl, want, "attendee list");
     assert.equal((await ok(call("GET", "/api/social/me", { token: s.nicole }))).avatarUrl, want, "/social/me");
@@ -329,25 +333,34 @@ test("a speaker without an uploaded photo shows their website photo everywhere; 
     assert.equal((await ok(call("GET", "/api/profile", { token: s.nicole }))).avatarUrl, want, "/api/profile");
     const c = await ok(call("POST", `/api/social/feed/${s.post}/comments`, { token: s.nicole, body: { body: "Thank you all!" } }), 201);
     assert.equal(c.authorAvatarUrl, want, "the comment answer");
+    assert.deepEqual([c.authorId, c.authorSpeakerId], [nicoleId, "spk-nicole"]);
     const p = await ok(call("POST", "/api/social/feed", { token: s.nicole, body: { body: `See you at the Westin (${++round})` } }), 201);
     assert.equal(p.authorAvatarUrl, want, "the post answer");
     // Discussions, their replies and group chats carry authorAvatarUrl too.
     const r = await ok(call("POST", `/api/community/discussions/${disc.id}/replies`, { token: s.nicole, body: { body: "Day 1 keynote!" } }), 201);
     assert.equal(r.authorAvatarUrl, want, "the reply answer");
+    assert.deepEqual([r.authorId, r.authorSpeakerId], [nicoleId, "spk-nicole"]);
     for (const x of (await ok(call("GET", `/api/community/discussions/${disc.id}/replies`, { as: U.ben }))).filter((y) => y.authorId === nicoleId)) {
       assert.equal(x.authorAvatarUrl, want, "discussion replies");
+      assert.equal(x.authorSpeakerId, "spk-nicole", "discussion replies");
     }
     const m = await ok(call("POST", `/api/community/groups/${group.id}/messages`, { token: s.nicole, body: { body: "Hello lounge" } }), 201);
     assert.equal(m.authorAvatarUrl, want, "the group message answer");
+    assert.deepEqual([m.authorId, m.authorSpeakerId], [nicoleId, "spk-nicole"]);
     const msgs = (await ok(call("GET", `/api/community/groups/${group.id}/messages`, { as: U.ben }))).filter((y) => y.authorId === nicoleId);
     assert.ok(msgs.length > 0);
-    for (const x of msgs) assert.equal(x.authorAvatarUrl, want, "group messages");
-    assert.equal((await ok(call("GET", "/api/community/discussions", { token: s.nicole }))).find((d) => d.id === own.id)?.authorAvatarUrl, want, "discussions");
+    for (const x of msgs) {
+      assert.equal(x.authorAvatarUrl, want, "group messages");
+      assert.equal(x.authorSpeakerId, "spk-nicole", "group messages");
+    }
+    const mine = (await ok(call("GET", "/api/community/discussions", { token: s.nicole }))).find((d) => d.id === own.id);
+    assert.deepEqual([mine?.authorAvatarUrl, mine?.authorSpeakerId], [want, "spk-nicole"], "discussions");
     assert.equal((await ok(call("GET", `/api/community/groups/${group.id}/members`, { as: U.ben }))).find((x) => x.id === nicoleId)?.avatarUrl, want, "group members");
   };
   // Someone without a photo: no avatar on their replies or messages.
   const plain = await ok(call("POST", `/api/community/groups/${group.id}/messages`, { as: U.ben, body: { body: "Hi all" } }), 201);
   assert.equal(plain.authorAvatarUrl, "");
+  assert.deepEqual([plain.authorId, plain.authorSpeakerId], [idOf(U.ben), ""]);
   await check(NICOLE_AVATAR);
   // Raj's pass carries Sam's (staff) email: Sam keeps his initials.
   assert.equal((await ok(call("GET", "/api/social/me", { as: U.sam }))).avatarUrl, "");

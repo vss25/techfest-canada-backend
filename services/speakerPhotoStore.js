@@ -1,7 +1,7 @@
 import Attendee from "../models/Attendee.js";
 import User from "../models/User.js";
 import { SANITY_PROJECT } from "./rsvp.js";
-import { SPEAKER_PHOTO_QUERY, buildSpeakerPhotos, currentSpeakerPhotos, setSpeakerPhotos, speakerAvatarUrl } from "./speakerPhotos.js";
+import { SPEAKER_PHOTO_QUERY, buildSpeakerPhotos, currentSpeakerPhotos, setSpeakerPhotos } from "./speakerPhotos.js";
 
 /* =========================================================
    Loads the speaker photo snapshot (services/speakerPhotos.js):
@@ -26,9 +26,10 @@ export async function loadSpeakerPhotos({ fetchImpl = globalThis.fetch } = {}) {
   if (!res.ok) throw new Error(`Speaker list unavailable (HTTP ${res.status})`);
   const json = await res.json();
   const speakers = Array.isArray(json?.result) ? json.result : [];
-  const withPhoto = speakers.filter((s) => s?._id && speakerAvatarUrl(s)).map((s) => String(s._id));
-  const passes = withPhoto.length
-    ? await Attendee.find({ speakerId: { $in: withPhoto } }).select("name email alsoTo ticketId claimedBy speakerId").lean()
+  // Every published speaker (their speaker page from the app), with or without a photo.
+  const ids = speakers.filter((s) => s?._id && !String(s._id).startsWith("drafts.")).map((s) => String(s._id));
+  const passes = ids.length
+    ? await Attendee.find({ speakerId: { $in: ids } }).select("name email alsoTo ticketId claimedBy speakerId").lean()
     : [];
   const claimers = passes.map((p) => p.claimedBy).filter(Boolean);
   const ticketIds = passes.map((p) => p.ticketId).filter(Boolean);

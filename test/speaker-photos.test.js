@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  speakerAvatarUrl, namesAgree, buildSpeakerPhotos, photoFor, setSpeakerPhotos, currentSpeakerPhotos, AVATAR_PX,
+  speakerAvatarUrl, namesAgree, buildSpeakerPhotos, photoFor, speakerIdFor, setSpeakerPhotos, currentSpeakerPhotos, AVATAR_PX,
 } from "../services/speakerPhotos.js";
 import { avatarFor, userCard, commentDTO, postDTO } from "../services/socialHelpers.js";
 import { leaderboardCard } from "../services/points.js";
@@ -58,7 +58,7 @@ test("photoFor: the account that claimed or holds a speaker's pass, or has its e
   assert.equal(snap.speakers, 2);   // with a photo, published
   const nicole = speakerAvatarUrl(speakers[0]);
   const raj = speakerAvatarUrl(speakers[1]);
-  assert.equal(snap.byUser.get(NIC), nicole);
+  assert.equal(snap.byUser.get(NIC).url, nicole);
   // Claimed (by id only, as a card is loaded), holding the ticket, or the pass email: all Nicole.
   assert.equal(photoFor({ _id: NIC, name: "Nicole Louis" }, snap), nicole);
   assert.equal(photoFor({ _id: OTHER, name: "Nicole Louis", tickets: [{ ticketId: "spk000000001" }] }, snap), nicole);
@@ -75,6 +75,11 @@ test("photoFor: the account that claimed or holds a speaker's pass, or has its e
   assert.equal(photoFor({ _id: OTHER, name: "Someone", email: "someone@example.com" }, snap), "");
   assert.equal(photoFor({ _id: OTHER, name: "Draft Person", tickets: [{ ticketId: "x" }] }, snap), "");
   assert.equal(photoFor(null, snap), "");
+  // Which website speaker they are (Oct 22 2026: their speaker page from a comment's name), photo or not.
+  assert.equal(speakerIdFor({ _id: NIC, name: "Nicole Louis" }, snap), "spk-nicole");
+  assert.equal(speakerIdFor({ _id: OTHER, name: "No Photo", email: "nophoto@example.com" }, snap), "spk-nophoto");
+  assert.equal(speakerIdFor(users[1], snap), "");
+  assert.equal(speakerIdFor({ _id: OTHER, name: "Someone", email: "someone@example.com" }, snap), "");
   // Placeholder addresses (ticket-only accounts) never match.
   const ph = buildSpeakerPhotos({ speakers, passes: [{ ...passes[0], claimedBy: null, email: "spk000000001@ticket.thetechfestival.com" }] });
   assert.equal(ph.byEmail.size, 0);

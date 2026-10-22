@@ -94,29 +94,32 @@ function candidates(user, snap) {
   return out;
 }
 
-const pick = (user, list) => list.find((c) => c.names.some((n) => namesAgree(user?.name, n)))?.url || "";
+/** The speakers linked to this account whose name agrees with theirs ([{ speakerId, url, names }]). */
+const matching = (user, list) => list.filter((c) => c.names.some((n) => namesAgree(user?.name, n)));
 
 const EMPTY = Object.freeze({ at: 0, speakers: 0, byUser: new Map(), byClaimer: new Map(), byTicket: new Map(), byEmail: new Map() });
 
 /**
  * speakers: Sanity docs (SPEAKER_PHOTO_QUERY); passes: Speaker Passes { name, email, alsoTo, ticketId, claimedBy, speakerId };
- * users: the accounts linked to those passes { _id, name, email, tickets } → the snapshot photoFor reads:
- * byUser (account id → photo, worked out now), and byClaimer / byTicket / byEmail (→ [{ url, names }]) for accounts
- * that link later or whose document a route loaded without some of those fields.
+ * users: the accounts linked to those passes { _id, name, email, tickets } → the snapshot photoFor / speakerIdFor read:
+ * byUser (account id → { speakerId, url, names }, worked out now), and byClaimer / byTicket / byEmail
+ * (→ [{ speakerId, url, names }]) for accounts that link later or whose document a route loaded without some of those
+ * fields. Every published speaker is linked (Oct 22 2026: their speaker page from a comment's name), `url` "" for one
+ * without a photo; `speakers` counts those with one.
  */
 export function buildSpeakerPhotos({ speakers = [], passes = [], users = [], now = Date.now() } = {}) {
   const bySpeaker = new Map();
   for (const s of speakers || []) {
     const id = str(s?._id);
-    const url = speakerAvatarUrl(s);
-    if (!id || id.startsWith("drafts.") || !url || !str(s?.name).trim()) continue;
-    bySpeaker.set(id, { url, name: str(s.name) });
+    if (!id || id.startsWith("drafts.") || !str(s?.name).trim()) continue;
+    bySpeaker.set(id, { speakerId: id, url: speakerAvatarUrl(s), name: str(s.name) });
   }
-  const snap = { at: now, speakers: bySpeaker.size, byUser: new Map(), byClaimer: new Map(), byTicket: new Map(), byEmail: new Map() };
+  const withPhoto = [...bySpeaker.values()].filter((x) => x.url).length;
+  const snap = { at: now, speakers: withPhoto, byUser: new Map(), byClaimer: new Map(), byTicket: new Map(), byEmail: new Map() };
   for (const p of passes || []) {
     const sp = bySpeaker.get(str(p?.speakerId));
     if (!sp) continue;
-    const entry = { url: sp.url, names: [sp.name, str(p.name)].filter((n) => n.trim()) };
+    const entry = { speakerId: sp.speakerId, url: sp.url, names: [sp.name, str(p.name)].filter((n) => n.trim()) };
     add(snap.byClaimer, str(p.claimedBy || ""), entry);
     add(snap.byTicket, str(p.ticketId || ""), entry);
     for (const e of [p.email, ...(Array.isArray(p.alsoTo) ? p.alsoTo : [])]) {
@@ -125,8 +128,9 @@ export function buildSpeakerPhotos({ speakers = [], passes = [], users = [], now
     }
   }
   for (const u of users || []) {
-    const url = pick(u, candidates(u, snap));
-    if (url) snap.byUser.set(str(u._id), url);
+    const found = matching(u, candidates(u, snap));
+    const entry = found.find((x) => x.url) || found[0];
+    if (entry) snap.byUser.set(str(u._id), entry);
   }
   return snap;
 }
@@ -134,7 +138,13 @@ export function buildSpeakerPhotos({ speakers = [], passes = [], users = [], now
 /** The speaker photo for an account (a User doc with name and whichever of _id, tickets, email the route loaded), or "". */
 export function photoFor(user, snap) {
   if (!user || !snap) return "";
-  return pick(user, candidates(user, snap)) || snap.byUser.get(str(user._id || user.id)) || "";
+  return matching(user, candidates(user, snap)).find((x) => x.url)?.url || snap.byUser.get(str(user._id || user.id))?.url || "";
+}
+
+/** The website speaker (Sanity id) this account is, or "": their speaker page from a comment, reply or chat message. */
+export function speakerIdFor(user, snap) {
+  if (!user || !snap) return "";
+  return matching(user, candidates(user, snap))[0]?.speakerId || snap.byUser.get(str(user._id || user.id))?.speakerId || "";
 }
 
 /* The current snapshot (empty until services/speakerPhotoStore.js has loaded one). */
@@ -143,3 +153,5 @@ export const setSpeakerPhotos = (snap) => { current = snap || EMPTY; };
 export const currentSpeakerPhotos = () => current;
 /** photoFor with the current snapshot. */
 export const speakerPhotoFor = (user, snap = current) => photoFor(user, snap);
+/** speakerIdFor with the current snapshot. */
+export const speakerIdOf = (user, snap = current) => speakerIdFor(user, snap);
