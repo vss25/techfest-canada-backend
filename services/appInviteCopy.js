@@ -14,20 +14,29 @@
    Plain text only: it's HTML-escaped where it's shown, line breaks
    are kept in the multi-line fields. Placeholders filled in for each
    person: {firstName} ("there" when we don't know it) and {email}
-   (the address the email went to: the one to sign in with).
+   (the address the email went to: the one to sign in with); in the
+   swag kit fields, {kits}, {cutoff} and {announce} (the contest's
+   settings, services/swagRules.js).
+
+   The swag kit (Oct 22 2026, the organiser: "this is supposed to be an
+   advertisement for the app … download the app, and then only you can
+   get a chance to win"): while swag.enabled, the email carries a block
+   right after the intro (the photo, swagHeadline, swagOnly, swagText,
+   "No purchase necessary · Rules") and its subject is swagSubject.
    Pure (no database), unit-tested in test/app-invite.test.js.
 ========================================================= */
 
 import { cleanValue, compact, sameAsDefault, mergeCopy } from "./passEmailCopy.js";
 
 export const TEMPLATE_KEY = "app-invite-email";
-export const PLACEHOLDERS = Object.freeze(["{firstName}", "{email}"]);
+export const PLACEHOLDERS = Object.freeze(["{firstName}", "{email}", "{kits}", "{cutoff}", "{announce}"]);
 
 /** Sections in the order the email shows them (the editor groups the fields by these). */
 export const SECTIONS = Object.freeze([
   { key: "subject", title: "Subject and inbox preview" },
   { key: "header", title: "Header" },
   { key: "message", title: "Greeting and intro" },
+  { key: "swag", title: "The swag kit (while the contest is on)" },
   { key: "features", title: "What's in the app" },
   { key: "button", title: "The button" },
   { key: "homescreen", title: "Add it to your home screen" },
@@ -45,6 +54,10 @@ export const FIELDS = Object.freeze([
   f("heading", "header", "Heading", "line", 160),
   f("greeting", "message", "Greeting", "line", 120, { hint: "{firstName} becomes \"there\" when we don't know their name." }),
   f("intro", "message", "Intro", "text", 1200, { hint: "A blank line starts a new paragraph." }),
+  f("swagSubject", "swag", "Subject while the contest is on", "line", 200, { hint: "Replaces the subject while the swag kit contest is on." }),
+  f("swagHeadline", "swag", "Headline", "line", 120),
+  f("swagOnly", "swag", "Only app users can win", "line", 200, { hint: "Shown in bold: the key point." }),
+  f("swagText", "swag", "How and when", "text", 400, { hint: "{kits}, {cutoff} and {announce} come from the contest's settings." }),
   f("featuresTitle", "features", "List title", "line", 80),
   f("features", "features", "What's in the app", "list", 8, { hint: "One line each. Add, remove, reorder or reword." }),
   f("button", "button", "Button", "line", 40),
@@ -74,6 +87,10 @@ export const DEFAULT_COPY = Object.freeze({
   heading: "Your festival, in your pocket.",
   greeting: "Hi {firstName},",
   intro: "TTFC 2026 is almost here, and the TTFC web app has everything you need for the two days. It opens right in your phone's browser, so there's nothing to download.",
+  swagSubject: "Get the TTFC app — only app users can win the swag kit",
+  swagHeadline: "Download the app to win the TTFC swag kit",
+  swagOnly: "Only people using the TTFC app can win — download it, sign in and earn points.",
+  swagText: "The top {kits} on the app's leaderboard win. Winners are announced at the end of Day 1 ({announce}).",
   featuresTitle: "What's in it",
   features: Object.freeze([
     "Your pass and check-in QR code",
@@ -170,9 +187,11 @@ export function changedWording(before = {}, after = {}) {
   return out;
 }
 
-/** {firstName} and {email} → values, in one pass. `firstName` missing → "there". */
-export function fillInvite(text, { firstName = "", email = "" } = {}) {
-  return String(text ?? "").replace(/\{(firstName|email)\}/g, (m, k) => (k === "firstName" ? firstName || "there" : email || m));
+/** {firstName}, {email} (and {kits}, {cutoff}, {announce} when given) → values, in one pass. `firstName` missing → "there". */
+export function fillInvite(text, { firstName = "", email = "", kits = "", cutoff = "", announce = "" } = {}) {
+  const v = { kits: String(kits || ""), cutoff, announce };
+  return String(text ?? "").replace(/\{(firstName|email|kits|cutoff|announce)\}/g, (m, k) =>
+    (k === "firstName" ? firstName || "there" : k === "email" ? email || m : v[k] || m));
 }
 
 export const fieldInfo = (key) => BY_KEY[key] || null;

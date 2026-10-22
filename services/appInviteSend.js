@@ -12,7 +12,8 @@
    database).
 ========================================================= */
 
-import { APP_INVITE_CAMPAIGN, COOLDOWN_MS } from "./appInvite.js";
+import User from "../models/User.js";
+import { APP_INVITE_CAMPAIGN, COOLDOWN_MS, inviteSendKey } from "./appInvite.js";
 import { TEMPLATE_KEY, templateCopy, templateSet } from "./appInviteCopy.js";
 import { sendAppInviteEmail } from "./appInviteEmail.js";
 import { campaignSendStore, makeReminderSender } from "./rsvpReminder.js";
@@ -33,24 +34,41 @@ export async function saveInviteTemplate(EmailTemplate, copy, options, by = "") 
   return loadInviteTemplate(EmailTemplate);
 }
 
-/** What planAppInvites needs besides the people: unsubscribes, this campaign's sends and engagement (optionally for some emails). */
-export async function inviteInputs({ Subscription, CampaignSend, EmailEngagement }, emails = null, { campaign = APP_INVITE_CAMPAIGN } = {}) {
+/**
+ * What planAppInvites needs besides the people: unsubscribes, the sends of the key claimed under now (the swag
+ * version's while `swag` is on, with the earlier invite's as earlierSends) and the engagement (optionally for some emails).
+ */
+export async function inviteInputs({ Subscription, CampaignSend, EmailEngagement }, emails = null, { swag = false } = {}) {
   const only = Array.isArray(emails) ? { email: { $in: emails } } : {};
-  const [optedOut, sends, engagement] = await Promise.all([
+  const [optedOut, sends, earlierSends, engagement] = await Promise.all([
     Subscription.find({ subscribed: false, ...only }).select("email").lean(),
-    CampaignSend.find({ campaign, ...only }).select("email status sentAt sends error").lean(),
-    EmailEngagement.find({ campaign, ...only }).select("campaign email opens visits lastOpenAt lastVisitAt").lean(),
+    CampaignSend.find({ campaign: inviteSendKey(swag), ...only }).select("email status sentAt sends error").lean(),
+    swag ? CampaignSend.find({ campaign: APP_INVITE_CAMPAIGN, ...only }).select("email status sentAt sends error").lean() : [],
+    EmailEngagement.find({ campaign: APP_INVITE_CAMPAIGN, ...only }).select("campaign email opens visits lastOpenAt lastVisitAt").lean(),
   ]);
-  return { optedOut: optedOut.map((s) => s.email), sends, engagement };
+  return { optedOut: optedOut.map((s) => s.email), sends, earlierSends, engagement, swag };
+}
+
+/** Signed in to the app since the list was read? (their account by id, or any account with that email). */
+export async function onAppNow(row) {
+  const who = [{ email: row.email }];
+  const id = /^u-([a-f0-9]{24})$/.exec(String(row.id || ""))?.[1];
+  if (id) who.push({ _id: id });
+  return !!(await User.exists({ $and: [{ $or: who }, { $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }] }] }));
 }
 
 /**
- * sendTo(row, by, { force }) → the Date it went, or "skipped" (someone else has it, or sent within the cool-down).
- * Throws when the email service refuses it (recorded as failed). `template`: loadInviteTemplate's result.
+ * sendTo(row, by, { force }) → the Date it went, "skipped" (someone else has it, or sent within the cool-down) or, with
+ * `recheck` (sends that skip people already on the app), "usingApp" (they signed in since the list was read).
+ * Throws when the email service refuses it (recorded as failed). `template`: loadInviteTemplate's result; `swag`: the
+ * contest's settings (services/swagRules.js swagSettings): while it's on the email carries the offer and the send is
+ * claimed under the swag version's key.
  */
-export function makeInviteSender({ CampaignSend, template, send = sendAppInviteEmail }) {
-  return makeReminderSender({
-    store: campaignSendStore(CampaignSend, { campaign: APP_INVITE_CAMPAIGN, cooldownMs: COOLDOWN_MS }),
-    send: ({ to, row, track }) => send({ to, person: row, copy: template?.copy || {}, options: template?.options, track }),
+export function makeInviteSender({ CampaignSend, template, swag = null, recheck = false, send = sendAppInviteEmail }) {
+  const on = !!swag?.enabled;
+  const sendTo = makeReminderSender({
+    store: campaignSendStore(CampaignSend, { campaign: inviteSendKey(on), cooldownMs: COOLDOWN_MS }),
+    send: ({ to, row, track }) => send({ to, person: row, copy: template?.copy || {}, options: template?.options, swag: on ? swag : null, track }),
   });
+  return async (row, by, opts) => (recheck && (await onAppNow(row)) ? "usingApp" : sendTo(row, by, opts));
 }

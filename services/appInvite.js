@@ -50,6 +50,14 @@ import { TIER_LABELS } from "./rsvp.js";
 import { codeOf, codeView, howGot } from "./promoCodes.js";
 
 export const APP_INVITE_CAMPAIGN = "app-invite-2026";
+/** While the swag kit contest is on (services/swagRules.js swag.enabled), the email carries the swag offer and its
+    sends are claimed under this key (Oct 22 2026): someone who got the earlier invite but still isn't on the app can
+    get this version once; the earlier sends stay recorded under APP_INVITE_CAMPAIGN. Tracking (opens, the web app
+    visit) stays under APP_INVITE_CAMPAIGN for both. */
+export const APP_INVITE_SWAG_KEY = "app-invite-2026-swag";
+/** The CampaignSend key sends are claimed under now. */
+export const inviteSendKey = (swagOn) => (swagOn ? APP_INVITE_SWAG_KEY : APP_INVITE_CAMPAIGN);
+export const SWAG_SENT_LABEL = "Already got this version";
 export const APP_URL = `${EVENT.website}/app/`;
 /** Same values as the website's src/lib/appStores.js (keep in step). */
 export const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.atlaslinkmarkets.ttfc";
@@ -161,11 +169,11 @@ export function sendIndex(sends = []) {
 }
 
 /** EmailEngagement rows of this campaign → Map(email → { opens, visits }). */
-export function engagementByEmail(rows = [], campaign = APP_INVITE_CAMPAIGN) {
+export function engagementByEmail(rows = []) {
   const out = new Map();
   for (const r of rows || []) {
     const e = String(r?.email || "").trim().toLowerCase();
-    if (!e || r.campaign !== campaign) continue;
+    if (!e || r.campaign !== APP_INVITE_CAMPAIGN) continue;
     out.set(e, { opens: Number(r.opens) || 0, visits: Number(r.visits) || 0, lastOpenAt: r.lastOpenAt || null, lastVisitAt: r.lastVisitAt || null });
   }
   return out;
@@ -176,20 +184,22 @@ export function engagementByEmail(rows = [], campaign = APP_INVITE_CAMPAIGN) {
  * @param {Array} people  internal People records (services/people.js buildPeople)
  * @param {object} o
  * @param {Iterable<string>} o.optedOut  emails with Subscription.subscribed false
- * @param {Array} o.sends     this campaign's CampaignSend rows
+ * @param {Array} o.sends     the CampaignSend rows of the key sends are claimed under now (inviteSendKey)
+ * @param {Array} o.earlierSends  with `swag`: the earlier invite's rows (APP_INVITE_CAMPAIGN), shown as earlierSentAt
  * @param {Array} o.engagement this campaign's EmailEngagement rows
  * @param {boolean} o.skipUsing  leave out anyone already using the app (default true)
  * @param {"all"|"one"|"failed"} o.mode  all: skip anyone already sent; one: wait COOLDOWN_MS; failed: only failed sends
- * @param {string} o.campaign  whose engagement rows count (the app invite, or "Win the swag kit": services/swagInvite.js)
+ * @param {boolean} o.swag   the swag version is on: "already sent" means this version ("Already got this version")
  * @returns {{ rows, targets, counts }}
  *   rows: one per person who is part of TTFC 2026 (with or without a usable email):
  *         { id, name, email, roles, usingApp, status, sentAt, sends, opened, clicked, willGet, reason, label, firstName }
  *   targets: rows that would get it now (one per email); counts: see below
  */
-export function planAppInvites(people = [], { optedOut = [], sends = [], engagement = [], skipUsing = true, mode = "all", now = Date.now(), cooldownMs = COOLDOWN_MS, campaign = APP_INVITE_CAMPAIGN } = {}) {
+export function planAppInvites(people = [], { optedOut = [], sends = [], earlierSends = [], engagement = [], skipUsing = true, mode = "all", now = Date.now(), cooldownMs = COOLDOWN_MS, swag = false } = {}) {
   const out = new Set([...optedOut].map((e) => String(e || "").trim().toLowerCase()));
   const sendBy = sendIndex(sends);
-  const eng = engagementByEmail(engagement, campaign);
+  const earlierBy = swag ? sendIndex(earlierSends) : new Map();
+  const eng = engagementByEmail(engagement);
   const seen = new Set();
   const rows = [];
   for (const p of people || []) {
@@ -218,9 +228,13 @@ export function planAppInvites(people = [], { optedOut = [], sends = [], engagem
       sendAgain, canSelect: !reason || sendAgain,
       status: s?.status || "pending", sentAt: s?.sentAt || null, sends: s?.sends || 0, error: s?.error || "",
       opened: !!e?.opens, clicked: !!e?.visits,
+      // The swag version (Oct 22 2026): which version this row's status is about, and when they got the earlier one.
+      version: swag ? "swag" : "standard",
+      earlierSentAt: (email && earlierBy.get(email)?.status === "sent" && earlierBy.get(email).sentAt) || null,
       // Signed in after the email went (lastActiveAt is when they last used the app).
       usingAfter: !!(s?.status === "sent" && s.sentAt && p.user?.lastActiveAt && ms(p.user.lastActiveAt) > ms(s.sentAt)),
-      willGet: !reason, reason, label: reason === "notFailed" ? "No failed send to retry" : SKIP_LABELS[reason] || "",
+      willGet: !reason, reason,
+      label: reason === "notFailed" ? "No failed send to retry" : swag && reason === "alreadySent" ? SWAG_SENT_LABEL : SKIP_LABELS[reason] || "",
     });
   }
   const targets = rows.filter((r) => r.willGet);
@@ -279,7 +293,7 @@ export function pickBatch(plan, emails = [], { kind = "selected" } = {}) {
     const r = email ? byEmail.get(email) : null;
     if (r && (r.willGet || (kind === "selected" && r.sendAgain))) { todo.push(r); continue; }
     const reason = !r ? "notListed" : r.reason === "alreadySent" && kind === "selected" ? "recent" : r.reason || "notListed";
-    dropped.push({ email: key, name: r?.name || "", reason, label: SKIP_LABELS[reason] || r?.label || "" });
+    dropped.push({ email: key, name: r?.name || "", reason, label: (r?.reason === reason && r?.label) || SKIP_LABELS[reason] || "" });
   }
   return { todo, dropped };
 }

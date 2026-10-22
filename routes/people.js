@@ -48,6 +48,7 @@ import { SINGLE_SEND_LIMIT, staffNote } from "../services/staffPowers.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites } from "../services/appInvite.js";
 import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
+import { loadSwag } from "../services/swag.js";
 import { accessOf } from "../services/rightsStore.js";
 import {
   HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
@@ -544,11 +545,13 @@ const verdict = (plan, labels) => {
   return { canSend: false, reason: s?.reason || "unknown", label: s?.label || "Can't be sent right now" };
 };
 
-/** The app invite email to this person (services/appInvite.js): their row, sendable now or why not. */
+/** The app invite email to this person (services/appInvite.js): their row, sendable now or why not (for the version
+    that goes now: the swag kit one, with its own sends, while that contest is on). */
 async function appInviteFor(p) {
   const email = usableEmail(p.email);
-  const inputs = await inviteInputs({ Subscription, CampaignSend, EmailEngagement }, email ? [email] : []);
-  return planAppInvites([p], { ...inputs, mode: "one" }).rows[0] || null;
+  const swag = (await loadSwag()).enabled;
+  const inputs = await inviteInputs({ Subscription, CampaignSend, EmailEngagement }, email ? [email] : [], { swag });
+  return planAppInvites([p], { ...inputs, mode: "one", swag }).rows[0] || null;
 }
 
 /** The profile's Emails card. */
@@ -612,7 +615,8 @@ router.post("/:id/app-invite", wrap(async (req, res) => {
   if (!singleSends.hit(String(req.user._id))) return res.status(429).json({ error: "That's a lot of single sends in an hour. Try again later." });
   const note = staffNote(isManagement(req.user));
   try {
-    const sentAt = await makeInviteSender({ CampaignSend, template: await loadInviteTemplate(EmailTemplate) })(row, String(req.user.email || req.user._id));
+    const [template, swag] = await Promise.all([loadInviteTemplate(EmailTemplate), loadSwag()]);
+    const sentAt = await makeInviteSender({ CampaignSend, template, swag })(row, String(req.user.email || req.user._id));
     if (sentAt === "skipped") return res.status(409).json({ code: "skipped", error: "They were emailed very recently, or someone is sending to them right now." });
     await audit(req, "people_app_invite_one", "person", p.id, `${p.name} <${row.email}>${note}`);
     return res.json({ sent: true, email: row.email, sentAt });

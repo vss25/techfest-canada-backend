@@ -9,15 +9,20 @@
    (routes/swag.js). Settings are app content keys (Admin › Website &
    app; services/adminHelpers.js CONTENT_KEYS), so GET /api/app/content
    carries them too; GET /api/app/swag gives them worked out.
+   Oct 22 2026, the organiser: it's "an advertisement for the app …
+   download the app, and then only you can get a chance to win this.
+   Very important … Winners will be told end of day 1." The offer is in
+   the app invite email (services/appInviteEmail.js), not a campaign of
+   its own; the cutoff is Day 1, 4 PM, the announcement Day 1, 5 PM.
 ========================================================= */
 
 export const SWAG_DEFAULTS = Object.freeze({
   "swag.enabled": false,                                   // management turns it on
   "swag.kits": "3",
-  "swag.cutoff": "2026-10-27T15:00:00-04:00",              // Toronto (EDT)
-  "swag.announce": "2026-10-27T16:00:00-04:00",
+  "swag.cutoff": "2026-10-26T16:00:00-04:00",              // Day 1, 4 PM Toronto (EDT)
+  "swag.announce": "2026-10-26T17:00:00-04:00",            // the end of Day 1, 5 PM
   "swag.title": "Win the TTFC swag kit",
-  "swag.rules": "Earn points in the TTFC app by connecting, saving sessions, posting and taking part. The top {kits} people on the leaderboard at {cutoff} each win a TTFC swag kit. Open to registered TTFC 2026 attendees with 'Show me on the leaderboard' on; TTFC staff, volunteers and their families can't win. Winners are told in the app at {announce} and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question. No purchase necessary. Prizes have no cash value and can't be exchanged.",
+  "swag.rules": "Only people using the TTFC app can win. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part. The top {kits} people on the leaderboard at {cutoff} each win a TTFC swag kit. Open to registered TTFC 2026 attendees with 'Show me on the leaderboard' on; TTFC staff, volunteers and their families can't win. Winners are told in the app at the end of Day 1 ({announce}) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question. No purchase necessary. Prizes have no cash value and can't be exchanged.",
 });
 export const SWAG_KEYS = Object.freeze(Object.keys(SWAG_DEFAULTS));
 export const MAX_KITS = 50;
@@ -25,6 +30,8 @@ export const SWAG_PAGE = "https://www.thetechfestival.com/swag";
 export const SWAG_PHOTO = "https://www.thetechfestival.com/swag/swag-kit-1200.jpg";
 export const INSTALL_URL = "https://www.thetechfestival.com/app/install";
 export const WINNER_NOTE = Object.freeze({ title: "You won a TTFC swag kit!", body: "Collect it at the registration desk." });
+/** The key point, for the apps and the website: only app users can win. */
+export const SWAG_PITCH = "Only people using the TTFC app can win";
 
 const TZ = "America/Toronto";
 const str = (v) => String(v ?? "");
@@ -92,7 +99,7 @@ export function swagPhase(s, { now = new Date(), announced = false } = {}) {
 /** GET /api/app/swag. */
 export function publicSwag(s, { now = new Date(), announced = false } = {}) {
   return {
-    enabled: s.enabled, title: s.title, kits: s.kits,
+    enabled: s.enabled, title: s.title, kits: s.kits, appOnly: true, pitch: SWAG_PITCH,
     cutoff: s.cutoff.toISOString(), announce: s.announce.toISOString(),
     cutoffLabel: longTime(s.cutoff), cutoffShort: shortTime(s.cutoff), announceLabel: longTime(s.announce),
     rules: fillSwag(s.rulesText, s),
