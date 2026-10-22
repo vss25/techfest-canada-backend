@@ -46,7 +46,7 @@ export const openPixel = makeOpenPixel();
    carries #r=<token>; the web app sends it back once, src/app/lib/inviteVisit.js). Recorded as a "visit" when the
    token is ours and for an email whose button opens the app; anything else is ignored. Always 204 (text/plain or
    JSON, so the page needs no CORS preflight), at most a few per token, rate-limited per IP. */
-export const VISIT_CAMPAIGNS = Object.freeze([CAMPAIGNS.appInvite]);
+export const VISIT_CAMPAIGNS = Object.freeze([CAMPAIGNS.appInvite, CAMPAIGNS.appSwag]);
 export function makeAppVisit({ record = trackLater, perToken = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 }), perIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 }) } = {}) {
   return function appVisit(req, res) {
     res.set("Cache-Control", "no-store");

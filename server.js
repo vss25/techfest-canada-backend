@@ -7,6 +7,9 @@ import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { startSessionGroups } from "./services/sessionGroups.js";
 import { startSpeakerPhotos } from "./services/speakerPhotoStore.js";
 import { startDigests } from "./services/digest.js";
+import { startSwagSnapshot } from "./services/swag.js";
+import { publicRouter as swagPublicRouter, adminRouter as swagAdminRouter } from "./routes/swag.js";   // "Win the TTFC swag kit"
+import appSwagRouter from "./routes/appSwag.js";                                                      // its email to people not on the app yet
 import { attendeeRouter as sosAttendeeRouter, staffRouter as sosStaffRouter } from "./routes/sos.js";   // Help & SOS
 import digestAdminRouter, { publicRouter as digestPublicRouter } from "./routes/digest.js";   // "What you missed" emails
 import { appRouter as linkedinAppRouter, publicRouter as linkedinSharePageRouter, linkedinShareCallback } from "./routes/linkedinShare.js";
@@ -165,6 +168,7 @@ app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
+app.use("/api/app/swag", swagPublicRouter);   // the swag kit contest's settings and rules (no sign-in)
 app.use("/api/app/sos", sosAttendeeRouter);   // Help & SOS: attendees' urgent messages to staff (signed in)
 app.use("/api/app/digest", digestPublicRouter); // "What you missed" email: one-click unsubscribe (no sign-in)
 app.use("/api/app", linkedinAppRouter);       // GET /attending-link, POST /linkedin/share (signed in)
@@ -174,7 +178,9 @@ app.use("/api/app", appAwardsRouter);        // GET /awards/summary (no sign-in)
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
-app.use("/api/console/app-invite", appInviteRouter); // app invite email: Website & app › App invite email (before the console router)
+app.use("/api/console/app-invite", appInviteRouter);
+app.use("/api/console/app-swag", appSwagRouter); // "Win the swag kit" email: people not on the app yet (before the console router)
+app.use("/api/console/swag", swagAdminRouter); // the swag kit winners: review, announce (before the console router) // app invite email: Website & app › App invite email (before the console router)
 app.use("/api/console/nominations", nominationsAdminRouter); // Catalyst Awards (before the console router)
 app.use("/api/console/jury", juryAdminRouter); // Catalyst Awards jury (before the console router)
 app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder email (before the console router)
@@ -217,6 +223,8 @@ mongoose
     startSpeakerPhotos();
     // Every minute, one server: "What you missed" emails, while staff have them switched on (services/digest.js).
     startDigests();
+    // Every minute: at the swag kit cutoff, keep the leaderboard as it is then (services/swag.js).
+    startSwagSnapshot();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.

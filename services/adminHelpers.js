@@ -1,6 +1,7 @@
 /* Pure helpers for analytics and the admin console (unit-tested). */
 
 import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
+import { SWAG_DEFAULTS, cleanSwagContent } from "./swagRules.js";
 
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
@@ -102,6 +103,10 @@ export const CONTENT_KEYS = {
      (services/siteFiles.js). */
   "site.hero_video_url": "",
   "site.brochure_url": "",
+  /* "Win the TTFC swag kit" (Oct 22 2026, services/swagRules.js): swag.enabled (off until management turns it on),
+     swag.kits (1–50), swag.cutoff and swag.announce (ISO times with their offset, Toronto), swag.title, swag.rules
+     ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag). Management only (services/staffPowers.js). */
+  ...SWAG_DEFAULTS,
 };
 
 /** Validates a content update; returns [key, value] or null. */
@@ -113,6 +118,8 @@ export function cleanContent(key, value) {
     const url = cleanSiteFileUrl(key, value);
     return url === null ? null : [key, url];
   }
+  const swag = cleanSwagContent(key, value);
+  if (swag !== undefined) return swag;
   return [key, String(value ?? "").slice(0, 2000)];
 }
 

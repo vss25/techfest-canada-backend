@@ -161,11 +161,11 @@ export function sendIndex(sends = []) {
 }
 
 /** EmailEngagement rows of this campaign → Map(email → { opens, visits }). */
-export function engagementByEmail(rows = []) {
+export function engagementByEmail(rows = [], campaign = APP_INVITE_CAMPAIGN) {
   const out = new Map();
   for (const r of rows || []) {
     const e = String(r?.email || "").trim().toLowerCase();
-    if (!e || r.campaign !== APP_INVITE_CAMPAIGN) continue;
+    if (!e || r.campaign !== campaign) continue;
     out.set(e, { opens: Number(r.opens) || 0, visits: Number(r.visits) || 0, lastOpenAt: r.lastOpenAt || null, lastVisitAt: r.lastVisitAt || null });
   }
   return out;
@@ -180,15 +180,16 @@ export function engagementByEmail(rows = []) {
  * @param {Array} o.engagement this campaign's EmailEngagement rows
  * @param {boolean} o.skipUsing  leave out anyone already using the app (default true)
  * @param {"all"|"one"|"failed"} o.mode  all: skip anyone already sent; one: wait COOLDOWN_MS; failed: only failed sends
+ * @param {string} o.campaign  whose engagement rows count (the app invite, or "Win the swag kit": services/swagInvite.js)
  * @returns {{ rows, targets, counts }}
  *   rows: one per person who is part of TTFC 2026 (with or without a usable email):
  *         { id, name, email, roles, usingApp, status, sentAt, sends, opened, clicked, willGet, reason, label, firstName }
  *   targets: rows that would get it now (one per email); counts: see below
  */
-export function planAppInvites(people = [], { optedOut = [], sends = [], engagement = [], skipUsing = true, mode = "all", now = Date.now(), cooldownMs = COOLDOWN_MS } = {}) {
+export function planAppInvites(people = [], { optedOut = [], sends = [], engagement = [], skipUsing = true, mode = "all", now = Date.now(), cooldownMs = COOLDOWN_MS, campaign = APP_INVITE_CAMPAIGN } = {}) {
   const out = new Set([...optedOut].map((e) => String(e || "").trim().toLowerCase()));
   const sendBy = sendIndex(sends);
-  const eng = engagementByEmail(engagement);
+  const eng = engagementByEmail(engagement, campaign);
   const seen = new Set();
   const rows = [];
   for (const p of people || []) {
