@@ -245,6 +245,19 @@ test("the unsubscribe link: a page with one button (a GET changes nothing), one 
   assert.equal(sentTo(U.nicole).length, before);
 });
 
+test("someone on the unsubscribed list (Admin › Unsubscribed emails) gets no digest either", { skip }, async () => {
+  const Subscription = (await import("../models/Subscription.js")).default;
+  const { recordUnsubscribe } = await import("../services/unsubscribe.js");
+  await recordUnsubscribe(Subscription, U.cal.email, { source: "staff", by: "mia.manager@example.com" });
+  const before = sentTo(U.cal).length;
+  await dm(U.ben, U.cal, "Coffee before the keynote?", T(24, 13, 0));
+  assert.ok((await run(T(24, 13, 1))).noted >= 1);
+  const r = await run(T(24, 17, 1));
+  assert.equal(sentTo(U.cal).length, before);
+  assert.ok(r.skipped >= 1, JSON.stringify(r));
+  assert.equal((await stateOf(U.cal))?.pendingSince ?? null, null);
+});
+
 test("the daily cap stops sending (and says so); the admin page counts today's sends; preview with sample items", { skip }, async () => {
   await dm(U.gunant, U.ben, "Hi Ben", T(25, 9, 0));
   await dm(U.gunant, U.dee, "Hi Dee", T(25, 9, 0));

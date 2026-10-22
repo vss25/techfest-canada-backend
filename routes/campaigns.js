@@ -8,6 +8,7 @@ import crypto from "crypto";
 import Campaign from "../models/Campaign.js";
 import Audience from "../models/Audience.js";
 import EmailTracking from "../models/EmailTracking.js";
+import Subscription from "../models/Subscription.js";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { sendCampaignEmail, wrapLinksWithTracking, generateCampaignFooter, sanitizeEmailHtml, sendBatchCampaignEmails } from "../services/emailService.js";
 
@@ -641,6 +642,15 @@ router.post("/:id/launch", authMiddleware, adminMiddleware, async (req, res) => 
     if (!audience || audience.contacts.length === 0) {
       return res.status(400).json({ error: "No contacts in audience" });
     }
+    // Leave out everyone who unsubscribed (services/unsubscribe.js): the one list every bulk email reads.
+    const optedOut = new Set((await Subscription.find({
+      subscribed: false, email: { $in: audience.contacts.map((c) => String(c.email || "").trim().toLowerCase()) },
+    }).select("email").lean()).map((x) => x.email));
+    const contacts = audience.contacts.filter((c) => !optedOut.has(String(c.email || "").trim().toLowerCase()));
+    const leftOut = audience.contacts.length - contacts.length;
+    if (!contacts.length) {
+      return res.status(400).json({ error: "Everyone in this audience has unsubscribed." });
+    }
 
     campaign.status = "sending";
     campaign.sentAt = new Date();
@@ -658,7 +668,7 @@ router.post("/:id/launch", authMiddleware, adminMiddleware, async (req, res) => 
       console.error(`[LAUNCH] Error clearing tracking records:`, err.message);
     }
 
-    for (const contact of audience.contacts) {
+    for (const contact of contacts) {
       const tracking = new EmailTracking({
         campaignId: campaign._id,
         email: contact.email,
@@ -683,17 +693,17 @@ router.post("/:id/launch", authMiddleware, adminMiddleware, async (req, res) => 
     // Send immediate response, process in background
     res.json({
       success: true,
-      message: `Campaign launch started for ${audience.contacts.length} recipients. Emails will be sent in background.`,
-      recipientCount: audience.contacts.length,
+      message: `Campaign launch started for ${contacts.length} recipients${leftOut ? ` (${leftOut} unsubscribed, left out)` : ""}. Emails will be sent in background.`,
+      recipientCount: contacts.length,
     });
     
     // Process in background
     (async () => {
       try {
-        console.log(`[LAUNCH BACKGROUND] Starting batch send for ${audience.contacts.length} recipients`);
+        console.log(`[LAUNCH BACKGROUND] Starting batch send for ${contacts.length} recipients`);
         
         // Prepare email list with full contact details for personalization
-        const emailList = audience.contacts.map((contact) => ({
+        const emailList = contacts.map((contact) => ({
           contact: {
             email: contact.email,
             name: contact.name || "",
@@ -717,11 +727,11 @@ router.post("/:id/launch", authMiddleware, adminMiddleware, async (req, res) => 
         console.log(`[LAUNCH BACKGROUND] Batch send complete:`, batchResult);
         
         // Update campaign stats
-        campaign.stats.sent = audience.contacts.length;
+        campaign.stats.sent = contacts.length;
         campaign.status = "sent";
         await campaign.save();
         
-        console.log(`[CAMPAIGN LAUNCH] Campaign "${campaign.name}" (ID: ${campaign._id}) sent to ${audience.contacts.length} recipients`);
+        console.log(`[CAMPAIGN LAUNCH] Campaign "${campaign.name}" (ID: ${campaign._id}) sent to ${contacts.length} recipients`);
       } catch (err) {
         console.error("[LAUNCH BACKGROUND] Batch send error:", err);
         campaign.status = "failed";

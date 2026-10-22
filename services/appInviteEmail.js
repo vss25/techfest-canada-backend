@@ -30,6 +30,7 @@ import { APP_INVITE_CAMPAIGN, PLAY_STORE_URL, appInviteLink, appStoreUrl } from 
 import { pixelUrlFor, signTrack, withPixel } from "./trackToken.js";
 import { SWAG_PAGE, longTime } from "./swagRules.js";
 import { noteTrackedSend } from "./engagementStore.js";
+import { unsubscribeFor } from "./unsubscribe.js";
 
 export const ENQUIRE_EMAIL = "enquire@thetechfestival.com";
 /** The logo with its words in dark ink, for mail apps showing the light version. */
@@ -67,9 +68,10 @@ const line = (text, vars) => esc(fillInvite(text, vars));
  * @param {object} [p.swag]       the swag kit contest while it's on (services/swagRules.js swagSettings), else null:
  *                                the swag block after the intro and the swag subject
  * @param {string} [p.swagSrc]    the swag photo: "cid:swag-kit" or a data: URI
+ * @param {string} [p.unsubscribeUrl] the footer's "Unsubscribe from TTFC emails" link (services/unsubscribe.js; "" = none)
  * @returns {{ subject, preheader, html, text, link }}
  */
-export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firstName = "", email = "", link = "", logoSrc = "", logoLightSrc = "", pixelSrc = "", storeUrl = appStoreUrl(), swag = null, swagSrc = "" } = {}) {
+export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firstName = "", email = "", link = "", logoSrc = "", logoLightSrc = "", pixelSrc = "", storeUrl = appStoreUrl(), swag = null, swagSrc = "", unsubscribeUrl = "" } = {}) {
   const c = effectiveCopy(copy);
   const vars = {
     firstName: String(firstName || "").trim(), email: String(email || "").trim(),
@@ -239,6 +241,7 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
             ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
             ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
             ${c.footer ? `<span class="mut" style="color:#6f6290;">${line(c.footer, vars).replace(/\n/g, "<br>")}</span>` : ""}
+            ${unsubscribeUrl ? `<br><a href="${esc(unsubscribeUrl)}" target="_blank" class="lk" style="color:#a596c7;text-decoration:underline;">Unsubscribe from TTFC emails</a>` : ""}
           </td>
         </tr>
       </table>
@@ -281,6 +284,7 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
     `${EVENT.name} · ${EVENT.dates}`,
     `${EVENT.venue}, ${EVENT.address}`,
     ...(c.footer ? [t(c.footer)] : []),
+    ...(unsubscribeUrl ? [`Unsubscribe from TTFC emails: ${unsubscribeUrl}`] : []),
   ].join("\n").replace(/\n{3,}/g, "\n\n");
 
   return { subject, preheader, html: withPixel(html, pixelSrc), text, link: url };
@@ -302,17 +306,19 @@ const logoAttachments = (swagOn) => [
  * The email for one person. `inline`: data: URIs (admin preview). `track`: the address a real send goes to;
  * its token goes in the button's link and the open pixel (`tracked` says whether it could be signed).
  * Never for previews or test sends. `copy` / `options`: the saved (or a draft's) wording and switches. `swag`: the
- * contest's settings while it's on (else null): the swag block, its subject and the photo.
+ * contest's settings while it's on (else null): the swag block, its subject and the photo. `headers`: the
+ * List-Unsubscribe headers (one-click for a real send, the mailto alone for a preview or test).
  */
 export function appInviteEmailFor(person, { inline = true, track = "", copy = {}, options = DEFAULT_OPTIONS, storeUrl = appStoreUrl(), swag = null } = {}) {
   const on = !!swag?.enabled;
-  const base = { copy, options, storeUrl, firstName: person?.firstName || "", email: person?.email || "", swag: on ? swag : null };
-  if (inline) return { ...buildAppInviteEmail({ ...base, ...inlineLogos(on) }), attachments: [], tracked: false };
+  const unsub = unsubscribeFor(track, { real: !inline && !!track, mailto: ENQUIRE_EMAIL });
+  const base = { copy, options, storeUrl, firstName: person?.firstName || "", email: person?.email || "", swag: on ? swag : null, unsubscribeUrl: unsub.url };
+  if (inline) return { ...buildAppInviteEmail({ ...base, ...inlineLogos(on) }), attachments: [], tracked: false, headers: unsub.headers };
   const token = track ? signTrack({ c: APP_INVITE_CAMPAIGN, e: track }) : "";
   const extra = token ? { link: appInviteLink(token), pixelSrc: pixelUrlFor(token) } : {};
   return {
     ...buildAppInviteEmail({ ...base, logoSrc: `cid:${LOGO_CID}`, logoLightSrc: `cid:${LOGO_DARK_CID}`, ...(on ? { swagSrc: `cid:${SWAG_CID}` } : {}), ...extra }),
-    attachments: logoAttachments(on), tracked: !!token,
+    attachments: logoAttachments(on), tracked: !!token, headers: unsub.headers,
   };
 }
 
@@ -320,14 +326,15 @@ let resendClient = null;
 const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
 
 /**
- * Sends one app invite through Resend (from and reply-to enquire@, List-Unsubscribe to enquire@).
- * Throws when Resend refuses it. `subjectPrefix` marks test sends ("[Test] "). `track`: a real send.
+ * Sends one app invite through Resend (from and reply-to enquire@). A real send (`track`) carries the person's own
+ * unsubscribe link and the one-click List-Unsubscribe headers (services/unsubscribe.js); a test send ("[Test] ") the
+ * preview link and the mailto. Throws when Resend refuses it.
  * @returns {Promise<{ id: string }>}
  */
 export async function sendAppInviteEmail({ to, person, copy = {}, options = DEFAULT_OPTIONS, swag = null, subjectPrefix = "", client = resend(), track = false, noteTracked = noteTrackedSend }) {
   if (!to) throw new Error("Missing email");
   const address = track ? String(to).trim().toLowerCase() : "";
-  const { subject, html, text, attachments, tracked } = appInviteEmailFor({ ...person, email: to }, { inline: false, track: address, copy, options, swag });
+  const { subject, html, text, attachments, tracked, headers } = appInviteEmailFor({ ...person, email: to }, { inline: false, track: address, copy, options, swag });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,
@@ -336,7 +343,7 @@ export async function sendAppInviteEmail({ to, person, copy = {}, options = DEFA
     html,
     text,
     attachments,
-    headers: { "List-Unsubscribe": `<mailto:${ENQUIRE_EMAIL}?subject=unsubscribe>` },
+    headers,
     tags: [{ name: "campaign", value: APP_INVITE_CAMPAIGN }],
   });
   if (error) throw new Error(error.message || "Resend refused the email");

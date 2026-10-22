@@ -27,6 +27,7 @@ import { personNameKey } from "./rsvp.js";
 import { RSVP_URL, displayTicketId } from "./speakerPassEmail.js";
 import { openPixelUrl, withPixel } from "./trackToken.js";
 import { noteTrackedSend } from "./engagementStore.js";
+import { isUnsubscribed, unsubscribeFor } from "./unsubscribe.js";
 
 /** RSVP reminders come from enquire@ (the "I'm attending" email moved to marcom@ on Oct 20 2026). */
 export const FROM = `The Tech Festival Canada <${CONTACT_EMAIL}>`;
@@ -121,9 +122,10 @@ export const SAMPLE_REMINDER = Object.freeze({
  * @param {Array}  p.tickets   [{ ticketId, firstName, lastName }] still to RSVP
  * @param {string} [p.logoSrc] "cid:…" or a data: URI ("" = text wordmark)
  * @param {string} [p.pixelSrc] a real send's open pixel ("" = none)
+ * @param {string} [p.unsubscribeUrl] the footer's unsubscribe link (services/unsubscribe.js; "" = none)
  * @returns {{ subject, preheader, html, text, links }}
  */
-export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets = [], logoSrc = "", pixelSrc = "" } = {}) {
+export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets = [], logoSrc = "", pixelSrc = "", unsubscribeUrl = "" } = {}) {
   const first = greetingName({ firstName, lastName });
   const subject = first ? `${first}, a quick reminder to RSVP for TTFC 2026` : "A quick reminder to RSVP for TTFC 2026";
   const preheader = "Tell us which breakfasts, luncheons and evening events you're coming to. It takes about a minute.";
@@ -203,7 +205,7 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
           <td class="pad" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
             ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
             ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
-            <span style="color:#5f527f;">You're getting this because you have a pass for TTFC 2026 and we don't have your RSVP yet.</span>
+            <span style="color:#5f527f;">You're getting this because you have a pass for TTFC 2026 and we don't have your RSVP yet.${unsubscribeUrl ? ` <a href="${esc(unsubscribeUrl)}" target="_blank" style="color:#a596c7;text-decoration:underline;">Unsubscribe</a>` : ""}</span>
           </td>
         </tr>
       </table>
@@ -232,19 +234,23 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
     "",
     `${EVENT.name} · ${EVENT.dates}`,
     `${EVENT.venue}, ${EVENT.address}`,
+    ...(unsubscribeUrl ? [`Unsubscribe from TTFC emails: ${unsubscribeUrl}`] : []),
   ].join("\n");
 
   return { subject, preheader, html: withPixel(html, pixelSrc), text, links: links.map((l) => l.url) };
 }
 
 /** Subject/html/text for a row; `inline: true` puts the logo in as a data: URI (admin preview).
-    `track`: the address a real send goes to (its open pixel; `tracked` says whether it could be signed). */
+    `track`: the address a real send goes to (its open pixel, `tracked` says whether it could be signed, and its own
+    unsubscribe link and one-click headers, `headers`); previews and test sends get the preview link and the mailto. */
 export function reminderEmailFor(row, { inline = true, track = "" } = {}) {
   const logoSrc = inline ? `data:image/png;base64,${logoPng().toString("base64")}` : `cid:${LOGO_CID}`;
   const pixelSrc = !inline && track ? openPixelUrl({ c: REMINDER_CAMPAIGN, e: track }) : "";
+  const unsub = unsubscribeFor(track, { real: !inline && !!track, mailto: CONTACT_EMAIL });
   return {
-    ...buildRsvpReminderEmail({ firstName: row?.firstName || "", lastName: row?.lastName || "", tickets: row?.tickets || [], logoSrc, pixelSrc }),
+    ...buildRsvpReminderEmail({ firstName: row?.firstName || "", lastName: row?.lastName || "", tickets: row?.tickets || [], logoSrc, pixelSrc, unsubscribeUrl: unsub.url }),
     tracked: !!pixelSrc,
+    headers: unsub.headers,
   };
 }
 
@@ -257,7 +263,7 @@ export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = r
   if (!to) throw new Error("Missing email");
   if (!row?.tickets?.length) throw new Error("No ticket to RSVP for");
   const address = track ? String(to).trim().toLowerCase() : "";
-  const { subject, html, text, tracked } = reminderEmailFor(row, { inline: false, track: address });
+  const { subject, html, text, tracked, headers } = reminderEmailFor(row, { inline: false, track: address });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,
@@ -266,6 +272,7 @@ export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = r
     html,
     text,
     attachments: [{ filename: "ttfc-2026.png", content: logoPng().toString("base64"), content_type: "image/png", content_id: LOGO_CID }],
+    headers,
     tags: [{ name: "campaign", value: REMINDER_CAMPAIGN }],
   });
   if (error) throw new Error(error.message || "Resend refused the email");
@@ -281,8 +288,12 @@ export async function sendRsvpReminder({ to, row, subjectPrefix = "", client = r
    and the sender are passed in so tests use fakes (never Resend). */
 
 /** CampaignSend as the reminder store: claim / sent / failed. */
-export function campaignSendStore(CampaignSend, { campaign = REMINDER_CAMPAIGN, cooldownMs = REMINDER_COOLDOWN_MS } = {}) {
+export function campaignSendStore(CampaignSend, { campaign = REMINDER_CAMPAIGN, cooldownMs = REMINDER_COOLDOWN_MS, Subscription = null } = {}) {
   return {
+    /** True when `email` unsubscribed (services/unsubscribe.js), checked just before each email; false without a model. */
+    async optedOut(email) {
+      return Subscription ? isUnsubscribed(Subscription, email) : false;
+    },
     /** True when this run may send to `email` now; `force` (a single send) ignores the cool-down. */
     async claim(email, { name = "", by = "", force = false, now = new Date() } = {}) {
       const filter = force
@@ -311,11 +322,14 @@ export function campaignSendStore(CampaignSend, { campaign = REMINDER_CAMPAIGN, 
 }
 
 /**
- * sendTo(row, by, { force }) → the Date it went, or "skipped" (someone else has it / reminded recently).
+ * sendTo(row, by, { force }) → the Date it went, "unsubscribed" (they're on the unsubscribe list now: the last check,
+ * so someone who unsubscribes while a send is running is still left out; even `force` never overrides it) or "skipped"
+ * (someone else has it / reminded recently).
  * Throws when the email service refuses it (recorded as failed). `row`: { email, name, firstName, lastName, tickets }.
  */
 export function makeReminderSender({ store, send = sendRsvpReminder, now = () => new Date() }) {
   return async function sendTo(r, by = "", { force = false } = {}) {
+    if (await store.optedOut?.(r.email)) return "unsubscribed";
     if (!(await store.claim(r.email, { name: r.name || "", by, force, now: now() }))) return "skipped";
     try {
       const data = await send({ to: r.email, row: r, track: true });

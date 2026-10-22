@@ -27,6 +27,7 @@ import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { CAMPAIGN_KEY, attendingLink, greetingName } from "./attendingCampaign.js";
 import { pixelUrlFor, signTrack, withPixel } from "./trackToken.js";
 import { noteTrackedSend } from "./engagementStore.js";
+import { unsubscribeFor } from "./unsubscribe.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -113,9 +114,10 @@ export function button(href, label) {
  * @param {string} [p.logoSrc]     "cid:…" or a data: URI ("" = text wordmark)
  * @param {string} [p.previewSrc]  same ("" = no preview image)
  * @param {string} [p.pixelSrc]    a real send's open pixel ("" = none)
+ * @param {string} [p.unsubscribeUrl] the footer's unsubscribe link (services/unsubscribe.js; "" = "Reply with unsubscribe")
  * @returns {{ subject, preheader, html, text, link }}
  */
-export function buildAttendingEmail({ firstName = "", lastName = "", title = "", company = "", link = "", logoSrc = "", previewSrc = "", pixelSrc = "" } = {}) {
+export function buildAttendingEmail({ firstName = "", lastName = "", title = "", company = "", link = "", logoSrc = "", previewSrc = "", pixelSrc = "", unsubscribeUrl = "" } = {}) {
   const first = greetingName({ firstName, lastName });
   const url = link || attendingLink({ firstName, lastName, title, company });
   const subject = first ? `${first}, show the world you're attending TTFC 2026` : "Show the world you're attending TTFC 2026";
@@ -236,7 +238,9 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
           <td class="pad" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
             ${esc(EVENT.name)} &middot; ${esc(EVENT.dates)}<br>
             ${esc(EVENT.venue)}, ${esc(EVENT.address)}<br>
-            <span style="color:#5f527f;">You're getting this because you have a pass for TTFC 2026. Prefer not to get emails like this? Reply with &ldquo;unsubscribe&rdquo;.</span>
+            <span style="color:#5f527f;">You're getting this because you have a pass for TTFC 2026. ${unsubscribeUrl
+              ? `Prefer not to get emails like this? <a href="${esc(unsubscribeUrl)}" target="_blank" style="color:#a596c7;text-decoration:underline;">Unsubscribe</a>.`
+              : "Prefer not to get emails like this? Reply with &ldquo;unsubscribe&rdquo;."}</span>
           </td>
         </tr>
       </table>
@@ -270,7 +274,9 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
     "",
     `${EVENT.name} · ${EVENT.dates}`,
     `${EVENT.venue}, ${EVENT.address}`,
-    "You're getting this because you have a pass for TTFC 2026. Prefer not to get emails like this? Reply with \"unsubscribe\".",
+    unsubscribeUrl
+      ? `You're getting this because you have a pass for TTFC 2026. Prefer not to get emails like this? Unsubscribe: ${unsubscribeUrl}`
+      : "You're getting this because you have a pass for TTFC 2026. Prefer not to get emails like this? Reply with \"unsubscribe\".",
   ].join("\n");
 
   return { subject, preheader, html: withPixel(html, pixelSrc), text, link: url };
@@ -279,18 +285,20 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
 /**
  * Subject/html/text for one recipient. `inline: true` uses data: URIs (admin preview, local demo).
  * `track`: the address a real send goes to; its token goes in the link and the open pixel
- * (`tracked` says whether it could be signed). Never for previews or test sends.
+ * (`tracked` says whether it could be signed) and their own unsubscribe link and one-click headers (`headers`).
+ * Never for previews or test sends (those get the preview link and the mailto).
  */
 export function attendingEmailFor(recipient, { inline = true, track = "" } = {}) {
+  const unsub = unsubscribeFor(track, { real: !inline && !!track, mailto: MARCOM_EMAIL });
   const base = {
     firstName: recipient?.firstName || "", lastName: recipient?.lastName || "",
-    title: recipient?.title || "", company: recipient?.company || "",
+    title: recipient?.title || "", company: recipient?.company || "", unsubscribeUrl: unsub.url,
   };
-  if (inline) return { ...buildAttendingEmail({ ...base, ...inlineImageSrcs() }), attachments: [], tracked: false };
+  if (inline) return { ...buildAttendingEmail({ ...base, ...inlineImageSrcs() }), attachments: [], tracked: false, headers: unsub.headers };
   const { srcs, attachments } = attendingAttachments();
   const token = track ? signTrack({ c: CAMPAIGN_KEY, e: track }) : "";
   const extra = token ? { link: attendingLink({ ...base, r: token }), pixelSrc: pixelUrlFor(token) } : {};
-  return { ...buildAttendingEmail({ ...base, ...srcs, ...extra }), attachments, tracked: !!token };
+  return { ...buildAttendingEmail({ ...base, ...srcs, ...extra }), attachments, tracked: !!token, headers: unsub.headers };
 }
 
 /* ---------- sending ---------- */
@@ -307,7 +315,7 @@ const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
 export async function sendAttendingEmail({ to, recipient, subjectPrefix = "", client = resend(), track = false, noteTracked = noteTrackedSend }) {
   if (!to) throw new Error("Missing email");
   const address = track ? String(to).trim().toLowerCase() : "";
-  const { subject, html, text, attachments, tracked } = attendingEmailFor(recipient, { inline: false, track: address });
+  const { subject, html, text, attachments, tracked, headers } = attendingEmailFor(recipient, { inline: false, track: address });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,
@@ -316,7 +324,7 @@ export async function sendAttendingEmail({ to, recipient, subjectPrefix = "", cl
     html,
     text,
     attachments,
-    headers: { "List-Unsubscribe": `<mailto:${MARCOM_EMAIL}?subject=unsubscribe>` },
+    headers,
     tags: [{ name: "campaign", value: CAMPAIGN_KEY }],
   });
   if (error) throw new Error(error.message || "Resend refused the email");

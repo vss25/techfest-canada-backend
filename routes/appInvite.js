@@ -170,6 +170,7 @@ export async function sendInviteToOne(email, { by = "", fresh = true } = {}) {
   if (!row.willGet) return { status: 409, body: { code: row.reason, error: row.label } };
   const template = await loadInviteTemplate(EmailTemplate);
   const sentAt = await makeInviteSender({ CampaignSend, template, swag: plan.swag })(row, by);
+  if (sentAt === "unsubscribed") return { status: 409, body: { code: "unsubscribed", error: "They unsubscribed from our emails." } };
   if (sentAt === "skipped") return { status: 409, body: { code: "skipped", error: "They were emailed very recently, or someone is sending to them right now." } };
   return { status: 200, body: { sent: true, email, sentAt } };
 }
@@ -201,7 +202,7 @@ function runInBackground(req, todo, template, doneAction, { swag = null, recheck
         try {
           const out = await sendTo(r, by);
           if (out === "usingApp") appInviteJob.state.usingApp = (appInviteJob.state.usingApp || 0) + 1;
-          else if (out === "skipped") appInviteJob.state.skipped++;
+          else if (out === "skipped" || out === "unsubscribed") appInviteJob.state.skipped++;
           else appInviteJob.state.sent++;
         } catch (err) {
           appInviteJob.state.failed++;
