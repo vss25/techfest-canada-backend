@@ -6,9 +6,11 @@ import Nomination from "../models/Nomination.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { cleanCode, isValidEmail, newCode, normalizeEmail, sameHash } from "../services/emailLink.js";
 import {
-  CODE_REFUSED, CODE_TTL_MS, LOGIN_REFUSED, MAX_CODE_TRIES, TOO_MANY, VIA_CODE, VIA_PASSWORD, checkPassword, hashJuryCode, hashPassword,
-  jurorCanSignIn, makeRequireJuror, passwordProblem, signJuryToken,
+  CODE_REFUSED, CODE_TTL_MS, MAX_CODE_TRIES, TOO_MANY, VIA_CODE, hashJuryCode,
+  jurorCanSignIn, makeRequireJuror, signJuryToken,
 } from "../services/juryAuth.js";
+
+const CODE_ONLY = "Jurors sign in with a one-time 6-digit code by email.";
 import {
   COMMENT_MAX, RECOMMENDATIONS, STATE_LABELS, assessmentState, cleanComment, cleanRecommendation, cleanScores, formatDeadline, isLocked,
   isObjectId, juryOrder, missingCriteria, nomineeForJury, nomineeSummary, oneLine, plainScoreSet, progressOf, visibleToJury, weightedTotal,
@@ -27,13 +29,13 @@ import { currentRubric, loadSettings } from "../services/juryStore.js";
 
    Sign-in (no token; rate-limited; the answers never say whether an
    email is a juror's):
-   POST /auth/login        { email, password }  → { token, juror }
+   POST /auth/login        → 410 (passwords removed Oct 22; code only)
    POST /auth/code         { email }            → { sent: true } (always; only active jurors get an email)
    POST /auth/code/verify  { email, code }      → { token, juror }
 
    Signed in:
    GET  /me                → { juror, deadline, deadlineText, locked, rubric, recommendations, commentMax, progress }
-   POST /password          { password, currentPassword? } → { token } (other sessions end)
+   POST /password          → 410 (passwords removed Oct 22)
    GET  /assignments       → { rows, conflicts, progress, nextId, criteriaCount, deadline, deadlineText, locked }
    GET  /nominations/:id   → { nominee, assessment, rubric, prevId, nextId, position, count, … }
    PUT  /nominations/:id/draft    { scores, recommendation, comment } → { state, savedAt, total, missing }
@@ -67,9 +69,9 @@ async function defaultSendCode(payload) {
  * @param {object} [deps]
  * @param {(p: { to, code, name, minutes }) => Promise<any>} [deps.sendCode]
  * @param {() => number} [deps.now]
- * @param {object} [deps.limits] per-15-minute caps (tests raise them): loginPerIp, loginPerEmail, codePerIp, codePerEmail, verifyPerIp, passwordPerJuror
+ * @param {object} [deps.limits] per-15-minute caps (tests raise them): codePerIp, codePerEmail, verifyPerIp
  */
-export const JURY_LIMITS = Object.freeze({ loginPerIp: 30, loginPerEmail: 8, codePerIp: 20, codePerEmail: 5, verifyPerIp: 40, passwordPerJuror: 10 });
+export const JURY_LIMITS = Object.freeze({ codePerIp: 20, codePerEmail: 5, verifyPerIp: 40 });
 
 export function createJuryRouter({ sendCode = defaultSendCode, now = () => Date.now(), limits = {} } = {}) {
   const router = express.Router();
@@ -77,12 +79,9 @@ export function createJuryRouter({ sendCode = defaultSendCode, now = () => Date.
   const cap = { ...JURY_LIMITS, ...limits };
   const limiter = (k) => makeLimiter({ max: cap[k], windowMs: 15 * 60 * 1000 });
 
-  const loginPerIp = limiter("loginPerIp");
-  const loginPerEmail = limiter("loginPerEmail");
   const codePerIp = limiter("codePerIp");
   const codePerEmail = limiter("codePerEmail");
   const verifyPerIp = limiter("verifyPerIp");
-  const passwordPerJuror = limiter("passwordPerJuror");
 
   const signedIn = async (juror, via) => {
     await Juror.updateOne({ _id: juror._id }, { $set: { lastSignInAt: new Date(now()), lastActiveAt: new Date(now()) } });
@@ -91,17 +90,8 @@ export function createJuryRouter({ sendCode = defaultSendCode, now = () => Date.
 
   /* ---------- sign in ---------- */
 
-  router.post("/auth/login", wrap(async (req, res) => {
-    const email = normalizeEmail(req.body?.email);
-    const password = typeof req.body?.password === "string" ? req.body.password : "";
-    if (!isValidEmail(email) || !password) return res.status(400).json({ error: "Enter your email and password." });
-    if (!loginPerIp.hit(`ip:${clientIp(req)}`) || !loginPerEmail.hit(`email:${email}`)) return res.status(429).json({ error: TOO_MANY });
-    const juror = await Juror.findOne({ email }).select("+passwordHash").lean();
-    const ok = await checkPassword(password, jurorCanSignIn(juror) ? juror.passwordHash : "");
-    if (!ok) return res.status(401).json({ error: LOGIN_REFUSED });
-    loginPerEmail.reset(`email:${email}`);
-    res.json(await signedIn(juror, VIA_PASSWORD));
-  }));
+  // Passwords were removed (the organiser, Oct 22 2026): jurors sign in with a one-time code only.
+  router.post("/auth/login", (_req, res) => res.status(410).json({ error: CODE_ONLY }));
 
   router.post("/auth/code", wrap(async (req, res) => {
     const email = normalizeEmail(req.body?.email);
@@ -203,24 +193,7 @@ export function createJuryRouter({ sendCode = defaultSendCode, now = () => Date.
     });
   }));
 
-  router.post("/password", wrap(async (req, res) => {
-    if (!passwordPerJuror.hit(String(req.juror._id))) return res.status(429).json({ error: TOO_MANY });
-    const password = typeof req.body?.password === "string" ? req.body.password : "";
-    const problem = passwordProblem(password, { email: req.juror.email });
-    if (problem) return res.status(400).json({ error: problem });
-    const full = await Juror.findById(req.juror._id).select("+passwordHash").lean();
-    // Signed in with a code: the email proved who they are (that's "forgot password"). With a password: the current one.
-    if (full.passwordHash && req.juryVia === VIA_PASSWORD && !(await checkPassword(String(req.body?.currentPassword || ""), full.passwordHash))) {
-      return res.status(400).json({ error: "Your current password isn't right." });
-    }
-    const updated = await Juror.findOneAndUpdate(
-      { _id: full._id, tokenVersion: full.tokenVersion },
-      { $set: { passwordHash: await hashPassword(password), passwordSetAt: new Date(now()), passwordSetBy: "juror" }, $inc: { tokenVersion: 1 } },
-      { returnDocument: "after" },
-    ).lean();
-    if (!updated) return res.status(409).json({ error: "Your account changed in the meantime. Sign in again and retry." });
-    res.json({ token: signJuryToken(updated, { via: req.juryVia }), juror: jurorView(updated) });
-  }));
+  router.post("/password", (_req, res) => res.status(410).json({ error: CODE_ONLY }));
 
   router.get("/assignments", wrap(async (req, res) => {
     const [ctx, list] = await Promise.all([context(), myList(req.juror._id)]);

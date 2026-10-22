@@ -6,7 +6,6 @@ import Nomination from "../models/Nomination.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
 import { makeLimiter } from "../services/ticketAccess.js";
-import { hashPassword, passwordProblem } from "../services/juryAuth.js";
 import {
   ANCHOR_MAX, COMMENT_MAX, DEFAULT_CRITERIA, HELP_MAX, LABEL_MAX, MAX_CRITERIA, MIN_CRITERIA, POOL_STATUSES, RECOMMENDATIONS, SCORE_MAX,
   SCORE_MIN, STATE_LABELS, WEIGHT_MAX, WEIGHT_MIN, assessmentState, categoryKey, cleanJuror, cleanRubric, cleanSettings, formatDeadline,
@@ -33,8 +32,8 @@ import { NOMINATION_STATUSES, SPECIAL_AWARDS } from "../services/nominations.js"
    Nothing here emails anyone unless management clicks.
 
    GET    /overview                 → { jurors, settings, pool, rubric, counts, portalUrl, canManage }
-   POST   /jurors                   { name, email, organisation?, title?, active?, password? } → { juror }
-   PATCH  /jurors/:id               { name?, email?, organisation?, title?, active?, password? (null clears) } → { juror }
+   POST   /jurors                   { name, email, organisation?, title?, active? } → { juror }
+   PATCH  /jurors/:id               { name?, email?, organisation?, title?, active? } → { juror }
    DELETE /jurors/:id               → { removed: true } (off the jury: sessions end, allocations off, scores no longer count)
    GET    /jurors/:id               → { juror, rows } (their allocations and where each one is; no scores)
    GET    /nominations              → { rows, pool, jurors, filters } (what can be allocated, with coverage)
@@ -149,29 +148,23 @@ const jurorOut = async (id) => {
 router.post("/jurors", requireManagement, wrap(async (req, res) => {
   const c = cleanJuror(req.body || {});
   if (!c.ok) return res.status(400).json({ error: c.error });
-  const password = req.body?.password;
-  if (password !== undefined && password !== null && password !== "") {
-    const problem = passwordProblem(password, { email: c.set.email });
-    if (problem) return res.status(400).json({ error: `Password: ${problem}` });
-  }
-  const pw = typeof password === "string" && password ? { passwordHash: await hashPassword(password), passwordSetAt: new Date(), passwordSetBy: by(req) } : {};
   const existing = await Juror.findOne({ email: c.set.email }).lean();
   let juror;
   if (existing && !existing.removedAt) return res.status(409).json({ error: "A juror with this email is already on the jury." });
   if (existing) {
     // Back on the jury: the same record, so their earlier allocations can be given back (they stay off until then).
     juror = await Juror.findByIdAndUpdate(existing._id, {
-      $set: { ...c.set, ...pw, removedAt: null, removedBy: "", updatedBy: by(req) }, $inc: { tokenVersion: 1 },
+      $set: { ...c.set, removedAt: null, removedBy: "", updatedBy: by(req) }, $inc: { tokenVersion: 1 },
     }, { returnDocument: "after" }).lean();
     await audit(req, "jury_juror_restore", juror._id, `${juror.name} <${juror.email}>`);
   } else {
     try {
-      juror = (await Juror.create({ ...c.set, ...pw, createdBy: by(req), updatedBy: by(req) })).toObject();
+      juror = (await Juror.create({ ...c.set, createdBy: by(req), updatedBy: by(req) })).toObject();
     } catch (err) {
       if (err?.code === 11000) return res.status(409).json({ error: "A juror with this email is already on the jury." });
       throw err;
     }
-    await audit(req, "jury_juror_add", juror._id, `${juror.name} <${juror.email}>${pw.passwordHash ? ", password set" : ""}`);
+    await audit(req, "jury_juror_add", juror._id, `${juror.name} <${juror.email}>`);
   }
   res.status(201).json({ juror: await jurorOut(juror._id) });
 }));
@@ -204,20 +197,6 @@ router.patch("/jurors/:id", requireManagement, wrap(async (req, res) => {
   const unset = {};
   let endSessions = false;
   const what = [];
-  if ("password" in (req.body || {})) {
-    const pw = req.body.password;
-    if (pw === null || pw === "") {
-      Object.assign(unset, { passwordHash: "", passwordSetAt: "" });
-      set.passwordSetBy = "";
-      what.push("password cleared");
-    } else {
-      const problem = passwordProblem(pw, { email: c.set.email || before.email });
-      if (problem) return res.status(400).json({ error: `Password: ${problem}` });
-      Object.assign(set, { passwordHash: await hashPassword(pw), passwordSetAt: new Date(), passwordSetBy: by(req) });
-      what.push("password set");
-    }
-    endSessions = true;
-  }
   if (c.set.email && c.set.email !== before.email) {
     const clash = await Juror.findOne({ email: c.set.email, _id: { $ne: before._id } }).lean();
     if (clash) return res.status(409).json({ error: clash.removedAt ? "That email belongs to a juror who was removed. Add them again instead." : "Another juror has this email." });

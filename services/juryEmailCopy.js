@@ -64,7 +64,7 @@ export const FIELDS = Object.freeze({
   reminder: Object.freeze([...COMMON, ...TAIL]),
 });
 
-const SIGN_IN = "Sign in with {email}. Use the password you were given, or ask for a 6-digit code by email on the sign-in page.";
+const SIGN_IN = "Sign in with {email}. Ask for a one-time 6-digit code by email on the sign-in page.";
 const SIGNATURE = "The Catalyst Awards team, The Tech Festival Canada";
 const FOOTER = "You're getting this because you're on the Catalyst Awards jury for TTFC 2026.";
 
