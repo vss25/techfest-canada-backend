@@ -83,7 +83,8 @@ test("the page a push opens in the web app (router under /app/)", () => {
 test("payload: { title, body, link, thread, kind, id, url, from }, text capped", () => {
   const sender = "64b0000000000000000000bb";
   const p = buildWebPayload({ title: "Riley Chen", body: "x".repeat(900), link: "ttfc://tab/network", thread: `dm.${sender}`, kind: "dm", id: "m1" }, { from: sender });
-  assert.deepEqual(Object.keys(p).sort(), ["body", "from", "id", "kind", "link", "thread", "title", "url"]);
+  assert.deepEqual(Object.keys(p).sort(), ["body", "from", "id", "kind", "link", "tag", "thread", "title", "url"]);
+  assert.equal(p.tag, `dm.${sender}`);   // the service worker's notification tag: a newer push in this chat replaces it
   assert.equal(p.body.length, 400);
   assert.equal(p.url, `/app/chat/${sender}`);
   assert.equal(p.from, sender);

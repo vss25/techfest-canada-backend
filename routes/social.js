@@ -15,6 +15,8 @@ import { pushToUsers } from "../services/push.js";
 import { config as cloudinaryConfig, signUpload, cleanMedia, MAX_ITEMS, MAX_VIDEO_SECONDS } from "../services/cloudinary.js";
 import { rankFeed, PINNED_MS } from "../services/feedRank.js";
 import { avatarUrls } from "../services/avatars.js";
+import { notifyComment, notifyLike, notifyMentions, resolveMentions } from "../services/notify.js";
+import { prefsDTO, prefsUpdate } from "../services/notifyPrefs.js";
 import { requireSwitch, POLLS_KEY, QA_KEY } from "../services/liveSwitches.js";
 import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
@@ -266,6 +268,20 @@ router.put("/users/:id/share", async (req, res) => {
   res.json(await connectionDTO(c, req));
 });
 
+/* ================= NOTIFICATION SETTINGS =================
+   Settings › Notifications (services/notifyPrefs.js): every switch defaults to on.
+   GET → { prefs: { messages, comments, mentions, likes, groups, connections, announcements, digestEmail }, options: [{ key, label }] }
+   PATCH { <key>: true|false, … } → the same (unknown keys and non-booleans are ignored; nothing to change → 400). */
+
+router.get("/notify/prefs", (req, res) => res.json(prefsDTO(req.user)));
+
+router.patch("/notify/prefs", async (req, res) => {
+  const set = prefsUpdate(req.body);
+  if (!set) return res.status(400).json({ error: "Send one or more of the switches as true or false." });
+  const user = await User.findByIdAndUpdate(req.user._id, { $set: set }, { returnDocument: "after", projection: { notifyPrefs: 1 } }).lean();
+  res.json(prefsDTO(user));
+});
+
 /* ================= FEED ================= */
 
 /* Which posts: the newest `limit` this viewer may see, plus official announcements from the last 48 h (pinned on
@@ -351,6 +367,7 @@ router.post("/feed", needRight("post"), async (req, res) => {
   if (status === "approved" && !req.appHidden) {
     recordActivity(buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
       refId: post._id, recipients: mentionedUserIds(mentions), blocked: req.blocked }));
+    notifyMentions({ actor: req.user, mentions, where: "post", refId: post._id, body, blocked: req.blocked, shadow: req.shadow });
   }
   res.status(201).json(postDTO(post, req.user._id, mine, { staff: req.rights.deleteAnyPost }));
 });
@@ -395,7 +412,7 @@ router.post("/feed/:id/like", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: POST_GONE });
   const me = req.user._id;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const post = await SocialPost.findById(req.params.id).select("authorId status likes").lean();
+    const post = await SocialPost.findById(req.params.id).select("authorId status likes createdAt").lean();
     if (!canInteractPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: POST_GONE });
     const wasLiked = (post.likes || []).some((l) => String(l) === String(me));
     // Only if it's still as read (else another tap of theirs won the race: read again).
@@ -412,6 +429,7 @@ router.post("/feed/:id/like", async (req, res) => {
     if (t.firstLike && !req.appHidden) {
       recordActivity(buildActivity({ kind: "like", section: "feed", actorId: me, actorName: req.user.name,
         refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+      notifyLike({ post, actor: req.user, blocked: req.blocked });   // at most one an hour per post
     }
     return res.json({ liked: t.liked, likeCount: Math.max(0, t.likes.length - hiddenAmong(t.likes, req.shadow)) });
   }
@@ -443,9 +461,10 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
   let post = await SocialPost.findById(req.params.id).select("authorId status commentCount").lean();
   if (!canInteractPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: POST_GONE });
   const status = await statusFor(body, req.user._id, "comment");
+  const mentions = await resolveMentions(req.body?.mentions);
   const c = await SocialComment.create({
     postId: post._id, authorId: req.user._id, authorName: req.user.name,
-    authorTier: authorTier(req), body, status,
+    authorTier: authorTier(req), body, status, ...(mentions.length ? { mentions } : {}),
   });
   if (status === "approved") {
     // Counted as usual (so the person who wrote it sees the count go up); other viewers' counts leave hidden people out.
@@ -457,8 +476,15 @@ router.post("/feed/:id/comments", needRight("comment"), async (req, res) => {
       return res.status(404).json({ error: POST_GONE });
     }
     if (!req.appHidden) {
-      recordActivity(buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
-        refId: post._id, recipients: [post.authorId], blocked: req.blocked }));
+      recordActivity([
+        ...buildActivity({ kind: "comment", section: "feed", actorId: req.user._id, actorName: req.user.name,
+          refId: post._id, recipients: [post.authorId], blocked: req.blocked }),
+        ...buildActivity({ kind: "mention", section: "feed", actorId: req.user._id, actorName: req.user.name,
+          refId: post._id, recipients: mentionedUserIds(mentions).filter((id) => !req.shadow.has(id)), blocked: req.blocked }),
+      ]);
+      // Pushes: "mentioned you" to the people it @mentions, "commented on your post" to the author (unless mentioned).
+      const mentioned = notifyMentions({ actor: req.user, mentions, where: "comment", refId: post._id, body, blocked: req.blocked, shadow: req.shadow });
+      notifyComment({ post, actor: req.user, body, blocked: req.blocked, mentioned });
     }
   }
   const counted = req.shadow.size ? (await hiddenCommentCounts([post], req.shadow)).get(String(post._id)) || 0 : 0;
@@ -527,7 +553,7 @@ router.post("/connections/request", async (req, res) => {
     if (share) setShare(existing, req.user._id, share);
     if (accepting || share) await existing.save();
     if (accepting && !req.appHidden) {
-      pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) }, { from: req.user._id });
+      pushToUsers([existing.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(existing._id) }, { from: req.user._id, pref: "connections" });
     }
     return res.json(await connectionDTO(existing, req));
   }
@@ -542,7 +568,7 @@ router.post("/connections/request", async (req, res) => {
   await c.save();
   // A hidden person's request is saved (they see it as sent) but never reaches anyone.
   if (!req.blocked.has(toUserId) && !req.appHidden) {
-    pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id });
+    pushToUsers([toUserId], { title: `${req.user.name} wants to connect`, body: [req.user.jobTitle, req.user.organization].filter(Boolean).join(" · ") || "Open TTFC to respond.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id, pref: "connections" });
   }
   res.status(201).json(await connectionDTO(c, req));
 });
@@ -556,7 +582,7 @@ router.post("/connections/:id/respond", async (req, res) => {
   if (share) setShare(c, req.user._id, share);
   await c.save();
   if (c.status === "accepted" && !req.appHidden) {
-    pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id });
+    pushToUsers([c.fromUserId], { title: `${req.user.name} accepted your request`, body: "You're connected — say hello.", link: "ttfc://tab/network", kind: "conn", id: String(c._id) }, { from: req.user._id, pref: "connections" });
   }
   res.json(await connectionDTO(c, req));
 });
@@ -702,7 +728,7 @@ router.post("/messages/:userId", async (req, res) => {
   // Held messages wait for a moderator; only approved ones reach the phone. A hidden person's are saved and shown
   // to them as sent, but the other person never gets them (left out of their chats, unread counts and pushes).
   if (status === "approved" && !req.appHidden) {
-    pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) }, { from: req.user._id });
+    pushToUsers([to._id], { title: req.user.name, body, link: "ttfc://tab/network", thread: `dm.${req.user._id}`, kind: "dm", id: String(m._id) }, { from: req.user._id, pref: "messages" });
   }
   res.status(201).json(messageDTO(m.toObject(), req.user._id, { masked: req.appHidden }));
 });
@@ -716,7 +742,7 @@ async function pushApprovedMessage(m) {
       Block.exists({ $or: [{ userId: m.fromUserId, blockedId: m.toUserId }, { userId: m.toUserId, blockedId: m.fromUserId }] }),
     ]);
     if (!from || blocked) return;
-    pushToUsers([m.toUserId], { title: from.name, body: m.body, link: "ttfc://tab/network", thread: `dm.${m.fromUserId}`, kind: "dm", id: String(m._id) }, { from: m.fromUserId });
+    pushToUsers([m.toUserId], { title: from.name, body: m.body, link: "ttfc://tab/network", thread: `dm.${m.fromUserId}`, kind: "dm", id: String(m._id) }, { from: m.fromUserId, pref: "messages" });
   } catch (err) {
     console.error("APPROVED MESSAGE PUSH ERROR:", err?.message || err);
   }

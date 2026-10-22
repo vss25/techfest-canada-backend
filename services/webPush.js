@@ -150,8 +150,9 @@ const seg = (v) => (/^[A-Za-z0-9_-]{1,64}$/.test(str(v)) ? str(v) : "");
 /** The web app page a push opens (its router lives under /app/). The service worker may build its own
     from `thread`, `kind` and `from`; this is the default. Pure. */
 export function webUrlFor({ link = "", thread = "", kind = "" } = {}) {
-  const [, threadKind = "", threadId = ""] = /^(dm|group|disc)\.(.+)$/.exec(str(thread)) || [];
+  const [, threadKind = "", threadId = ""] = /^(dm|group|disc|post)\.(.+)$/.exec(str(thread)) || [];
   const id = seg(threadId);
+  if (id && threadKind === "post") return `/app/post/${id}`;
   if (id && threadKind === "dm") return `/app/chat/${id}`;
   if (id && threadKind === "group") return `/app/group/${id}`;
   if (id && threadKind === "disc") return `/app/discussion/${id}`;
@@ -170,26 +171,36 @@ export function webUrlFor({ link = "", thread = "", kind = "" } = {}) {
   return kind === "personal" || kind === "report" ? "/app/notifications" : "/app/";
 }
 
-/** The JSON a push carries: { title, body, link, thread, kind, id, url, from? }. `from` = whose action it
-    is (the sender of a chat message). Pure. */
+/** The JSON a push carries: { title, body, link, thread, kind, id, url, tag, from? }. `from` = whose action it
+    is (the sender of a chat message). `tag` (the thread, else the kind): the service worker shows the notification
+    with it, so a newer one about the same post / chat replaces the older one. Pure. */
 export function buildWebPayload({ title = "", body = "", link = "", thread = "", kind = "", id = "" } = {}, { from = "" } = {}) {
   const out = {
     title: str(title).slice(0, 120),
     body: str(body).slice(0, 400),
     link: str(link), thread: str(thread).slice(0, 64), kind: str(kind), id: str(id),
     url: webUrlFor({ link, thread, kind }),
+    tag: (str(thread) || str(kind)).slice(0, 64),
   };
   const sender = str(from) || (/^dm\.(.+)$/.exec(str(thread)) || [])[1] || "";
   if (sender) out.from = sender;
   return out;
 }
 
-/** web-push options for one notification: 12 h to live, chats "high" urgency. Pure. */
+/** The push service's Topic for a thread ("post.<id>" → "post-<id>"): an undelivered push with the same topic is
+    replaced by the newer one. Only [A-Za-z0-9_-], ≤ 32 characters; "" = none. Pure. */
+export const pushTopic = (thread) => {
+  const t = str(thread).replace(/\./g, "-");
+  return /^[A-Za-z0-9_-]{1,32}$/.test(t) ? t : "";
+};
+
+/** web-push options for one notification: 12 h to live, chats "high" urgency, the thread's topic. Pure. */
 export const sendOptions = (note, keys) => ({
   TTL: TTL_SECONDS,
   urgency: HIGH.has(str(note?.kind)) ? "high" : "normal",
   timeout: TIMEOUT_MS,
   vapidDetails: { subject: SUBJECT, publicKey: keys.publicKey, privateKey: keys.privateKey },
+  ...(pushTopic(note?.thread) ? { topic: pushTopic(note.thread) } : {}),
 });
 
 /** The push service says this subscription will never work again (remove it). Pure. */
@@ -241,10 +252,11 @@ export function pushToUsers(userIds, note, { from = "" } = {}) {
   })().catch((err) => console.error("WEB PUSH error:", err?.message || err));
 }
 
-/** Everyone with web push on (announcements), 200 people at a time. */
-export function pushToEveryone(note) {
+/** Everyone with web push on (announcements), 200 people at a time. `pref`: leave out who switched it off. */
+export function pushToEveryone(note, { pref = "" } = {}) {
   return (async () => {
-    const ids = (await User.find({ "webPushSubs.endpoint": { $exists: true }, banned: { $ne: true } }).select("_id").lean()).map((u) => u._id);
+    const ids = (await User.find({ "webPushSubs.endpoint": { $exists: true }, banned: { $ne: true }, ...(pref ? { [`notifyPrefs.${pref}`]: { $ne: false } } : {}) })
+      .select("_id").lean()).map((u) => u._id);
     for (let i = 0; i < ids.length; i += 200) await pushToUsers(ids.slice(i, i + 200), note);
   })().catch((err) => console.error("WEB PUSH broadcast error:", err?.message || err));
 }

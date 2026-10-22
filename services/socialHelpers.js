@@ -145,6 +145,9 @@ export function publicProfile(user, opts = {}) {
     `kind`: their person kind now, as on cards and the directory ("staff" | "volunteer" | "speaker" |
     "exhibitor" | "vendor" | ""). `authorTier`: the badge signal older app builds read: "Speaker" or "Exhibitor"
     from their types now (a person type, never a pass name), else what was stored when they commented. */
+/** Stored @mentions as the apps get them: [{ type: "user" | "speaker", id, name }]. */
+export const mentionList = (list) => (Array.isArray(list) ? list : []).map((m) => ({ type: m.type, id: String(m.id), name: m.name || "" }));
+
 export function commentDTO(c, author = null, ctx = {}) {
   const acc = author ? personAccess(author, ctx) : null;
   const stored = publicTier(c.authorTier);
@@ -155,7 +158,7 @@ export function commentDTO(c, author = null, ctx = {}) {
     authorAvatarUrl: author ? avatarFor(author) : "",
     authorTier: acc ? typesTier(acc.types) : stored,
     kind: acc ? acc.kind : stored === "Speaker" ? "speaker" : stored === "Exhibitor" ? "exhibitor" : "",
-    body: c.body, status: c.status, createdAt: c.createdAt,
+    body: c.body, mentions: mentionList(c.mentions), status: c.status, createdAt: c.createdAt,
   };
 }
 
@@ -189,7 +192,7 @@ export function postDTO(post, viewerId, avatars = new Map(), { staff = false } =
     likeCount: post.likeCount || 0,
     commentCount: post.commentCount || 0,
     likedByMe: (post.likes || []).some((l) => String(l) === me),
-    mentions: (post.mentions || []).map((m) => ({ type: m.type, id: String(m.id), name: m.name || "" })),
+    mentions: mentionList(post.mentions),
     canRemove: !!me && (String(post.authorId) === me || !!staff),
     status: post.status || "approved",
     createdAt: post.createdAt,

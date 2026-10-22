@@ -59,7 +59,7 @@ export function isConfigured() {
 export const cleanFcmToken = (t) => (typeof t === "string" && /^[A-Za-z0-9:_-]{20,4096}$/.test(t.trim()) ? t.trim() : "");
 
 /** The v1 messages:send body for one device. Pure, unit-tested. */
-export function buildFcmMessage(token, { title = "", body = "", link = "", thread = "", kind = "", id = "" } = {}) {
+export function buildFcmMessage(token, { title = "", body = "", link = "", thread = "", kind = "", id = "", url = "" } = {}) {
   const notification = {};
   if (title) notification.title = String(title).slice(0, 120);
   notification.body = String(body || "").slice(0, 400);
@@ -71,7 +71,7 @@ export function buildFcmMessage(token, { title = "", body = "", link = "", threa
       notification,
       android: { priority: "HIGH", notification: androidNote },
       // `thread` ("dm.<senderId>", "group.<id>"…) so a tap can open that chat.
-      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64) },
+      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64), url: String(url || "") },
     },
   };
 }
@@ -146,11 +146,12 @@ export function pushToUsers(userIds, note) {
   })().catch((err) => console.error("FCM error:", err.message));
 }
 
-/** Everyone on the Android app with a registered phone (announcements). */
-export function pushToEveryone(note) {
+/** Everyone on the Android app with a registered phone (announcements). `pref`: leave out who switched it off. */
+export function pushToEveryone(note, { pref = "" } = {}) {
   if (!isConfigured()) return;
   (async () => {
-    const ids = (await User.find({ "fcmTokens.0": { $exists: true }, banned: { $ne: true } }).select("_id").lean()).map((u) => u._id);
+    const ids = (await User.find({ "fcmTokens.0": { $exists: true }, banned: { $ne: true }, ...(pref ? { [`notifyPrefs.${pref}`]: { $ne: false } } : {}) })
+      .select("_id").lean()).map((u) => u._id);
     for (let i = 0; i < ids.length; i += 200) pushToUsers(ids.slice(i, i + 200), note);
   })().catch((err) => console.error("FCM broadcast error:", err.message));
 }

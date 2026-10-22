@@ -167,6 +167,11 @@ const userSchema = new mongoose.Schema(
     contactQrShare: { type: [String], default: undefined },
     // When they last opened each tab's activity (likes, comments, mentions, replies).
     activitySeen: { feed: { type: Date }, discussions: { type: Date } },
+    // Which pushes and emails they want (Oct 22 2026, services/notifyPrefs.js). Unset = on: only false turns one off.
+    notifyPrefs: {
+      messages: Boolean, comments: Boolean, mentions: Boolean, likes: Boolean,
+      groups: Boolean, connections: Boolean, announcements: Boolean, digestEmail: Boolean,
+    },
     avatarData:   { type: String, default: "", select: false }, // data:image/jpeg;base64,… (≤150 KB)
     avatarVersion: { type: Number, default: 0 },           // bumps on change; 0 = no photo
     // Consent recorded by the apps (server-stamped): 18+ self-confirmation and

@@ -329,7 +329,11 @@ test("the feed: Ann's posts, comments, likes and mentions are hers alone, and ot
   const benActivity = await ok(call("GET", "/api/social/activity?section=feed", { as: ben }));
   assert.ok(!benActivity.some((a) => a.actorId === idOf(ann)));
   assert.equal((await ok(call("GET", "/api/social/activity/unread", { as: ben }))).feed, 0);
-  assert.equal(pushes.length, 0, "no pushes");
+  // No pushes from Ann (her mention, comment and like); Ben's like of Cal's post tells Cal (Oct 22 2026 like pushes,
+  // sent after a throttle check, so wait for it).
+  await waitFor(() => pushes.length >= 1);
+  await pause(80);
+  assert.deepEqual(pushes.map((p) => [p.to, p.note.kind, p.note.body]), [[[idOf(cal)], "like", "Ben Normal liked your post"]]);
 
   // The moderator sees all of it, Ann's likes counted.
   const maxFeed = await ok(call("GET", "/api/social/feed", { as: max }));

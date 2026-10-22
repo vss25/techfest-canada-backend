@@ -271,10 +271,13 @@ test("routes: leaving is remembered (the job doesn't add them back); a registran
   // Messages in it push under the usual rules (the others in it, never the hidden member's).
   pushes.length = 0;
   await ok(call("POST", `/api/community/groups/${g._id}/messages`, { as: U.ann, body: { body: "See you at the front" } }), 201);
+  for (let i = 0; i < 100 && !pushes.length; i++) await pause(20);   // chat pushes go out after the throttle check (services/notify.js)
+  await pause(50);
   assert.equal(pushes.length, 1);
   assert.deepEqual(pushes[0].to.sort(), [String(U.cal._id), String(U.hal._id)].sort());
   pushes.length = 0;
   await ok(call("POST", `/api/community/groups/${g._id}/messages`, { as: U.hal, body: { body: "Hello?" } }), 201);
+  await pause(150);
   assert.equal(pushes.length, 0);                                                          // a hidden person's messages reach nobody
 });
 

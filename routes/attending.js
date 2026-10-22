@@ -12,6 +12,7 @@ import { postImageToLinkedin } from "../services/linkedinPost.js";
 import { verifyTrack } from "../services/trackToken.js";
 import { CAMPAIGNS, UNATTRIBUTED_POSTS, engagementKey } from "../services/engagement.js";
 import { trackLater } from "../services/engagementStore.js";
+import { recordAttendingShare } from "./linkedinShare.js";
 
 /* =========================================================
    /api/attending: the website's "I'm attending" page (/attending)
@@ -191,6 +192,8 @@ export async function attendingLinkedinCallback(req, res, next) {
       // Theirs in People when the page had their token; else counted without a name.
       const who = draft.trackEmail ? engagementKey({ c: CAMPAIGNS.attending, e: draft.trackEmail }) : null;
       trackLater(who || UNATTRIBUTED_POSTS, "post", { postUrl: url });
+      // Their account's "Post that you're attending" points (services/points.js), never in the way of the post.
+      if (draft.trackEmail) recordAttendingShare(draft.trackEmail, url).catch((err) => console.error("ATTENDING SHARE RECORD ERROR:", err?.message || err));
       return res.redirect(302, postReturnUrl(frontendUrl(), { post: url }));
     }
     return res.redirect(302, attendingReturnUrl(frontendUrl(), {

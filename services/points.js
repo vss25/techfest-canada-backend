@@ -23,6 +23,10 @@ import {
   SocialPost, SocialComment, SocialConnection,
   SessionRegistration, SessionQuestion, SessionVote,
 } from "../models/Social.js";
+import Attendee from "../models/Attendee.js";
+import EmailEngagement from "../models/EmailEngagement.js";
+import LinkedinShare from "../models/LinkedinShare.js";
+import { CAMPAIGNS } from "./engagement.js";
 import { avatarFor } from "./socialHelpers.js";
 import { SANITY_PROJECT } from "./rsvp.js";
 import { hiddenState, onHiddenChange, oids } from "./appHide.js";
@@ -48,6 +52,9 @@ export const RULES = Object.freeze([
   { key: "feed.post",          label: "Post on the feed",    description: "Each post (up to 3 a day).", points: 10, max: 3, per: "day", maxTotal: null },
   { key: "feed.comment",       label: "Comment",             description: "Each comment (up to 10 a day).", points: 3, max: 10, per: "day", maxTotal: null },
   { key: "feed.likes",         label: "Get likes",           description: "Each like your posts get from others (up to 25 per post).", points: 1, max: 25, per: "post", maxTotal: null },
+  // Oct 22 2026: only posts LinkedIn confirms through our "Post to LinkedIn" count (a share box or link can't be checked).
+  { key: "linkedin.attending", label: "Post that you're attending", description: "Tell your LinkedIn network you're attending, with Post to LinkedIn (once).", points: 50, max: 1, per: "total", maxTotal: null },
+  { key: "linkedin.share",     label: "Share a session on LinkedIn", description: "Each session discussion or poll you share with Post to LinkedIn (once each, up to 5).", points: 15, max: 5, per: "total", maxTotal: null },
 ].map((r) => Object.freeze(r)));
 
 /** Lowest total for each level, ascending. */
@@ -90,6 +97,8 @@ export function emptyCounts() {
     postsPerDay: [],            // approved posts per UTC day
     commentsPerDay: [],         // approved comments per UTC day
     likesPerPost: [],           // likes from others, one entry per approved post
+    linkedinAttending: false,   // a confirmed "I'm attending" LinkedIn post (models/LinkedinShare.js, or the email's page)
+    linkedinShares: 0,          // distinct session discussions / polls shared with a confirmed LinkedIn post
   };
 }
 
@@ -108,6 +117,8 @@ const COUNTERS = {
   "feed.post":          (c, r) => capEach(c.postsPerDay, r.max),
   "feed.comment":       (c, r) => capEach(c.commentsPerDay, r.max),
   "feed.likes":         (c, r) => capEach(c.likesPerPost, r.max),
+  "linkedin.attending": (c) => (c.linkedinAttending ? 1 : 0),
+  "linkedin.share":     (c, r) => capTotal(c.linkedinShares, r.max),
 };
 
 /** The level a total reaches. */
@@ -158,6 +169,8 @@ export function activityFromCounts(counts = {}) {
     "feed.post":          sum(c.postsPerDay),
     "feed.comment":       sum(c.commentsPerDay),
     "feed.likes":         sum(c.likesPerPost),
+    "linkedin.attending": c.linkedinAttending ? 1 : 0,
+    "linkedin.share":     whole(c.linkedinShares),
   };
   return Object.fromEntries(RULES.map((r) => [r.key, raw[r.key] ?? 0]));
 }
@@ -385,9 +398,42 @@ export function makeAgendaCache({
 
 const agenda = makeAgendaCache();
 
+/**
+ * LinkedIn posts LinkedIn confirmed, per person (Oct 22 2026): `attending` (a Set of user ids) and `shares`
+ * (Map user id → distinct items shared). "I'm attending" posts are matched by account (models/LinkedinShare.js:
+ * the apps' link, or the page's post resolved to an account), else by email: a post from the email's page counts
+ * for the account with that email, or that claimed a pass with it. `oid`: one person only.
+ */
+export async function linkedinCounts(oid = null) {
+  const [rows, posted] = await Promise.all([
+    LinkedinShare.aggregate([
+      { $match: oid ? { userId: oid } : {} },
+      { $group: { _id: { u: "$userId", k: "$kind" }, items: { $addToSet: "$itemKey" } } },
+    ]),
+    EmailEngagement.find({ campaign: CAMPAIGNS.attending, posts: { $gte: 1 }, email: { $ne: "" } }).select("email").lean(),
+  ]);
+  const attending = new Set();
+  const shares = new Map();
+  for (const r of rows) {
+    const u = String(r._id.u);
+    if (r._id.k === "attending") attending.add(u);
+    else shares.set(u, (shares.get(u) || 0) + (r.items || []).length);
+  }
+  const emails = [...new Set(posted.map((e) => String(e.email || "").toLowerCase()).filter(Boolean))];
+  if (emails.length) {
+    const [users, passes] = await Promise.all([
+      User.find({ email: { $in: emails }, ...(oid ? { _id: oid } : {}) }).select("_id").lean(),
+      Attendee.find({ email: { $in: emails }, claimedBy: oid ? oid : { $exists: true } }).select("claimedBy").lean(),
+    ]);
+    for (const u of users) attending.add(String(u._id));
+    for (const a of passes) if (a.claimedBy) attending.add(String(a.claimedBy));
+  }
+  return { attending, shares };
+}
+
 async function queryCounts(oid = null, hidden = []) {
   const p = countPipelines(oid, hidden);
-  const [sessions, saved, votes, questions, connections, posts, comments] = await Promise.all([
+  const [sessions, saved, votes, questions, connections, posts, comments, linkedin] = await Promise.all([
     agenda.get(),
     SessionRegistration.aggregate(p.saved),
     SessionVote.aggregate(p.votes),
@@ -395,8 +441,16 @@ async function queryCounts(oid = null, hidden = []) {
     SocialConnection.aggregate(p.connections),
     SocialPost.aggregate(p.posts),
     SocialComment.aggregate(p.comments),
+    linkedinCounts(oid),
   ]);
-  return mergeCounts({ saved, votes, questions, connections, posts, comments }, { sessions });
+  const map = mergeCounts({ saved, votes, questions, connections, posts, comments }, { sessions });
+  const get = (id) => {
+    if (!map.has(id)) map.set(id, emptyCounts());
+    return map.get(id);
+  };
+  for (const id of linkedin.attending) get(id).linkedinAttending = true;
+  for (const [id, n] of linkedin.shares) get(id).linkedinShares = n;
+  return map;
 }
 
 const isObjectId = (id) => /^[a-f0-9]{24}$/i.test(String(id || ""));

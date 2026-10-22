@@ -113,3 +113,53 @@ export async function postImageToLinkedin({ accessToken, personId, png, text, ti
   }
   throw lastErr;
 }
+
+const postUrlOf = (post) => {
+  const urn = String(post.headers?.["x-restli-id"] || post.headers?.["x-linkedin-id"] || post.data?.id || "");
+  return { urn, url: /^urn:li:(share|ugcPost):\d+$/.test(urn) ? `https://www.linkedin.com/feed/update/${urn}/` : "" };
+};
+
+/**
+ * A text post with a link card (Posts API "article": the link, its title and description), e.g. a session shared
+ * from the apps (Oct 22 2026, routes/linkedinShare.js), with the TTFC page tagged. Returns { urn, url }; throws
+ * LinkedIn's error otherwise. A refused tag doesn't stop the post: one more try without it.
+ */
+export async function postArticleToLinkedin({ accessToken, personId, text, link, title = "", description = "", mention = TTFC_PAGE, http = axios, versions = apiVersions() }) {
+  if (!accessToken || !personId || !/^https:\/\//.test(String(link || ""))) throw new Error("Missing token, member or link");
+  const author = `urn:li:person:${personId}`;
+  const plain = littleText(text);
+  const commentary = withPageMention(plain, mention);
+  let lastErr;
+  for (const version of versions) {
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      "LinkedIn-Version": version,
+      "X-Restli-Protocol-Version": "2.0.0",
+      "Content-Type": "application/json",
+    };
+    const body = {
+      author,
+      commentary,
+      visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      content: { article: { source: String(link), title: String(title || "").slice(0, 200), description: String(description || "").slice(0, 256) } },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+    };
+    try {
+      let post;
+      try {
+        post = await http.post(`${API}/posts`, body, { headers, timeout: 15000 });
+      } catch (err) {
+        const s = err?.response?.status;
+        if (commentary === plain || (s !== 400 && s !== 422)) throw err;
+        post = await http.post(`${API}/posts`, { ...body, commentary: plain }, { headers, timeout: 15000 });
+      }
+      return postUrlOf(post);
+    } catch (err) {
+      lastErr = err;
+      if (!isRetiredVersion(err)) throw err;
+    }
+  }
+  throw lastErr;
+}
