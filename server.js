@@ -7,6 +7,7 @@ import { startPriceScheduler } from "./services/scheduledPrices.js";
 import { startSessionGroups } from "./services/sessionGroups.js";
 import { startSpeakerPhotos } from "./services/speakerPhotoStore.js";
 import { startDigests } from "./services/digest.js";
+import { attendeeRouter as sosAttendeeRouter, staffRouter as sosStaffRouter } from "./routes/sos.js";   // Help & SOS
 import digestAdminRouter, { publicRouter as digestPublicRouter } from "./routes/digest.js";   // "What you missed" emails
 import { appRouter as linkedinAppRouter, publicRouter as linkedinSharePageRouter, linkedinShareCallback } from "./routes/linkedinShare.js";
 import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
@@ -164,6 +165,7 @@ app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
+app.use("/api/app/sos", sosAttendeeRouter);   // Help & SOS: attendees' urgent messages to staff (signed in)
 app.use("/api/app/digest", digestPublicRouter); // "What you missed" email: one-click unsubscribe (no sign-in)
 app.use("/api/app", linkedinAppRouter);       // GET /attending-link, POST /linkedin/share (signed in)
 app.use("/api/linkedin-share", linkedinSharePageRouter); // the website's /share/linkedin page (the link's token)
@@ -179,6 +181,7 @@ app.use("/api/console/rsvp-reminders", rsvpRemindersRouter); // RSVP reminder em
 app.use("/api/console/issued-passes", issuedPassesRouter); // Issue passes (before the console router)
 app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhibitor passes + manual PDF (before the console router)
 app.use("/api/console/purchase-email", purchaseEmailRouter); // the purchase confirmation's wording (before the console router)
+app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and moderators (app or admin sign-in), before the console router
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)

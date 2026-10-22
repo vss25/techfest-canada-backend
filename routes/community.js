@@ -18,8 +18,8 @@ import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import { viewerHide, isHidden, hiddenReplyCounts, visible, unseenOf } from "../services/appHide.js";
 import { SessionRegistration } from "../models/Social.js";
 import { membershipUpdate } from "../services/sessionGroups.js";
-import { avatarUrls, authorAvatar } from "../services/avatars.js";
-import { avatarFor, mentionList } from "../services/socialHelpers.js";
+import { authorInfo, authorFields, ownAuthorFields } from "../services/avatars.js";
+import { mentionList } from "../services/socialHelpers.js";
 import { notifyDiscussionReply, notifyGroupMessage, notifyMentions, resolveMentions } from "../services/notify.js";
 import { mentionedUserIds } from "../services/socialActivity.js";
 import GroupSeen from "../models/GroupSeen.js";
@@ -41,7 +41,7 @@ async function requireUser(req, res, next) {
     const h = req.headers.authorization;
     if (!h) return res.status(401).json({ error: "Unauthorized" });
     const decoded = jwt.verify(h.split(" ")[1], process.env.JWT_SECRET);
-    // + avatarVersion and email: their own avatar on what they post (avatarFor), as routes/social.js has them.
+    // + avatarVersion and email: their own avatar and speaker page on what they post (services/avatars.js), as routes/social.js has them.
     const user = await User.findById(decoded.id).select(`${RIGHTS_SELECT} avatarVersion email`);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
@@ -74,9 +74,9 @@ const isShadowed = (req, userId) => !!userId && req.shadow.has(String(userId));
 const isHiddenAuthor = async (userId, viewerId) => String(userId) !== String(viewerId) && isHidden(userId);
 /** Discussion cards for this viewer: replies and followers from hidden people don't count. */
 async function discussionsFor(req, list) {
-  const [replies, avatars] = await Promise.all([hiddenReplyCounts(list, req.shadow), avatarUrls(list.map((d) => d.authorId))]);
+  const [replies, authors] = await Promise.all([hiddenReplyCounts(list, req.shadow), authorInfo(list.map((d) => d.authorId))]);
   return list.map((d) => discussionDTO(d, me(req), {
-    shadow: req.shadow, hiddenReplies: replies.get(String(d._id)) || 0, authorAvatarUrl: authorAvatar(avatars, d.authorId),
+    shadow: req.shadow, hiddenReplies: replies.get(String(d._id)) || 0, ...authorFields(authors, d.authorId),
   }));
 }
 /** Moderators (the moderate right; staff accounts always) approve, see pending items and any group's chat. */
@@ -140,7 +140,7 @@ router.post("/discussions", needRight("startDiscussions"), async (req, res) => {
   });
   // @mentions are heard about once it's visible (a moderator's thread is approved at once; others wait for review).
   if (d.status === "approved" && !req.appHidden) mentionActivity(req, mentions, d._id, `${title}: ${body}`, "discussion");
-  res.status(201).json(discussionDTO(d, me(req), { authorAvatarUrl: avatarFor(req.user) }));
+  res.status(201).json(discussionDTO(d, me(req), ownAuthorFields(req.user)));
 });
 
 /* Follow / unfollow: { follow: true|false } → { ok, following, followerCount }.
@@ -170,10 +170,10 @@ router.get("/discussions/:id/replies", async (req, res) => {
     $or: [{ status: "approved" }, { authorId: req.user._id }],
   }).sort({ createdAt: 1 }).lean();
   const shown = replies.filter((r) => !req.unseen.has(String(r.authorId)));
-  const avatars = await avatarUrls(shown.map((r) => r.authorId));
+  const authors = await authorInfo(shown.map((r) => r.authorId));
   res.json(shown.map((r) => ({
     id: String(r._id), discussionId: String(r.discussionId), parentId: r.parentId ? String(r.parentId) : null,
-    authorId: String(r.authorId), authorName: r.authorName, authorAvatarUrl: authorAvatar(avatars, r.authorId), mentions: mentionList(r.mentions), body: r.body, status: r.status,
+    authorId: String(r.authorId), authorName: r.authorName, ...authorFields(authors, r.authorId), mentions: mentionList(r.mentions), body: r.body, status: r.status,
     mine: String(r.authorId) === me(req), createdAt: r.createdAt,
   })));
 });
@@ -232,7 +232,7 @@ router.post("/discussions/:id/replies", needRight("comment"), async (req, res) =
   }
   res.status(201).json({
     id: String(r._id), discussionId: String(d._id), parentId: parentId ? String(parentId) : null,
-    authorId: me(req), authorName: r.authorName, authorAvatarUrl: avatarFor(req.user), mentions: mentionList(r.mentions), body: r.body, status: r.status, mine: true,
+    authorId: me(req), authorName: r.authorName, ...ownAuthorFields(req.user), mentions: mentionList(r.mentions), body: r.body, status: r.status, mine: true,
     createdAt: r.createdAt, replyCount: Math.max(0, replyCount),
   });
 });
@@ -365,7 +365,7 @@ router.get("/groups/:id/messages", async (req, res) => {
   const filter = { groupId: g._id, $or: [{ status: "approved" }, { authorId: req.user._id }] };
   if (since && !isNaN(since)) filter.createdAt = { $gt: since };
   const msgs = (await GroupMessage.find(filter).sort({ createdAt: 1 }).limit(500).lean()).filter((m) => !req.unseen.has(String(m.authorId)));
-  const avatars = await avatarUrls(msgs.map((m) => m.authorId));
+  const authors = await authorInfo(msgs.map((m) => m.authorId));
   // They've seen this chat up to now (the "What you missed" email counts only later messages); not for ?peek=1 refreshes.
   if (req.query.peek !== "1") {
     GroupSeen.updateOne({ userId: req.user._id, groupId: g._id }, { $max: { at: new Date() } }, { upsert: true })
@@ -373,7 +373,7 @@ router.get("/groups/:id/messages", async (req, res) => {
   }
   res.json(msgs.map((m) => ({
     id: String(m._id), groupId: String(m.groupId), authorId: String(m.authorId), authorName: m.authorName,
-    authorAvatarUrl: authorAvatar(avatars, m.authorId), mentions: mentionList(m.mentions),
+    ...authorFields(authors, m.authorId), mentions: mentionList(m.mentions),
     body: m.body, status: m.status, mine: String(m.authorId) === me(req), createdAt: m.createdAt,
   })));
 });
@@ -398,7 +398,7 @@ router.post("/groups/:id/messages", async (req, res) => {
   }
   res.status(201).json({
     id: String(m._id), groupId: String(g._id), authorId: me(req), authorName: m.authorName,
-    authorAvatarUrl: avatarFor(req.user), mentions: mentionList(m.mentions), body: m.body, status: m.status, mine: true, createdAt: m.createdAt,
+    ...ownAuthorFields(req.user), mentions: mentionList(m.mentions), body: m.body, status: m.status, mine: true, createdAt: m.createdAt,
   });
 });
 

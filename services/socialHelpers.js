@@ -2,7 +2,7 @@ import { deliveryMedia } from "./cloudinary.js";
 import { publicTier, typesTier } from "./teamRoles.js";
 import { personAccess } from "./appRights.js";
 import { spotsOf } from "./availability.js";
-import { speakerPhotoFor } from "./speakerPhotos.js";
+import { speakerPhotoFor, speakerIdOf } from "./speakerPhotos.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -156,6 +156,9 @@ export function commentDTO(c, author = null, ctx = {}) {
     authorName: c.authorName,
     // Their photo now (an uploaded one, else a speaker's website photo), like a post's authorAvatarUrl.
     authorAvatarUrl: author ? avatarFor(author) : "",
+    // Tapping the name (Oct 22 2026): a website speaker's page when they're one (their Sanity id), else their
+    // profile by authorId.
+    authorSpeakerId: author ? speakerIdOf(author) : "",
     authorTier: acc ? typesTier(acc.types) : stored,
     kind: acc ? acc.kind : stored === "Speaker" ? "speaker" : stored === "Exhibitor" ? "exhibitor" : "",
     body: c.body, mentions: mentionList(c.mentions), status: c.status, createdAt: c.createdAt,
