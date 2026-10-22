@@ -1,11 +1,14 @@
 import express from "express";
 import Nomination from "../models/Nomination.js";
+import JuryAssignment from "../models/JuryAssignment.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import {
-  NOMINATION_STATUSES, cleanNominationPatch, isNominationEmail, nominationDetail, nominationRow, nominationsCsv,
-  parseNominationEmail,
+  CATEGORY_OPTIONS, NOMINATION_STATUSES, categoryChangeText, categoryOf, cleanCategoryChange, cleanFocusChange, cleanNominationPatch,
+  cleanRestoreWhat, focusChangeText, focusOf, isNominationEmail, nominationDetail, nominationRow, nominationsCsv, parseNominationEmail,
+  sameCategory, sameFocus, snapshotOf, submittedOf,
 } from "../services/nominations.js";
+import { forgetAwardApplications } from "./appAwards.js";
 
 /* =========================================================
    /api/console/nominations: Admin → Catalyst Awards → Nominations.
@@ -21,6 +24,17 @@ import {
           Reads the email service's log (Resend) for "[Catalyst Nomination]"
           emails, newest first, a batch per call: the page calls again with
           `cursor` until `done`. Already-saved emails are skipped.
+
+   Changing the award category and the nominee's focus (management, Oct 22 2026):
+   PATCH  /:id/category        { categoryType: "matrix", pillar, sector, note? }
+                               | { categoryType: "special", specialAward, note? } → { nomination, changed }
+   PATCH  /:id/focus           { nomineeSector?, nomineePillar?, note? } → { nomination, changed }
+   POST   /:id/restore-submitted { what: "category" | "focus" | "both" } → { nomination, changed }
+          Names from the canonical lists only (services/nominations.js PILLARS,
+          SECTORS, SPECIAL_AWARDS), else 400; the focus sector may also stay as
+          it is. The live fields change, so the jury, results, the apps' category
+          count, the CSV and the filters follow; the first change copies what
+          was submitted into `submitted` (once). Audited with labels only.
 ========================================================= */
 
 const router = express.Router();
@@ -112,11 +126,102 @@ router.post("/recover", requireManagement, async (req, res) => {
   res.json({ found, imported, cursor, done });
 });
 
+/** Jurors allocated to the nomination now, and assessments saved for it (submitted or draft, any allocation). */
+async function juryCounts(id) {
+  const rows = await JuryAssignment.find({ nomination: id }, { active: 1, "submission.submittedAt": 1, "draft.savedAt": 1 }).lean();
+  return {
+    assigned: rows.filter((a) => a.active).length,
+    scored: rows.filter((a) => a.submission?.submittedAt || a.draft?.savedAt).length,
+  };
+}
+
+const detailOf = async (n) => nominationDetail(n, { jury: await juryCounts(n._id) });
+
 router.get("/:id", async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Nomination not found" });
   const n = await Nomination.findById(req.params.id).lean();
   if (!n) return res.status(404).json({ error: "Nomination not found" });
-  res.json({ nomination: nominationDetail(n) });
+  res.json({ nomination: await detailOf(n), options: CATEGORY_OPTIONS });
+});
+
+/* ---------- the award category and the nominee's focus (management) ---------- */
+
+const PARTS = {
+  category: { same: sameCategory, of: categoryOf, text: categoryChangeText, label: "category" },
+  focus: { same: sameFocus, of: focusOf, text: focusChangeText, label: "focus" },
+};
+
+/** What was submitted, kept once: only set while there's no `submitted` yet (a second change never overwrites it). */
+async function keepSubmitted(before) {
+  if (submittedOf(before)) return;
+  await Nomination.updateOne({ _id: before._id, submitted: null }, { $set: { submitted: snapshotOf(before) } });
+}
+
+/**
+ * Changes `parts` ({ category?: values, focus?: values }) on the nomination. `restore`: back to what was
+ * submitted (the changed-by fields are cleared). → the response body, or null when it doesn't exist.
+ */
+async function change(req, before, parts, { note = "", restore = false } = {}) {
+  const set = {};
+  const lines = [];
+  for (const [part, values] of Object.entries(parts)) {
+    const P = PARTS[part];
+    const was = P.of(before);
+    // A restore clears who changed it even when the values already match (someone changed it back by hand).
+    if (P.same(was, values) && !restore) continue;
+    Object.assign(set, values);
+    if (restore) Object.assign(set, { [`${part}ChangedBy`]: "", [`${part}ChangedAt`]: null, [`${part}Note`]: "" });
+    else Object.assign(set, { [`${part}ChangedBy`]: by(req), [`${part}ChangedAt`]: new Date(), [`${part}Note`]: note });
+    if (!P.same(was, values)) lines.push(`${P.label}: ${P.text(was, values)}`);
+  }
+  if (!Object.keys(set).length) return { nomination: await detailOf(before), changed: false };
+  if (!restore) await keepSubmitted(before);
+  const n = await Nomination.findByIdAndUpdate(before._id, { $set: { ...set, updatedBy: by(req) } }, { returnDocument: "after" }).lean();
+  if (!n) return null;
+  if (lines.length) {
+    const action = restore ? "nomination_restore_submitted" : `nomination_${Object.keys(parts)[0]}`;
+    await audit(req, action, n._id, `${restore ? "restored as submitted, " : ""}${lines.join("; ")}${note ? " (with a note)" : ""}`);
+    forgetAwardApplications(); // the apps' category count follows at once on this server
+  }
+  return { nomination: await detailOf(n), changed: lines.length > 0 };
+}
+
+async function load(req, res) {
+  if (!isId(req.params.id)) { res.status(404).json({ error: "Nomination not found" }); return null; }
+  const n = await Nomination.findById(req.params.id).lean();
+  if (!n) { res.status(404).json({ error: "Nomination not found" }); return null; }
+  return n;
+}
+
+const send = (res, out) => (out ? res.json(out) : res.status(404).json({ error: "Nomination not found" }));
+
+router.patch("/:id/category", requireManagement, async (req, res) => {
+  const c = cleanCategoryChange(req.body || {});
+  if (!c.ok) return res.status(400).json({ error: c.error });
+  const before = await load(req, res);
+  if (!before) return;
+  send(res, await change(req, before, { category: c.set }, { note: c.note }));
+});
+
+router.patch("/:id/focus", requireManagement, async (req, res) => {
+  const before = await load(req, res);
+  if (!before) return;
+  const c = cleanFocusChange(req.body || {}, before);
+  if (!c.ok) return res.status(400).json({ error: c.error });
+  send(res, await change(req, before, { focus: c.set }, { note: c.note }));
+});
+
+router.post("/:id/restore-submitted", requireManagement, async (req, res) => {
+  const what = cleanRestoreWhat(req.body?.what);
+  if (!what) return res.status(400).json({ error: 'what must be "category", "focus" or "both".' });
+  const before = await load(req, res);
+  if (!before) return;
+  const sub = submittedOf(before);
+  if (!sub) return res.status(409).json({ error: "Nothing to restore: this nomination is as it was submitted." });
+  const parts = {};
+  if (what !== "focus") parts.category = categoryOf(sub);
+  if (what !== "category") parts.focus = focusOf(sub);
+  send(res, await change(req, before, parts, { restore: true }));
 });
 
 router.patch("/:id", async (req, res) => {

@@ -31,6 +31,141 @@ export function categoryShort(n = {}) {
   return (SPECIAL_AWARDS[n.specialAward] || "Special Recognition").replace(/ Award$/, "");
 }
 
+/* ---------- the canonical categories (5 pillars × 5 sectors + 3 special awards) ----------
+   Exactly the names the website's nomination form offers (website src/lib/catalystCategories.js,
+   used by src/components/NominationForm.jsx): what nominations store, the jury ranks by and the
+   apps count. Staff changes (below) must use one of these. */
+
+export const PILLARS = Object.freeze([
+  "AI & Machine Learning",
+  "Quantum Computing",
+  "Cybersecurity & Digital Trust",
+  "Robotics & Automation",
+  "CleanTech & Sustainability",
+]);
+
+export const SECTORS = Object.freeze([
+  "Financial Services & Banking",
+  "Healthcare & Life Sciences",
+  "Energy & Critical Infrastructure",
+  "Manufacturing, Supply Chain & Mobility",
+  "Public Sector, Defence & Security",
+]);
+
+/** For the admin form: { pillars, sectors, specialAwards: [{ key, label }] }. */
+export const CATEGORY_OPTIONS = Object.freeze({
+  pillars: PILLARS,
+  sectors: SECTORS,
+  specialAwards: Object.freeze(Object.entries(SPECIAL_AWARDS).map(([key, label]) => Object.freeze({ key, label }))),
+});
+
+/** "AI & Machine Learning · Healthcare & Life Sciences" / "FinTech" / "" (the nominee's focus pillar and sector). */
+export function focusLabel(n = {}) {
+  return [n.nomineePillar, n.nomineeSector].map((v) => String(v ?? "").trim()).filter(Boolean).join(" · ");
+}
+
+/* ---------- staff changes to the category and the nominee's focus ----------
+   The live fields (categoryType, pillar, sector, specialAward, nomineeSector, nomineePillar) are changed in
+   place, so the jury, the results, the apps' category count, the CSV and the filters follow; the first change
+   copies what was submitted into `submitted` (once, never overwritten). */
+
+export const CATEGORY_FIELDS = Object.freeze(["categoryType", "pillar", "sector", "specialAward"]);
+export const FOCUS_FIELDS = Object.freeze(["nomineeSector", "nomineePillar"]);
+export const SUBMITTED_FIELDS = Object.freeze([...CATEGORY_FIELDS, ...FOCUS_FIELDS]);
+export const NOTE_MAX = 500;
+export const RESTORE_WHAT = Object.freeze(["category", "focus", "both"]);
+
+const str = (v) => String(v ?? "");
+const pick = (n, keys) => Object.fromEntries(keys.map((k) => [k, str(n?.[k])]));
+
+/** The six values as they are now: what `submitted` is set to at the first change. */
+export const snapshotOf = (n = {}) => pick(n, SUBMITTED_FIELDS);
+export const categoryOf = (n = {}) => pick(n, CATEGORY_FIELDS);
+export const focusOf = (n = {}) => pick(n, FOCUS_FIELDS);
+
+/** What the nominator submitted (the six values), or null while nothing has been changed. */
+export const submittedOf = (n = {}) => (n?.submitted && typeof n.submitted === "object" ? snapshotOf(n.submitted) : null);
+
+const sameIn = (keys) => (a = {}, b = {}) => keys.every((k) => str(a[k]) === str(b[k]));
+export const sameCategory = sameIn(CATEGORY_FIELDS);
+export const sameFocus = sameIn(FOCUS_FIELDS);
+
+/** Does the live category / focus differ from what was submitted? */
+export function changedParts(n = {}) {
+  const sub = submittedOf(n);
+  return { category: !!sub && !sameCategory(sub, n), focus: !!sub && !sameFocus(sub, n) };
+}
+
+/** A name from `list`, matched without regard to case or extra spaces → the canonical name, else null. */
+function canonical(list, v) {
+  if (typeof v !== "string") return null;
+  const want = v.replace(/\s+/g, " ").trim().toLowerCase();
+  return list.find((x) => x.toLowerCase() === want) ?? null;
+}
+
+const noteOf = (v) => (typeof v === "string" ? v : "").replace(/[^\P{Cc}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, NOTE_MAX);
+
+/**
+ * PATCH /:id/category { categoryType, pillar?, sector?, specialAward?, note? } → { ok, set, note } | { ok: false, error }.
+ * Matrix: a pillar and a sector from the lists (specialAward cleared). Special: one of the three awards
+ * (pillar and sector cleared). Anything else is refused.
+ */
+export function cleanCategoryChange(body = {}) {
+  const type = body?.categoryType;
+  if (type === "matrix") {
+    const pillar = canonical(PILLARS, body.pillar);
+    if (!pillar) return { ok: false, error: `Pillar must be one of: ${PILLARS.join("; ")}.` };
+    const sector = canonical(SECTORS, body.sector);
+    if (!sector) return { ok: false, error: `Sector must be one of: ${SECTORS.join("; ")}.` };
+    return { ok: true, set: { categoryType: "matrix", pillar, sector, specialAward: "" }, note: noteOf(body.note) };
+  }
+  if (type === "special") {
+    const key = typeof body.specialAward === "string" ? body.specialAward.trim() : "";
+    if (!Object.hasOwn(SPECIAL_AWARDS, key)) return { ok: false, error: `Special award must be one of: ${Object.keys(SPECIAL_AWARDS).join(", ")}.` };
+    return { ok: true, set: { categoryType: "special", pillar: "", sector: "", specialAward: key }, note: noteOf(body.note) };
+  }
+  return { ok: false, error: 'categoryType must be "matrix" or "special".' };
+}
+
+/**
+ * PATCH /:id/focus { nomineeSector?, nomineePillar?, note? } → { ok, set, note } | { ok: false, error }.
+ * Either may be "" (none). The pillar comes from the pillar list; the sector from the sector list, or stays
+ * exactly as it is now (the form took it as free text, so "FinTech" can be kept while the pillar changes).
+ * `set` has both fields (the one not sent stays as it is).
+ */
+export function cleanFocusChange(body = {}, current = {}) {
+  const b = body && typeof body === "object" ? body : {};
+  const set = {};
+  if ("nomineePillar" in b) {
+    const v = b.nomineePillar;
+    if (v === "" || v === null) set.nomineePillar = "";
+    else {
+      const p = canonical(PILLARS, v);
+      if (!p) return { ok: false, error: `Focus pillar must be one of: ${PILLARS.join("; ")} (or none).` };
+      set.nomineePillar = p;
+    }
+  }
+  if ("nomineeSector" in b) {
+    const v = b.nomineeSector;
+    if (v === "" || v === null) set.nomineeSector = "";
+    else if (typeof v === "string" && v.trim() && v === str(current.nomineeSector)) set.nomineeSector = v;
+    else {
+      const s = canonical(SECTORS, v);
+      if (!s) return { ok: false, error: `Focus sector must be one of: ${SECTORS.join("; ")} (or none).` };
+      set.nomineeSector = s;
+    }
+  }
+  if (!Object.keys(set).length) return { ok: false, error: "Send nomineeSector and/or nomineePillar." };
+  return { ok: true, set: { ...focusOf(current), ...set }, note: noteOf(b.note) };
+}
+
+/** POST /:id/restore-submitted { what } → "category" | "focus" | "both", else null. */
+export const cleanRestoreWhat = (v) => (RESTORE_WHAT.includes(v) ? v : null);
+
+/** Audit lines: labels only, never a person ("AI & Machine Learning × Healthcare & Life Sciences → Rising Innovator"). */
+export const categoryChangeText = (a, b) => `${categoryShort(a)} → ${categoryShort(b)}`;
+export const focusChangeText = (a, b) => `${focusLabel(a) || "none"} → ${focusLabel(b) || "none"}`;
+
 const TEXT_FIELDS = {
   pillar: 120, sector: 120,
   nomineeName: 200, nomineeTitle: 200, nomineeOrganisation: 200, nomineeSector: 200, nomineeLocation: 200,
@@ -58,6 +193,7 @@ export function nominationFromForm(body = {}) {
 
 /** One row of Admin → Catalyst Awards → Nominations. */
 export function nominationRow(n) {
+  const changed = changedParts(n);
   return {
     id: String(n._id),
     category: categoryShort(n),
@@ -75,14 +211,39 @@ export function nominationRow(n) {
     hasNotes: !!n.adminNotes,
     source: n.source || "website",
     submittedAt: n.submittedAt || n.createdAt || null,
+    nomineeSector: n.nomineeSector || "",
+    nomineePillar: n.nomineePillar || "",
+    focus: focusLabel(n),
+    // Staff changed the category / the nominee's focus (it differs from what was submitted).
+    categoryChanged: changed.category,
+    focusChanged: changed.focus,
   };
 }
 
-/** Everything, for the detail drawer. */
-export function nominationDetail(n) {
+/** What was submitted, with its labels, for the admin panel (null while nothing has been changed). */
+function submittedDto(n) {
+  const sub = submittedOf(n);
+  return sub ? { ...sub, category: categoryShort(sub), categoryLabel: categoryLabel(sub), focus: focusLabel(sub) } : null;
+}
+
+/**
+ * Everything, for the detail drawer. `jury`: { assigned, scored } (allocations to jurors and assessments
+ * saved for it), for the warning before a category change.
+ */
+export function nominationDetail(n, { jury } = {}) {
   const out = { ...nominationRow(n), categoryLabel: categoryLabel(n), adminNotes: n.adminNotes || "", updatedBy: n.updatedBy || "",
     statusChangedAt: n.statusChangedAt || null };
   for (const k of Object.keys(TEXT_FIELDS)) out[k] = n[k] || "";
+  Object.assign(out, {
+    submitted: submittedDto(n),
+    categoryChangedBy: n.categoryChangedBy || "",
+    categoryChangedAt: n.categoryChangedAt || null,
+    categoryNote: n.categoryNote || "",
+    focusChangedBy: n.focusChangedBy || "",
+    focusChangedAt: n.focusChangedAt || null,
+    focusNote: n.focusNote || "",
+  });
+  if (jury) out.jury = { assigned: Number(jury.assigned) || 0, scored: Number(jury.scored) || 0 };
   return out;
 }
 
@@ -105,6 +266,7 @@ const cell = (v) => {
 };
 const CSV_COLUMNS = [
   ["Submitted", (n) => n.submittedAt || n.createdAt], ["Status", (n) => n.status || "pending"], ["Category", categoryLabel],
+  ["Submitted category", (n) => categoryLabel(submittedOf(n) || n)], ["Focus", focusLabel], ["Submitted focus", (n) => focusLabel(submittedOf(n) || n)],
   ["Nominee", (n) => n.nomineeName], ["Nominee type", (n) => n.nomineeType], ["Nominee title", (n) => n.nomineeTitle],
   ["Nominee organisation", (n) => n.nomineeOrganisation], ["Nominee location", (n) => n.nomineeLocation],
   ["Nominee email", (n) => n.nomineeEmail], ["Nominee phone", (n) => n.nomineePhone], ["Nominee website", (n) => n.nomineeWebsite],

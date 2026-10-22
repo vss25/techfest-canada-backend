@@ -128,6 +128,12 @@ test("what a juror sees: no emails, phones or nominator name; 'Self-nominated' /
   assert.match(v.statements[1].text, /\$2,500,000/); // money and percentages are left alone
   assert.equal(v.category, "Artificial Intelligence × Healthcare & Life Sciences");
   assert.equal(v.categoryKey, "matrix:Artificial Intelligence|Healthcare & Life Sciences");
+  assert.equal(v.focus, "");
+  // The focus staff set ("<pillar> · <sector>"); never what was submitted or who changed it.
+  const moved = J.nomineeForJury({ ...n, nomineePillar: "Quantum Computing", nomineeSector: "FinTech", categoryChangedBy: "Mia Example",
+    focusChangedBy: "Mia Example", categoryNote: "Better fit", submitted: { categoryType: "special", specialAward: "lifetime", nomineeSector: "Old" } });
+  assert.deepEqual([moved.nomineePillar, moved.nomineeSector, moved.focus], ["Quantum Computing", "FinTech", "Quantum Computing · FinTech"]);
+  for (const secret of ["Mia Example", "Better fit", "Lifetime", "Old", "submitted"]) assert.ok(!JSON.stringify(moved).includes(secret), secret);
   const sp = J.nomineeForJury({ categoryType: "special", specialAward: "rising", nomineeName: "Sam Example" });
   assert.equal(sp.specialAward, "Rising Innovator Award");
   assert.equal(sp.category, "Rising Innovator");

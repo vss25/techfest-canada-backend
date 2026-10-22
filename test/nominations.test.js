@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   categoryLabel, categoryShort, cleanNominationPatch, nominationFromForm, nominationsCsv, parseNominationEmail, isNominationEmail,
+  PILLARS, SECTORS, CATEGORY_OPTIONS, changedParts, cleanCategoryChange, cleanFocusChange, cleanRestoreWhat, focusLabel, nominationDetail,
+  nominationRow, snapshotOf, submittedOf,
 } from "../services/nominations.js";
 
 // The admin email exactly as routes/nominations.js builds it (trimmed to what the parser reads).
@@ -83,4 +85,73 @@ test("cleanNominationPatch and CSV", () => {
   assert.match(csv, /"'=cmd"/);
   assert.match(csv, /"He said ""hi"""/);
   assert.match(csv, /Lifetime Achievement Award/);
+});
+
+/* ---------- staff changes to the category and the nominee's focus (Oct 22 2026) ---------- */
+
+test("the canonical lists: the website form's 5 pillars × 5 sectors and the 3 special awards", () => {
+  assert.deepEqual(PILLARS, ["AI & Machine Learning", "Quantum Computing", "Cybersecurity & Digital Trust", "Robotics & Automation", "CleanTech & Sustainability"]);
+  assert.deepEqual(SECTORS, ["Financial Services & Banking", "Healthcare & Life Sciences", "Energy & Critical Infrastructure",
+    "Manufacturing, Supply Chain & Mobility", "Public Sector, Defence & Security"]);
+  assert.deepEqual(CATEGORY_OPTIONS.specialAwards, [
+    { key: "lifetime", label: "Lifetime Achievement Award" }, { key: "rising", label: "Rising Innovator Award" },
+    { key: "crossborder", label: "Cross-Border Impact Award" },
+  ]);
+  assert.ok(Object.isFrozen(PILLARS) && Object.isFrozen(SECTORS));
+});
+
+test("cleanCategoryChange: list names only (case and spaces forgiven), the other kind's fields cleared", () => {
+  assert.deepEqual(cleanCategoryChange({ categoryType: "matrix", pillar: "quantum  computing", sector: "Energy & Critical Infrastructure", note: " Moved\n after review " }),
+    { ok: true, set: { categoryType: "matrix", pillar: "Quantum Computing", sector: "Energy & Critical Infrastructure", specialAward: "" }, note: "Moved after review" });
+  assert.deepEqual(cleanCategoryChange({ categoryType: "special", specialAward: "rising", pillar: "Quantum Computing" }).set,
+    { categoryType: "special", pillar: "", sector: "", specialAward: "rising" });
+  for (const bad of [
+    {}, { categoryType: "Matrix", pillar: "Quantum Computing", sector: "Healthcare & Life Sciences" },
+    { categoryType: "matrix", pillar: "Quantum", sector: "Healthcare & Life Sciences" },
+    { categoryType: "matrix", pillar: "Quantum Computing", sector: "Healthcare" },
+    { categoryType: "matrix", pillar: { $ne: "" }, sector: "Healthcare & Life Sciences" },
+    { categoryType: "special", specialAward: "toString" }, { categoryType: "special", specialAward: "" },
+  ]) assert.equal(cleanCategoryChange(bad).ok, false, JSON.stringify(bad));
+  assert.equal(cleanCategoryChange({ categoryType: "special", specialAward: "lifetime", note: "x".repeat(900) }).note.length, 500);
+});
+
+test("cleanFocusChange: pillar and sector from the lists or none; the typed sector can stay as it is", () => {
+  const cur = { nomineeSector: "FinTech", nomineePillar: "" };
+  assert.deepEqual(cleanFocusChange({ nomineePillar: "ai & machine learning" }, cur).set, { nomineeSector: "FinTech", nomineePillar: "AI & Machine Learning" });
+  assert.deepEqual(cleanFocusChange({ nomineeSector: "FinTech", nomineePillar: "" }, cur).set, { nomineeSector: "FinTech", nomineePillar: "" });
+  assert.deepEqual(cleanFocusChange({ nomineeSector: "Financial Services & Banking" }, cur).set, { nomineeSector: "Financial Services & Banking", nomineePillar: "" });
+  assert.deepEqual(cleanFocusChange({ nomineeSector: null }, cur).set, { nomineeSector: "", nomineePillar: "" });
+  assert.equal(cleanFocusChange({ nomineeSector: "Retail" }, cur).ok, false);
+  assert.equal(cleanFocusChange({ nomineeSector: "fintech" }, cur).ok, false); // only exactly as stored
+  assert.equal(cleanFocusChange({ nomineePillar: "Blockchain" }, cur).ok, false);
+  assert.equal(cleanFocusChange({}, cur).ok, false);
+  assert.equal(cleanFocusChange({ note: "only a note" }, cur).ok, false);
+  assert.equal(cleanRestoreWhat("both"), "both");
+  assert.equal(cleanRestoreWhat("all"), null);
+});
+
+test("focus, the snapshot and what changed; the admin row and detail carry them", () => {
+  assert.equal(focusLabel({ nomineePillar: "Quantum Computing", nomineeSector: "FinTech" }), "Quantum Computing · FinTech");
+  assert.equal(focusLabel({ nomineeSector: " Health " }), "Health");
+  assert.equal(focusLabel({}), "");
+  const n = { _id: "n1", categoryType: "special", specialAward: "rising", pillar: "", sector: "", nomineeSector: "Health", nomineePillar: "",
+    nomineeName: "Riley Example", categoryChangedBy: "Mia Example", categoryChangedAt: new Date("2026-10-22T14:00:00Z"), categoryNote: "Better fit",
+    submitted: { categoryType: "matrix", pillar: "AI & Machine Learning", sector: "Healthcare & Life Sciences", specialAward: "", nomineeSector: "Health", nomineePillar: "" } };
+  assert.deepEqual(snapshotOf({ categoryType: "matrix", pillar: "P" }), { categoryType: "matrix", pillar: "P", sector: "", specialAward: "", nomineeSector: "", nomineePillar: "" });
+  assert.equal(submittedOf({}), null);
+  assert.deepEqual(changedParts(n), { category: true, focus: false });
+  assert.deepEqual(changedParts({ ...n, submitted: undefined }), { category: false, focus: false });
+  const row = nominationRow(n);
+  assert.deepEqual([row.category, row.focus, row.categoryChanged, row.focusChanged], ["Rising Innovator", "Health", true, false]);
+  const d = nominationDetail(n, { jury: { assigned: 2, scored: 1 } });
+  assert.equal(d.submitted.category, "AI & Machine Learning × Healthcare & Life Sciences");
+  assert.equal(d.submitted.categoryLabel, "The Catalyst Award for AI & Machine Learning in Healthcare & Life Sciences");
+  assert.equal(d.submitted.focus, "Health");
+  assert.deepEqual([d.categoryChangedBy, d.categoryNote, d.focusChangedBy, d.focusChangedAt], ["Mia Example", "Better fit", "", null]);
+  assert.deepEqual(d.jury, { assigned: 2, scored: 1 });
+  assert.equal(nominationDetail({ _id: "n2", categoryType: "matrix" }).submitted, null);
+
+  const csv = nominationsCsv([n]).split("\r\n");
+  assert.deepEqual(csv[0].split(",").slice(2, 6), ["Category", "Submitted category", "Focus", "Submitted focus"]);
+  assert.ok(csv[1].includes(",Rising Innovator Award,The Catalyst Award for AI & Machine Learning in Healthcare & Life Sciences,Health,Health,"), csv[1]);
 });
