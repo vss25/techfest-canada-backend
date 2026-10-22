@@ -10,6 +10,7 @@ import { ENQUIRE_EMAIL, FROM, appInviteEmailFor, buildAppInviteEmail, sendAppInv
 import { makeAppVisit } from "../routes/engagement.js";
 import { engagementKey, CAMPAIGNS } from "../services/engagement.js";
 import { signTrack, verifyTrack } from "../services/trackToken.js";
+import { verifyUnsubscribe } from "../services/unsubscribe.js";
 
 /* The app invite email (Oct 20 2026, the organiser: "send emails to all people associated with the event to
    download the web app … allow customization as usual … sent from enquire"). Fictional people, example.com. */
@@ -164,7 +165,15 @@ test("a real send: from and reply-to enquire@, List-Unsubscribe, the tracked but
   await sendAppInviteEmail({ to: "Jane.Doe@example.com", person: { firstName: "Jane" }, client, track: true, noteTracked: (k) => noted.push(k) });
   const m = calls[0];
   assert.equal(FROM, "The Tech Festival Canada <enquire@thetechfestival.com>");
-  assert.deepEqual([m.from, m.reply_to, m.headers["List-Unsubscribe"]], [FROM, ENQUIRE_EMAIL, "<mailto:enquire@thetechfestival.com?subject=unsubscribe>"]);
+  assert.deepEqual([m.from, m.reply_to], [FROM, ENQUIRE_EMAIL]);
+  // One-click unsubscribe (RFC 8058): their own signed https link first, the mailto second; the same link in the footer.
+  const unsub = /^<(https:\/\/[^>]+\/api\/unsubscribe\?t=([^>]+))>, <mailto:enquire@thetechfestival\.com\?subject=unsubscribe>$/.exec(m.headers["List-Unsubscribe"]);
+  assert.ok(unsub, m.headers["List-Unsubscribe"]);
+  assert.equal(verifyUnsubscribe(unsub[2]), "jane.doe@example.com");
+  assert.equal(m.headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click");
+  assert.ok(m.html.includes(`href="${unsub[1]}"`) && m.html.includes("Unsubscribe from TTFC emails"));
+  assert.ok(m.text.includes(`Unsubscribe from TTFC emails: ${unsub[1]}`));
+  assert.doesNotMatch(m.text, /Reply with "unsubscribe"/);
   assert.deepEqual(m.tags, [{ name: "campaign", value: APP_INVITE_CAMPAIGN }]);
   assert.deepEqual(m.attachments.map((a) => a.content_id), ["ttfc-logo", "ttfc-logo-dark"]);
   const token = /href="https:\/\/www\.thetechfestival\.com\/app\/#r=([^"]+)"/.exec(m.html)?.[1];
@@ -178,6 +187,11 @@ test("a real send: from and reply-to enquire@, List-Unsubscribe, the tracked but
   await sendAppInviteEmail({ to: "staff@example.com", person: { firstName: "Jane" }, client, subjectPrefix: "[Test] ", noteTracked: (k) => noted.push(k) });
   assert.equal(calls[1].subject, "[Test] Your TTFC 2026 app is ready");
   assert.doesNotMatch(calls[1].html, /#r=|\/api\/t\/o\//);
+  // …and no personal unsubscribe link: the preview page and the mailto only (a test can't unsubscribe anyone).
+  assert.equal(calls[1].headers["List-Unsubscribe"], "<mailto:enquire@thetechfestival.com?subject=unsubscribe>");
+  assert.equal(calls[1].headers["List-Unsubscribe-Post"], undefined);
+  assert.match(calls[1].html, /\/api\/unsubscribe\/preview/);
+  assert.doesNotMatch(calls[1].html, /\/api\/unsubscribe\?t=/);
   assert.equal(noted.length, 1);
   // Resend refusing it throws (recorded as failed by the sender).
   const no = { emails: { send: async () => ({ data: null, error: { message: "rate limited" } }) } };
@@ -186,6 +200,7 @@ test("a real send: from and reply-to enquire@, List-Unsubscribe, the tracked but
   const prev = appInviteEmailFor({ firstName: "Jane", email: "jane@example.com" });
   assert.match(prev.html, /data:image\/png;base64/);
   assert.equal(prev.tracked, false);
+  assert.match(prev.html, /\/api\/unsubscribe\/preview/);
   assert.equal(appInviteLink(""), APP_URL);
   assert.equal(appInviteLink("not a token"), APP_URL);
 });

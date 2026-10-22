@@ -126,7 +126,7 @@ export const DEFAULT_COPY = Object.freeze({
   appStoreLink: "Download on the App Store",
   signOff: "We can't wait to see you in Toronto. Questions? Just reply to this email.",
   signature: "The Tech Festival Canada team",
-  footer: "You're getting this because you're part of TTFC 2026. Prefer not to get emails like this? Reply with \"unsubscribe\".",
+  footer: "You're getting this because you're part of TTFC 2026.", // the "Unsubscribe from TTFC emails" link always follows (services/unsubscribe.js)
 });
 
 /** The optional lines, each with its own on / off. */

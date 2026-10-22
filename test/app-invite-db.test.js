@@ -169,7 +169,8 @@ test("a test to yourself, a send to one person (staff), its cool-down", { skip }
   assert.equal(one.status, 200, JSON.stringify(one.body));
   const m = sent.at(-1);
   assert.deepEqual([m.from, m.reply_to, m.to], ["The Tech Festival Canada <enquire@thetechfestival.com>", "enquire@thetechfestival.com", "ana.example@example.com"]);
-  assert.equal(m.headers["List-Unsubscribe"], "<mailto:enquire@thetechfestival.com?subject=unsubscribe>");
+  assert.match(m.headers["List-Unsubscribe"], /^<https:\/\/[^>]+\/api\/unsubscribe\?t=[^>]+>, <mailto:enquire@thetechfestival\.com\?subject=unsubscribe>$/);
+  assert.equal(m.headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click");
   assert.match(m.html, /\/app\/#r=/);
   const row = await M.CampaignSend.findOne({ campaign: "app-invite-2026", email: "ana.example@example.com" }).lean();
   assert.deepEqual([row.status, row.sends], ["sent", 1]);

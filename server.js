@@ -69,6 +69,8 @@ import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";
 import purchaseEmailRouter from "./routes/purchaseEmail.js";                                         // Admin › Purchase email
 import peopleRouter, { companiesRouter } from "./routes/people.js";                   // Admin → People directory + company logos
 import engagementRouter from "./routes/engagement.js";                              // GET /api/t/o/<token>.gif: email open pixel
+import unsubscribeRouter from "./routes/unsubscribe.js";                            // the unsubscribe link in every bulk email (no sign-in)
+import unsubscribesRouter from "./routes/unsubscribes.js";                          // Admin › Unsubscribed emails
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -129,6 +131,8 @@ app.use(express.json({ limit: "1mb" }));
 
 // The email open pixel: before the kill switch, so an email never shows a broken image.
 app.use("/api/t", engagementRouter);
+// The unsubscribe link in every bulk email: before the kill switch, so unsubscribing always works.
+app.use("/api/unsubscribe", unsubscribeRouter);
 
 /* ==========================================
    KILL SWITCH — site + app offline (staff routes keep working)
@@ -187,6 +191,7 @@ app.use("/api/console/exhibitor-passes", issuedPassRouter("exhibitor")); // Exhi
 app.use("/api/console/purchase-email", purchaseEmailRouter); // the purchase confirmation's wording (before the console router)
 app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and moderators (app or admin sign-in), before the console router
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
+app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)

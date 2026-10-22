@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import User from "../models/User.js";
 import JobLock from "../models/JobLock.js";
 import CampaignSend from "../models/CampaignSend.js";
+import Subscription from "../models/Subscription.js";
 import DigestState from "../models/DigestState.js";
 import GroupSeen from "../models/GroupSeen.js";
 import ActivityEvent from "../models/ActivityEvent.js";
@@ -17,6 +18,7 @@ import { isOnApp } from "./socialHelpers.js";
 import { usableEmail } from "./attendingCampaign.js";
 import { prefsOf } from "./notifyPrefs.js";
 import { trackSecret } from "./trackToken.js";
+import { isUnsubscribed } from "./unsubscribe.js";
 import { apiBaseUrl } from "./walletLink.js";
 import { snippet } from "./notify.js";
 import { nextDigest, slotKey, dayKey, afterSend, DELAY_MS } from "./digestRules.js";
@@ -44,7 +46,8 @@ import { SYSTEM_ID } from "./sessionGroups.js";
         blocked people, each item at most once (emailedUntil). Nothing
         left → no email.
    Recipients: app accounts with a real email, not suspended, with
-   "Email me a summary of what I missed" on. One email per person per
+   "Email me a summary of what I missed" on, and not on the
+   unsubscribed list (services/unsubscribe.js; checked at send time). One email per person per
    slot (a CampaignSend row "digest:<YYYY-MM-DD>T<HH:MM>" + email,
    claimed before sending), at most RUN_LIMIT a run, a short gap
    between sends, a retry with backoff when Resend is busy, and a
@@ -327,7 +330,7 @@ export async function runDigests({ now = new Date(), owner = INSTANCE, send = se
         break;
       }
       const user = await User.findById(s._id).select(RECIPIENT_SELECT).lean();
-      if (!canGetDigest(user)) {
+      if (!canGetDigest(user) || (await isUnsubscribed(Subscription, user.email))) {
         await DigestState.updateOne({ _id: s._id }, { $unset: { pendingSince: 1 } });
         out.skipped++;
         continue;

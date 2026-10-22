@@ -262,7 +262,7 @@ router.get("/export", requireManagement, wrap(async (req, res) => {
 const REMINDER_GAP_MS = 600;
 const REMINDER_MAX = 500; // emails per run; run it again for the rest (anyone reminded is then skipped)
 const reminderRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
-const sendReminder = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
+const sendReminder = makeReminderSender({ store: campaignSendStore(CampaignSend, { Subscription }), send: sendRsvpReminder });
 const FILTER_KEYS = ["q", "type", "pass", "value", "rsvp", "exhibitor", "rsvpEmail", "vip", "status", "attending"];
 const pickFilters = (src = {}) => Object.fromEntries(FILTER_KEYS.filter((k) => typeof src?.[k] === "string" && src[k]).map((k) => [k, String(src[k]).slice(0, 120)]));
 
@@ -315,7 +315,7 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
       await sendSequentially(todo, async (t) => {
         try {
           const out = await sendReminder(t, by);
-          if (out === "skipped") reminderJob.state.skipped++; else reminderJob.state.sent++;
+          if (out === "skipped" || out === "unsubscribed") reminderJob.state.skipped++; else reminderJob.state.sent++;
         } catch (err) {
           reminderJob.state.failed++;
           failures.push(`${t.email}: ${String(err?.message || err).slice(0, 80)}`);
@@ -343,7 +343,7 @@ router.post("/reminder", requireManagement, wrap(async (req, res) => {
 const nudgeRuns = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
 const singleSends = makeLimiter(SINGLE_SEND_LIMIT); // one-person reminders and nudges from a profile, per staff member
 const sendNudge = makeReminderSender({
-  store: campaignSendStore(CampaignSend, { campaign: ATTENDING_CAMPAIGN, cooldownMs: NUDGE_COOLDOWN_MS }),
+  store: campaignSendStore(CampaignSend, { campaign: ATTENDING_CAMPAIGN, cooldownMs: NUDGE_COOLDOWN_MS, Subscription }),
   send: ({ to, row, track }) => sendAttendingEmail({ to, recipient: row, track }),
 });
 
@@ -397,7 +397,7 @@ router.post("/nudge", requireManagement, wrap(async (req, res) => {
       await sendSequentially(todo, async (t) => {
         try {
           const out = await sendNudge(t, by);
-          if (out === "skipped") attendingJob.state.skipped++; else attendingJob.state.sent++;
+          if (out === "skipped" || out === "unsubscribed") attendingJob.state.skipped++; else attendingJob.state.sent++;
         } catch (err) {
           attendingJob.state.failed++;
           failures.push(`${t.email}: ${String(err?.message || err).slice(0, 80)}`);
@@ -590,6 +590,7 @@ const sendOne = (kind) => wrap(async (req, res) => {
   const action = reminder ? "people_rsvp_reminder_one" : "people_attending_nudge_one";
   try {
     const sentAt = await (reminder ? sendReminder : sendNudge)(t, by);
+    if (sentAt === "unsubscribed") return res.status(409).json({ code: "unsubscribed", error: "They unsubscribed from our emails." });
     if (sentAt === "skipped") {
       return res.status(409).json({ code: "skipped", error: reminder ? "They were reminded very recently, or someone is sending to them right now." : "They were emailed very recently, or someone is sending to them right now." });
     }
@@ -617,6 +618,7 @@ router.post("/:id/app-invite", wrap(async (req, res) => {
   try {
     const [template, swag] = await Promise.all([loadInviteTemplate(EmailTemplate), loadSwag()]);
     const sentAt = await makeInviteSender({ CampaignSend, template, swag })(row, String(req.user.email || req.user._id));
+    if (sentAt === "unsubscribed") return res.status(409).json({ code: "unsubscribed", error: "They unsubscribed from our emails." });
     if (sentAt === "skipped") return res.status(409).json({ code: "skipped", error: "They were emailed very recently, or someone is sending to them right now." });
     await audit(req, "people_app_invite_one", "person", p.id, `${p.name} <${row.email}>${note}`);
     return res.json({ sent: true, email: row.email, sentAt });

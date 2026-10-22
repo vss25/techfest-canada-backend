@@ -12,6 +12,7 @@ import {
 } from "../services/attendingCampaign.js";
 import { attendingEmailFor, sendAttendingEmail } from "../services/attendingEmail.js";
 import { attendingJob } from "../services/attendingNudge.js";
+import { isUnsubscribed } from "../services/unsubscribe.js";
 
 /* =========================================================
    /api/console/attending-campaign: the "I'm attending" email
@@ -124,6 +125,8 @@ async function claim(r, by) {
 }
 
 async function sendOne(r, by) {
+  // The last check: someone who unsubscribed after the list was read (services/unsubscribe.js) is left out.
+  if (await isUnsubscribed(Subscription, r.email)) { attendingJob.state.skipped++; return; }
   if (!(await claim(r, by))) { attendingJob.state.skipped++; return; }
   try {
     const data = await sendAttendingEmail({ to: r.email, recipient: r, track: true });

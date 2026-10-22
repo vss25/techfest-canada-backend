@@ -13,6 +13,7 @@
 ========================================================= */
 
 import User from "../models/User.js";
+import SubscriptionModel from "../models/Subscription.js";
 import { APP_INVITE_CAMPAIGN, COOLDOWN_MS, inviteSendKey } from "./appInvite.js";
 import { TEMPLATE_KEY, templateCopy, templateSet } from "./appInviteCopy.js";
 import { sendAppInviteEmail } from "./appInviteEmail.js";
@@ -58,16 +59,17 @@ export async function onAppNow(row) {
 }
 
 /**
- * sendTo(row, by, { force }) → the Date it went, "skipped" (someone else has it, or sent within the cool-down) or, with
+ * sendTo(row, by, { force }) → the Date it went, "unsubscribed" (on the unsubscribe list now: checked just before the
+ * email, services/unsubscribe.js), "skipped" (someone else has it, or sent within the cool-down) or, with
  * `recheck` (sends that skip people already on the app), "usingApp" (they signed in since the list was read).
  * Throws when the email service refuses it (recorded as failed). `template`: loadInviteTemplate's result; `swag`: the
  * contest's settings (services/swagRules.js swagSettings): while it's on the email carries the offer and the send is
  * claimed under the swag version's key.
  */
-export function makeInviteSender({ CampaignSend, template, swag = null, recheck = false, send = sendAppInviteEmail }) {
+export function makeInviteSender({ CampaignSend, Subscription = SubscriptionModel, template, swag = null, recheck = false, send = sendAppInviteEmail }) {
   const on = !!swag?.enabled;
   const sendTo = makeReminderSender({
-    store: campaignSendStore(CampaignSend, { campaign: inviteSendKey(on), cooldownMs: COOLDOWN_MS }),
+    store: campaignSendStore(CampaignSend, { campaign: inviteSendKey(on), cooldownMs: COOLDOWN_MS, Subscription }),
     send: ({ to, row, track }) => send({ to, person: row, copy: template?.copy || {}, options: template?.options, swag: on ? swag : null, track }),
   });
   return async (row, by, opts) => (recheck && (await onAppNow(row)) ? "usingApp" : sendTo(row, by, opts));

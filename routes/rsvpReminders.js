@@ -66,7 +66,7 @@ const job = reminderJob;
 const jobView = () => job.view();
 
 // Claim in CampaignSend, send through Resend, record the result (shared with routes/people.js).
-const sendTo = makeReminderSender({ store: campaignSendStore(CampaignSend), send: sendRsvpReminder });
+const sendTo = makeReminderSender({ store: campaignSendStore(CampaignSend, { Subscription }), send: sendRsvpReminder });
 
 router.get("/", async (req, res) => {
   const { rows, counts } = await currentRows();
@@ -110,6 +110,7 @@ router.post("/send-one", requireManagement, async (req, res) => {
   const by = String(req.user.email || req.user._id);
   try {
     const sentAt = await sendTo(r, by, { force: true });
+    if (sentAt === "unsubscribed") return res.status(409).json({ code: "unsubscribed", error: "They unsubscribed from our emails." });
     if (sentAt === "skipped") return res.status(409).json({ error: "Someone else is sending to them right now." });
     await audit(req, "rsvp_reminder_send_one", email);
     return res.json({ sent: true, email, sentAt });
@@ -140,7 +141,7 @@ router.post("/send-all", requireManagement, async (req, res) => {
       await sendSequentially(todo, async (r) => {
         try {
           const out = await sendTo(r, by);
-          if (out === "skipped") job.state.skipped++; else job.state.sent++;
+          if (out === "skipped" || out === "unsubscribed") job.state.skipped++; else job.state.sent++;
         } catch (err) {
           job.state.failed++;
           throw err;

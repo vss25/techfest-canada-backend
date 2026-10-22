@@ -3,6 +3,7 @@ import Subscription from "../models/Subscription.js";
 import Audience from "../models/Audience.js";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { sendUnsubscribeConfirmationEmail, sendWelcomeEmail } from "../services/emailService.js";
+import { recordUnsubscribe } from "../services/unsubscribe.js";
 
 const router = express.Router();
 
@@ -92,14 +93,9 @@ router.post("/unsubscribe", async (req, res) => {
       return res.status(400).json({ error: "Email is required" });
     }
 
-    const subscription = await Subscription.findOne({ email: email.toLowerCase() });
-
-    if (!subscription) {
-      return res.json({ message: "Not found or already unsubscribed" });
-    }
-
-    subscription.subscribed = false;
-    await subscription.save();
+    // On the one unsubscribe list every bulk email reads (a row is made when there's none).
+    const done = await recordUnsubscribe(Subscription, email, { source: "website" });
+    if (!done) return res.status(400).json({ error: "Invalid email format" });
 
     try {
       await removeSubscriber(email.toLowerCase());
@@ -201,13 +197,9 @@ router.post("/unsubscribe/confirm/:campaignId/:email", async (req, res) => {
       }
     }
 
-    // 2. Also update Subscription model if exists
-    const subscription = await Subscription.findOne({ email: emailLower });
-    if (subscription) {
-      subscription.subscribed = false;
-      await subscription.save();
-      console.log(`[UNSUBSCRIBE] Updated subscription: ${emailLower}`);
-    }
+    // 2. The one unsubscribe list every bulk email reads (a row is made when there's none)
+    await recordUnsubscribe(Subscription, emailLower, { source: "campaign-link" });
+    console.log(`[UNSUBSCRIBE] On the unsubscribe list: ${emailLower}`);
 
     // 3. Sync with MailerLite
     try {
