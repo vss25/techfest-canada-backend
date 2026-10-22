@@ -1,5 +1,5 @@
 import {
-  PERSON_TYPES, isStaff, typeInfo, publicTypes, cleanTypes, storedTypes, autoTypes, holdsPass, badgeTypes, legacyVip,
+  PERSON_TYPES, isStaff, typeInfo, publicTypes, cleanTypes, storedTypes, autoTypes, holdsPass, legacyVip,
 } from "./teamRoles.js";
 
 /* =========================================================
@@ -138,8 +138,8 @@ export function personAccess(user, ctx = {}) {
   const info = typeInfo(user, ctx.exhibitors || null);
   return {
     ...info,
-    // What other people see: their types plus the VIP badge (never rights).
-    publicTypes: publicTypes(badgeTypes(info.types, info.vip)),
+    // What other people see: their badge types (never rights; never VIP since Oct 21 2026).
+    publicTypes: publicTypes(info.types),
     rights: effectiveRights(info.types, ctx.matrix, user, ctx.flags),
   };
 }

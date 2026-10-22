@@ -87,7 +87,7 @@ export function userCard(user, { exhibitors = null, matrix = undefined, self = f
     // Message / Connect buttons; routes correct it per viewer and the server still decides.
     acceptsMessages: acc.rights.receiveMessages,
     acceptsRequests: acc.rights.receiveRequests,
-    // "staff" | "volunteer" | "vip" | "speaker" | "exhibitor" | "vendor" | "" (+ booth for exhibitors).
+    // "staff" | "volunteer" | "speaker" | "exhibitor" | "vendor" | "" (+ booth for exhibitors). Never "vip" (Oct 21 2026).
     kind: acc.kind,
     booth: acc.booth,
     // Public types only (never attendee), in badge order: types[0] === kind.
@@ -134,7 +134,7 @@ export function publicProfile(user, opts = {}) {
 }
 
 /** A comment as the apps see it. `author`: the commenter's account (CARD_SELECT), or null when it's gone.
-    `kind`: their person kind now, as on cards and the directory ("staff" | "volunteer" | "vip" | "speaker" |
+    `kind`: their person kind now, as on cards and the directory ("staff" | "volunteer" | "speaker" |
     "exhibitor" | "vendor" | ""). `authorTier`: the badge signal older app builds read: "Speaker" or "Exhibitor"
     from their types now (a person type, never a pass name), else what was stored when they commented. */
 export function commentDTO(c, author = null, ctx = {}) {

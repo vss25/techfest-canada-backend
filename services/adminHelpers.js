@@ -84,6 +84,10 @@ export const CONTENT_KEYS = {
   "site.ticket_sales_open": true,          // off = buy buttons disabled, message shown
   "site.ticket_sales_message": "Ticket sales are paused right now. Please check back soon.",
   "site.nominations_open": true,
+  /* "Show award applications in the app" (Oct 21 2026): the Catalyst Awards Applications list in the apps and the
+     web app (GET /api/app/awards/applications, services/awardApplications.js). Off = the list is empty
+     ({ enabled: false }) and the apps hide the Applications entry; the category count still shows. */
+  "site.award_applications": true,
   "site.volunteer_open": true,
   "site.show_agenda": true,
   "flag.pwaPrompt": false,                 // on = the website offers "install the app" (the PWA at /app/)

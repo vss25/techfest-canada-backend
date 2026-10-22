@@ -43,7 +43,19 @@ const groupSchema = new Schema({
   ownerName:   { type: String, required: true },
   members:     { type: [Types.ObjectId], default: [], index: true },
   status:      { type: String, enum: STATUS, default: "pending", index: true },   // new groups go to review
+  // Session chats (Oct 21 2026, services/sessionGroups.js): made by the server 30 min before an agenda session,
+  // one per session (the unique index below), owned by the system (ownerId SYSTEM_ID). Unset on people's groups.
+  sessionId:       { type: String },          // the id the apps use for the session (Sanity sessionId, else _id)
+  sessionDocId:    { type: String },          // the Sanity _id (registrations may carry either)
+  sessionStartsAt: { type: Date },
+  sessionEndsAt:   { type: Date },
+  system:          { type: Boolean },
+  welcomePostedAt: { type: Date },            // the one welcome message was posted (claimed before posting)
+  // People who left a session chat themselves: never added back automatically (registering again does).
+  leftBy:          { type: [Types.ObjectId], default: undefined },
 }, { timestamps: true });
+groupSchema.index({ sessionId: 1 }, { unique: true, partialFilterExpression: { sessionId: { $type: "string" } } });
+groupSchema.index({ sessionDocId: 1 }, { partialFilterExpression: { sessionDocId: { $type: "string" } } });
 
 const groupMessageSchema = new Schema({
   groupId:    { type: Types.ObjectId, ref: "CommunityGroup", required: true, index: true },

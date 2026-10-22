@@ -125,8 +125,8 @@ const idOf = async (q) => (await call("GET", `/api/console/people?q=${encodeURIC
 
 test("/auth/me profileTag: every colour, in the organiser's order, with the other fields unchanged", { skip }, async () => {
   const want = {
-    vera: { key: "vip", label: "VIP" },            // VIP + speaker → VIP
-    pip: { key: "vip", label: "VIP" },             // VIP from his pass (Attendee.vip)
+    vera: { key: "speaker", label: "Speaker" },    // VIP + speaker → speaker (no VIP tag since Oct 21 2026)
+    pip: { key: "pass", label: "Power" },          // VIP from his pass (Attendee.vip): his pass, green
     max: { key: "media", label: "Media" },         // media + speaker → media
     sol: { key: "speaker", label: "Speaker" },     // a Speaker Pass
     sam: { key: "staff", label: "Staff" },         // a staff account

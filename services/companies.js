@@ -86,4 +86,5 @@ export const LOGO_SOURCE_LABELS = {
   wikimedia: "Wikimedia Commons",
   url: "Image link pasted by staff",
   upload: "File uploaded by staff",
+  auto: "Found automatically (the apps' organisations list)",   // services/organisations.js; never a choice staff send
 };

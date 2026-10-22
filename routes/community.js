@@ -17,6 +17,8 @@ import { isScope, markTyping, stopTyping, whoIsTyping } from "../services/typing
 import { personAccess, rightError } from "../services/appRights.js";
 import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import { viewerHide, isHidden, hiddenReplyCounts, visible, unseenOf } from "../services/appHide.js";
+import { SessionRegistration } from "../models/Social.js";
+import { membershipUpdate } from "../services/sessionGroups.js";
 
 /* =========================================================
    /api/community — discussions (threaded replies) and groups
@@ -204,20 +206,47 @@ router.post("/discussions/:id/replies", needRight("comment"), async (req, res) =
 
 /* ================= GROUPS ================= */
 
-/** `shadow`: hidden people, who don't count as members for this viewer. */
+/** `shadow`: hidden people, who don't count as members for this viewer. `sessionId`: the agenda session a session
+    chat belongs to (services/sessionGroups.js), null for people's groups; `system`: made by the server. */
 const groupDTO = (g, viewer, shadow) => ({
   id: String(g._id), name: g.name, description: g.description, tags: g.tags || [],
   ownerId: String(g.ownerId), ownerName: g.ownerName, memberCount: visible(g.members, shadow).length,
   joined: (g.members || []).some((m) => String(m) === viewer),
   status: g.status, createdAt: g.createdAt,
+  sessionId: g.sessionId || null, system: g.system === true,
 });
 
+const isSessionGroup = (g) => typeof g?.sessionId === "string" && !!g.sessionId;
+/** The session ids (either kind) this person registered for. */
+const myRegistrations = async (req) => (await SessionRegistration.find({ userId: req.user._id }).select("sessionId").lean()).map((r) => r.sessionId);
+
+/* People's groups as before (approved ones, and my own), plus the session chats I can see: the ones I'm in or
+   registered for (moderators: all). A session chat isn't listed for everyone, so the list isn't fifty sessions. */
 router.get("/groups", async (req, res) => {
-  const list = await CommunityGroup.find({
-    $or: [{ status: "approved" }, { ownerId: req.user._id }],
-  }).sort({ createdAt: -1 }).limit(100).lean();
+  const regs = await myRegistrations(req);
+  const sessionFilter = isModerator(req) ? { sessionId: { $type: "string" } }
+    : { sessionId: { $type: "string" }, $or: [{ members: req.user._id }, { sessionId: { $in: regs } }, { sessionDocId: { $in: regs } }] };
+  const [list, sessions] = await Promise.all([
+    CommunityGroup.find({ sessionId: { $not: { $type: "string" } }, $or: [{ status: "approved" }, { ownerId: req.user._id }] })
+      .sort({ createdAt: -1 }).limit(100).lean(),
+    CommunityGroup.find({ ...sessionFilter, status: "approved" }).sort({ sessionStartsAt: 1 }).limit(200).lean(),
+  ]);
   // A group a hidden person started isn't there for anyone else.
-  res.json(list.filter((g) => !isShadowed(req, g.ownerId)).map((g) => groupDTO(g, me(req), req.shadow)).sort((a, b) => b.memberCount - a.memberCount));
+  res.json([...list, ...sessions].filter((g) => !isShadowed(req, g.ownerId)).map((g) => groupDTO(g, me(req), req.shadow)).sort((a, b) => b.memberCount - a.memberCount));
+});
+
+/* The chat of one agenda session (either of its ids) → the group, or 404 when it has none yet (it opens 30 min
+   before the session) or this person can't see it (not in it, not registered, not a moderator). */
+router.get("/groups/session/:sessionId", async (req, res) => {
+  const id = String(req.params.sessionId || "").slice(0, 80);
+  const g = id ? await CommunityGroup.findOne({ $or: [{ sessionId: id }, { sessionDocId: id }], system: true, status: "approved" }).lean() : null;
+  if (!g) return res.status(404).json({ error: "Not found" });
+  const member = (g.members || []).some((m) => String(m) === me(req));
+  if (!member && !isModerator(req)) {
+    const regs = await myRegistrations(req);
+    if (!regs.includes(g.sessionId) && !(g.sessionDocId && regs.includes(g.sessionDocId))) return res.status(404).json({ error: "Not found" });
+  }
+  res.json(groupDTO(g, me(req), req.shadow));
 });
 
 router.post("/groups", needRight("createGroups"), async (req, res) => {
@@ -236,6 +265,19 @@ router.post("/groups", needRight("createGroups"), async (req, res) => {
 router.post("/groups/:id/join", async (req, res) => {
   const g = await CommunityGroup.findById(req.params.id);
   if (!g || g.status !== "approved" || isShadowed(req, g.ownerId)) return res.status(404).json({ error: "Not found" });
+  if (isSessionGroup(g)) {
+    // A session chat: leaving is remembered (the job doesn't add them back); joining needs a registration for the
+    // session (or the moderate right). One atomic update, so the job topping it up at the same moment can't undo it.
+    const member = g.members.some((m) => String(m) === me(req));
+    if (!member && !isModerator(req)) {
+      const regs = await myRegistrations(req);
+      if (!regs.includes(g.sessionId) && !(g.sessionDocId && regs.includes(g.sessionDocId))) {
+        return res.status(403).json({ error: "Save this session to your agenda to join its chat." });
+      }
+    }
+    const after = await CommunityGroup.findByIdAndUpdate(g._id, membershipUpdate(req.user._id, !member), { returnDocument: "after" }).lean();
+    return res.json(groupDTO(after || g, me(req), req.shadow));
+  }
   const i = g.members.findIndex((m) => String(m) === me(req));
   if (i >= 0) g.members.splice(i, 1); else g.members.push(req.user._id);
   await g.save();

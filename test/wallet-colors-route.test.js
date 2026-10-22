@@ -98,7 +98,7 @@ const viaLink = (ticketId) => fetch(`${base}/pass/${ticketId}?sig=${signTicketId
 
 test("signed in (apps, web app, website): the account's Profile colour", async () => {
   assert.deepEqual(await colours(await viaApp("pow500000001", ID("a"))),
-    { bg: "rgb(245, 196, 0)", fg: "rgb(61, 46, 0)", label: "rgb(92, 69, 0)", qr: "TECHFEST:pow500000001" });           // VIP gold
+    { bg: "rgb(208, 31, 47)", fg: "rgb(255, 255, 255)", label: "rgb(250, 212, 216)", qr: "TECHFEST:pow500000001" });  // VIP speaker: red, no gold
   assert.equal((await colours(await viaApp("pow500000002", ID("b")))).bg, "rgb(11, 61, 145)");                    // media blue
   assert.equal((await colours(await viaApp("pow500000003", ID("c")))).bg, "rgb(24, 169, 87)");                    // a pass: green
   // Staff fetching Pat's pass with a password sign-in get Pat's colour, not staff purple.
@@ -110,13 +110,13 @@ test("signed in (apps, web app, website): the account's Profile colour", async (
 });
 
 test("the signed email link: an account's ticket gets the account's colour", async () => {
-  assert.equal((await colours(await viaLink("pow500000001"))).bg, "rgb(245, 196, 0)");
+  assert.equal((await colours(await viaLink("pow500000001"))).bg, "rgb(208, 31, 47)");
   assert.equal((await colours(await viaLink("pow500000002"))).bg, "rgb(11, 61, 145)");
 });
 
 test("the signed email link for a pass-only person: their Attendee record decides", async () => {
-  const gia = await colours(await viaLink("pow500000010"));                                                       // marked VIP
-  assert.deepEqual([gia.bg, gia.fg, gia.qr], ["rgb(245, 196, 0)", "rgb(61, 46, 0)", "TECHFEST:pow500000010"]);
+  const gia = await colours(await viaLink("pow500000010"));                                                       // marked VIP: her Power Pass
+  assert.deepEqual([gia.bg, gia.fg, gia.qr], ["rgb(24, 169, 87)", "rgb(5, 46, 22)", "TECHFEST:pow500000010"]);
   assert.equal((await colours(await viaLink("spk500000012"))).bg, "rgb(208, 31, 47)");                            // a Speaker Pass: red
   assert.equal((await colours(await viaLink("con500000013"))).bg, "rgb(24, 169, 87)");                            // exhibitor: green
   assert.deepEqual(await colours(await viaLink("con500000011")),

@@ -15,11 +15,12 @@ import { profileTagOf, profileTagOfPass } from "./profileTag.js";
    Since Oct 20 2026 the pass is in the holder's Profile colour
    (the organiser: "the pass in apple wallet is the same as the hue
    they're getting in the profile section (golden pass for vip,
-   etc.)"): services/profileTag.js decides (VIP > Media > Speaker >
-   Staff > Volunteer > any other pass), WALLET_COLORS has the
-   background, values and labels for each, and someone with no tag
-   keeps the purple pass. On the light passes (VIP gold, Volunteer
-   orange, other passes green) the logo's words are dark
+   etc.)"): services/profileTag.js decides (Media > Speaker > Staff >
+   Volunteer > any other pass; VIP left it on Oct 21 2026: "Don't
+   label anyone as VIP", so there's no gold pass any more),
+   WALLET_COLORS has the background, values and labels for each, and
+   someone with no tag keeps the purple pass. On the light passes
+   (Volunteer orange, other passes green) the logo's words are dark
    (assets/wallet/dark). Wallet draws the QR on its own white panel,
    whatever the colours. A pass already in someone's Wallet keeps the
    colours it was added with (no Wallet web service): adding it again
@@ -60,7 +61,6 @@ const rgb = (hex) => {
 /** The pass's colours for each Profile tag (services/profileTag.js), the same hue as the Profile page. `logo`:
     which logo the colour needs ("dark": the words in dark ink, for the light backgrounds). */
 export const WALLET_COLORS = Object.freeze({
-  vip: Object.freeze({ background: "#F5C400", foreground: "#3D2E00", label: "#5C4500", logo: "dark" }),
   media: Object.freeze({ background: "#0B3D91", foreground: "#FFFFFF", label: "#C9D7F2", logo: "light" }),
   speaker: Object.freeze({ background: "#D01F2F", foreground: "#FFFFFF", label: "#FAD4D8", logo: "light" }),
   staff: Object.freeze({ background: "#7B2FD0", foreground: "#FFFFFF", label: "#E3D2F7", logo: "light" }),
@@ -78,15 +78,15 @@ export function walletColorsFor(tag) {
 
 /**
  * The Profile tag of whoever holds the pass, from the records the route found (pure; the route loads them):
- *   account   their User (role, types, typesOff, vip, tickets): the same tag GET /auth/me sends, with
- *             `index` (services/exhibitorCache.js loadExhibitors) for a pass of theirs marked VIP / Media / exhibitor
+ *   account   their User (role, types, typesOff, tickets): the same tag GET /auth/me sends, with
+ *             `index` (services/exhibitorCache.js loadExhibitors) for a pass of theirs marked Media / exhibitor
  *   attendee  a pass-only person's Attendee record (no account has the ticket)
  * → { key, label } | null
  */
 export function walletTagFor({ account = null, attendee = null, index = null } = {}) {
   if (account) {
-    const { types, vip } = typeInfo(account, index);
-    return profileTagOf(account, { types, vip });
+    const { types } = typeInfo(account, index);
+    return profileTagOf(account, { types });
   }
   return attendee ? profileTagOfPass(attendee) : null;
 }
