@@ -13,6 +13,7 @@ import { canUseStaffSignIn } from "../services/teamRoles.js";
 import { accessOf } from "../services/rightsStore.js";
 import { ticketsWithExtras, EXTRA_FIELDS, EXTRA_SELECT } from "../services/passExtras.js";
 import { profileTagOf } from "../services/profileTag.js";
+import { spotsOf } from "../services/availability.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -162,6 +163,7 @@ router.get("/me", async (req, res) => {
       : [];
     res.json({
       ...profile, tickets: ticketsWithExtras(profile.tickets, { types, vip, attendees: switched }), types, rights,
+      availabilitySpots: spotsOf(profile),   // where they'll be per block (services/availability.js)
       profileTag: profileTagOf(user.toObject(), { types, vip }),
     });
 

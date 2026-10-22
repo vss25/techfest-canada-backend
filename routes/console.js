@@ -16,6 +16,7 @@ import { pwaStats, clampDays } from "../services/pwaStats.js";
 import { deleteAccount } from "../services/accountDeletion.js";
 import { pushToUsers, pushToEveryone } from "../services/push.js";
 import { trimBody, threadKey } from "../services/socialHelpers.js";
+import { spotsOf, spotsPatch } from "../services/availability.js";
 import { cleanRole, typeInfo, PERSON_TYPES } from "../services/teamRoles.js";
 import {
   DEFAULT_MATRIX, RIGHTS, RIGHT_LABELS, INBOUND_RIGHTS, ADMIN_POWERS, mergeMatrix, cleanMatrix, matrixChanges,
@@ -232,6 +233,7 @@ router.get("/users/:id", async (req, res) => {
   res.json({
     // types / typesOff (stored), autoTypes, holdsPass, effectiveTypes and rights: services/appRights.js consoleTypes.
     user: { ...u, id: String(u._id), messagesOff: !!u.messagesOff, requestsOff: !!u.requestsOff, ...consoleTypes(u, ctx),
+      availabilitySpots: spotsOf(u),
       appHidden: hide ? { at: hide.at, byName: hide.byName, reason: hide.reason } : null },
     activity: summarize(events),
     events: events.slice(0, 200),
@@ -287,6 +289,9 @@ router.patch("/users/:id", async (req, res) => {
   // staffRole only means something for staff. An unset one counts as management
   // (accounts from before levels existed), so someone newly made staff starts at "staff".
   if (changed.includes("role")) u.staffRole = u.role === "admin" ? "staff" : undefined;
+  // Where they'll be per block (services/availability.js): only blocks in availabilitySlots, as in the app.
+  const spots = spotsPatch(req.body, u, changed.includes("availabilitySlots") ? u.availabilitySlots : undefined).availabilitySpots;
+  if (spots && JSON.stringify(spots) !== JSON.stringify(u.availabilitySpots || {})) { u.availabilitySpots = spots; u.markModified("availabilitySpots"); changed.push("availabilitySpots"); }
   for (const [k, v] of Object.entries(typed.set)) { u[k] = v; changed.push(k); }
   for (const [k, v] of Object.entries(vipped.set)) { u[k] = v; changed.push(k); }
   // The attendee-list switch is staff-only now: record that staff made the call (services/directoryHide.js).

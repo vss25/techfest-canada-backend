@@ -1,6 +1,7 @@
 import { deliveryMedia } from "./cloudinary.js";
 import { publicTier, typesTier } from "./teamRoles.js";
 import { personAccess } from "./appRights.js";
+import { spotsOf } from "./availability.js";
 /* Pure helpers for routes/social.js — kept separate so they're unit-testable. */
 
 /** Stable key for a 1:1 thread regardless of who writes first. */
@@ -75,9 +76,11 @@ export function userCard(user, { exhibitors = null, matrix = undefined, self = f
     topics: Array.isArray(user.topics) ? user.topics : [],
     tier: self ? tier : typesTier(acc.types),
     tagline: user.tagline || "",
-    // When/where they're happy to meet — they chose to share this.
+    // When/where they're happy to meet — they chose to share this. Place of a block =
+    // availabilitySpots[id] || meetingSpot (services/availability.js).
     availabilitySlots: Array.isArray(user.availabilitySlots) ? user.availabilitySlots : [],
     meetingSpot: user.meetingSpot || "",
+    availabilitySpots: spotsOf(user),
     avatarUrl: avatarPath(user._id || user.id, user.avatarVersion),
     onApp: isOnApp(user),
     // Their receive rights (types + staff switches, services/appRights.js). False only hides the
@@ -93,7 +96,26 @@ export function userCard(user, { exhibitors = null, matrix = undefined, self = f
 }
 
 /** Fields userCard reads. Every query that builds cards must select these. */
-export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot messagesOff requestsOff types typesOff vip";
+export const CARD_SELECT = "name role jobTitle organization linkedinUrl country topics tickets avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot availabilitySpots messagesOff requestsOff types typesOff vip";
+
+/**
+ * A 1:1 message as the apps see it: thread items, the send answer and the chat list's lastMessage.
+ * Read receipts (Oct 21 2026), only meaningful on the viewer's own messages: `deliveredAt` (the other
+ * person's app fetched it) and `readAt` (they opened the chat), Date or null; a read message counts as
+ * delivered. Held / hidden messages carry what was stored (nothing for a held one: no ticks, a clock).
+ * `masked`: the viewer mustn't be able to tell what happens to their messages (they're hidden from the
+ * app, or the other person blocked them): their approved ones read as delivered when sent, never read.
+ */
+export function messageDTO(m, viewerId, { masked = false } = {}) {
+  const sentByMe = String(m.fromUserId) === String(viewerId);
+  let deliveredAt = m.deliveredAt || m.readAt || null;
+  let readAt = m.readAt || null;
+  if (sentByMe && masked) {
+    deliveredAt = m.status === "approved" ? m.createdAt || null : null;
+    readAt = null;
+  }
+  return { id: String(m._id), body: m.body, sentByMe, status: m.status, createdAt: m.createdAt, deliveredAt, readAt };
+}
 
 /** Fields a person's full profile page shows (GET /api/social/users/:id). */
 export const PROFILE_SELECT = `${CARD_SELECT} fieldOfWork jobLevel objectives`;

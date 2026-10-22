@@ -23,6 +23,8 @@ import User from "../models/User.js";
 const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 const MAX_TOKENS_PER_USER = 5;
 const CHANNEL_ID = "ttfc_updates";
+// Direct messages have their own channel in the Android app (1.0.2+), so people can tune them separately.
+const DM_CHANNEL_ID = "ttfc_dm";
 
 /** Service-account JSON from env: raw JSON or base64 of it. Null when unusable. */
 export function parseServiceAccount(raw) {
@@ -61,14 +63,15 @@ export function buildFcmMessage(token, { title = "", body = "", link = "", threa
   const notification = {};
   if (title) notification.title = String(title).slice(0, 120);
   notification.body = String(body || "").slice(0, 400);
-  const androidNote = { channel_id: CHANNEL_ID };
+  const androidNote = { channel_id: kind === "dm" ? DM_CHANNEL_ID : CHANNEL_ID };
   if (thread) androidNote.tag = String(thread).slice(0, 64);
   return {
     message: {
       token,
       notification,
       android: { priority: "HIGH", notification: androidNote },
-      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || "") },
+      // `thread` ("dm.<senderId>", "group.<id>"…) so a tap can open that chat.
+      data: { link: String(link || ""), kind: String(kind || ""), id: String(id || ""), thread: String(thread || "").slice(0, 64) },
     },
   };
 }

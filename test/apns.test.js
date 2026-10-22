@@ -8,7 +8,7 @@ test("payload: alert, sound, thread and app fields; long text is capped", () => 
   assert.equal(p.aps.alert.body.length, 400);
   assert.equal(p.aps.sound, "default");
   assert.equal(p.aps["thread-id"], "dm.1");
-  assert.deepEqual([p.link, p.kind, p.id], ["ttfc://tab/network", "dm", "m1"]);
+  assert.deepEqual([p.link, p.kind, p.id, p.thread], ["ttfc://tab/network", "dm", "m1", "dm.1"]);
   assert.equal(buildPayload({ body: "hi" }).aps.alert.title, undefined);
 });
 

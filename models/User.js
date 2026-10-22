@@ -151,7 +151,10 @@ const userSchema = new mongoose.Schema(
     jobLevel:     { type: String, default: "" },
     objectives:   { type: [String], default: [] },        // what they want from TTFC
     availabilitySlots: { type: [String], default: [] },   // when they're free to meet
-    meetingSpot:  { type: String, default: "" },
+    meetingSpot:  { type: String, default: "" },          // the default place for every block
+    // Where they'll be per block (Oct 21 2026): { "d1-12": "Expo floor", … }, only blocks in availabilitySlots,
+    // cleaned by services/availability.js. A block without an entry uses meetingSpot.
+    availabilitySpots: { type: mongoose.Schema.Types.Mixed, default: undefined },
     // Contact card (services/contactCard.js): the ways people can reach them, ≤ 12, in their order.
     // `account: true` = the sign-in email (value never stored, read from `email`). Shared per
     // connection (SocialConnection fromShare / toShare). Unset contactCardSavedAt = never saved:
@@ -175,6 +178,10 @@ const userSchema = new mongoose.Schema(
     apnsTokens:   { type: [{ token: String, env: String, updatedAt: Date }], default: [], select: false },
     // Android (FCM) registration tokens, same rules (newest last, max 5).
     fcmTokens:    { type: [{ token: String, updatedAt: Date }], default: [], select: false },
+    // Web Push subscriptions of the web app (services/webPush.js), same rules (newest last, max 5;
+    // an endpoint belongs to one account only).
+    webPushSubs:  { type: [{ _id: false, endpoint: String, p256dh: String, auth: String, ua: String, updatedAt: Date }],
+                    default: [], select: false },
 
     tickets: [ticketSchema],
 
@@ -190,6 +197,7 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ "appHidden.at": 1 }, { sparse: true });   // the hidden set (services/appHide.js)
+userSchema.index({ "webPushSubs.endpoint": 1 }, { sparse: true });   // one owner per endpoint, web push fan-out
 
 const User = mongoose.model("User", userSchema);
 
