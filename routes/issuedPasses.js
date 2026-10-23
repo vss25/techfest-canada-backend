@@ -127,7 +127,8 @@ export function issuedPassRouter(kindName = "issued") {
     }
     next();
   };
-  const DEFAULT_CC = () => String(process.env[kind.ccEnv] ?? process.env.ISSUED_PASS_CC ?? process.env.SPEAKER_CC ?? "lubna@thetechfestival.com")
+  // Nobody is copied unless the env says so (the organiser, Oct 23 2026: "remove lubna from cc from all rsvp emails").
+  const DEFAULT_CC = () => String(process.env[kind.ccEnv] ?? process.env.ISSUED_PASS_CC ?? process.env.SPEAKER_CC ?? "")
     .split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
   const find = (id) => (isId(id) ? Attendee.findOne({ _id: id, ...SCOPE }).select(PASS_FIELDS).lean() : null);
 
