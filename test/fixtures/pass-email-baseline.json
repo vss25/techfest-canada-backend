@@ -98,49 +98,49 @@
   "purchase: connect": {
     "subject": "You're in — your TTFC 2026 Connect Pass is confirmed 🎟",
     "preheader": "Connect Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
-    "html": "f30e12fed7e381910254b7b97e6be37c7e30d4324935cc8275ae0492d7a0adc9",
-    "text": "bae0ff14b15429f143d55dccc26deb3dde0361e85e9b64e0e483731f12bafbc4"
+    "html": "d1d45a84a3f6f913d4713da89a1026d5dbeee4bb1fab55cf4a4aaccbbfcc7735",
+    "text": "4a5440a6a793fe607c3a05d279183c55cb30e687d69e95e2dd369dda022e8eb4"
   },
   "purchase: influence": {
     "subject": "You're in — your TTFC 2026 Influence Pass is confirmed 🎟",
     "preheader": "Influence Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
-    "html": "3e381d43af3d6025766d5627bff7b04616887dab8e33d91d36ecd3949d160f05",
-    "text": "06dd7c6a4e4b445d489a9e7f4b7f1bbed3163cfa728a7e0f32e48b4073651960"
+    "html": "eaa3461750327a3de9720d7d292cf967a6b5d3c52a14703a48195f54f8ae8e28",
+    "text": "800451b6f32df14460dc02ae230acc607092256874283d1746919aa9eea39863"
   },
   "purchase: power": {
     "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
     "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
-    "html": "487082d39dc3562f76a4e3dcd68375f71954d053077c7b536ebb0a9271481a09",
-    "text": "d0cddf69ea3d1f0f7e749e1f63a198138842c528144c42d0f16f118690ede481"
+    "html": "b9dd0977983c74a15a9cceaae4ed960281abe57c1f761e73a1c327e51787fcb8",
+    "text": "7e53a1b49058def40d20f0e2c54b9e76f8675466a1727bf533e4b7d9c3a16ce5"
   },
   "purchase: apex": {
     "subject": "You're in — your TTFC 2026 Apex Pass is confirmed 🎟",
     "preheader": "Apex Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached and it's ready for Apple Wallet.",
-    "html": "33116096af4698203f8305a9ead0701dc9444d1bf4934e5597351bd4f8eab032",
-    "text": "6056830de4053313bf86178bb517c407efd8af1422b090c7149b7352c79f1218"
+    "html": "d95beeb4ee5f5010200fb1b4ade55b2692cc419ad513e42dbbe31b6508a64425",
+    "text": "5ec982818ff07b2a38e106f9d3080efac3584f45e8f17d643448aac8c176df1a"
   },
   "purchase: power with CxO": {
     "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
     "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
-    "html": "8b99e2647d50a0bd2e593562b0f178690441df5fdc1ed73d0425f275f358cc3b",
-    "text": "0874125a0fe2a0393ee809aff59c1a9f955ac7f0b784c8d5b6c5fc3aa783414b"
+    "html": "f41a82f8094677ee35f1333299d496edf3c295071b25e7286ee57b46dc6293a4",
+    "text": "a97fec7e53e9757b96a04e9a4355972a7898feaf725854c6e07ae8fb69b19c09"
   },
   "purchase: apex without CxO": {
     "subject": "You're in — your TTFC 2026 Apex Pass is confirmed 🎟",
     "preheader": "Apex Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
-    "html": "28d2acf1893298972f8405990b2f754fb5d7ddc23bf1393a3d7aab652d86680f",
-    "text": "87ba5d2b3c9bd3da970734b0cb5bad5f5dacf22a444ce97a81b57e07bd8ac3a9"
+    "html": "645497500093375f54c3811e0e1545092fe56b19e16b1852a83d2523b29fab90",
+    "text": "65f622c6d4928eeac5454a4344019144037ef0f029300dcd2a3cfb320542297f"
   },
   "purchase: guest, no logo": {
     "subject": "You're in — your TTFC 2026 Power Pass is confirmed 🎟",
     "preheader": "Power Pass · October 26–27, 2026 · The Westin Harbour Castle, Toronto. Your ticket PDF is attached.",
-    "html": "334b31f4f0dee8c195bfc3af6fbcfa864dee6c9b0a4192a6d565ebf07d61d300",
-    "text": "be054a8f15196e95e245fa44609c21cb89622efdd120da6242ba3f5860ba048d"
+    "html": "3eddfa5e728d898049c4f1ccf611c32c067dc98cc912efd33cc620b73fdb60b6",
+    "text": "43c7030c229659599d95f2afcb54b83de7a5d629dbcbb6003ae235d156d8207c"
   },
   "purchase: booth": {
     "subject": "Your TTFC 2026 Exhibition Booth — Gold is confirmed",
     "preheader": "Exhibition Booth — Gold confirmed for October 26–27, 2026 at The Westin Harbour Castle, Toronto.",
-    "html": "1818fcbb10301bab95d1f08c30feacd2d0aac1cfa452e544d7ad7fca06a83473",
-    "text": "7912512fbbebe0818e512e9ad06a341c57c269d2c0f76bedb691090039a2e46a"
+    "html": "48c2f940b7b2dcb44f3506824834276d81251947ce20a17a7117a78079a12829",
+    "text": "147ad46109ee4ce03b07b36981d6b3814f8f91e10944c03c3a6c5ef81c67c79e"
   }
 }

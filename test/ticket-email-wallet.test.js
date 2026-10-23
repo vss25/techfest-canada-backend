@@ -97,8 +97,12 @@ test("email contains the wallet link, QR, inclusions, app note and plain text", 
   assert.ok(e.html.includes("Private Scotch &amp; Cocktail Lounge (19+)"));
   assert.ok(e.html.includes("Your ticket PDF is attached"));
   assert.ok(e.html.includes("calendar.google.com"));
-  assert.match(e.html, /coming soon to the App Store/i);
-  assert.ok(!/apps\.apple\.com/.test(e.html), "no App Store link — the app isn't live");
+  // The app (Oct 22 2026): live on the App Store and Google Play, a button each (no more "coming soon").
+  assert.doesNotMatch(e.html + e.text, /coming soon/i);
+  assert.match(e.html, /Get the TTFC app/);
+  assert.match(e.html, /<a href="https:\/\/apps\.apple\.com\/ca\/app\/the-tech-festival-canada\/id6820764803"[^>]*>App Store<\/a>/);
+  assert.match(e.html, /<a href="https:\/\/play\.google\.com\/store\/apps\/details\?id=com\.atlaslinkmarkets\.ttfc"[^>]*>Google Play<\/a>/);
+  assert.match(e.text, /GET THE TTFC APP — ON THE APP STORE AND GOOGLE PLAY\n.+\n {2}App Store: https:\/\/apps\.apple\.com\/\S+\n {2}Google Play: https:\/\/play\.google\.com\/\S+/);
   assert.ok(e.html.includes(EVENT.supportEmail));
   assert.match(e.subject, /Apex Pass/);
   assert.ok(e.text.includes(walletUrl));
@@ -138,6 +142,9 @@ test("ticket PDF renders one page and links the wallet pass", async () => {
   assert.ok(pdf.startsWith("%PDF-"));
   assert.equal((pdf.match(/\/Type \/Page\b/g) || []).length, 1, "exactly one page");
   assert.ok(pdf.includes(walletUrl), "wallet link annotation");
+  // The app note links both stores (Oct 22 2026; it said "coming soon" before).
+  assert.ok(pdf.includes("https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803"), "App Store link annotation");
+  assert.ok(pdf.includes("https://play.google.com/store/apps/details?id=com.atlaslinkmarkets.ttfc"), "Google Play link annotation");
   await assert.rejects(() => generateTicketPDF({ tier: "apex" }), /Ticket ID missing/);
 });
 

@@ -23,6 +23,18 @@
    get a chance to win"): while swag.enabled, the email carries a block
    right after the intro (the photo, swagHeadline, swagOnly, swagText,
    "No purchase necessary · Rules") and its subject is swagSubject.
+   The store apps (Oct 22 2026, the organiser: "Prompt the users to
+   download Android/iOS. Stop prompting people to install the web app
+   any longer. However, let the web app be active."): the main call
+   to action is "Get the TTFC app", why, and two official-style
+   badges, Download on the App Store and Get it on Google Play (each
+   with its switch in `options`; the App Store one only while the
+   iPhone app's link is set; their words are the stores' own, not
+   fields). The web app is a small line under them ("Rather not
+   download anything? … Open the web app", the tracked link), or the
+   big button when no badge shows.
+   The "Add it to your home screen" steps are gone (their fields too:
+   anything saved for them is ignored).
    Pure (no database), unit-tested in test/app-invite.test.js.
 ========================================================= */
 
@@ -38,10 +50,9 @@ export const SECTIONS = Object.freeze([
   { key: "message", title: "Greeting and intro" },
   { key: "swag", title: "The swag kit (while the contest is on)" },
   { key: "features", title: "What's in the app" },
-  { key: "button", title: "The button" },
-  { key: "homescreen", title: "Add it to your home screen" },
+  { key: "stores", title: "Get the app: the App Store and Google Play badges" },
+  { key: "webapp", title: "The web app link" },
   { key: "signin", title: "Signing in" },
-  { key: "stores", title: "App store lines" },
   { key: "signoff", title: "Sign-off and footer" },
 ]);
 
@@ -60,19 +71,12 @@ export const FIELDS = Object.freeze([
   f("swagText", "swag", "How and when", "text", 400, { hint: "{kits}, {cutoff} and {announce} come from the contest's settings." }),
   f("featuresTitle", "features", "List title", "line", 80),
   f("features", "features", "What's in the app", "list", 8, { hint: "One line each. Add, remove, reorder or reword." }),
-  f("button", "button", "Button", "line", 40),
-  f("buttonNote", "button", "Under the button", "line", 200),
-  f("homeTitle", "homescreen", "Section title", "line", 80),
-  f("homeIntro", "homescreen", "Intro", "text", 400),
-  f("iphoneTitle", "homescreen", "iPhone: title", "line", 60),
-  f("iphoneSteps", "homescreen", "iPhone: steps", "list", 4),
-  f("androidTitle", "homescreen", "Android: title", "line", 60),
-  f("androidSteps", "homescreen", "Android: steps", "list", 4),
+  f("storesTitle", "stores", "Heading", "line", 80, { hint: "Above the App Store and Google Play badges (their own words are the stores' official ones)." }),
+  f("storesIntro", "stores", "Why", "line", 200),
+  f("buttonNote", "stores", "Under the badges", "line", 200),
+  f("webAppText", "webapp", "Web app line", "line", 200, { hint: "Small, under the badges, before the link." }),
+  f("button", "webapp", "Web app link", "line", 40, { hint: "The link to the web app (thetechfestival.com/app). With both badges off, it's the big button." }),
   f("signIn", "signin", "Sign-in line", "text", 400, { hint: "{email} is the address this email went to." }),
-  f("playText", "stores", "Google Play line", "line", 160, { hint: "Shown when \"Google Play line\" is on." }),
-  f("playLink", "stores", "Google Play link text", "line", 60),
-  f("appStoreText", "stores", "App Store line", "line", 160, { hint: "Shown when \"App Store line\" is on and the iPhone app is live (its App Store link is set)." }),
-  f("appStoreLink", "stores", "App Store link text", "line", 60),
   f("signOff", "signoff", "Sign-off", "text", 300),
   f("signature", "signoff", "Signed", "line", 120),
   f("footer", "signoff", "Footer", "text", 600),
@@ -82,11 +86,11 @@ const BY_KEY = Object.fromEntries(FIELDS.map((x) => [x.key, x]));
 /** The built-in wording (what the email says when nothing is changed). */
 export const DEFAULT_COPY = Object.freeze({
   subject: "Your TTFC 2026 app is ready",
-  preheader: "Your pass, the agenda, the venue map and live Q&A, all on your phone. Nothing to download from an app store.",
+  preheader: "Your pass, the agenda, the venue map and live Q&A, all on your phone. Free on the App Store and Google Play.",
   eyebrow: "The Tech Festival Canada 2026",
   heading: "Your festival, in your pocket.",
   greeting: "Hi {firstName},",
-  intro: "TTFC 2026 is almost here, and the TTFC web app has everything you need for the two days. It opens right in your phone's browser, so there's nothing to download.",
+  intro: "TTFC 2026 is almost here, and the TTFC app has everything you need for the two days. Download it free on the App Store or Google Play.",
   swagSubject: "Get the TTFC app — only app users can win the swag kit",
   swagHeadline: "Download the app to win the TTFC swag kit",
   swagOnly: "Only people using the TTFC app can win — download it, sign in and earn points.",
@@ -99,40 +103,21 @@ export const DEFAULT_COPY = Object.freeze({
     "Networking and chat with other attendees",
     "Live polls and Q&A during sessions",
   ]),
-  button: "Open the TTFC app",
-  buttonNote: "Works on iPhone and Android.",
-  homeTitle: "Add it to your home screen",
-  homeIntro: "It then opens like any other app, full screen.",
-  iphoneTitle: "iPhone",
-  iphoneSteps: Object.freeze([
-    // The web app's install sheet says the same (Oct 22 2026: a speaker on a new iPhone couldn't find the button).
-    // No fixed position: Safari's Bottom and Top layouts (and every older iPhone) show Share, a square with an
-    // arrow, in the toolbar; the Compact layout keeps it in a menu: iOS 26 in ••• next to the address bar, iOS 27 in
-    // the page menu (≡) at its left end (its right-hand button is now Tabs). Add to Home Screen can be under View
-    // More. Links opened in Instagram, LinkedIn or Gmail open in that app's own browser, which can't add it.
-    "Open thetechfestival.com/app in Safari. In Instagram, LinkedIn, Gmail etc., tap ••• then Open in Safari, or copy the link into Safari.",
-    "Tap Share (the square with an arrow). No Share button? Tap ••• next to the address bar (iOS 26), or ≡ at the left end of the address bar (iOS 27), then Share.",
-    "Tap Add to Home Screen, then Add. Not showing? Tap View More or scroll down; leave Open as Web App on.",
-  ]),
-  androidTitle: "Android",
-  androidSteps: Object.freeze([
-    "Open thetechfestival.com/app in Chrome.",
-    "Tap ⋮ then Add to Home screen (or Install app), then Install.",
-  ]),
+  storesTitle: "Get the TTFC app",
+  storesIntro: "Your pass, the schedule, live polls and messages, all on your phone.",
+  buttonNote: "Free on iPhone and Android.",
+  webAppText: "Rather not download anything? Use TTFC in your phone's browser:",
+  button: "Open the web app",
   signIn: "Sign in with this email: {email}. We'll send you a sign-in link and a 6-digit code.",
-  playText: "Prefer the Android app?",
-  playLink: "Get it on Google Play",
-  appStoreText: "Prefer the iPhone app?",
-  appStoreLink: "Download on the App Store",
   signOff: "We can't wait to see you in Toronto. Questions? Just reply to this email.",
   signature: "The Tech Festival Canada team",
   footer: "You're getting this because you're part of TTFC 2026.", // the "Unsubscribe from TTFC emails" link always follows (services/unsubscribe.js)
 });
 
-/** The optional lines, each with its own on / off. */
+/** The store badges, each with its own on / off (both off: the web app link is the big button). */
 export const OPTIONS = Object.freeze([
-  Object.freeze({ key: "play", label: "Google Play line", hint: "\"Prefer the Android app? Get it on Google Play.\"" }),
-  Object.freeze({ key: "appStore", label: "App Store line", hint: "Only shows once the iPhone app is on the App Store (its link is set)." }),
+  Object.freeze({ key: "appStore", label: "App Store badge", hint: "\"Download on the App Store\": the iPhone app. Only shows while the App Store link is set." }),
+  Object.freeze({ key: "play", label: "Google Play badge", hint: "\"Get it on Google Play\": the Android app." }),
 ]);
 export const DEFAULT_OPTIONS = Object.freeze({ play: true, appStore: true });
 

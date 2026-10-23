@@ -43,7 +43,7 @@
    (test/app-invite-batches.test.js).
 ========================================================= */
 
-import { EVENT } from "./ticketInfo.js";
+import { EVENT, IOS_APP_STORE_URL, PLAY_STORE_URL, appStoreUrl } from "./ticketInfo.js";
 import { isPlaceholderEmail, usableEmail } from "./attendingCampaign.js";
 import { TYPE_LABELS } from "./teamRoles.js";
 import { TIER_LABELS } from "./rsvp.js";
@@ -59,15 +59,10 @@ export const APP_INVITE_SWAG_KEY = "app-invite-2026-swag";
 export const inviteSendKey = (swagOn) => (swagOn ? APP_INVITE_SWAG_KEY : APP_INVITE_CAMPAIGN);
 export const SWAG_SENT_LABEL = "Already got this version";
 export const APP_URL = `${EVENT.website}/app/`;
-/** Same values as the website's src/lib/appStores.js (keep in step). */
-export const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.atlaslinkmarkets.ttfc";
-/** The iPhone app on the App Store: empty until the listing is live (it answered 404 on Oct 19 2026). Set
-    APP_STORE_URL on the server (e.g. https://apps.apple.com/ca/app/id6820764803) when it is. */
-export const IOS_APP_STORE_URL = "";
-export const appStoreUrl = (env = process.env) => {
-  const u = String(env.APP_STORE_URL || IOS_APP_STORE_URL || "").trim();
-  return /^https:\/\/apps\.apple\.com\/[^\s"'<>]+$/.test(u) ? u : "";
-};
+/** The store links (services/ticketInfo.js, the same as the website's src/lib/appStores.js): Google Play since
+    Oct 17 2026, the iPhone app on the App Store since Oct 22 2026 (11:29 PM ET). appStoreUrl() reads APP_STORE_URL
+    on the server first (only an https://apps.apple.com/… link counts; anything else = no App Store button). */
+export { IOS_APP_STORE_URL, PLAY_STORE_URL, appStoreUrl };
 
 export const COOLDOWN_DAYS = 3;
 export const COOLDOWN_MS = COOLDOWN_DAYS * 24 * 60 * 60 * 1000;

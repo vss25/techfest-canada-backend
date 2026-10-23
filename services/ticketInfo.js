@@ -29,8 +29,19 @@ export const EVENT = {
   mapsUrl: "https://maps.google.com/?q=The+Westin+Harbour+Castle,+1+Harbour+Square,+Toronto",
 };
 
-export const APP_COMING_SOON = {
-  title: "TTFC mobile app — coming soon to the App Store",
+/** The TTFC app in the stores (Oct 22 2026: Google Play since Oct 17, the App Store since Oct 22, 11:29 PM ET). The
+    website's src/lib/appStores.js has the same links (keep in step). APP_STORE_URL on the server overrides the App
+    Store one (only an https://apps.apple.com/… link counts; anything else = no App Store button). */
+export const IOS_APP_STORE_URL = "https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803";
+export const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.atlaslinkmarkets.ttfc";
+export const appStoreUrl = (env = process.env) => {
+  const u = String(env.APP_STORE_URL || IOS_APP_STORE_URL || "").trim();
+  return /^https:\/\/apps\.apple\.com\/[^\s"'<>]+$/.test(u) ? u : "";
+};
+
+/** The app note on the ticket email and PDF (it said "coming soon to the App Store" until Oct 22 2026). */
+export const APP_PROMO = {
+  title: "Get the TTFC app — on the App Store and Google Play",
   body: "Your agenda, your pass, networking and chat with other delegates — all in one place.",
 };
 

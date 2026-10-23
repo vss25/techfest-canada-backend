@@ -34,7 +34,7 @@
 ========================================================= */
 
 import {
-  EVENT, APP_COMING_SOON, PASS_INCLUSIONS, inclusionsFor, emailTips, displayPassName, isBoothId,
+  EVENT, APP_PROMO, PLAY_STORE_URL, appStoreUrl, PASS_INCLUSIONS, inclusionsFor, emailTips, displayPassName, isBoothId,
   firstNameFor, googleCalendarUrl, taglineFor, blurbFor, tierKey, escapeHtml as esc,
 } from "./ticketInfo.js";
 import { carryPassRules, fieldsFor, fillText, templateFor, textHtml } from "./passEmailCopy.js";
@@ -128,9 +128,11 @@ export function purchaseEmailDefaults({ tier = "power", ticketId = "", cxoBreakf
     calendarButton: "Add to Google Calendar",
     tipsTitle: "Know before you go",
     tips: booth ? [] : emailTips(tier),
-    appEyebrow: "Coming soon to the App Store",
-    appTitle: "The TTFC mobile app",
-    appBody: APP_COMING_SOON.body,
+    appEyebrow: "On the App Store and Google Play",
+    appTitle: "Get the TTFC app",
+    appBody: APP_PROMO.body,
+    appStoreButton: "App Store",
+    playButton: "Google Play",
     helpTitle: "Need a hand?",
     helpText: `Reply to this email or write to ${EVENT.supportEmail}. Quote your ticket ID {ticketId} so we can find your booking fast.`,
     contactLine: `${EVENT.websiteLabel} · Office ${EVENT.phone} · Toll free ${EVENT.tollFree}`,
@@ -310,7 +312,20 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
   </table>
 </td></tr>` : "";
 
-  /* ---------- app coming soon ---------- */
+  /* ---------- the TTFC app: App Store and Google Play buttons (Oct 22 2026; "coming soon" until then) ----------
+     The App Store button only while its link is set (services/ticketInfo.js appStoreUrl). */
+  const stores = [
+    ...(appStoreUrl() ? [{ label: t.appStoreButton, href: appStoreUrl() }] : []),
+    { label: t.playButton, href: PLAY_STORE_URL },
+  ];
+  // Both the same size (124 × 34).
+  const storePill = ({ label: text, href }) => `<td style="padding:10px 8px 0 0;">
+          <table role="presentation" width="124" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;width:124px;"><tr>
+            <td align="center" valign="middle" width="124" height="34" bgcolor="${C.purple}" style="width:124px;height:34px;border-radius:999px;background:${C.purple};background-image:linear-gradient(90deg,${C.purple},${C.pink});">
+              <a href="${esc(href)}" target="_blank" style="display:block;width:124px;padding:9px 0;font-family:${SANS};font-size:13px;line-height:16px;font-weight:800;text-align:center;color:#ffffff;text-decoration:none;border-radius:999px;white-space:nowrap;">${esc(text)}</a>
+            </td>
+          </tr></table>
+        </td>`;
   const appBlock = `
 <tr><td class="em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:22px 32px 30px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.card}" style="background:${C.card};background-image:linear-gradient(90deg,${C.card},#2b0f5c);border:1px solid ${C.cardEdge};border-radius:14px;border-collapse:separate;">
@@ -324,6 +339,9 @@ export function buildTicketEmail({ name, firstName, ticketId, tier, walletUrl = 
         ${label(t.appEyebrow, C.gold)}
         <div style="font-family:${DISPLAY};font-size:15px;line-height:21px;font-weight:800;color:#ffffff;margin:3px 0 4px;letter-spacing:0.5px;">${esc(t.appTitle)}</div>
         <div style="font-family:${SANS};font-size:13px;line-height:19px;color:${C.text};">${html("appBody", esc(t.appBody))}</div>
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;"><tr>
+        ${stores.map(storePill).join("")}
+        </tr></table>
       </td>
     </tr>
   </table>
@@ -449,8 +467,9 @@ ${appBlock}
     `  ${t.calendarButton}: ${cal}`,
     ...(tips.length ? ["", t.tipsTitle.toUpperCase(), ...tips.map((x) => `  - ${x}`)] : []),
     "",
-    edited.appTitle || edited.appEyebrow ? `${t.appTitle} — ${t.appEyebrow}`.toUpperCase() : APP_COMING_SOON.title.toUpperCase(),
+    edited.appTitle || edited.appEyebrow ? `${t.appTitle} — ${t.appEyebrow}`.toUpperCase() : APP_PROMO.title.toUpperCase(),
     `  ${t.appBody}`,
+    ...stores.map((x) => `  ${x.label}: ${x.href}`),
     "",
     edited.helpTitle || edited.helpText ? `${t.helpTitle} ${t.helpText}` : `Questions? Reply to this email or write to ${EVENT.supportEmail}.`,
     edited.contactLine ? t.contactLine : `${EVENT.website} · ${EVENT.phone} · Toll free ${EVENT.tollFree}`,

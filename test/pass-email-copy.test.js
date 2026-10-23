@@ -19,7 +19,9 @@ import {
 /* ---------- the emails with no edits ----------
    The same people, passes and settings the builders rendered before staff could edit every part
    of them (buildSpeakerPassEmail and buildTicketEmail as on claude/four-passes 38e1c22, the
-   Speaker Pass rework); fixtures/pass-email-baseline.json holds hashes of that output. */
+   Speaker Pass rework); fixtures/pass-email-baseline.json holds hashes of that output. The purchase emails'
+   hashes were renewed on Oct 22 2026 for one change only: the app note ("Coming soon to the App Store") became
+   "Get the TTFC app" with App Store and Google Play buttons (test/ticket-email-wallet.test.js). */
 
 const IMG = { qrSrc: "cid:ttfc-speaker-qr", logoSrc: "cid:ttfc-logo" };
 const SAMPLE_ROS = {
