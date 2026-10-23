@@ -11,6 +11,9 @@
    Dark like the other TTFC emails, with a light version for mail
    apps that ask for one. No tracking pixel, no tracked links. From
    and reply-to enquire@ ("everything else through enquire").
+   Both end with the compact "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026): before the
+   sign-off, and below the code in the code email.
    Pure builders (buildJuryEmail, buildJuryCodeEmail), unit-tested.
 ========================================================= */
 
@@ -20,11 +23,20 @@ import { C, SANS, SERIF, LOGO_CID, button, logoPng, stripe } from "./attendingEm
 import { ENQUIRE_EMAIL, FROM, LOGO_DARK_CID, logoDarkPng } from "./appInviteEmail.js";
 import { frontendBase } from "./emailLink.js";
 import { effectiveCopy, fill } from "./juryEmailCopy.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 export { ENQUIRE_EMAIL, FROM };
 export const JURY_PATH = "/awards/jury-admin";
 export const portalUrl = (base = frontendBase()) => `${base}${JURY_PATH}`;
 export const CAMPAIGNS = Object.freeze({ invite: "jury-invite-2026", reminder: "jury-reminder-2026", code: "jury-code-2026" });
+
+/** The compact "Get the TTFC app" block as a row of the shell (dark, with the light version's colours). */
+const appRow = (padding = "12px 44px 0") => `        <!-- Get the TTFC app (services/appStoreBlock.js) -->
+        <tr>
+          <td class="pad" style="padding:${padding};">
+            ${appStoreBlockHtml({ compact: true })}
+          </td>
+        </tr>`;
 
 const para = (text, vars, style) => fill(text, vars).split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
   .map((p) => `<p class="tx" style="${style}">${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
@@ -62,6 +74,7 @@ function shell({ title, preheader, logoSrc = "", logoLightSrc = "", body }) {
     .logo-d { display:none !important; }
     .logo-l { display:block !important; }
   }
+${appStoreBlockCss({ adapt: "light" })}
 </style>
 </head>
 <body class="bg" style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -158,6 +171,7 @@ export function buildJuryEmail({ kind = "invite", copy = {}, vars = {}, link = "
             ${showDeadline ? `<p class="tx" style="${small}"><strong class="hd" style="color:${C.white};">${line(c.deadlineLine, vars)}</strong></p>` : ""}
           </td>
         </tr>
+${appRow()}
         <tr>
           <td class="pad" style="padding:12px 44px 30px;">
             ${para(c.signOff, vars, small)}
@@ -176,6 +190,7 @@ export function buildJuryEmail({ kind = "invite", copy = {}, vars = {}, link = "
     `${t(c.button)}:`, url, "",
     ...(c.signIn ? [t(c.signIn), ""] : []),
     ...(showDeadline ? [t(c.deadlineLine), ""] : []),
+    ...appStoreBlockLines(), "",
     t(c.signOff),
     ...(c.signature ? ["", t(c.signature)] : []),
     ...(c.footer ? ["", t(c.footer)] : []),
@@ -216,7 +231,8 @@ export function buildJuryCodeEmail({ code = "", minutes = 15, name = "", link = 
             <p class="mut" style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};margin:0 0 10px;">Didn't ask for it? You can ignore this email. Nobody can sign in without the code.</p>
             <p class="mut" style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};margin:0;">Jury portal: <a class="lk" href="${esc(url)}" target="_blank" style="color:${C.white};text-decoration:underline;">${esc(url.replace(/^https?:\/\//, ""))}</a></p>
           </td>
-        </tr>`;
+        </tr>
+${appRow("0 44px 30px")}`;
   const html = shell({ title: CODE_SUBJECT, preheader, logoSrc, logoLightSrc, body });
   const text = [
     "Your sign-in code", "",
@@ -225,6 +241,7 @@ export function buildJuryCodeEmail({ code = "", minutes = 15, name = "", link = 
     `It works once, for the next ${minutes} minutes.`,
     "Didn't ask for it? You can ignore this email. Nobody can sign in without the code.", "",
     `Jury portal: ${url}`, "",
+    ...appStoreBlockLines(), "",
     `${EVENT.name} · ${EVENT.dates}`,
   ].join("\n");
   return { subject: CODE_SUBJECT, preheader, html, text };

@@ -16,6 +16,8 @@
    (services/trackToken.js, People › RSVP email opened); previews and
    test sends don't. The RSVP form itself is counted when it's opened
    with a ticket (services/rsvpHandler.js), for every email ever sent.
+   Under the buttons: the "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026).
 ========================================================= */
 
 import { Resend } from "resend";
@@ -28,6 +30,7 @@ import { RSVP_URL, displayTicketId } from "./speakerPassEmail.js";
 import { openPixelUrl, withPixel } from "./trackToken.js";
 import { noteTrackedSend } from "./engagementStore.js";
 import { isUnsubscribed, unsubscribeFor } from "./unsubscribe.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 /** RSVP reminders come from enquire@ (the "I'm attending" email moved to marcom@ on Oct 20 2026). */
 export const FROM = `The Tech Festival Canada <${CONTACT_EMAIL}>`;
@@ -158,6 +161,7 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
     .hero { font-size:30px !important; line-height:36px !important; }
     .btn a { padding:17px 26px !important; font-size:16px !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -193,6 +197,12 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
             Already RSVP'd? Thank you, you can ignore this email.${many ? " Forward a button to the person it's for if they'd rather do it themselves." : ""}
           </td>
         </tr>
+        <!-- Get the TTFC app (services/appStoreBlock.js) -->
+        <tr>
+          <td class="pad" style="padding:32px 44px 0;">
+            ${appStoreBlockHtml()}
+          </td>
+        </tr>
         <tr>
           <td class="pad" style="padding:32px 44px 36px;">
             <div style="font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};">Questions? Just reply to this email.</div>
@@ -226,6 +236,8 @@ export function buildRsvpReminderEmail({ firstName = "", lastName = "", tickets 
     "",
     ...links.flatMap((l) => [`${l.label}:`, l.url, ""]),
     `Already RSVP'd? Thank you, you can ignore this email.${many ? " Forward a link to the person it's for if they'd rather do it themselves." : ""}`,
+    "",
+    ...appStoreBlockLines(),
     "",
     "Questions? Just reply to this email.",
     "",

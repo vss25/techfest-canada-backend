@@ -6,10 +6,14 @@
    Same visual language as the ticket and profile emails: table
    layout, inline styles, 600px max, bulletproof button, Apple Mail
    dark mode through the progressive <style> block.
+   Both end with the compact "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026), below the code
+   so it never pushes the code down.
 ========================================================= */
 
 import { C, SANS, DISPLAY, MONO } from "./ticketEmail.js";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 export const SIGN_IN_SUBJECT = "Your TTFC sign-in link";
 export const NO_TICKET_SUBJECT = "We couldn't find a TTFC ticket for this email";
@@ -41,6 +45,7 @@ function shell({ preheader, body, footerNote }) {
     .em-muted { color:#a99cc9 !important; }
     .em-link { color:#c9b8f2 !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body class="em-bg" style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -81,6 +86,13 @@ ${body}
 </body>
 </html>`;
 }
+
+/** The compact "Get the TTFC app" block, last in the panel (under the code). */
+const appRow = () => `
+<!-- the TTFC app -->
+<tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:0 32px 30px;">
+  ${appStoreBlockHtml({ compact: true })}
+</td></tr>`;
 
 function button(href, label) {
   return `<table role="presentation" class="em-btn" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
@@ -129,7 +141,8 @@ export function buildSignInEmail({ link = "", code = "", minutes = 15 } = {}) {
   <p class="em-text" style="margin:0 0 10px;font-family:${SANS};font-size:14px;line-height:21px;color:${C.text};">The link and code work once, for the next <strong class="em-ink" style="color:${C.ink};">${esc(minutes)} minutes</strong>.</p>
   <p class="em-muted" style="margin:0 0 10px;font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};">Didn't ask to sign in? You can ignore this email. Nobody can get in without it.</p>
   <p class="em-muted" style="margin:0;font-family:${SANS};font-size:12px;line-height:18px;color:${C.muted};">Button not working? Copy this link into your browser:<br><a class="em-link" href="${esc(link)}" target="_blank" style="color:${C.purple};text-decoration:underline;word-break:break-all;">${esc(link)}</a></p>
-</td></tr>`;
+</td></tr>
+${appRow()}`;
 
   const html = shell({
     preheader,
@@ -148,6 +161,8 @@ export function buildSignInEmail({ link = "", code = "", minutes = 15 } = {}) {
     "",
     `The link and code work once, for the next ${minutes} minutes.`,
     "Didn't ask to sign in? You can ignore this email. Nobody can get in without it.",
+    "",
+    ...appStoreBlockLines(),
     "",
     `Need a hand? Write to ${EVENT.supportEmail}.`,
     EVENT.website,
@@ -177,7 +192,8 @@ export function buildNoTicketEmail({ email = "", ticketsUrl = `${EVENT.website}/
 </td></tr>
 <tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:16px 32px 30px;">
   <p class="em-muted" style="margin:0;font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};">Didn't ask for this? You can ignore this email.</p>
-</td></tr>`;
+</td></tr>
+${appRow()}`;
 
   const html = shell({
     preheader,
@@ -195,6 +211,8 @@ export function buildNoTicketEmail({ email = "", ticketsUrl = `${EVENT.website}/
     `Get your pass: ${ticketsUrl}`,
     "",
     "Didn't ask for this? You can ignore this email.",
+    "",
+    ...appStoreBlockLines(),
     "",
     `Need a hand? Write to ${EVENT.supportEmail}.`,
   ].join("\n");

@@ -40,14 +40,11 @@ import { pixelUrlFor, signTrack, withPixel } from "./trackToken.js";
 import { SWAG_PAGE, longTime } from "./swagRules.js";
 import { noteTrackedSend } from "./engagementStore.js";
 import { unsubscribeFor } from "./unsubscribe.js";
+import { STORE_BADGES, storeBadgeTable } from "./appStoreBlock.js";
 
 export const ENQUIRE_EMAIL = "enquire@thetechfestival.com";
-/** The store badges' words (the stores' own) and logos: small lossless PNGs on the website (public/email/, 56 px for
-    28 px), white Apple logo and the four-colour Play triangle. */
-export const STORE_BADGES = Object.freeze({
-  appStore: Object.freeze({ id: "appStore", top: "Download on the", name: "App Store", text: "iPhone (App Store)", alt: "Apple", glyph: `${EVENT.website}/email/store-apple@2x.png` }),
-  play: Object.freeze({ id: "play", top: "GET IT ON", name: "Google Play", text: "Android (Google Play)", alt: "Play", glyph: `${EVENT.website}/email/store-play@2x.png` }),
-});
+/** The store badges' words and logos, shared with every other email's "Get the TTFC app" block (services/appStoreBlock.js). */
+export { STORE_BADGES };
 /** The logo with its words in dark ink, for mail apps showing the light version. */
 export const LOGO_DARK_CID = "ttfc-logo-dark";
 const LOGO_DARK_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets", "email", "ttfc-logo-dark.png");
@@ -109,12 +106,9 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
   // The badges: black, a 1px #a6a6a6 edge, the store's logo and its two lines of live text, both exactly 200 × 58,
   // side by side (stacked on a phone). Tables and inline styles only; the logo is a PNG with alt text, so with images
   // off the badge still reads "Download on the App Store". Every part is a link.
-  const badge = ({ href, top, name, glyph, alt }) => `
+  const badge = (store) => `
                 <td class="sb" align="center" valign="top" style="padding:0 6px 10px;">
-                  <table role="presentation" class="sbt" width="200" height="58" cellpadding="0" cellspacing="0" border="0" bgcolor="#000000" style="width:200px;height:58px;margin:0 auto;background:#000000;border:1px solid #a6a6a6;border-radius:12px;border-collapse:separate;"><tr>
-                    <td width="62" height="56" align="right" valign="middle" style="width:62px;height:56px;padding:0;"><a href="${esc(href)}" target="_blank" style="display:block;padding:14px 10px 14px 24px;text-decoration:none;"><img src="${esc(glyph)}" width="28" height="28" alt="${esc(alt)}" style="display:block;width:28px;height:28px;border:0;outline:none;font-family:${SANS};font-size:9px;line-height:28px;color:#ffffff;"></a></td>
-                    <td align="left" valign="middle" style="padding:0;"><a href="${esc(href)}" target="_blank" style="display:block;padding:9px 10px 9px 0;font-family:${SANS};color:#ffffff;text-decoration:none;white-space:nowrap;"><span style="display:block;font-size:11px;line-height:14px;font-weight:500;letter-spacing:${top === top.toUpperCase() ? "0.6px" : "0.1px"};color:#ffffff;">${esc(top)}</span><span style="display:block;font-size:21px;line-height:25px;font-weight:600;letter-spacing:-0.3px;color:#ffffff;">${esc(name)}</span></a></td>
-                  </tr></table>
+                  ${storeBadgeTable(store)}
                 </td>`;
 
   const html = `<!DOCTYPE html>

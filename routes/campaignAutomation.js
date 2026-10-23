@@ -501,8 +501,9 @@ function generateEmailHtml(template) {
   const audience = template.audience || "General";
   const purpose = template.purpose || "Event Updates";
 
-  // Use shared footer function (fallback uses generic ID)
-  const fallbackFooter = generateCampaignFooter(API_URL, "fallback", "recipient@example.com");
+  // Use shared footer function (fallback uses generic ID). Without the "Get the TTFC app" block: the send adds the
+  // real footer, which has it (services/appStoreBlock.js).
+  const fallbackFooter = generateCampaignFooter(API_URL, "fallback", "recipient@example.com", { app: false });
 
   return `
 <!DOCTYPE html>

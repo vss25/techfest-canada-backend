@@ -207,7 +207,7 @@ test("sequential sending pauses between emails and keeps going after a failure",
 });
 
 /* ---------- email ---------- */
-test("profile email escapes the name, carries the link and the pass, and never says the app is live", () => {
+test("profile email escapes the name, carries the link and the pass, and the App Store and Google Play links", () => {
   const link = "https://www.thetechfestival.com/complete-profile?t=ab12&s=xyz-_1";
   const e = buildProfileRequestEmail({ firstName: `<img src=x onerror="alert(1)">Jo`, tier: "power", link });
   assert.equal(e.subject, PROFILE_EMAIL_SUBJECT);
@@ -223,7 +223,10 @@ test("profile email escapes the name, carries the link and the pass, and never s
   assert.ok(e.text.includes("Power Pass"));
   assert.ok(/about a minute/i.test(e.text));
   assert.ok(/only shared with the TTFC organisers/i.test(e.text));
-  assert.equal(/app store|download the app|mobile app/i.test(e.html + e.text), false);
+  // Since Oct 23 2026 every email has the "Get the TTFC app" block (services/appStoreBlock.js; the app is live).
+  assert.ok(e.html.includes("Get the TTFC app") && e.html.includes("apps.apple.com") && e.html.includes("play.google.com"));
+  assert.match(e.text, /iPhone \(App Store\): https:\/\/apps\.apple\.com\//);
+  assert.match(e.text, /Android \(Google Play\): https:\/\/play\.google\.com\//);
   assert.ok(buildProfileRequestEmail({ link }).text.startsWith("Hi there,"));
   assert.ok(buildProfileRequestEmail({ firstName: "Guest", link }).text.startsWith("Hi there,"));
 });

@@ -1,6 +1,7 @@
 import express from "express";
 import { Resend } from "resend";
 import { requireEmailDelivery } from "../services/emailDelivery.js";
+import { appStoreBlockHtml } from "../services/appStoreBlock.js";
 import PavilionApplication from "../models/PavilionApplication.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { cleanText } from "../services/brochureDownloads.js";
@@ -140,7 +141,8 @@ function buildAdminEmail(n) {
 /* ═══════════════════════════════════════════════════════
    HELPER — Confirmation email for APPLICATIONS (to applicant)
    ═══════════════════════════════════════════════════════ */
-function buildConfirmationEmail(n) {
+/** To the applicant; ends with the compact "Get the TTFC app" block (services/appStoreBlock.js). */
+export function buildConfirmationEmail(n) {
   const booth = BOOTH_LABELS[n.boothTier] || { label: "—", size: "—", pay: 0 };
 
   return `
@@ -185,6 +187,9 @@ function buildConfirmationEmail(n) {
     <p style="margin: 24px 0 0; font-size: 14px; line-height: 1.7; color: #333;">
       For any questions, reply to this email or reach us at <a href="mailto:sales@thetechfestival.com" style="color: #7a3fd1;">sales@thetechfestival.com</a>.
     </p>
+    <div style="margin: 28px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+    </div>
   </div>
 
   <p style="text-align: center; margin: 20px 0 0; font-size: 12px; color: #999; line-height: 1.6;">
@@ -199,7 +204,8 @@ function buildConfirmationEmail(n) {
 /* ═══════════════════════════════════════════════════════
    HELPER — Payment receipt email (goes to applicant)
    ═══════════════════════════════════════════════════════ */
-function buildPaymentReceiptEmail(p) {
+/** To the applicant; ends with the compact "Get the TTFC app" block (services/appStoreBlock.js). */
+export function buildPaymentReceiptEmail(p) {
   return `
 <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 0 auto; padding: 32px 24px; color: #0d0520;">
 
@@ -239,6 +245,9 @@ function buildPaymentReceiptEmail(p) {
     <p style="margin: 24px 0 0; font-size: 14px; line-height: 1.7; color: #333;">
       For any questions, reply to this email or reach us at <a href="mailto:sales@thetechfestival.com" style="color: #7a3fd1;">sales@thetechfestival.com</a>.
     </p>
+    <div style="margin: 28px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+    </div>
   </div>
 
   <p style="text-align: center; margin: 20px 0 0; font-size: 12px; color: #999; line-height: 1.6;">

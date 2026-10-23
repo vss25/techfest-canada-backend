@@ -22,6 +22,9 @@
    previews never have one. Every value is HTML-escaped; staff text never
    becomes HTML (line breaks are kept, email addresses in the contact
    box become links). Email-safe: tables, inline styles, 600px max.
+   After the RSVP section, before the contact box: the fixed "Get the
+   TTFC app" block with the App Store and Google Play badges
+   (services/appStoreBlock.js; Oct 23 2026), in the HTML and the text.
 ========================================================= */
 
 import { EVENT, escapeHtml as esc, tierKey } from "./ticketInfo.js";
@@ -35,6 +38,7 @@ import { ISSUE_TIERS, defaultIssuedCopy, includesWithExtras, issuedVariant, rsvp
 import { EXTRA_KEYS, autoExtras, effectiveExtras } from "./passExtras.js";
 import { carryPassRules, fillText, mergeCopy, textHtml, tierFor } from "./passEmailCopy.js";
 import { withPixel } from "./trackToken.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const SERIF = "Georgia,'Times New Roman',Times,serif";
@@ -490,6 +494,7 @@ export function buildPassEmail({ name, title = "", company = "", ticketId, qrSrc
     .hero { font-size:30px !important; line-height:36px !important; }
     .pass-name { font-size:26px !important; line-height:32px !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -539,6 +544,13 @@ ${runOfShowHtml({ name: fullName, runOfShow }, t, h, edited)}
             <div style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin:12px 0 0;">${esc(t.rsvpNote)}</div>
           </td>
         </tr>` : ""}
+
+        <!-- Get the TTFC app (fixed, not a field: services/appStoreBlock.js) -->
+        <tr>
+          <td class="pad" style="padding:36px 44px 0;">
+            ${appStoreBlockHtml()}
+          </td>
+        </tr>
 
         <!-- Contact -->
         <tr>
@@ -600,6 +612,8 @@ ${runOfShowHtml({ name: fullName, runOfShow }, t, h, edited)}
     ...(hasRos ? [...runOfShowText({ name: fullName, runOfShow }, t, edited), ""] : []),
     ...(includeList.length ? [t.includesTitle.toUpperCase(), ...includeList.map(([head, sub]) => `  - ${head}${sub ? `: ${sub}` : ""}`), ""] : []),
     ...(rsvp ? [t.rsvpTitle.toUpperCase(), `  ${t.rsvpText}`, edited.rsvpNote ? `  ${t.rsvpNote}` : "  Your personal RSVP link (your details are already filled in):", `  ${rsvpLink}`, ""] : []),
+    ...appStoreBlockLines(),
+    "",
     contactLine,
     "",
     t.signoff,
