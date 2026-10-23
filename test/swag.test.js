@@ -41,7 +41,8 @@ test("the rules: only app users can win, first; {kits}, {cutoff}, {announce} fil
   assert.match(rules, /^Only people using the TTFC app can win\. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part\. The top 3 people on the leaderboard at 4:00 PM on Monday, October 26 each win a TTFC swag kit\./);
   assert.match(rules, /TTFC staff, volunteers and their families can't win\./);
   assert.match(rules, /Winners are told in the app at the end of Day 1 \(5:00 PM on Monday, October 26\) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question\./);
-  assert.match(rules, /No purchase necessary\. Prizes have no cash value and can't be exchanged\.$/);
+  assert.match(rules, /Quebec residents, TTFC staff, volunteers and their families can't win\./);
+  assert.match(rules, /Free to enter for TTFC 2026 pass holders\. Prizes have no cash value and can't be exchanged\.$/);
   const p = publicSwag(defaults, { now: new Date("2026-10-26T12:00:00Z") });
   assert.deepEqual([p.enabled, p.kits, p.phase, p.cutoffShort, p.rulesUrl, p.installUrl], [false, 3, "open", "Oct 26, 4 PM", "https://www.thetechfestival.com/swag", "https://www.thetechfestival.com/app/install"]);
   assert.deepEqual([p.appOnly, p.pitch], [true, "Only people using the TTFC app can win"]);
@@ -81,7 +82,7 @@ test("the app invite carries the offer while the contest is on: the photo, the k
   assert.match(e.html, />Download the app to win the TTFC swag kit</);
   assert.match(e.html, />Only people using the TTFC app can win — download it, sign in and earn points\.</);
   assert.match(e.html, /The top 3 on the app&#39;s leaderboard win\. Winners are announced at the end of Day 1 \(5:00 PM on Monday, October 26\)\./);
-  assert.match(e.html, /No purchase necessary · <a href="https:\/\/www\.thetechfestival\.com\/swag"[^>]*>Rules<\/a>/);
+  assert.match(e.html, /Free for TTFC 2026 pass holders · Quebec residents excluded · <a href="https:\/\/www\.thetechfestival\.com\/swag"[^>]*>Rules<\/a>/);
   // Right after the intro, before what's in the app and the App Store / Google Play buttons; the same layout otherwise.
   const at = (s2) => e.html.indexOf(s2);
   assert.ok(at("Download it free on the App Store or Google Play.") > 0);

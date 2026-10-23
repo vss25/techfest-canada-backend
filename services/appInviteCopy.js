@@ -22,7 +22,7 @@
    advertisement for the app … download the app, and then only you can
    get a chance to win"): while swag.enabled, the email carries a block
    right after the intro (the photo, swagHeadline, swagOnly, swagText,
-   "No purchase necessary · Rules") and its subject is swagSubject.
+   "Free for TTFC 2026 pass holders · Quebec residents excluded · Rules") and its subject is swagSubject.
    The store apps (Oct 22 2026, the organiser: "Prompt the users to
    download Android/iOS. Stop prompting people to install the web app
    any longer. However, let the web app be active."): the main call
