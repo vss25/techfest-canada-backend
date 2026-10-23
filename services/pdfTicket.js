@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
-  EVENT, inclusionsFor, knowBeforeYouGo, displayPassName, isBoothId,
+  EVENT, APP_PROMO, PLAY_STORE_URL, appStoreUrl, inclusionsFor, knowBeforeYouGo, displayPassName, isBoothId,
 } from "./ticketInfo.js";
 
 /* ============================================================
@@ -12,8 +12,9 @@ import {
 
    One US-Letter page: dark brand header, a ticket card with the
    attendee, pass, ticket ID and a large QR, then what the pass
-   includes, practical tips, the app-coming-soon note and contact
-   details.
+   includes, practical tips, the "Get the TTFC app" note with
+   App Store and Google Play links (Oct 22 2026; "coming soon"
+   until then) and contact details.
 
    QR payload is the bare ticket ID — exactly what the emailed PDF
    has always carried and what the website door scanner
@@ -308,7 +309,7 @@ export async function generateTicketPDF(ticket = {}) {
     ry += ls.length * 12 + 7;
   }
 
-  /* ================= APP COMING SOON ================= */
+  /* ================= GET THE TTFC APP ================= */
   const AH = 66, AX = 32, AW = PAGE.w - 64;
   const AY = Math.min(Math.max(ly, ry) + 8, PAGE.h - 46 - 22 - AH);  // keep clear of the footer
   const app = doc.linearGradient(AX, 0, AX + AW, 0);
@@ -323,14 +324,21 @@ export async function generateTicketPDF(ticket = {}) {
   doc.lineWidth(1.6).strokeColor("#ffffff").roundedRect(gx + 12.5, gy + 7, 13, 24, 3).stroke();
   doc.circle(gx + 19, gy + 27.5, 1.2).fill("#ffffff");
 
-  one("COMING SOON TO THE APP STORE", gx + 52, AY + 14, F.bold, 7, GOLD, { characterSpacing: 1.8 });
-  one("The TTFC mobile app", gx + 52, AY + 25, F.head, 12, "#ffffff", { characterSpacing: 0.4 });
-  one("Your agenda, your pass, networking and chat — all in one place.", gx + 52, AY + 44, F.regular, 8.8, "#d6cbf3");
+  const ios = appStoreUrl();
+  one(ios ? "ON THE APP STORE AND GOOGLE PLAY" : "ON GOOGLE PLAY", gx + 52, AY + 14, F.bold, 7, GOLD, { characterSpacing: 1.8 });
+  one("Get the TTFC app", gx + 52, AY + 25, F.head, 12, "#ffffff", { characterSpacing: 0.4 });
+  one(APP_PROMO.body.replace(" with other delegates", ""), gx + 52, AY + 44, F.regular, 8.8, "#d6cbf3");
 
-  // "Coming soon" outline pill (not a store badge — the app isn't live yet)
-  const pw = 92, px = AX + AW - pw - 18, py = AY + (AH - 24) / 2;
-  doc.lineWidth(1).strokeColor("#8f78c9").roundedRect(px, py, pw, 24, 12).stroke();
-  one("COMING SOON", px, py + 8, F.bold, 7.5, "#ffffff", { width: pw, align: "center", characterSpacing: 1.6 });
+  // The store links: white pills, each a link (the App Store one only while its link is set)
+  const stores = [...(ios ? [["App Store", ios]] : []), ["Google Play", PLAY_STORE_URL]];
+  const pw = 92, ph = 20, px = AX + AW - pw - 18;
+  const py0 = AY + (AH - (stores.length * ph + (stores.length - 1) * 6)) / 2;
+  stores.forEach(([name, url], i) => {
+    const py = py0 + i * (ph + 6);
+    doc.roundedRect(px, py, pw, ph, 10).fill("#ffffff");
+    one(name, px, py + 6, F.bold, 8, DARK, { width: pw, align: "center", characterSpacing: 0.4 });
+    doc.link(px, py, pw, ph, url);
+  });
 
   /* ================= FOOTER ================= */
   const FY = PAGE.h - 46;

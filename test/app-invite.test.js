@@ -22,7 +22,7 @@ test("wording: every field has a section and built-in text; staff's text is clea
     assert.ok(SECTIONS.some((s) => s.key === f.section), f.key);
     assert.ok(DEFAULT_COPY[f.key] !== undefined, `default for ${f.key}`);
   }
-  assert.equal(DEFAULT_COPY.button, "Open the TTFC app");
+  assert.equal(DEFAULT_COPY.button, "Open the web app");
   assert.deepEqual(DEFAULT_OPTIONS, { play: true, appStore: true });
   // Unknown keys ignored, one-line fields squashed, lists trimmed.
   assert.deepEqual(cleanCopy({ subject: "  Hi\nthere  ", nope: "x", features: ["  A ", "", "B"] }), { subject: "Hi there", features: ["A", "B"] });
@@ -41,50 +41,92 @@ test("wording: every field has a section and built-in text; staff's text is clea
   assert.equal(fillInvite("Hi {firstName},", {}), "Hi there,");
 });
 
-test("the email: greeting, why, the big button to the web app, home-screen steps, the sign-in address, escaped", () => {
+test("the email: greeting, why, the App Store and Google Play buttons first, the web app link, the sign-in address, escaped", () => {
   const e = buildAppInviteEmail({ firstName: "Jane", email: "jane.doe@example.com" });
   assert.equal(e.subject, "Your TTFC 2026 app is ready");
   assert.match(e.html, /Hi Jane,/);
   for (const f of DEFAULT_COPY.features) assert.ok(e.html.includes(f.replace(/&/g, "&amp;")), f);
-  assert.match(e.html, /href="https:\/\/www\.thetechfestival\.com\/app\/"/);
-  assert.match(e.html, />Open the TTFC app</);
-  assert.match(e.html, /Add it to your home screen/);
-  // iOS 26 and 27 proof (the web app's install sheet says the same): no fixed position, the Share button by its look,
-  // else the ••• (iOS 26) or ≡ (iOS 27) menu by the address bar; in-app browsers first open it in Safari.
-  for (const step of DEFAULT_COPY.iphoneSteps) assert.ok(e.html.includes(step.replace(/'/g, "&#39;")) || e.html.includes(step), step);
-  assert.match(e.html, /No Share button\? Tap ••• next to the address bar \(iOS 26\), or ≡ at the left end of the address bar \(iOS 27\), then Share\./);
-  assert.match(e.html, /In Instagram, LinkedIn, Gmail etc\., tap ••• then Open in Safari, or copy the link into Safari\./);
-  assert.match(e.html, /Not showing\? Tap View More or scroll down; leave Open as Web App on\./);
-  assert.match(e.html, /Tap ⋮ then Add to Home screen \(or Install app\), then Install\./);
+  // Oct 22–23 2026: the store apps are the call to action: "Get the TTFC app", why, and two official-style badges.
+  assert.match(e.html, />Get the TTFC app</);
+  assert.match(e.html, />Your pass, the schedule, live polls and messages, all on your phone\.</);
+  const links = (href) => (e.html.match(new RegExp(`<a href="${href.replace(/[.?]/g, "\\$&")}" target="_blank"`, "g")) || []).length;
+  assert.equal(links("https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803"), 2, "the App Store badge: logo and words are links");
+  assert.equal(links(PLAY_STORE_URL), 2, "the Google Play badge: logo and words are links");
+  // Black, a grey edge, both exactly 200 × 58, stacking on a phone.
+  assert.equal((e.html.match(/<table role="presentation" class="sbt" width="200" height="58" cellpadding="0" cellspacing="0" border="0" bgcolor="#000000" style="width:200px;height:58px;margin:0 auto;background:#000000;border:1px solid #a6a6a6;border-radius:12px;/g) || []).length, 2);
+  assert.match(e.html, /\.sb \{ display:block !important; width:100% !important;/);
+  // The words are live text (the stores' own), the logos small PNGs on the website with alt text; no SVG, no gradient.
+  assert.match(e.html, />Download on the<\/span><span[^>]*>App Store<\/span>/);
+  assert.match(e.html, />GET IT ON<\/span><span[^>]*>Google Play<\/span>/);
+  assert.match(e.html, /<img src="https:\/\/www\.thetechfestival\.com\/email\/store-apple@2x\.png" width="28" height="28" alt="Apple"/);
+  assert.match(e.html, /<img src="https:\/\/www\.thetechfestival\.com\/email\/store-play@2x\.png" width="28" height="28" alt="Play"/);
+  const cta = e.html.slice(e.html.indexOf("<!-- The main call to action"), e.html.indexOf("<!-- Signing in -->"));
+  assert.doesNotMatch(cta, /<svg|gradient/i);
+  assert.ok(cta.indexOf("store-apple") < cta.indexOf("store-play"), "App Store first");
+  assert.match(cta, />Free on iPhone and Android\.</);
+  assert.ok(e.html.indexOf(">Get the TTFC app<") < e.html.indexOf(">Open the web app</a>"), "the stores before the web app");
+  // The web app is a small secondary link (no big button) and nothing tells anyone to add it to the home screen.
+  assert.match(e.html, /<div class="mut" style="[^"]*font-size:12px;[^"]*">Rather not download anything\? Use TTFC in your phone&#39;s browser: <a href="https:\/\/www\.thetechfestival\.com\/app\/"[^>]*>Open the web app<\/a>/);
+  assert.doesNotMatch(e.html, /class="btn"/);
+  assert.doesNotMatch(e.html, /home screen|Home Screen|Add to Home|Safari|Install app|nothing to download/i);
+  assert.match(e.preheader, /Free on the App Store and Google Play\.$/);
+  assert.match(e.html, /Download it free on the App Store or Google Play\./);
   assert.match(e.html, /Sign in with this email: jane\.doe@example\.com/);
   assert.match(e.html, /prefers-color-scheme: light/);          // the light version for mail apps that ask
   assert.doesNotMatch(e.html, /\/api\/t\/o\//);                  // no pixel without a real send
   assert.equal(e.link, APP_URL);
-  // Plain text: the link and every step.
-  assert.match(e.text, /Open the TTFC app:\nhttps:\/\/www\.thetechfestival\.com\/app\//);
-  assert.match(e.text, /iPhone:\n {2}1\. Open thetechfestival\.com\/app in Safari\./);
+  // Plain text: both store links, clearly, then the web app's.
+  assert.ok(e.text.includes([
+    "GET THE TTFC APP",
+    "Your pass, the schedule, live polls and messages, all on your phone.",
+    "",
+    "  iPhone (App Store): https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803",
+    "  Android (Google Play): https://play.google.com/store/apps/details?id=com.atlaslinkmarkets.ttfc",
+    "",
+    "Free on iPhone and Android.",
+    "",
+    "Rather not download anything? Use TTFC in your phone's browser:",
+    "Open the web app: https://www.thetechfestival.com/app/",
+  ].join("\n")), e.text);
+  assert.doesNotMatch(e.text, /home screen|Add to Home|Safari/i);
   assert.match(e.text, /Sign in with this email: jane\.doe@example\.com/);
+  // Old saved wording for the removed home-screen section is ignored.
+  const old = buildAppInviteEmail({ copy: { homeTitle: "Add it to your home screen", iphoneSteps: ["Tap Share"], playText: "Prefer the Android app?" } });
+  assert.doesNotMatch(old.html + old.text, /Add it to your home screen|Tap Share|Prefer the Android app/);
   // No name: "Hi there,". Staff's text is plain text, never HTML.
   assert.match(buildAppInviteEmail({ email: "x@example.com" }).html, /Hi there,/);
-  const evil = buildAppInviteEmail({ copy: { heading: "<script>alert(1)</script>", features: ["<b>bold</b>"] }, firstName: "<i>J</i>" });
-  assert.doesNotMatch(evil.html, /<script>alert|<b>bold<\/b>|<i>J<\/i>/);
+  const evil = buildAppInviteEmail({ copy: { heading: "<script>alert(1)</script>", features: ["<b>bold</b>"], storesTitle: "<i>x</i>" }, firstName: "<i>J</i>" });
+  assert.doesNotMatch(evil.html, /<script>alert|<b>bold<\/b>|<i>J<\/i>|<i>x<\/i>/);
   assert.match(evil.html, /&lt;script&gt;/);
 });
 
-test("optional lines: Google Play on by default; the App Store line only with its switch on and the iPhone app's link set", () => {
+test("the badges' switches: both on by default; the App Store one only with its link; neither = the web app's big button", () => {
   const base = { firstName: "Jane", email: "jane@example.com" };
-  const on = buildAppInviteEmail({ ...base, storeUrl: "" });
-  assert.ok(on.html.includes(PLAY_STORE_URL));
-  assert.match(on.text, /Prefer the Android app\? Get it on Google Play: https:\/\/play\.google\.com/);
-  assert.doesNotMatch(on.html, /App Store/);
-  const off = buildAppInviteEmail({ ...base, options: { play: false }, storeUrl: "" });
-  assert.ok(!off.html.includes(PLAY_STORE_URL));
-  const store = "https://apps.apple.com/ca/app/id6820764803";
-  assert.ok(buildAppInviteEmail({ ...base, storeUrl: store }).html.includes(store));
-  assert.ok(!buildAppInviteEmail({ ...base, storeUrl: store, options: { appStore: false } }).html.includes(store));
-  // The server's setting: only an apps.apple.com link counts; none today.
-  assert.equal(appStoreUrl({}), "");
-  assert.equal(appStoreUrl({ APP_STORE_URL: store }), store);
+  const store = "https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803";
+  const both = buildAppInviteEmail(base);
+  assert.ok(both.html.includes(store) && both.html.includes(PLAY_STORE_URL));
+  // No App Store link (APP_STORE_URL unusable): Google Play alone, still 200 wide.
+  const noIos = buildAppInviteEmail({ ...base, storeUrl: "" });
+  assert.ok(noIos.html.includes(PLAY_STORE_URL));
+  assert.doesNotMatch(noIos.html, />App Store<|store-apple/);
+  assert.doesNotMatch(noIos.text, /App Store\):/);
+  assert.equal((noIos.html.match(/class="sbt" width="200" height="58"/g) || []).length, 1);
+  // Switched off one at a time.
+  const noPlay = buildAppInviteEmail({ ...base, options: { play: false } });
+  assert.ok(noPlay.html.includes(store) && !noPlay.html.includes(PLAY_STORE_URL));
+  assert.ok(!buildAppInviteEmail({ ...base, options: { appStore: false } }).html.includes(store));
+  // Both off: the web app is the big button again, no panel.
+  const none = buildAppInviteEmail({ ...base, options: { play: false, appStore: false } });
+  assert.ok(!none.html.includes(store) && !none.html.includes(PLAY_STORE_URL));
+  assert.doesNotMatch(none.html, />Get the TTFC app<|class="cta"/);
+  assert.match(none.html, /class="btn"[\s\S]*>Open the web app</);
+  assert.match(none.text, /Open the web app:\nhttps:\/\/www\.thetechfestival\.com\/app\//);
+  // Staff's words around the badges (the badges' own words are the stores').
+  const words = buildAppInviteEmail({ ...base, copy: { storesTitle: "Download TTFC", storesIntro: "It's free.", buttonNote: "Works offline too." } });
+  assert.match(words.html, />Download TTFC<[\s\S]*>It&#39;s free\.<[\s\S]*>Download on the<[\s\S]*>Works offline too\.</);
+  // The server's setting: only an apps.apple.com link counts; the live listing by default.
+  assert.equal(appStoreUrl({}), store);
+  assert.equal(appStoreUrl({ APP_STORE_URL: "https://apps.apple.com/us/app/id6820764803" }), "https://apps.apple.com/us/app/id6820764803");
   assert.equal(appStoreUrl({ APP_STORE_URL: "https://evil.example.com/app" }), "");
 });
 

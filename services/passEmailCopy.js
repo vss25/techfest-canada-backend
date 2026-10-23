@@ -160,6 +160,8 @@ const PURCHASE_FIELDS = [
   f("appEyebrow", "app", "Label", "line", 80, { booth: true }),
   f("appTitle", "app", "Title", "line", 120, { booth: true }),
   f("appBody", "app", "Text", "text", 400, { booth: true }),
+  f("appStoreButton", "app", "App Store button", "line", 40, { booth: true, hint: "Opens the iPhone app on the App Store." }),
+  f("playButton", "app", "Google Play button", "line", 40, { booth: true, hint: "Opens the Android app on Google Play." }),
   f("helpTitle", "footer", "Help title", "line", 80, { booth: true }),
   f("helpText", "footer", "Help text", "text", 600, { booth: true, hint: "Email addresses become links; {ticketId} shows in the ticket style." }),
   f("contactLine", "footer", "Website and phone line", "text", 300, { booth: true }),

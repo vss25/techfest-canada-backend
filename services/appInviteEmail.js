@@ -1,16 +1,25 @@
 /* =========================================================
    The app invite email: HTML + plain text (Oct 20 2026)
    ---------------------------------------------------------
-   "Open the TTFC app": the TTFC header like the other emails, a
-   short why (their pass and check-in QR, the agenda, the venue
-   map, networking and chat, live polls and Q&A), one big button to
-   the web app (https://www.thetechfestival.com/app/), how to add it
-   to the home screen on an iPhone and on Android, the address to
-   sign in with, and, each with its own switch, a Google Play line
-   and an App Store line (the App Store one only once the iPhone
-   app's link is set: services/appInvite.js appStoreUrl).
-   Every word comes from the editable wording (services/
-   appInviteCopy.js). Dark like the other TTFC emails, with a light
+   "Your TTFC 2026 app is ready": the TTFC header like the other
+   emails, a short why (their pass and check-in QR, the agenda, the
+   venue map, networking and chat, live polls and Q&A), then the
+   main call to action (Oct 22 2026, the organiser: "Prompt the users
+   to download Android/iOS. Stop prompting people to install the web
+   app"; Oct 23: "Make the CTA better"): a purple-edged panel with
+   "Get the TTFC app", why, and two official-style badges, Download
+   on the App Store and Get it on Google Play (black, grey edge, the
+   store's logo as a PNG on the website and live text, both 200 × 58,
+   side by side or stacked on a phone), each with its own switch (the
+   App Store one only while the iPhone app's link is set:
+   services/appInvite.js appStoreUrl), and "Free on iPhone and
+   Android."; under the panel a small line to the web app (the
+   tracked link, "Open the web app"), which becomes the big button if
+   no badge shows.
+   No "Add it to your home screen" steps any more. Then the address
+   to sign in with.
+   Every word but the badges' (the stores' own) comes from the
+   editable wording (services/appInviteCopy.js). Dark like the other TTFC emails, with a light
    version for mail apps that ask for one (prefers-color-scheme).
    Real sends (sendAppInviteEmail with `track`) carry the person's
    signed token in the button's link (#r=…) and a 1×1 open pixel;
@@ -33,6 +42,12 @@ import { noteTrackedSend } from "./engagementStore.js";
 import { unsubscribeFor } from "./unsubscribe.js";
 
 export const ENQUIRE_EMAIL = "enquire@thetechfestival.com";
+/** The store badges' words (the stores' own) and logos: small lossless PNGs on the website (public/email/, 56 px for
+    28 px), white Apple logo and the four-colour Play triangle. */
+export const STORE_BADGES = Object.freeze({
+  appStore: Object.freeze({ id: "appStore", top: "Download on the", name: "App Store", text: "iPhone (App Store)", alt: "Apple", glyph: `${EVENT.website}/email/store-apple@2x.png` }),
+  play: Object.freeze({ id: "play", top: "GET IT ON", name: "Google Play", text: "Android (Google Play)", alt: "Play", glyph: `${EVENT.website}/email/store-play@2x.png` }),
+});
 /** The logo with its words in dark ink, for mail apps showing the light version. */
 export const LOGO_DARK_CID = "ttfc-logo-dark";
 const LOGO_DARK_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets", "email", "ttfc-logo-dark.png");
@@ -60,11 +75,11 @@ const line = (text, vars) => esc(fillInvite(text, vars));
  * @param {object} [p.options]    { play, appStore } on / off
  * @param {string} [p.firstName]
  * @param {string} [p.email]      the address it goes to (the sign-in line)
- * @param {string} [p.link]       the button's link (default: the web app, no token)
+ * @param {string} [p.link]       the web app link (default: the web app, no token)
  * @param {string} [p.logoSrc]    "cid:…" or a data: URI ("" = the text wordmark)
  * @param {string} [p.logoLightSrc] the same for the light version (dark words; "" = the light logo everywhere)
  * @param {string} [p.pixelSrc]   a real send's open pixel ("" = none)
- * @param {string} [p.storeUrl]   the iPhone app's App Store link ("" = no App Store line)
+ * @param {string} [p.storeUrl]   the iPhone app's App Store link ("" = no App Store button)
  * @param {object} [p.swag]       the swag kit contest while it's on (services/swagRules.js swagSettings), else null:
  *                                the swag block after the intro and the swag subject
  * @param {string} [p.swagSrc]    the swag photo: "cid:swag-kit" or a data: URI
@@ -79,8 +94,9 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
   };
   const url = link || appInviteLink();
   const opts = { ...DEFAULT_OPTIONS, ...(options || {}) };
-  const showPlay = opts.play !== false && !!c.playText;
-  const showStore = opts.appStore !== false && !!storeUrl && !!c.appStoreText;
+  const showStore = opts.appStore !== false && !!storeUrl;
+  const showPlay = opts.play !== false;
+  const stores = [...(showStore ? [{ ...STORE_BADGES.appStore, href: storeUrl }] : []), ...(showPlay ? [{ ...STORE_BADGES.play, href: PLAY_STORE_URL }] : [])];
   const subject = fillInvite(swag && c.swagSubject ? c.swagSubject : c.subject, vars);
   const preheader = fillInvite(c.preheader, vars);
   const body = `font-family:${SANS};font-size:16px;line-height:26px;color:${C.text};margin:0 0 14px;`;
@@ -90,21 +106,16 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
                 <td valign="top" width="26" style="padding:0 0 10px;font-family:${SANS};font-size:15px;line-height:22px;color:${C.magenta};">&#9679;</td>
                 <td valign="top" class="tx" style="padding:0 0 10px;font-family:${SANS};font-size:15px;line-height:22px;color:${C.text};">${line(t, vars)}</td>
               </tr>`;
-  const steps = (title, list, color) => `
-                <td class="col" valign="top" width="50%" style="padding:0 8px 0 0;">
-                  <div class="hd" style="font-family:${SANS};font-size:14px;line-height:20px;font-weight:800;color:${C.white};margin:0 0 10px;">${line(title, vars)}</div>
-                  ${(list || []).map((s, i) => `
-                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;margin:0 0 9px;"><tr>
-                    <td valign="top" width="30" style="padding:0;">
-                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;"><tr>
-                        <td align="center" valign="middle" width="22" height="22" style="width:22px;height:22px;border-radius:11px;border:1px solid ${color};font-family:${SANS};font-size:11px;font-weight:800;color:${color};">${i + 1}</td>
-                      </tr></table>
-                    </td>
-                    <td valign="top" class="tx" style="padding:1px 0 0;font-family:${SANS};font-size:14px;line-height:20px;color:${C.text};">${line(s, vars)}</td>
-                  </tr></table>`).join("")}
+  // The badges: black, a 1px #a6a6a6 edge, the store's logo and its two lines of live text, both exactly 200 × 58,
+  // side by side (stacked on a phone). Tables and inline styles only; the logo is a PNG with alt text, so with images
+  // off the badge still reads "Download on the App Store". Every part is a link.
+  const badge = ({ href, top, name, glyph, alt }) => `
+                <td class="sb" align="center" valign="top" style="padding:0 6px 10px;">
+                  <table role="presentation" class="sbt" width="200" height="58" cellpadding="0" cellspacing="0" border="0" bgcolor="#000000" style="width:200px;height:58px;margin:0 auto;background:#000000;border:1px solid #a6a6a6;border-radius:12px;border-collapse:separate;"><tr>
+                    <td width="62" height="56" align="right" valign="middle" style="width:62px;height:56px;padding:0;"><a href="${esc(href)}" target="_blank" style="display:block;padding:14px 10px 14px 24px;text-decoration:none;"><img src="${esc(glyph)}" width="28" height="28" alt="${esc(alt)}" style="display:block;width:28px;height:28px;border:0;outline:none;font-family:${SANS};font-size:9px;line-height:28px;color:#ffffff;"></a></td>
+                    <td align="left" valign="middle" style="padding:0;"><a href="${esc(href)}" target="_blank" style="display:block;padding:9px 10px 9px 0;font-family:${SANS};color:#ffffff;text-decoration:none;white-space:nowrap;"><span style="display:block;font-size:11px;line-height:14px;font-weight:500;letter-spacing:${top === top.toUpperCase() ? "0.6px" : "0.1px"};color:#ffffff;">${esc(top)}</span><span style="display:block;font-size:21px;line-height:25px;font-weight:600;letter-spacing:-0.3px;color:#ffffff;">${esc(name)}</span></a></td>
+                  </tr></table>
                 </td>`;
-  const storeLine = (text, label, href) => `
-            <div class="tx" style="font-family:${SANS};font-size:14px;line-height:22px;color:${C.text};margin:0 0 6px;">${line(text, vars)} <a href="${esc(href)}" target="_blank" style="color:${C.white};font-weight:700;text-decoration:underline;" class="lk">${line(label, vars)}</a></div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
@@ -124,10 +135,12 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
     .hero { font-size:30px !important; line-height:36px !important; }
     .col { display:block !important; width:100% !important; padding:0 0 16px 0 !important; }
     .btn a { padding:17px 26px !important; font-size:16px !important; }
+    .sb { display:block !important; width:100% !important; padding:0 0 10px !important; }
   }
   @media (prefers-color-scheme: light) {
     body, .bg { background:#f6f2fb !important; }
     .panel { background:#ffffff !important; border-color:#e6def3 !important; }
+    .cta { background:#ffffff !important; }
     .hd, .hero, .sig { color:#140a26 !important; }
     .tx { color:#3a2f55 !important; }
     .mut { color:#6b5f88 !important; }
@@ -194,38 +207,29 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
           </td>
         </tr>` : ""}
 
-        <!-- The button -->
+        <!-- The main call to action: "Get the TTFC app" and the App Store / Google Play badges (or, with neither, the web app's big button) -->
         <tr>
-          <td class="pad" align="center" style="padding:30px 44px 6px;">
-            ${button(url, fillInvite(c.button, vars))}
-            ${c.buttonNote ? `<div class="mut" style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin-top:14px;">${line(c.buttonNote, vars)}</div>` : ""}
-          </td>
-        </tr>
-
-        <!-- Add it to your home screen -->
-        <tr>
-          <td class="pad" style="padding:28px 44px 0;">
-            <table role="presentation" class="panel" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.panel}" style="background:${C.panel};border:1px solid ${C.hair};border-radius:16px;border-collapse:separate;">
-              <tr><td style="padding:22px 24px 10px;">
-                <div class="hd" style="font-family:${SANS};font-size:17px;line-height:24px;font-weight:800;color:${C.white};margin:0 0 4px;">${line(c.homeTitle, vars)}</div>
-                ${c.homeIntro ? `<div class="mut" style="font-family:${SANS};font-size:14px;line-height:21px;color:${C.muted};margin:0 0 16px;">${line(c.homeIntro, vars)}</div>` : ""}
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-                  ${steps(c.iphoneTitle, c.iphoneSteps, C.purple)}
-                  ${steps(c.androidTitle, c.androidSteps, C.magenta)}
+          <td class="pad" align="center" style="padding:28px 44px 6px;">
+            ${stores.length ? `<table role="presentation" class="cta" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.panel}" style="background:${C.panel};border:2px solid ${C.purple};border-radius:18px;border-collapse:separate;">
+              <tr><td align="center" style="padding:24px 16px 16px;">
+                ${c.storesTitle ? `<div class="hd" style="font-family:${SANS};font-size:22px;line-height:28px;font-weight:800;color:${C.white};margin:0 0 6px;">${line(c.storesTitle, vars)}</div>` : ""}
+                ${c.storesIntro ? `<div class="tx" style="font-family:${SANS};font-size:15px;line-height:22px;color:${C.text};margin:0 0 18px;">${line(c.storesIntro, vars)}</div>` : ""}
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:separate;margin:0 auto;"><tr>${stores.map(badge).join("")}
                 </tr></table>
+                ${c.buttonNote ? `<div class="mut" style="font-family:${SANS};font-size:13px;line-height:18px;color:${C.muted};margin:4px 0 0;">${line(c.buttonNote, vars)}</div>` : ""}
               </td></tr>
             </table>
+            <div class="mut" style="font-family:${SANS};font-size:12px;line-height:18px;color:${C.dim};margin:14px 0 0;">${c.webAppText ? `${line(c.webAppText, vars)} ` : ""}<a href="${esc(url)}" target="_blank" class="lk" style="color:${C.muted};font-weight:600;text-decoration:underline;">${line(c.button, vars)}</a></div>`
+              : button(url, fillInvite(c.button, vars))}
           </td>
         </tr>
 
-        <!-- Signing in, app store lines -->
-        <tr>
+        <!-- Signing in -->
+        ${c.signIn ? `<tr>
           <td class="pad" style="padding:24px 44px 0;">
-            ${c.signIn ? para(c.signIn, vars, `font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 14px;`) : ""}
-            ${showPlay ? storeLine(c.playText, c.playLink || "Google Play", PLAY_STORE_URL) : ""}
-            ${showStore ? storeLine(c.appStoreText, c.appStoreLink || "App Store", storeUrl) : ""}
+            ${para(c.signIn, vars, `font-family:${SANS};font-size:15px;line-height:24px;color:${C.text};margin:0 0 14px;`)}
           </td>
-        </tr>
+        </tr>` : ""}
 
         <!-- Sign-off -->
         <tr>
@@ -261,23 +265,21 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
     "",
     ...(swag ? [t(c.swagHeadline).toUpperCase(), t(c.swagOnly), ...(c.swagText ? [t(c.swagText)] : []), `No purchase necessary. Rules: ${SWAG_PAGE}`, ""] : []),
     ...((c.features || []).length ? [c.featuresTitle ? t(c.featuresTitle).toUpperCase() : "", ...c.features.map((x) => `  • ${t(x)}`), ""] : []),
-    `${t(c.button)}:`,
-    url,
-    ...(c.buttonNote ? [t(c.buttonNote)] : []),
-    "",
-    t(c.homeTitle).toUpperCase(),
-    ...(c.homeIntro ? [t(c.homeIntro)] : []),
-    "",
-    `${t(c.iphoneTitle)}:`,
-    ...(c.iphoneSteps || []).map((s, i) => `  ${i + 1}. ${t(s)}`),
-    "",
-    `${t(c.androidTitle)}:`,
-    ...(c.androidSteps || []).map((s, i) => `  ${i + 1}. ${t(s)}`),
+    ...(stores.length
+      ? [
+        ...(c.storesTitle ? [t(c.storesTitle).toUpperCase()] : []),
+        ...(c.storesIntro ? [t(c.storesIntro)] : []),
+        "",
+        ...stores.map((x) => `  ${x.text}: ${x.href}`),
+        "",
+        ...(c.buttonNote ? [t(c.buttonNote)] : []),
+        "",
+        ...(c.webAppText ? [t(c.webAppText)] : []),
+        `${t(c.button)}: ${url}`,
+      ]
+      : [`${t(c.button)}:`, url]),
     "",
     ...(c.signIn ? [t(c.signIn), ""] : []),
-    ...(showPlay ? [`${t(c.playText)} ${t(c.playLink || "Google Play")}: ${PLAY_STORE_URL}`] : []),
-    ...(showStore ? [`${t(c.appStoreText)} ${t(c.appStoreLink || "App Store")}: ${storeUrl}`] : []),
-    ...(showPlay || showStore ? [""] : []),
     t(c.signOff),
     ...(c.signature ? ["", t(c.signature)] : []),
     "",

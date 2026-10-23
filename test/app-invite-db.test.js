@@ -121,9 +121,9 @@ test("wording: staff read it, management save it (defaults aren't stored), the p
   const t = await call("GET", "/api/console/app-invite/template", { as: U.sam });
   assert.equal(t.status, 200);
   assert.equal(t.body.canEdit, false);
-  assert.equal(t.body.defaults.button, "Open the TTFC app");
+  assert.equal(t.body.defaults.button, "Open the web app");
   assert.deepEqual(t.body.options, { play: true, appStore: true });
-  assert.equal(t.body.appStoreUrl, "");
+  assert.equal(t.body.appStoreUrl, "https://apps.apple.com/ca/app/the-tech-festival-canada/id6820764803");
   assert.equal((await call("PUT", "/api/console/app-invite/template", { as: U.sam, body: { heading: "Nope" } })).status, 403);
   const saved = await call("PUT", "/api/console/app-invite/template", { body: { heading: "Your festival app is here.", subject: t.body.defaults.subject, options: { play: false } } });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
