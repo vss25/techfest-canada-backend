@@ -3,6 +3,7 @@
 import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
 import { SWAG_DEFAULTS, cleanSwagContent } from "./swagRules.js";
 import { STAY_DEFAULTS } from "./waitlist.js";
+import { cleanJourneyContent, journeyContentError } from "./stayJourney.js";
 
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
@@ -110,7 +111,9 @@ export const CONTENT_KEYS = {
   ...SWAG_DEFAULTS,
   /* "Stay updated": the TTFC 2027 waitlist page (website /stay-updated, the web app's /app/stay-updated) and the
      person's "You're on the TTFC 2027 waitlist" email (Oct 23 2026, services/waitlist.js). Plain text, any staff;
-     empty = the default. stay.thanks is also POST /api/stay-updated's answer. */
+     empty = the default. stay.thanks is also POST /api/stay-updated's answer. stay.journey is the 2027 journey, a
+     JSON list of stops checked by services/stayJourney.js (cleanContent refuses a journey it can't save;
+     contentError says why). */
   ...STAY_DEFAULTS,
 };
 
@@ -125,7 +128,14 @@ export function cleanContent(key, value) {
   }
   const swag = cleanSwagContent(key, value);
   if (swag !== undefined) return swag;
+  const journey = cleanJourneyContent(key, value);
+  if (journey !== undefined) return journey;
   return [key, String(value ?? "").slice(0, 2000)];
+}
+
+/** Why cleanContent refused a value of a known key, in plain words for the panel ("" = no particular reason). */
+export function contentError(key, value) {
+  return journeyContentError(key, value);
 }
 
 /** "Most used" summary from a list of events. */
