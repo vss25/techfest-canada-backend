@@ -1176,7 +1176,8 @@ const SPEAKER_PASS_FIELDS = "name email alsoTo ticketId ticketType speakerId det
   "passEmailSentCount claimedBy checkedIn createdAt purchaseDate runOfShow speakerContact invitesSentAt invitesSentCount " +
   "speakerNudgedAt speakerNudgeCount issuedPass cxoBreakfast luncheons galaDinner awardsNight";
 // Who's copied on speaker emails and invites until staff change it in Edit email (SPEAKER_CC, comma-separated).
-const DEFAULT_SPEAKER_CC = () => String(process.env.SPEAKER_CC ?? "lubna@thetechfestival.com").split(",")
+// Nobody by default since Oct 23 2026 (the organiser: "remove lubna from cc from all rsvp emails").
+const DEFAULT_SPEAKER_CC = () => String(process.env.SPEAKER_CC ?? "").split(",")
   .map((e) => e.trim().toLowerCase()).filter(Boolean);
 /** The saved wording and cc list: { copy: every field staff set (services/passEmailCopy.js), cc: [] }. */
 async function speakerTemplate() {
