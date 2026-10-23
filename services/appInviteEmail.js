@@ -188,7 +188,7 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
                 <div class="hd" style="font-family:${SANS};font-size:22px;line-height:28px;font-weight:800;color:${C.white};margin:0 0 10px;">${line(c.swagHeadline, vars)}</div>
                 <div class="hd" style="font-family:${SANS};font-size:16px;line-height:24px;font-weight:800;color:${C.orange};margin:0 0 10px;">${line(c.swagOnly, vars)}</div>
                 ${c.swagText ? para(c.swagText, vars, `font-family:${SANS};font-size:15px;line-height:23px;color:${C.text};margin:0 0 10px;`) : ""}
-                <div class="mut" style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};">No purchase necessary · <a href="${esc(SWAG_PAGE)}" target="_blank" class="lk" style="color:${C.white};font-weight:700;text-decoration:underline;">Rules</a></div>
+                <div class="mut" style="font-family:${SANS};font-size:13px;line-height:20px;color:${C.muted};">Free for TTFC 2026 pass holders · Quebec residents excluded · <a href="${esc(SWAG_PAGE)}" target="_blank" class="lk" style="color:${C.white};font-weight:700;text-decoration:underline;">Rules</a></div>
               </td></tr>
             </table>
           </td>
@@ -263,7 +263,7 @@ export function buildAppInviteEmail({ copy = {}, options = DEFAULT_OPTIONS, firs
     "",
     t(c.intro),
     "",
-    ...(swag ? [t(c.swagHeadline).toUpperCase(), t(c.swagOnly), ...(c.swagText ? [t(c.swagText)] : []), `No purchase necessary. Rules: ${SWAG_PAGE}`, ""] : []),
+    ...(swag ? [t(c.swagHeadline).toUpperCase(), t(c.swagOnly), ...(c.swagText ? [t(c.swagText)] : []), `Free for TTFC 2026 pass holders. Quebec residents excluded. Rules: ${SWAG_PAGE}`, ""] : []),
     ...((c.features || []).length ? [c.featuresTitle ? t(c.featuresTitle).toUpperCase() : "", ...c.features.map((x) => `  • ${t(x)}`), ""] : []),
     ...(stores.length
       ? [
