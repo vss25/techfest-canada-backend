@@ -3,6 +3,7 @@ import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { C, SANS, SERIF, LOGO_CID, button, logoPng, stripe } from "./attendingEmail.js";
 import { APP_URL } from "./appInvite.js";
 import { ENQUIRE_EMAIL, FROM } from "./appInviteEmail.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 /* =========================================================
    The "What you missed" email (Oct 22 2026): HTML + plain text.
@@ -14,6 +15,8 @@ import { ENQUIRE_EMAIL, FROM } from "./appInviteEmail.js";
    "Open TTFC" button; an unsubscribe line (one click turns
    "Email me a summary of what I missed" off). Dark like the other TTFC
    emails, with a light version for mail apps that ask for one.
+   Under the button, the "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026).
    From and reply-to enquire@. Subject: the most important line,
    "+ N more", "on TTFC". Pure builder; services/digest.js sends.
    Items (services/digest.js missedFor):
@@ -148,6 +151,7 @@ export function buildDigestEmail({ firstName = "", items = [], unsubscribeUrl = 
     .mut { color:#6b5f88 !important; }
     .eb { color:#9a5200 !important; }
   }
+${appStoreBlockCss({ adapt: "light" })}
 </style>
 </head>
 <body class="bg" style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -175,6 +179,12 @@ export function buildDigestEmail({ firstName = "", items = [], unsubscribeUrl = 
             ${button(open, "Open TTFC")}
           </td>
         </tr>
+        <!-- Get the TTFC app (services/appStoreBlock.js) -->
+        <tr>
+          <td class="pad" style="padding:0 44px 32px;">
+            ${appStoreBlockHtml()}
+          </td>
+        </tr>
         <tr><td>${stripe(2)}</td></tr>
         <tr>
           <td class="pad mut" align="center" style="padding:22px 44px 40px;font-family:${SANS};font-size:12px;line-height:19px;color:${C.dim};">
@@ -194,6 +204,7 @@ export function buildDigestEmail({ firstName = "", items = [], unsubscribeUrl = 
     greeting, "", intro, "",
     ...sections.flatMap((s) => [s.title.toUpperCase(), ...s.items.flatMap((x) => [`  • ${x.headline}${x.text ? ` — “${x.text}”` : ""}`, `    ${x.url}`]), ""]),
     `Open TTFC: ${open}`, "",
+    ...appStoreBlockLines(), "",
     `${EVENT.name} · ${EVENT.dates}`,
     unsubscribeUrl ? `Turn off these emails: ${unsubscribeUrl}` : `Turn these off in the app: Settings › Notifications.`,
   ].join("\n");

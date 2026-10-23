@@ -11,6 +11,7 @@ import { isBoothId, EVENT } from "./ticketInfo.js";
 import { logoPng, FROM as SPEAKER_PASS_FROM, CONTACT_EMAIL as SPEAKER_PASS_REPLY_TO } from "./speakerPassEmail.js";
 import { passEmailFor } from "./passEmail.js";
 import { loadTemplate } from "./emailTemplates.js";
+import { appStoreBlockHtml, campaignAppBlock } from "./appStoreBlock.js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -28,6 +29,25 @@ export function sanitizeEmailHtml(html) {
    WELCOME EMAIL
 ========================================================= */
 
+/** The welcome email's HTML; it ends with the compact "Get the TTFC app" block (services/appStoreBlock.js). */
+export function buildWelcomeEmailHtml(name) {
+  return `
+      <h2>Welcome ${name}!</h2>
+
+      <p>Thank you for joining TechFest Canada.</p>
+
+      <p>You can now purchase your delegate pass below.</p>
+
+      <a href="${process.env.FRONTEND_URL}/tickets"
+      style="padding:12px 20px;background:#8b5cf6;color:white;border-radius:6px;text-decoration:none;">
+      Purchase Tickets
+      </a>
+      <div style="max-width:560px;margin:28px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+      </div>
+      `;
+}
+
 export async function sendWelcomeEmail(email, name) {
 
   try {
@@ -40,18 +60,7 @@ export async function sendWelcomeEmail(email, name) {
 
       subject: "Welcome to TechFest Canada 🚀",
 
-      html: `
-      <h2>Welcome ${name}!</h2>
-
-      <p>Thank you for joining TechFest Canada.</p>
-
-      <p>You can now purchase your delegate pass below.</p>
-
-      <a href="${process.env.FRONTEND_URL}/tickets"
-      style="padding:12px 20px;background:#8b5cf6;color:white;border-radius:6px;text-decoration:none;">
-      Purchase Tickets
-      </a>
-      `
+      html: buildWelcomeEmailHtml(name)
     });
 
     console.log("Welcome email sent");
@@ -67,6 +76,23 @@ export async function sendWelcomeEmail(email, name) {
    PASSWORD RESET EMAIL
 ========================================================= */
 
+/** The password reset email's HTML; under the button, the compact "Get the TTFC app" block (services/appStoreBlock.js). */
+export function buildResetPasswordEmailHtml(resetLink) {
+  return `
+      <h2>Password Reset Request</h2>
+
+      <p>Click below to reset your password.</p>
+
+      <a href="${resetLink}"
+      style="padding:12px 20px;background:#f97316;color:white;border-radius:6px;text-decoration:none;">
+      Reset Password
+      </a>
+      <div style="max-width:560px;margin:28px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+      </div>
+      `;
+}
+
 export async function sendResetPasswordEmail(email, resetLink) {
 
   try {
@@ -79,16 +105,7 @@ export async function sendResetPasswordEmail(email, resetLink) {
 
       subject: "Reset your password",
 
-      html: `
-      <h2>Password Reset Request</h2>
-
-      <p>Click below to reset your password.</p>
-
-      <a href="${resetLink}"
-      style="padding:12px 20px;background:#f97316;color:white;border-radius:6px;text-decoration:none;">
-      Reset Password
-      </a>
-      `
+      html: buildResetPasswordEmailHtml(resetLink)
     });
 
     console.log("Reset email sent");
@@ -583,7 +600,14 @@ export function campaignSenderLine(env = process.env) {
 
 let warnedNoAddress = false;
 
-export function generateCampaignFooter(baseUrl, campaignId, email) {
+/**
+ * The footer every staff-built email gets (Audience campaigns, their test sends, automation). Since Oct 23 2026 it starts
+ * with the "Get the TTFC app" block (App Store and Google Play, services/appStoreBlock.js campaignAppBlock): after
+ * staff's content, before the sender line and Unsubscribe. Its badges link straight to the stores (added after
+ * the click-tracking rewrite, like the rest of the footer). `app: false` leaves it out (a footer inside a
+ * template that gets the real footer as well).
+ */
+export function generateCampaignFooter(baseUrl, campaignId, email, { app = true } = {}) {
   if (!process.env.MAIL_POSTAL_ADDRESS && !warnedNoAddress) {
     warnedNoAddress = true;
     console.warn("MAIL_POSTAL_ADDRESS is not set: campaign emails need the sender's postal address (CASL / CAN-SPAM).");
@@ -591,7 +615,7 @@ export function generateCampaignFooter(baseUrl, campaignId, email) {
   const unsubscribeUrl = `${baseUrl}/api/track/unsubscribe/${campaignId}/${encodeURIComponent(email)}`;
   const viewBrowserUrl = `${baseUrl}/api/track/view/${campaignId}/${encodeURIComponent(email)}`;
 
-  return `
+  return `${app ? campaignAppBlock() : ""}
     <div style="background:#1a1035;padding:20px;text-align:center;margin-top:20px;border-radius:0 0 12px 12px;">
       <p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0;">
         ${campaignSenderLine()}

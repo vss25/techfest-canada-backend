@@ -8,10 +8,13 @@
    Same visual language as the ticket email (services/ticketEmail.js):
    table layout, inline styles, 600px max, bulletproof button, Apple
    Mail dark mode through the progressive <style> block.
+   Before the help footer: the "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026).
 ========================================================= */
 
 import { C, SANS, DISPLAY } from "./ticketEmail.js";
 import { EVENT, displayPassName, escapeHtml as esc } from "./ticketInfo.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 export const PROFILE_EMAIL_SUBJECT = "One minute to get the most out of TTFC 2026";
 
@@ -55,6 +58,7 @@ export function buildProfileRequestEmail({ firstName = "", tier = "", link = "" 
     .em-muted { color:#a99cc9 !important; }
     .em-link { color:#c9b8f2 !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body class="em-bg" style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -109,6 +113,11 @@ export function buildProfileRequestEmail({ firstName = "", tier = "", link = "" 
   <p class="em-muted" style="margin:0;font-family:${SANS};font-size:12px;line-height:18px;color:${C.muted};">Button not working? Copy this link into your browser:<br><a class="em-link" href="${esc(link)}" target="_blank" style="color:${C.purple};text-decoration:underline;word-break:break-all;">${esc(link)}</a></p>
 </td></tr>
 
+<!-- the TTFC app (services/appStoreBlock.js) -->
+<tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:0 32px 32px;">
+  ${appStoreBlockHtml()}
+</td></tr>
+
 <!-- help footer -->
 <tr><td bgcolor="${C.dark}" class="em-pad" style="background:${C.dark};padding:26px 32px;">
   <div style="font-family:${SANS};font-size:15px;line-height:22px;font-weight:700;color:#ffffff;margin:0 0 6px;">Need a hand?</div>
@@ -139,6 +148,8 @@ export function buildProfileRequestEmail({ firstName = "", tier = "", link = "" 
     `Your pass: ${pass} · ${EVENT.dates} · ${EVENT.venue}, Toronto`,
     "",
     "Your answers are only shared with the TTFC organisers. You can update them any time with the same link.",
+    "",
+    ...appStoreBlockLines(),
     "",
     `Need a hand? Reply to this email or write to ${EVENT.supportEmail}.`,
     EVENT.website,

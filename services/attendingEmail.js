@@ -17,6 +17,8 @@
    attending-preview.jpg, drawn by the website's own card renderer).
    Every value is HTML-escaped. Email-safe: tables, inline styles,
    600px max; the <style> block only adds mobile tweaks.
+   After "How it works": the "Get the TTFC app" block (App Store and
+   Google Play, services/appStoreBlock.js; Oct 23 2026).
 ========================================================= */
 
 import fs from "fs";
@@ -28,6 +30,7 @@ import { CAMPAIGN_KEY, attendingLink, greetingName } from "./attendingCampaign.j
 import { pixelUrlFor, signTrack, withPixel } from "./trackToken.js";
 import { noteTrackedSend } from "./engagementStore.js";
 import { unsubscribeFor } from "./unsubscribe.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -159,6 +162,7 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
     .preview { width:280px !important; }
     .btn a { padding:17px 26px !important; font-size:16px !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -224,6 +228,13 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
           </td>
         </tr>
 
+        <!-- Get the TTFC app (services/appStoreBlock.js) -->
+        <tr>
+          <td class="pad" style="padding:30px 44px 0;">
+            ${appStoreBlockHtml()}
+          </td>
+        </tr>
+
         <!-- Sign-off -->
         <tr>
           <td class="pad" style="padding:32px 44px 36px;">
@@ -266,6 +277,8 @@ export function buildAttendingEmail({ firstName = "", lastName = "", title = "",
     "  3. Post it: on your phone it goes straight to the LinkedIn app. On a computer, LinkedIn asks you to allow it once, then your post goes up with the image attached.",
     "",
     "Your photo stays on your device. Only the finished image is shared, when you post it.",
+    "",
+    ...appStoreBlockLines(),
     "",
     "Thank you for helping us spread the word. Questions? Just reply to this email.",
     "",

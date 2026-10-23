@@ -9,12 +9,15 @@
    Speaker Pass email (routes/console.js sendSpeakerPass), with the
    same cc. The UID is per pass + session, so a resend updates the
    same calendar event (SEQUENCE = how many times it went before).
+   The email ends with the compact "Get the TTFC app" block (App Store
+   and Google Play, services/appStoreBlock.js; Oct 23 2026).
 ========================================================= */
 
 import { Resend } from "resend";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { C, CONTACT_EMAIL, FROM } from "./speakerPassEmail.js";
 import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, fmtTime, needsMicUp, sessionInviteIcs } from "./runOfShow.js";
+import { appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 export const organizer = (env = process.env) => ({
   name: env.SPEAKER_ORGANIZER_NAME || "Lubna Soni",
@@ -42,6 +45,9 @@ export function buildSessionInvite({ name, ticketId, session: s, to, sequence = 
       ${lines.map(([t, w]) => `<tr><td valign="top" style="padding:8px 12px 8px 0;font-weight:800;white-space:nowrap;">${esc(t)}</td><td style="padding:8px 0;border-left:3px solid ${C.magenta};padding-left:12px;">${esc(w)}</td></tr>`).join("")}
     </table>
     <p style="font-size:14px;line-height:21px;margin:18px 0 0;color:#4a4060;">Accept the invite to add it to your calendar. Questions: ${esc(org.name)}, <a href="mailto:${esc(org.email)}" style="color:${C.purple};">${esc(org.email)}</a>, or <a href="mailto:${CONTACT_EMAIL}" style="color:${C.purple};">${CONTACT_EMAIL}</a>.</p>
+    <div style="margin:24px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+    </div>
   </div>
 </body></html>`;
   const text = [
@@ -53,6 +59,8 @@ export function buildSessionInvite({ name, ticketId, session: s, to, sequence = 
     ...lines.map(([t, w]) => `${t}  ${w}`),
     "",
     `Accept the invite to add it to your calendar. Questions: ${org.name}, ${org.email}, or ${CONTACT_EMAIL}.`,
+    "",
+    ...appStoreBlockLines(),
   ].join("\n");
   const ics = sessionInviteIcs({ ticketId, name, session: s, to, organizer: org, sequence, now, micUp });
   return { subject, html, text, ics };

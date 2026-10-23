@@ -1,6 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import { Resend } from "resend";
+import { appStoreBlockHtml } from "../services/appStoreBlock.js";
 
 const router = express.Router();
 
@@ -151,7 +152,8 @@ function buildAdminEmail(doc) {
   </div>`;
 }
 
-function buildAckEmail(doc) {
+/** To the applicant; the compact "Get the TTFC app" block before the sign-off (services/appStoreBlock.js). */
+export function buildAckEmail(doc) {
   const first = esc(String(doc.fullName).split(" ")[0]);
   return `
   <div style="background:#f5f3fa;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
@@ -163,6 +165,9 @@ function buildAckEmail(doc) {
         <p style="margin:0 0 14px">Hi ${first},</p>
         <p style="margin:0 0 14px">Thanks for requesting media accreditation for <strong>The Tech Festival Canada 2026</strong> &mdash; 26&ndash;27 October, Westin Harbour Castle, Toronto.</p>
         <p style="margin:0 0 14px">Our press team reviews requests on a rolling basis and will be in touch at this address.</p>
+        <div style="margin:22px 0 0">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
+        </div>
         <p style="margin:22px 0 0;font-size:13px;color:#6b6480">
           The Tech Festival Canada<br />
           <a href="mailto:marcom@thetechfestival.com" style="color:#7a3fd1;text-decoration:none">marcom@thetechfestival.com</a>

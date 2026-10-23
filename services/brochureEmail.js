@@ -13,6 +13,7 @@
 import { C, SANS, DISPLAY } from "./ticketEmail.js";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { SALES_INBOX } from "./brochureDownloads.js";
+import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 
 export const BROCHURE_SUBJECT = "Your TTFC 2026 brochure";
 
@@ -55,6 +56,7 @@ function shell({ preheader, body, footerNote, helpEmail = "" }) {
     .em-muted { color:#a99cc9 !important; }
     .em-link { color:#c9b8f2 !important; }
   }
+${appStoreBlockCss()}
 </style>
 </head>
 <body class="em-bg" style="margin:0;padding:0;background:${C.bg};" bgcolor="${C.bg}">
@@ -140,6 +142,11 @@ export function buildBrochureEmail({ firstName = "", brochure, link = "", attach
     </td></tr>
   </table>
   <p class="em-muted" style="margin:16px 0 0;font-family:${SANS};font-size:12px;line-height:18px;color:${C.muted};">Button not working? Copy this link into your browser:<br><a class="em-link" href="${esc(link)}" target="_blank" style="color:${C.purple};text-decoration:underline;word-break:break-all;">${esc(link)}</a></p>
+</td></tr>
+
+<!-- the TTFC app (services/appStoreBlock.js; Oct 23 2026) -->
+<tr><td class="em-panel em-pad" bgcolor="${C.panel}" style="background:${C.panel};padding:0 32px 32px;">
+  ${appStoreBlockHtml()}
 </td></tr>`;
 
   const html = shell({
@@ -157,6 +164,8 @@ export function buildBrochureEmail({ firstName = "", brochure, link = "", attach
     `Thanks for your interest in ${EVENT.name}, ${EVENT.dates} at ${EVENT.venue}, Toronto.`,
     attached ? "Your copy is attached to this email. You can also download it again here:" : "Download your copy here:",
     link,
+    "",
+    ...appStoreBlockLines(),
     "",
     `Questions about sponsoring or exhibiting? Reply to this email or write to ${SALES_INBOX}.`,
     EVENT.website,

@@ -3,6 +3,7 @@ import { Resend } from "resend";
 import Nomination from "../models/Nomination.js";
 import { nominationFromForm } from "../services/nominations.js";
 import { switchOn } from "../services/liveSwitches.js";
+import { appStoreBlockHtml } from "../services/appStoreBlock.js";
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -95,7 +96,8 @@ function buildAdminEmail(n) {
 /* ═══════════════════════════════════════════════════════
    HELPER — Confirmation email (goes to the nominator)
    ═══════════════════════════════════════════════════════ */
-function buildConfirmationEmail(n) {
+/** To the nominator; ends with the compact "Get the TTFC app" block (services/appStoreBlock.js). */
+export function buildConfirmationEmail(n) {
   const specialAwardLabels = {
     lifetime: "Lifetime Achievement Award",
     rising: "Rising Innovator Award",
@@ -150,6 +152,9 @@ function buildConfirmationEmail(n) {
       <a href="https://www.thetechfestival.com/awards" style="display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #7a3fd1, #f5a623); color: #fff; text-decoration: none; border-radius: 10px; font-weight: 800; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase;">
         View the Awards
       </a>
+    </div>
+    <div style="margin: 28px 0 0;">
+${appStoreBlockHtml({ compact: true, theme: "light" })}
     </div>
   </div>
 
