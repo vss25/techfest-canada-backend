@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, seenAt, unreadFilter,
   countUnread, parseSection, activityDTO, buildReportNotifications, reportLink, removeMode, canViewPost, MAX_MENTIONS,
-  canInteractPost, POST_GONE, isRepeatPost, REPEAT_POST_MS,
+  canInteractPost, POST_GONE, isRepeatPost, REPEAT_POST_MS, seenWatermark, SEEN_AHEAD_MS,
 } from "../services/socialActivity.js";
 import { postDTO, publicProfile } from "../services/socialHelpers.js";
 
@@ -266,4 +266,18 @@ test("isRepeatPost: the same post sent again (a retry) is recognised; a differen
   assert.equal(isRepeatPost({ body: "", media: [{ publicId: "a" }] }, { body: "", media: [{ publicId: "b" }] }), false);
   assert.equal(isRepeatPost(null, photo), false);
   assert.equal(REPEAT_POST_MS, 120_000);
+});
+
+test("seenWatermark: upTo is exactly what the app counted (capped a few minutes ahead); without it, everything there is", () => {
+  const now = new Date("2026-10-26T14:00:00.000Z");
+  const iso = (d) => d.toISOString();
+  // Newer apps: the newest event they counted, even if it's a little behind or ahead of this server's clock.
+  assert.equal(iso(seenWatermark({ upTo: "2026-10-26T13:59:58.000Z", now })), "2026-10-26T13:59:58.000Z");
+  assert.equal(iso(seenWatermark({ upTo: "2026-10-26T14:00:20.000Z", now })), "2026-10-26T14:00:20.000Z");
+  assert.equal(seenWatermark({ upTo: "2099-01-01T00:00:00Z", now }).getTime(), now.getTime() + SEEN_AHEAD_MS);
+  // Older apps (no upTo) or junk: now, or the newest event's createdAt when another instance's clock put it ahead.
+  assert.equal(iso(seenWatermark({ now })), iso(now));
+  assert.equal(iso(seenWatermark({ upTo: "garbage", now })), iso(now));
+  assert.equal(iso(seenWatermark({ upTo: "", newest: new Date("2026-10-26T14:00:20.000Z"), now })), "2026-10-26T14:00:20.000Z");
+  assert.equal(iso(seenWatermark({ newest: new Date("2026-10-26T13:00:00.000Z"), now })), iso(now));
 });

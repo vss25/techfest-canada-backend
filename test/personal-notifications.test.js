@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   cleanLink, validateNotify, recipientFilter, recipientDTO, notificationDTO, groupHistory,
-  parseSince, parseReadBody, ON_APP_FILTER, MAX_RECIPIENTS,
+  parseSince, parseReadBody, ON_APP_FILTER, MAX_RECIPIENTS, repeatNotifyFilter, REPEAT_NOTIFY_MS,
 } from "../services/notifyHelpers.js";
 
 const id = (n) => String(n).padStart(24, "a");
@@ -101,8 +101,19 @@ test("parseSince and parseReadBody", () => {
   assert.equal(parseSince("garbage"), null);
   assert.equal(parseSince("2026-10-06T10:00:00Z").toISOString(), "2026-10-06T10:00:00.000Z");
   assert.deepEqual(parseReadBody({ all: true }), { all: true });
+  assert.deepEqual(parseReadBody({ all: true, upTo: "2026-10-26T14:00:00Z" }), { all: true, upTo: new Date("2026-10-26T14:00:00Z") });
+  assert.deepEqual(parseReadBody({ all: true, upTo: "soon" }), { all: true });
   assert.deepEqual(parseReadBody({ ids: [id(1), id(1), "x"] }), { ids: [id(1)] });
   assert.equal(parseReadBody({ ids: [] }), null);
   assert.equal(parseReadBody({ all: "yes" }), null);
   assert.equal(parseReadBody(undefined), null);
+});
+
+test("repeatNotifyFilter: the same message from the same sender to these people in the last two minutes", () => {
+  const now = new Date("2026-10-26T14:00:00Z");
+  const f = repeatNotifyFilter({ sentBy: "s", userIds: [id(1), id(2)], title: "T", body: "B", link: undefined }, now);
+  assert.deepEqual(f, {
+    kind: "personal", sentBy: "s", userId: { $in: [id(1), id(2)] }, title: "T", body: "B", link: "",
+    createdAt: { $gte: new Date(now.getTime() - REPEAT_NOTIFY_MS) },
+  });
 });

@@ -40,7 +40,7 @@ import Stripe from "stripe";
 import crypto from "crypto";
 import { validateComplimentary, COMP_PROMO } from "../services/complimentary.js";
 import AppNotification from "../models/AppNotification.js";
-import { validateNotify, recipientFilter, recipientDTO, groupHistory, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
+import { validateNotify, recipientFilter, recipientDTO, groupHistory, repeatNotifyFilter, MAX_RECIPIENTS } from "../services/notifyHelpers.js";
 import Brochure from "../models/Brochure.js";
 import { downloadsFilter, downloadRow, downloadsCsv, botReason } from "../services/brochureDownloads.js";
 import PavilionApplication from "../models/PavilionApplication.js";
@@ -548,16 +548,26 @@ router.post("/notify", async (req, res) => {
   const { userIds, title, body, link } = v.value;
   const eligible = await User.find(recipientFilter("", userIds)).select("_id name").lean();
   if (!eligible.length) return res.status(400).json({ error: "None of those people are on the app yet." });
-  const batchId = new mongoose.Types.ObjectId().toString();
-  await AppNotification.insertMany(eligible.map((u) => ({
-    userId: u._id, title, body, link, kind: "personal", batchId, sentBy: req.user._id, sentByName: req.user.name || "",
-  })));
+  // The same message from the same sender a moment ago (a second tap, a retry): those people already have it, and a
+  // twin row would stay unread after they read the first one (Oct 23 2026).
+  const repeats = await AppNotification.find(repeatNotifyFilter({ sentBy: req.user._id, userIds: eligible.map((u) => u._id), title, body, link }))
+    .select("userId batchId").lean();
+  const already = new Set(repeats.map((r) => String(r.userId)));
+  const fresh = eligible.filter((u) => !already.has(String(u._id)));
+  const batchId = fresh.length ? new mongoose.Types.ObjectId().toString() : repeats[0].batchId;
+  if (fresh.length) {
+    await AppNotification.insertMany(fresh.map((u) => ({
+      userId: u._id, title, body, link, kind: "personal", batchId, sentBy: req.user._id, sentByName: req.user.name || "",
+    })));
+    pushToUsers(fresh.map((u) => u._id), { title, body, link: link || "", kind: "personal", id: batchId });
+  }
   const sentIds = new Set(eligible.map((u) => String(u._id)));
   const skipped = userIds.filter((id) => !sentIds.has(id));
-  pushToUsers(eligible.map((u) => u._id), { title, body, link: link || "", kind: "personal", id: batchId });
-  const who = eligible.length === 1 ? eligible[0].name : `${eligible.length} people`;
-  await audit(req, "notify_person", "user", [...sentIds].join(",").slice(0, 200), `${who}: ${title}`);
-  res.status(201).json({ ok: true, sent: eligible.length, skipped, batchId });
+  if (fresh.length) {
+    const who = fresh.length === 1 ? fresh[0].name : `${fresh.length} people`;
+    await audit(req, "notify_person", "user", fresh.map((u) => String(u._id)).join(",").slice(0, 200), `${who}: ${title}`);
+  }
+  res.status(201).json({ ok: true, sent: eligible.length, skipped, batchId, alreadySent: already.size });
 });
 
 router.get("/notify/history", async (req, res) => {

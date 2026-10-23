@@ -63,6 +63,21 @@ export function validateNotify(input) {
   return { value: { userIds, title, body, link } };
 }
 
+/** How long the same message from the same sender to the same person counts as a resend (a retry), not a new one. */
+export const REPEAT_NOTIFY_MS = 2 * 60_000;
+
+/**
+ * Mongo filter for copies of this message the sender already sent these people in the last REPEAT_NOTIFY_MS.
+ * POST /console/notify leaves those people out: a second tap or a retry after a lost answer used to make an
+ * identical second row, so reading one left its twin unread and the message seemed to come back.
+ */
+export function repeatNotifyFilter({ sentBy, userIds, title, body, link }, now = new Date()) {
+  return {
+    kind: "personal", sentBy, userId: { $in: userIds }, title, body, link: link || "",
+    createdAt: { $gte: new Date(now.getTime() - REPEAT_NOTIFY_MS) },
+  };
+}
+
 /** Same rule as the app's `onApp`: signed into the app at least once. */
 export const ON_APP_FILTER = { $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }] };
 
@@ -120,9 +135,16 @@ export function parseSince(s) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** POST /api/social/notifications/read → { all: true } | { ids: [...] } | null */
+/**
+ * POST /api/social/notifications/read → { all: true } | { all: true, upTo: Date } | { ids: [...] } | null
+ * `upTo` (with all): the newest notification the app showed, so "Mark all as read" covers exactly what was on
+ * screen and one that arrived meanwhile stays unread. Read is for good: nothing sets readAt back to null.
+ */
 export function parseReadBody(b) {
-  if (b?.all === true) return { all: true };
+  if (b?.all === true) {
+    const upTo = parseSince(b.upTo);
+    return upTo ? { all: true, upTo } : { all: true };
+  }
   const ids = [...new Set((Array.isArray(b?.ids) ? b.ids : []).map(String).filter((x) => OBJECT_ID.test(x)))].slice(0, 200);
   return ids.length ? { ids } : null;
 }
