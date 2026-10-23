@@ -265,7 +265,7 @@ test("the confirmation's preview for staff, and the wording in GET /api/app/cont
   assert.match(p.body.html, /\/api\/unsubscribe\/preview/);
   const c = await call("GET", "/api/app/content");
   assert.equal(c.status, 200);
-  assert.equal(c.body["stay.hero_title"], "TTFC 2027 · Toronto · Dates to be announced");
+  assert.equal(c.body["stay.hero_title"], "TTFC 2027 · Toronto · November 2027");
   assert.equal(c.body["stay.thanks"], THANKS);
-  assert.equal(c.body["stay.stat"], "1000+ attendees across 2 days");
+  assert.equal(c.body["stay.stat"], "");
 });
