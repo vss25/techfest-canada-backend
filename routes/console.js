@@ -9,7 +9,7 @@ import {
 } from "../models/Social.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
-import { CONTENT_KEYS, cleanContent, summarize } from "../services/adminHelpers.js";
+import { CONTENT_KEYS, cleanContent, contentError, summarize } from "../services/adminHelpers.js";
 import { contentAccess, contentEditRefusal } from "../services/staffPowers.js";
 import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
@@ -472,7 +472,11 @@ router.get("/app-content", async (req, res) => {
 
 router.put("/app-content/:key", async (req, res) => {
   const c = cleanContent(req.params.key, req.body?.value);
-  if (!c) return res.status(400).json({ error: "Unknown key" });
+  if (!c) {
+    // A known key whose value can't be saved (e.g. the 2027 journey, services/stayJourney.js) says why.
+    const why = contentError(req.params.key, req.body?.value);
+    return res.status(400).json(why ? { error: why, code: "invalid_value" } : { error: "Unknown key" });
+  }
   const refusal = contentEditRefusal(c[0], c[1], { management: isManagement(req.user) });
   if (refusal) {
     await audit(req, "edit_app_text_refused", "content", c[0], `${refusal.code}: ${String(c[1]).slice(0, 80)}`);

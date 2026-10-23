@@ -83,6 +83,7 @@ before(async () => {
   app.use("/api/stay-updated", routes.publicRouter);
   app.use("/api/console/waitlist", routes.adminRouter);
   app.use("/api/app", (await import("../routes/appApi.js")).default);
+  app.use("/api/console", (await import("../routes/console.js")).default); // app content: the 2027 journey
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -267,5 +268,45 @@ test("the confirmation's preview for staff, and the wording in GET /api/app/cont
   assert.equal(c.status, 200);
   assert.equal(c.body["stay.hero_title"], "TTFC 2027 · Toronto · November 2027");
   assert.equal(c.body["stay.thanks"], THANKS);
-  assert.equal(c.body["stay.stat"], "");
+  assert.equal("stay.stat" in c.body, false, "no attendee line on the 2027 page");
+  assert.equal("stay.expect" in c.body, false, "no “What to expect”");
+  assert.equal(JSON.parse(c.body["stay.journey"]).length, 6, "the organiser's journey by default");
+});
+
+test("the 2027 journey: any staff saves it through app content (checked and tidied), a bad one is refused in plain words", { skip }, async () => {
+  const { DEFAULT_JOURNEY_JSON } = await import("../services/stayJourney.js");
+  const put = (as, value) => call("PUT", "/api/console/app-content/stay.journey", { as, body: { value } });
+  // Not staff: refused before anything is checked.
+  assert.equal((await put(pat, "[]")).status, 403);
+  // Staff (not management) can save it, like the page's other words.
+  const stops = [
+    { city: "vancouver", month: "February 2027", kind: "briefing", pillar: "AI & Machine Learning", sector: "Healthcare & Life Sciences", date: "", venue: "", note: "" },
+    { city: "Toronto", month: "November 2027", kind: "festival", pillar: "", sector: "", date: "", venue: "", note: "Two days" },
+  ];
+  const ok = await put(sam, JSON.stringify(stops));
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const row = await M.AppContent.findOne({ key: "stay.journey" }).lean();
+  assert.equal(JSON.parse(row.value)[0].city, "Vancouver", "stored with the city's own name");
+  assert.equal(row.updatedBy, "Sam Staff");
+  assert.ok(await M.AdminAudit.exists({ action: "edit_app_text", targetId: "stay.journey" }));
+  const c = await call("GET", "/api/app/content");
+  assert.deepEqual(JSON.parse(c.body["stay.journey"]).map((s) => [s.city, s.kind, s.pillar]), [
+    ["Vancouver", "briefing", "AI & Machine Learning"], ["Toronto", "festival", ""],
+  ]);
+  // A city that isn't on the list, a made-up pillar, 13 stops: 400 with the reason, nothing changes.
+  const bad = await put(sam, JSON.stringify([{ city: "Boston", month: "May 2027" }]));
+  assert.deepEqual([bad.status, bad.body], [400, { error: "Stop 1: pick a city from the list.", code: "invalid_value" }]);
+  const bad2 = await put(sam, JSON.stringify([{ city: "Ottawa", pillar: "Blockchain" }]));
+  assert.equal(bad2.body.error, "Stop 1: pick the technology pillar from the list, or “To be announced”.");
+  const bad3 = await put(sam, JSON.stringify(Array.from({ length: 13 }, () => ({ city: "Ottawa" }))));
+  assert.equal(bad3.body.error, "The journey can have 12 stops at most.");
+  assert.equal((await M.AppContent.findOne({ key: "stay.journey" }).lean()).value, row.value, "unchanged");
+  // An unknown key still says so.
+  assert.deepEqual((await call("PUT", "/api/console/app-content/stay.nope", { as: sam, body: { value: "x" } })).body, { error: "Unknown key" });
+  // "" = back to the organiser's journey (the admin list shows the default).
+  assert.equal((await put(sam, "")).status, 200);
+  const list = await call("GET", "/api/console/app-content", { as: sam });
+  const j = list.body.find((r) => r.key === "stay.journey");
+  assert.deepEqual([j.value, j.default, j.managementOnly], ["", DEFAULT_JOURNEY_JSON, false]);
+  assert.equal(list.body.some((r) => r.key === "stay.pillars" || r.key === "stay.expect" || r.key === "stay.stat"), false, "the removed keys aren't listed");
 });
