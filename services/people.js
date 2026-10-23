@@ -73,13 +73,14 @@ import { companyKey, companyDTO, domainOfUrl } from "./companies.js";
 import { rsvpStatusOf, splitName, RSVP_STATUS_LABELS } from "./rsvpStaff.js";
 import { workDomain } from "./attendeeDetails.js";
 import { cxoOverride } from "./cxoBreakfast.js";
-import { EXTRAS, EXTRA_KEYS, autoExtras, cxoPerson, effectiveExtras, extrasOverride, extrasView } from "./passExtras.js";
+import { EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, extrasView, personExtras } from "./passExtras.js";
 import { rsvpIndex, hasRsvp } from "./rsvpReminder.js";
 import { usableEmail } from "./attendingCampaign.js";
 import { attendingIndex, attendingStatusOf } from "./attendingNudge.js";
 import { OPENS_NOTE, attendingEngagementOf, engagementIndex, rsvpEngagementOf } from "./engagement.js";
 import { codeOf, codeView, discountMap } from "./promoCodes.js";
 import { personHide } from "./appHideRules.js";
+import { personBand } from "./checkinCard.js";
 
 /* ---------- Pass status ---------- */
 export const PASS_STATUSES = ["paid", "complimentary", "issued", "pending", "refunded", "none"];
@@ -571,7 +572,7 @@ function summarize(p, { companiesByKey, refunds, exIdx, stripe, remindedAt, atte
   const types = typesOf(p, exIdx);
   const vipInfo = vipOf(p);
   // Pass extras per pass (CxO Breakfasts, luncheons, Gala, Awards): staff's switch, else automatic (the pass's
-  // rules; the CxO Breakfasts also for a speaker- or media-type person and a VIP). `cxo` / `cxoAuto`: the CxO
+  // rules; the CxO Breakfasts also for a speaker-type person and a VIP, all four for Media). `cxo` / `cxoAuto`: the CxO
   // Breakfasts on their own.
   for (const t of tickets) {
     t.extrasAuto = autoExtras(t.type, types, { vip: vipInfo.vip });
@@ -693,7 +694,13 @@ export function personRow(p) {
     cxoBreakfast: p.primary ? !!p.primary.cxo : null,
     vip: p.vip,
     vipFrom: p.vipFrom,
+    // Media = Yes (Oct 23 2026): the media type, from their account or a pass marked Media (`mediaPass`). Power Pass
+    // privileges with the CxO Breakfasts on any pass (services/passExtras.js). PATCH /:id { media } switches it.
+    media: p.types.includes("media"),
     mediaPass: !!p.mediaPass,
+    // Their pass's colour as the door shows it (services/checkinCard.js personBand): VIP gold > Media dark blue >
+    // Speaker red > Staff purple > Volunteer orange > the pass in green; { key, label, bg, text, passName }, null with no pass.
+    band: p.primary ? personBand({ vip: p.vip, types: p.types, passes: p.passList.filter((t) => !t.hidden).map(bandPass), passName: p.primary.label }) : null,
     exhibitor: p.exhibitor,
     exhibitorPass: p.exhibitorPass,
     // "I'm attending" email: { status: none | sent | failed | sending, label, sentAt, nudges }.
@@ -713,10 +720,13 @@ export function personRow(p) {
 }
 
 const yesNo = (v, want) => (want === "yes" ? !!v : want === "no" ? !v : true);
+/** A pass as personBand reads it (a Speaker Pass, the best pass for "Exhibitor"). */
+const bandPass = (t) => ({ ticketId: t.ticketId, type: t.type, promoCode: t.promoCode });
 
 /** ?q= name, email, company, job title or ticket ID; ?type= a person type; ?pass= connect | influence | power | apex | speaker;
     ?value= below | above (ticket value after payment, VALUE_LINE CAD); ?rsvp= attendee | staff | none (any = attendee or staff);
-    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?status= a pass status (no longer in the toolbar);
+    ?exhibitor= yes | no; ?rsvpEmail= yes | no; ?vip= yes | no; ?media= yes | no (Media = Yes, the media type);
+    ?status= a pass status (no longer in the toolbar);
     ?attending= yes (the "I'm attending" email went) | no (not sent, failed or unconfirmed).
     Engagement values of the same filters (services/engagement.js):
     ?attending= opened (the email, or anything after it) | visited (their page) | posted (a confirmed LinkedIn post) |
@@ -733,7 +743,7 @@ export function filterPeople(people, query = {}) {
   const value = String(query.value || "").toLowerCase();
   const flags = {
     exhibitor: String(query.exhibitor || "").toLowerCase(), rsvpEmail: String(query.rsvpEmail || "").toLowerCase(), vip: String(query.vip || "").toLowerCase(),
-    attending: String(query.attending || "").toLowerCase(), appHidden: String(query.appHidden || "").toLowerCase(),
+    media: String(query.media || "").toLowerCase(), attending: String(query.attending || "").toLowerCase(), appHidden: String(query.appHidden || "").toLowerCase(),
   };
   const words = q ? q.split(/\s+/).filter(Boolean) : [];
   return people.filter((p) => {
@@ -745,7 +755,7 @@ export function filterPeople(people, query = {}) {
     const rs = rsvpStatusOf(p.rsvp).status;
     if (rsvp === "any" ? rs === "none" : RSVP_STATUSES.includes(rsvp) && rs !== rsvp) return false;
     if (rsvp === "form" && !(p.rsvpEngagement?.formOpened && rs !== "attendee")) return false;
-    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.vip, flags.vip) || !yesNo(p.appHidden, flags.appHidden)) return false;
+    if (!yesNo(p.exhibitor, flags.exhibitor) || !yesNo(p.vip, flags.vip) || !yesNo(p.types.includes("media"), flags.media) || !yesNo(p.appHidden, flags.appHidden)) return false;
     if (!ENGAGED.rsvpEmail(p, flags.rsvpEmail)) return false;
     if (!ENGAGED.attending(p, flags.attending)) return false;
     return true;
@@ -810,7 +820,7 @@ export function peopleCounts(people) {
   const byStatus = Object.fromEntries(PASS_STATUSES.map((s) => [s, 0]));
   const byRsvp = Object.fromEntries(RSVP_STATUSES.map((s) => [s, 0]));
   const byValue = { below: 0, above: 0, unknown: 0, none: 0 };
-  let exhibitors = 0, vips = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0, appHidden = 0;
+  let exhibitors = 0, vips = 0, media = 0, rsvpEmailSent = 0, cxo = 0, attendingSent = 0, appHidden = 0;
   // Engagement (services/engagement.js): people, not events.
   const engaged = { attendingOpened: 0, attendingVisited: 0, attendingPosted: 0, attendingMaybe: 0, rsvpEmailOpened: 0, rsvpFormOpened: 0, rsvpFormNotSent: 0 };
   const extras = Object.fromEntries(EXTRA_KEYS.map((x) => [x, 0]));
@@ -822,6 +832,7 @@ export function peopleCounts(people) {
     byValue[bandOf(p)] += 1;
     if (p.exhibitor) exhibitors += 1;
     if (p.vip) vips += 1;
+    if (p.types.includes("media")) media += 1;
     if (p.appHidden) appHidden += 1;
     if (p.rsvpEmail.sent) rsvpEmailSent += 1;
     if (p.attending?.status === "sent") attendingSent += 1;
@@ -838,7 +849,7 @@ export function peopleCounts(people) {
     if (p.primary?.cxo) cxo += 1;
     for (const x of EXTRA_KEYS) if (p.primary?.extras?.[x]) extras[x] += 1;
   }
-  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, appHidden, rsvpEmailSent, attendingSent, cxo, extras, ...engaged };
+  return { total: people.length, byType, byStatus, byRsvp, byValue, exhibitors, vips, media, appHidden, rsvpEmailSent, attendingSent, cxo, extras, ...engaged };
 }
 
 /**
@@ -863,7 +874,7 @@ const GENERIC = /^(sessions|expo|breaks)_d\d$/; // what every pass includes on a
 const stamp = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 16) : "");
 
 export const PEOPLE_CSV_HEAD = [
-  "Name", "Email", "Types", "VIP", "Company", "Job title", "Pass", "Ticket ID", "Pass status", "Code",
+  "Name", "Email", "Types", "VIP", "Media", "Company", "Job title", "Pass", "Ticket ID", "Pass status", "Code",
   "Ticket value after payment (CAD before HST)", "Ticket value", "Ticket value from", "CxO Breakfast",
   "Networking Luncheons", "Gala Dinner & Networking Reception", "Catalyst Awards Night", "Extras set by staff", "Passes",
   "RSVP", "RSVP set by", "RSVP updated (UTC)", "Days", "Special events", "Added by staff",
@@ -881,7 +892,7 @@ export function peopleCsv(people, { profileBase = "" } = {}) {
     const r = rsvpStatusOf(p.rsvp);
     const v = p.primary ? p.primary.value : null;
     return [
-      p.name, p.email, p.types.map((t) => TYPE_LABELS[t] || t).join("; "), p.vip ? "Yes" : "No", p.company, p.jobTitle,
+      p.name, p.email, p.types.map((t) => TYPE_LABELS[t] || t).join("; "), p.vip ? "Yes" : "No", p.types.includes("media") ? "Yes" : "No", p.company, p.jobTitle,
       p.primary?.label || "", p.primary?.ticketId || "", PASS_STATUS_LABELS[p.primary?.status || "none"], p.primary?.code?.label || "",
       v === null || v === undefined ? "" : v.toFixed(2), VALUE_BAND_LABELS[bandOf(p)],
       p.primary ? VALUE_SOURCE_LABELS[valueSource(p.primary)] : "",
@@ -985,12 +996,14 @@ export function editInfo(p, { management = false, staffId = "" } = {}) {
 }
 
 /** Pass extras rules for this person's RSVP: their main pass's extras (staff's switches, else automatic; with
-    no pass, the speaker or media type or the VIP flag gives the CxO Breakfasts) and any extra already on their
-    RSVPs (never taken away).
+    no pass, what the person gets on any pass, services/passExtras.js personExtras: the speaker type or the VIP
+    flag gives the CxO Breakfasts, Media all four) and any extra already on their RSVPs (never taken away).
     → { cxo: true | false | undefined, extras: { cxo, lunch, gala, awards } | undefined, extra: [keys], speaker } */
 export function rsvpRulesFor(p) {
-  const cxo = p.primary ? !!p.primary.cxo : cxoPerson(p.types, p.vip) ? true : undefined;
-  const extras = p.primary ? { ...p.primary.extras } : cxo ? { cxo: true } : undefined;
+  const own = p.primary ? null : personExtras(p.types, { vip: p.vip });
+  const cxo = p.primary ? !!p.primary.cxo : own.cxo ? true : undefined;
+  const ownOn = own ? Object.fromEntries(EXTRA_KEYS.filter((x) => own[x]).map((x) => [x, true])) : {};
+  const extras = p.primary ? { ...p.primary.extras } : Object.keys(ownOn).length ? ownOn : undefined;
   return { cxo, extras, extra: extraOptionsFor([...p.rsvps, ...p.dupRsvps]), speaker: p.types.includes("speaker") };
 }
 

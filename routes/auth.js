@@ -156,7 +156,7 @@ router.get("/me", async (req, res) => {
     // Each ticket's `cxoBreakfast` (true / false: its CxO Breakfasts) and `inclusions` (everything it includes, with
     // the pass extras staff switched on or off for it: luncheons, Gala Dinner, Awards Night, CxO Breakfasts), from
     // staff's switches on the ticket (the account's, else its Attendee row's) or automatic (services/passExtras.js:
-    // the CxO Breakfasts also for speakers, VIPs and media). The apps and the web app read them.
+    // the CxO Breakfasts also for speakers and VIPs; Media: all four on any pass). The apps and the web app read them.
     // `profileTag`: the colour of their own Profile page ({ key, label } | null, services/profileTag.js).
     const ids = (profile.tickets || []).map((t) => t?.ticketId).filter(Boolean);
     const switched = ids.length

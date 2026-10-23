@@ -7,7 +7,9 @@
                 whose person types include speaker (staff-set or from a
                 Speaker Pass) or media, and any VIP (Oct 20 2026),
                 whatever their pass; No otherwise (Power no longer
-                includes it).
+                includes it). Media gets the luncheons, the Gala and
+                the Awards Night on any pass too (Oct 23 2026,
+                services/passExtras.js personExtras).
      override   staff's per-pass switch "CxO Breakfast included":
                 true / false on the ticket record, unset = automatic.
                 Attendee.cxoBreakfast on a guest / issued / speaker pass,
@@ -34,7 +36,7 @@ export function cxoOverride(...records) {
   return undefined;
 }
 
-/** Automatic: an Apex or Speaker Pass, or a speaker- or media-type holder, or a VIP (`vip`). Booths never. */
+/** Automatic: an Apex or Speaker Pass, or a speaker- or media-type holder, or a VIP (`vip`). Booths never (services/passExtras.js). */
 export const autoCxo = (ticketType, types = [], { vip = false } = {}) => autoExtras(ticketType, types, { vip }).cxo;
 
 /** Effective value for one pass: staff's switch when set, else automatic. */

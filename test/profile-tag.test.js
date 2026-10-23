@@ -184,7 +184,9 @@ test("CxO Breakfasts: automatic for a VIP and for the media type on any pass; st
   assert.equal(autoCxo("influence", [], { vip: true }), true);
   assert.equal(effectiveCxo({ ticketType: "influence", types: ["media"] }), true);
   assert.equal(effectiveCxo({ ticketType: "influence", types: ["media"], override: false }), false);
-  assert.match(extrasMeta().find((x) => x.key === "cxo").auto, /speakers, VIPs and media on any pass/);
+  assert.match(extrasMeta().find((x) => x.key === "cxo").auto, /speakers, VIPs and Media on any pass/);
+  // Media (Oct 23 2026): the rest of a Power Pass's extras too, on any pass; a VIP still only the breakfasts.
+  assert.deepEqual(autoExtras("connect", ["media"]), { cxo: true, lunch: true, gala: true, awards: true });
 });
 
 test("/auth/me tickets: cxoBreakfast and the CxO line for a VIP or media holder of a Power Pass", () => {

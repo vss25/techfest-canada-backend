@@ -212,7 +212,9 @@ test("Give a pass: Mark as VIP / Media saved on the pass, CxO Breakfasts on Auto
   const tiers = (await call("GET", "/api/console/issued-passes/tiers", { as: U.sam })).body;
   assert.deepEqual(tiers.marks, ["vip", "media"]);
   assert.deepEqual(tiers.markTiers, { vip: "power", media: "power", volunteer: "connect" });
-  assert.match(tiers.extras.find((x) => x.key === "cxo").auto, /VIPs and media/);
+  assert.match(tiers.extras.find((x) => x.key === "cxo").auto, /VIPs and Media on any pass/);
+  // Media = Yes (Oct 23 2026): a Power Pass's extras plus the CxO Breakfasts on any pass, so every row names Media.
+  assert.ok(tiers.extras.every((x) => /Media on any pass/.test(x.auto)));
   // Preview: a Power Pass marked Media lists the breakfasts.
   const prev = await call("POST", "/api/console/issued-passes/preview", { as: U.sam, body: { name: "Mona Press", email: "mona.press@example.com", tier: "power", media: true } });
   assert.equal(prev.status, 200, JSON.stringify(prev.body));
