@@ -18,7 +18,7 @@ import { makeLimiter } from "../services/ticketAccess.js";
 /* ---------- the wording ---------- */
 
 test("the page's wording: the organiser's facts only, every piece an app content key (editable in Admin)", () => {
-  assert.equal(STAY_DEFAULTS["stay.hero_title"], "TTFC 2027 · Toronto · Dates to be announced");
+  assert.equal(STAY_DEFAULTS["stay.hero_title"], "TTFC 2027 · Toronto · November 2027");
   assert.deepEqual(STAY_DEFAULTS["stay.pillars"].split("\n"), [
     "AI & Machine Learning", "Quantum Computing", "Cybersecurity & Digital Trust", "Robotics & Automation", "CleanTech & Sustainability",
   ]);
@@ -26,11 +26,12 @@ test("the page's wording: the organiser's facts only, every piece an app content
     "Financial Services & Banking", "Healthcare & Life Sciences", "Energy & Critical Infrastructure",
     "Manufacturing, Supply Chain & Mobility", "Public Sector, National Defence & Security",
   ]);
-  // The attendee-count rule: always "1000+ attendees across 2 days", never another number.
-  assert.equal(STAY_DEFAULTS["stay.stat"], "1000+ attendees across 2 days");
+  // No attendee count on the 2027 page (the organiser, Oct 23 2026), and no other numbers.
+  assert.equal(STAY_DEFAULTS["stay.stat"], "");
   const all = Object.values(STAY_DEFAULTS).join("\n");
   assert.doesNotMatch(all.replace("1000+ attendees across 2 days", "").replace(/\b2027\b/g, ""), /\d{3,}|\d[\d,+ ]*\s*(attendees|delegates|people|speakers)/i, "no other counts or years");
-  assert.doesNotMatch(all, /\b(2027-|January|February|March|April|May|June|July|August|September|October|November|December)\b/, "no invented dates");
+  // The only date the organiser gave: Toronto in November 2027. Every exact date is to be announced.
+  assert.doesNotMatch(all.replace(/November 2027/g, ""), /\b(2027-|January|February|March|April|May|June|July|August|September|October|November|December)\b/, "no invented dates");
   assert.doesNotMatch(all, /Westin|Harbour/i, "no 2027 venue");
   // What to expect: things true of TTFC 2026.
   const titles = STAY_DEFAULTS["stay.expect"].split(/\n{2,}/).map((b) => b.split("\n")[0]);
@@ -178,7 +179,7 @@ test("the confirmation: the subject, their ticks in the page's words (or Attendi
   assert.equal(e.link, PAGE_URL);
   assert.equal(PAGE_URL, "https://www.thetechfestival.com/stay-updated");
   assert.match(e.html, />You&#39;re on the TTFC 2027 waitlist\.</);
-  assert.match(e.html, /Thank you for your interest in TTFC 2027 in Toronto\. Dates are to be announced\./);
+  assert.match(e.html, /Thank you for your interest in TTFC 2027: two days in Toronto in November 2027, plus one-day briefing events in Ottawa, Montreal, Calgary and Vancouver\. Dates to be announced for every event\./);
   assert.ok(e.html.indexOf(">Sponsorship<") < e.html.indexOf(">Bringing a delegation<"), "both ticks, in order");
   assert.match(e.html, />Someone from our team will reach out\.</);
   assert.match(e.html, /href="https:\/\/www\.thetechfestival\.com\/stay-updated"/);
@@ -195,7 +196,7 @@ test("the confirmation: the subject, their ticks in the page's words (or Attendi
   assert.match(custom.html, /<title>Thanks &lt;3<\/title>/);
   assert.match(custom.html, />A booth</);
   assert.match(custom.html, />We&#39;ll call you\.</);
-  assert.match(custom.html, /Dates are to be announced/, "an empty field uses the default");
+  assert.match(custom.html, /Dates to be announced for every event/, "an empty field uses the default");
   // The sender's postal address (MAIL_POSTAL_ADDRESS, as in the campaign footer), escaped; "Toronto" without one.
   const addr = buildWaitlistEmail({ postal: "Example Org <Inc>, 1 Example St, Toronto, ON" });
   assert.match(addr.html, /The Tech Festival Canada &middot; Example Org &lt;Inc&gt;, 1 Example St, Toronto, ON &middot;/);
@@ -396,4 +397,11 @@ test("the save fails: the team's email is the only copy, so it's waited for; bot
   const t2 = setup({ saveFails: true, alertFails: true });
   const r2 = await t2.call({ ...GOOD });
   assert.deepEqual([r2.statusCode, r2.body], [500, { ok: false, error: FAILED }]);
+});
+
+test("the 2027 events: Toronto (two days, November) and four one-day briefings, dates to be announced", () => {
+  const events = STAY_DEFAULTS["stay.briefings"].split(/\n{2,}/).map((b) => b.split("\n"));
+  assert.deepEqual(events.map((e) => e[0]), ["Toronto", "Ottawa", "Montreal", "Calgary", "Vancouver"]);
+  assert.match(events[0][1], /two days in November 2027\. Dates to be announced/);
+  assert.ok(events.slice(1).every((e) => e[1] === "One-day briefing event. Date to be announced."));
 });
