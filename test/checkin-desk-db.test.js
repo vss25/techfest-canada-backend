@@ -172,6 +172,9 @@ test("the guests: pass types (Other for an unknown one), Media / VIP / Exhibitor
   assert.equal(by["Priya Sharma"].passName, "Power Pass");
   assert.equal(by["Mo Media"].tier, "connect");
   assert.equal(by["Mo Media"].marks.media, true);
+  // Media = Yes: Power Pass privileges with the CxO Breakfasts on any pass (services/passExtras.js): the desk reads it.
+  assert.deepEqual(by["Mo Media"].extras, { cxo: true, lunch: true, gala: true, awards: true });
+  assert.deepEqual(by["Gus Guest"].extras, { cxo: false, lunch: false, gala: false, awards: false });
   assert.equal(by["Vera Vip"].marks.vip, true);
   assert.equal(by["Nina Speaker"].tier, "speaker");
   assert.equal(by["Nina Speaker"].marks.speaker, true);
