@@ -29,7 +29,9 @@ import { loadExhibitors } from "../services/exhibitorCache.js";
                             → { success, updated, editToken, kind, tier, tierLabel, tierVerified }
                             Keep `editToken` and send it back to change the RSVP later.
    ---------------------------------------------------------
-   The website page (/rsvp) has no links to it. No email is sent.
+   The website page (/rsvp) has no links to it. Nothing is emailed to the person; the team
+   (RSVP_INBOX) gets one email per saved RSVP that names a person and a day. Only the POSTs
+   write anything: opening a link or the page (a mail scanner too) never saves an RSVP.
    A lookup that verifies a ticket counts as "RSVP form opened" for it
    (People), once per ticket and address in 30 minutes, after answering.
    Staff: Admin → Leads → RSVPs (routes/console.js /rsvps).
@@ -108,7 +110,9 @@ const handlers = makeRsvpHandlers({
     findByEditToken: (hash) => (hash
       ? Rsvp.findOne({ editTokenHash: hash, ...LIVE_RSVPS }).select("+editTokenHash").lean()
       : Promise.resolve(null)),
-    insert: (doc) => Rsvp.create(doc),
+    // Plain objects, like update's .lean(): a Mongoose document spread into the team email lost every field
+    // (the "[RSVP] Someone · Power Pass" alert with no ticket ID or days, Oct 2026; services/rsvp.js rsvpAlertRow).
+    insert: async (doc) => (await Rsvp.create(doc)).toObject(),
     update: (id, set) => Rsvp.findByIdAndUpdate(id, { $set: set, $inc: { submissions: 1 } }, { new: true }).lean(),
     mark: (id, set) => Rsvp.updateOne({ _id: id }, { $set: set }),
   },
