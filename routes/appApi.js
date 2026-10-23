@@ -105,6 +105,7 @@ router.post("/report", async (req, res) => {
    A person hidden from the app (services/appHide.js) alerts nobody: their reports are
    saved and listed in App moderation, labelled. */
 const MAX_REPORT_ALERTS = 500;
+const REPEAT_REPORT_MS = 24 * 3_600_000;
 async function moderators() {
   const ctx = await rightsContext();
   const rows = await User.find(holdersQuery("moderate", ctx.matrix)).select(RIGHTS_SELECT).limit(5000).lean();
@@ -113,6 +114,10 @@ async function moderators() {
 async function alertStaff(me, report) {
   try {
     if (await isHidden(me._id)) return;
+    // The same person reporting the same thing again within a day (a retry, a second tap): staff already have that
+    // alert, and a twin would stay unread after they read the first one (Oct 23 2026). The report is still saved.
+    if (await Report.exists({ reporterId: me._id, targetType: report.targetType, targetId: report.targetId, _id: { $ne: report._id },
+      createdAt: { $gte: new Date(Date.now() - REPEAT_REPORT_MS) } })) return;
     if (!reportAlertLimiter.hit(String(me._id))) return;
     const staff = await moderators();
     const rows = buildReportNotifications({

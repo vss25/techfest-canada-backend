@@ -111,6 +111,27 @@ export function unreadFilter(userId, section, activitySeen, blocked = new Set())
   return f;
 }
 
+/** How far past this server's clock an app's "seen up to" is believed (another instance's clock may run ahead). */
+export const SEEN_AHEAD_MS = 5 * 60_000;
+
+/**
+ * The "seen up to" mark POST /activity/seen stores (with $max, so it never moves back: once seen, an item never
+ * counts as unread again, whichever request lands last or whichever instance's clock answers).
+ * - `upTo` (apps from Oct 23 2026): the newest event the app counted, GET /activity/unread's `latest[section]`.
+ *   Exactly what it counted is seen; anything newer stays unread. Capped at now + SEEN_AHEAD_MS.
+ * - no `upTo` (older apps), or not a date: everything there is now. That's the later of this server's clock and
+ *   the newest event's own createdAt (`newest`), since the instance that saved the event may run ahead of this
+ *   one: until Oct 23 2026 the mark was this server's clock alone, so such an event came back unread after "seen".
+ * → Date
+ */
+export function seenWatermark({ upTo, newest = null, now = new Date() } = {}) {
+  const t = (v) => (v === null || v === undefined || v === "" ? NaN : new Date(v).getTime());
+  const asked = t(upTo);
+  if (Number.isFinite(asked)) return new Date(Math.min(asked, now.getTime() + SEEN_AHEAD_MS));
+  const top = t(newest);
+  return new Date(Number.isFinite(top) ? Math.max(now.getTime(), top) : now.getTime());
+}
+
 /** Same rule in memory: { feed, discussions } counts from activity rows. */
 export function countUnread(events, activitySeen, blocked = new Set()) {
   const out = { feed: 0, discussions: 0 };

@@ -43,7 +43,7 @@ import {
   viewerHide, isHiddenGuest, postForViewer, postsForViewer, hiddenCommentCounts, hiddenAmong, visible, unseenOf, oids,
 } from "../services/appHide.js";
 import {
-  cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter,
+  cleanMentions, mentionedUserIds, keepKnownMentions, buildActivity, toggleLike, unreadFilter, seenWatermark,
   parseSection, activityDTO, removeMode, canViewPost, canInteractPost, POST_GONE, isRepeatPost, REPEAT_POST_MS, isObjectId, ACTIVITY_SECTIONS,
 } from "../services/socialActivity.js";
 
@@ -907,23 +907,39 @@ router.patch("/points/prefs", async (req, res) => {
    Likes, comments and mentions on the feed, replies in discussions you
    follow (those also push, see routes/community.js). The apps poll
    /activity/unread and show a dot on the tab until the person opens it
-   (POST /activity/seen { section }). */
+   (POST /activity/seen { section, upTo }).
+   Read state only moves forward (Oct 23 2026, "I mark something read and it shows up again"): `latest` is the
+   newest unread event per section, the app sends it back as `upTo`, and the mark is stored with $max
+   (services/socialActivity.js seenWatermark). Never cached anywhere: these answers change with every mark. */
 
 const seenTimes = (u) => ({ feed: u.activitySeen?.feed, discussions: u.activitySeen?.discussions });
+const noStore = (res) => res.set("Cache-Control", "private, no-store");
 
 router.get("/activity/unread", async (req, res) => {
   const seen = seenTimes(req.user);
-  const [feed, discussions] = await Promise.all(ACTIVITY_SECTIONS.map((s) =>
-    ActivityEvent.countDocuments(unreadFilter(req.user._id, s, seen, req.unseen))));
-  res.json({ feed, discussions });
+  const per = await Promise.all(ACTIVITY_SECTIONS.map(async (s) => {
+    const filter = unreadFilter(req.user._id, s, seen, req.unseen);
+    const count = await ActivityEvent.countDocuments(filter);
+    const top = count ? await ActivityEvent.findOne(filter).sort({ createdAt: -1 }).select("createdAt").lean() : null;
+    return { count, latest: top?.createdAt || null };
+  }));
+  const [feed, discussions] = per;
+  noStore(res);
+  res.json({ feed: feed.count, discussions: discussions.count, latest: { feed: feed.latest, discussions: discussions.latest } });
 });
 
 router.post("/activity/seen", async (req, res) => {
   const section = parseSection(req.body?.section);
   if (!section) return res.status(400).json({ error: "section must be feed or discussions" });
-  const seenAt = new Date();
-  await User.updateOne({ _id: req.user._id }, { $set: { [`activitySeen.${section}`]: seenAt } });
-  res.json({ ok: true, section, seenAt });
+  const upTo = req.body?.upTo;
+  const newest = parseSince(upTo) ? null
+    : (await ActivityEvent.findOne({ userId: req.user._id, section }).sort({ createdAt: -1 }).select("createdAt").lean())?.createdAt;
+  const mark = seenWatermark({ upTo, newest, now: new Date() });
+  // $max: an older mark (a slower request, another device, another instance's clock) never undoes a newer one.
+  const saved = await User.findOneAndUpdate({ _id: req.user._id }, { $max: { [`activitySeen.${section}`]: mark } },
+    { returnDocument: "after", projection: { activitySeen: 1 } }).lean();
+  noStore(res);
+  res.json({ ok: true, section, seenAt: saved?.activitySeen?.[section] || mark });
 });
 
 router.get("/activity", async (req, res) => {
@@ -933,13 +949,16 @@ router.get("/activity", async (req, res) => {
   const filter = { userId: req.user._id, section };
   if (req.unseen.size) filter.actorId = { $nin: [...req.unseen] };
   const rows = await ActivityEvent.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+  noStore(res);
   res.json(rows.map(activityDTO));
 });
 
 /* ================= MY NOTIFICATIONS =================
    Personal notifications staff sent from the admin panel, and (for staff)
    "Content reported" ones from POST /api/app/report. The apps poll this
-   (on open and in the background) and show new ones as local notifications. */
+   (on open and in the background) and show new ones as local notifications.
+   Read is for good: readAt is only ever set where it's null, never cleared. "Mark all as read" sends the newest one
+   it showed as `upTo`, so one that arrived meanwhile stays unread. Never cached. */
 
 router.get("/notifications", async (req, res) => {
   const filter = { userId: req.user._id };
@@ -949,6 +968,7 @@ router.get("/notifications", async (req, res) => {
     AppNotification.find(filter).sort({ createdAt: -1 }).limit(100).lean(),
     AppNotification.countDocuments({ userId: req.user._id, readAt: null }),
   ]);
+  noStore(res);
   res.json({ notifications: rows.map(notificationDTO), unread });
 });
 
@@ -957,8 +977,11 @@ router.post("/notifications/read", async (req, res) => {
   if (!which) return res.status(400).json({ error: "ids or all required" });
   const filter = { userId: req.user._id, readAt: null };
   if (which.ids) filter._id = { $in: which.ids };
+  if (which.upTo) filter.createdAt = { $lte: which.upTo };
   const r = await AppNotification.updateMany(filter, { $set: { readAt: new Date() } });
-  res.json({ ok: true, updated: r.modifiedCount ?? 0 });
+  const unread = await AppNotification.countDocuments({ userId: req.user._id, readAt: null });
+  noStore(res);
+  res.json({ ok: true, updated: r.modifiedCount ?? 0, unread });
 });
 
 /* ================= STAFF MODERATION =================
