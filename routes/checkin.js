@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { requireCheckIn } from "../middleware/adminAuth.js";
 import { checkinCard, plainCard, holderIsAccount } from "../services/checkinCard.js";
+import { recordScan } from "../services/checkinDeskActions.js";
 
 /* What the scanner shows about the pass and its holder (services/checkinCard.js): `ticketType` (connect | influence |
    power | apex | speaker; the text "All Access" is Power), `passName` its name ("Speaker Pass" for the internal one),
@@ -81,8 +82,9 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         ticketId, account: holder, ticket: holder.tickets.find((t) => t.ticketId === ticketId), attendee, fallbackName: user.name,
       });
 
-      // already used
+      // already used (the desk app still records today's check-in once: Day 2, services/checkinDeskActions.js)
       if (ticket.checkedIn) {
+        await recordScan({ ticketId, user: req.user, outcome: "already" });
         return res.json({
           ...card,
           status: "already_checked_in",
@@ -97,6 +99,8 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       await user.save();
       // Keep the admin attendee list in step when a guest ticket was linked to this account.
       await Attendee.updateOne({ ticketId }, { $set: { checkedIn: true, checkedInAt: ticket.checkedInAt } });
+      // The check-in desk app's pass desk shows them checked in (never fails the scan).
+      await recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: ticket.checkedInAt });
 
       res.json({
         ...card,
@@ -122,6 +126,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     const card = await cardFor({ ticketId, attendee: attendee.toObject(), fallbackName: attendee.name });
 
     if (attendee.checkedIn) {
+      await recordScan({ ticketId, user: req.user, outcome: "already" });
       return res.json({
         ...card,
         status: "already_checked_in",
@@ -133,6 +138,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     attendee.checkedIn = true;
     attendee.checkedInAt = new Date();
     await attendee.save();
+    await recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: attendee.checkedInAt });
 
     res.json({
       ...card,

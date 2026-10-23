@@ -49,6 +49,8 @@ import EmailTemplate from "../models/EmailTemplate.js";
 import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites } from "../services/appInvite.js";
 import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
 import { loadSwag } from "../services/swag.js";
+import { deskGuestChanged, deskInclusionsChanged } from "../services/checkinDeskLog.js";
+import { autoExtras, extrasView } from "../services/passExtras.js";
 import { accessOf } from "../services/rightsStore.js";
 import {
   HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
@@ -962,6 +964,8 @@ router.patch("/:id", wrap(async (req, res) => {
       `${want.name || p.name}: ${p.user ? "sign-in email changed (their app and website sign-in)" : "email changed"} · ${emailHash(emailChange.from) || "none"} → ${emailHash(emailChange.to) || "none"} (sha256)`);
   }
   invalidate();
+  // The check-in desk app reloads this guest (name, company, Media / VIP / Exhibitor marks).
+  if (changed.length) await deskGuestChanged({ ticketIds: p.passList.map((x) => x.ticketId), user: req.user });
   const after = await findPerson(p.id);
   res.json({ ok: true, changed, person: after ? personRow(after) : null });
 }));
@@ -1041,6 +1045,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
       const what = x.key === "cxo" ? "CxO Breakfast" : x.label; // the CxO line reads as it always has
       await audit(req, EXTRA_AUDIT[x.key], "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: ${what} ${before} → ${after}`);
     }
+    // The check-in desk app shows the new inclusions straight away (services/checkinDeskLog.js).
+    await deskInclusionsChanged({ ticketId: t.ticketId, extras: effectiveAfter, user: req.user,
+      extrasView: extrasView(overrideAfter, autoExtras(tier || t.type, p.types, { vip: p.vip }), effectiveAfter) });
     did = true;
   }
   if (Object.keys(extrasAsked).length) did = true;
@@ -1072,6 +1079,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     }
     const moved = moves.length ? `inventory ${moves.join(", ")}` : "inventory unchanged";
     await audit(req, "pass_tier", "ticket", t.ticketId, `${p.name} · ${t.ticketId.toUpperCase()}: ${t.label} → ${TIER_LABELS[tier]} (no charge; ${moved})`);
+    await deskGuestChanged({ ticketIds: [t.ticketId], user: req.user });
     did = true;
   }
   if (value !== undefined) {

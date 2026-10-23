@@ -26,6 +26,7 @@ import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
 import webhookRoutes from "./routes/webhook.js";
 import checkinRoutes from "./routes/checkin.js";
+import checkinDeskRoutes from "./routes/checkinDesk.js"; // TTFC Check-in desk app (lobby, pass desk, meals, media, AV, exhibitors)
 import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
 import kycRoutes from "./routes/kyc.js";
@@ -154,6 +155,7 @@ app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /r
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
 app.use("/api/jury", juryRouter);       // the jury portal: jury tokens only (services/juryAuth.js)
 app.use("/api/payments", paymentRoutes);
+app.use("/api/checkin/desk", checkinDeskRoutes); // the desk app: under /api/checkin so the kill switch leaves it on
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/leads", leadsRoutes);
