@@ -1,6 +1,6 @@
 import express from "express";
 import axios from "axios";
-import { makeLimiter } from "../services/ticketAccess.js";
+import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import { frontendUrl } from "../services/profileRequest.js";
 import AttendingPost from "../models/AttendingPost.js";
 import {
@@ -71,10 +71,11 @@ import { recordAttendingShare } from "./linkedinShare.js";
 ========================================================= */
 
 const router = express.Router();
-const photoPerIp = makeLimiter({ max: 30, windowMs: 15 * 60 * 1000 });
-const startPerIp = makeLimiter({ max: 20, windowMs: 15 * 60 * 1000 });
-const draftPerIp = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 });
-const eventPerIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 });
+// Per address, sized for a venue's shared Wi-Fi (SHARED_ADDRESS); the drafts carry a 9 MB image, so fewer of those.
+const photoPerIp = makeLimiter(SHARED_ADDRESS);
+const startPerIp = makeLimiter(SHARED_ADDRESS);
+const draftPerIp = makeLimiter({ ...SHARED_ADDRESS, max: 100 });
+const eventPerIp = makeLimiter(SHARED_ADDRESS);
 export const PAGE_EVENTS = ["visit", "share", "manual"];
 const COOKIE_PATH = "/api/auth/linkedin";
 const COOKIE_MAX_AGE_S = 10 * 60;

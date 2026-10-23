@@ -6,7 +6,7 @@ import axios from "axios";
 
 import User from "../models/User.js";
 import { sendResetPasswordEmail } from "../services/emailService.js";
-import { makeLimiter } from "../services/ticketAccess.js";
+import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import Attendee from "../models/Attendee.js";
 import { withCheckoutProfile } from "../services/onboardingProfile.js";
 import { canUseStaffSignIn } from "../services/teamRoles.js";
@@ -18,7 +18,7 @@ import { avatarFor } from "../services/socialHelpers.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
-const loginPerIp = makeLimiter({ max: 30, windowMs: 15 * 60 * 1000 });
+const loginPerIp = makeLimiter(SHARED_ADDRESS); // a venue shares one address; loginPerEmail stops guessing
 const loginPerEmail = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
 const BAD_LOGIN = "Incorrect email or password.";
 // The website's Google client is public (it's in the page source); the env list
