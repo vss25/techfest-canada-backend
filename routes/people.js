@@ -162,10 +162,10 @@ const DETAIL_FIELDS = ["firstName", "lastName", "organisation", "organization", 
 const VALUE_FIELDS = ["manualValue", "manualValueNote", "manualValueBy", "manualValueAt"];
 const USER_SELECT = ["name email role staffRole types typesOff vip banned organization jobTitle linkedinUrl companyLogoUrl lastActiveAt appOnboarded createdAt avatarVersion",
   `+rsvpEmailMark +rsvpEmailMarkBy +rsvpEmailMarkAt ${HIDE_SELECT}`,
-  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
+  "tickets.ticketId tickets.type tickets.purchaseDate tickets.checkedIn tickets.checkedInAt tickets.hiddenByStaff tickets.promoCode tickets.stripeSessionId",
   ...EXTRA_FIELDS.map((f) => `tickets.${f}`),
   "tickets.upgradedFrom", ...VALUE_FIELDS.map((k) => `tickets.${k}`), ...DETAIL_FIELDS.map((k) => `tickets.details.${k}`)].join(" ");
-const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn hiddenByStaff syncDuplicate claimedBy speakerId",
+const ATTENDEE_SELECT = ["name email ticketId ticketType promoCode purchaseDate checkedIn checkedInAt hiddenByStaff syncDuplicate claimedBy speakerId",
   "stripeSessionId passEmailSentAt passEmailRsvp speakerNudgedAt issuedPass.label issuedPass.booth issuedPass.rsvp exhibitor vip media", ...EXTRA_FIELDS,
   "rsvpEmailMark rsvpEmailMarkBy rsvpEmailMarkAt", ...VALUE_FIELDS,
   "companyLogoUrl createdAt", HIDE_SELECT, ...DETAIL_FIELDS.map((k) => `details.${k}`)].join(" ");

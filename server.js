@@ -69,6 +69,7 @@ import rsvpRemindersRouter from "./routes/rsvpReminders.js";                    
 import issuedPassesRouter, { issuedPassRouter } from "./routes/issuedPasses.js";                           // staff-issued passes (admin console)
 import purchaseEmailRouter from "./routes/purchaseEmail.js";                                         // Admin › Purchase email
 import peopleRouter, { companiesRouter } from "./routes/people.js";                   // Admin → People directory + company logos
+import eventSummaryRouter from "./routes/eventSummary.js";                          // Admin › Event summary (headcounts, read only)
 import engagementRouter from "./routes/engagement.js";                              // GET /api/t/o/<token>.gif: email open pixel
 import unsubscribeRouter from "./routes/unsubscribe.js";                            // the unsubscribe link in every bulk email (no sign-in)
 import unsubscribesRouter from "./routes/unsubscribes.js";                          // Admin › Unsubscribed emails
@@ -196,6 +197,7 @@ app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: 
 app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
 app.use("/api/console/waitlist", waitlistAdminRouter); // 2027 waitlist: the list, counts, CSV (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
+app.use("/api/console/summary", eventSummaryRouter); // Event summary: passes, RSVPs, meals, check-in (read only, before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
 app.use("/api/files", filesRouter);         // GET /post/:id, /avatar/:id, /company-logo/:id

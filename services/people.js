@@ -170,6 +170,11 @@ export function passStatus(t, refunds = null) {
 const passLabel = (type) => TIER_LABELS[tierFromTicketType(type)] || "Pass";
 const RETIRED_LABEL = /^\s*(all[- ]access|exhibitor)\s+pass\s*$/i;
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+/** The earliest of these dates (Date or ISO string), or null when none is a real date. */
+const firstTime = (...vals) => {
+  const ts = vals.map((v) => (v ? new Date(v).getTime() : NaN)).filter(Number.isFinite);
+  return ts.length ? new Date(Math.min(...ts)) : null;
+};
 
 /** A user ticket and / or the guest record of the same ticket → one pass record. */
 function ticketRecord({ user = null, t = null, a = null }) {
@@ -197,6 +202,9 @@ function ticketRecord({ user = null, t = null, a = null }) {
     stripeSessionId: String(t?.stripeSessionId || a?.stripeSessionId || ""),
     purchaseDate: t?.purchaseDate || a?.purchaseDate || null,
     checkedIn: !!(t?.checkedIn || a?.checkedIn),
+    // When the door scanner first checked it in (routes/checkin.js sets it on the first scan only; the old
+    // /api/admin/checkin left it empty): the earlier of the two records' times, or null.
+    checkedInAt: firstTime(t?.checkedInAt, a?.checkedInAt),
     hidden: !!(t?.hiddenByStaff || a?.hiddenByStaff || a?.syncDuplicate),
     claimed: !!t || !!a?.claimedBy,
     passEmailSentAt: a?.passEmailSentAt || null,
