@@ -2,6 +2,7 @@
 
 import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
 import { SWAG_DEFAULTS, cleanSwagContent } from "./swagRules.js";
+import { STAY_DEFAULTS } from "./waitlist.js";
 
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
@@ -107,6 +108,10 @@ export const CONTENT_KEYS = {
      swag.kits (1–50), swag.cutoff and swag.announce (ISO times with their offset, Toronto), swag.title, swag.rules
      ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag). Management only (services/staffPowers.js). */
   ...SWAG_DEFAULTS,
+  /* "Stay updated": the TTFC 2027 waitlist page (website /stay-updated, the web app's /app/stay-updated) and the
+     person's "You're on the TTFC 2027 waitlist" email (Oct 23 2026, services/waitlist.js). Plain text, any staff;
+     empty = the default. stay.thanks is also POST /api/stay-updated's answer. */
+  ...STAY_DEFAULTS,
 };
 
 /** Validates a content update; returns [key, value] or null. */

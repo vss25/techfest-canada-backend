@@ -1,6 +1,6 @@
 /* "Get the TTFC app" in every email (Oct 23 2026, the organiser: "make sure all emails now have details of downloading
    apps whether android or iOS"): services/appStoreBlock.js and every email an attendee, speaker, exhibitor, juror,
-   nominator or subscriber can get. Staff alerts stay as they were. Pure builders and stubbed email clients only:
+   nominator, subscriber or 2027 waitlist sign-up can get. Staff alerts stay as they were. Pure builders and stubbed email clients only:
    nothing is sent. Fictional people only (example.com). */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -30,6 +30,8 @@ import { buildPurchaseAlert } from "../services/purchaseAlert.js";
 import { sosEmail } from "../services/sos.js";
 import { buildRsvpEmail } from "../services/rsvp.js";
 import { buildFormEmail } from "../services/formSubmissions.js";
+import { buildWaitlistAlert } from "../services/waitlist.js";
+import { buildWaitlistEmail, sendWaitlistEmail } from "../services/waitlistEmail.js";
 
 const { buildResetPasswordEmailHtml, buildWelcomeEmailHtml, generateCampaignFooter } = await import("../services/emailService.js");
 const nominations = await import("../routes/nominations.js");
@@ -236,6 +238,20 @@ test("nominator, India Pavilion and media confirmations: the compact light block
   assert.ok(hasBlock({ html: ack }, { compact: true, text: false, label: "media" }) < ack.indexOf("marcom@thetechfestival.com"));
 });
 
+test("TTFC 2027 waitlist confirmation (Oct 23 2026): the full block after the page button, before the sign-off", async () => {
+  const e = buildWaitlistEmail({ interests: ["sponsorship"], unsubscribeUrl: "https://api.example.com/off" });
+  const at = hasBlock(e, { label: "waitlist" });
+  assert.ok(e.html.indexOf("See what&#39;s coming in 2027") < at && at < e.html.indexOf("See you in Toronto,"), "placement");
+  assert.ok(e.text.indexOf("See what's coming in 2027:") < e.text.indexOf("GET THE TTFC APP"));
+  assert.ok(e.text.indexOf("GET THE TTFC APP") < e.text.indexOf("Questions? Just reply"));
+  assert.ok(e.html.includes(".ab-sb { display:block"), "the stacking rule");
+  // Nothing ticked, and staff's own wording: still there (not a field).
+  hasBlock(buildWaitlistEmail({ interests: [], copy: { "stay.email_intro": "", "stay.email_next": "Hi" } }), { label: "waitlist attending" });
+  const sent = [];
+  await sendWaitlistEmail({ to: "jane@example.com", interests: ["exhibitor"], client: { emails: { send: async (m) => { sent.push(m); return { data: { id: "em_9" } }; } } } });
+  hasBlock(sent[0], { label: "waitlist sent" });
+});
+
 test("password reset and welcome emails: the compact block under the button", () => {
   const r = buildResetPasswordEmailHtml("https://www.thetechfestival.com/reset-password/abc");
   assert.ok(r.indexOf("Reset Password") < hasBlock({ html: r }, { compact: true, text: false, label: "reset" }));
@@ -264,13 +280,15 @@ test("emails that already had the stores keep their own: the app invite, the pur
   assert.ok(purchase.html.includes(IOS_APP_STORE_URL) && purchase.html.includes(PLAY_STORE_URL));
 });
 
-test("staff alerts never get it: new ticket, RSVP, SOS, website forms, brochure downloads", () => {
+test("staff alerts never get it: new ticket, RSVP, SOS, website forms, brochure downloads, 2027 waitlist", () => {
   const staff = {
     purchase: buildPurchaseAlert({ session: { id: "cs_test_1", amount_total: 1000, currency: "cad", customer_details: { email: "a@example.com", name: "Ann" }, metadata: { tier: "power" } }, ticketIds: ["a1b2c3d4e5f6"], paidAt: new Date("2026-10-23T12:00:00Z") }),
     rsvp: buildRsvpEmail({ firstName: "Ann", lastName: "Lee", tier: "connect" }),
     sos: sosEmail({ _id: "abc", name: "Ann", email: "a@example.com", category: "medical", message: "help", location: "Hall" }),
     form: buildFormEmail({ type: "general", name: "Ann", email: "a@example.com", message: "hi", createdAt: new Date("2026-10-23T12:00:00Z") }),
     brochure: buildBrochureReceiptEmail({ lead: { firstName: "A", lastName: "B", email: "a@example.com" }, brochure: BROCHURES.sponsorship, delivery: "link" }),
+    waitlist: buildWaitlistAlert({ email: "a@example.com", phone: "+1 416 555 0100", interests: ["sponsorship"], source: "ios", createdAt: new Date("2026-10-23T12:00:00Z") }),
+    "waitlist (updated)": buildWaitlistAlert({ email: "a@example.com", phone: "4165550100", interests: [], source: "website", count: 2, createdAt: new Date("2026-10-23T12:00:00Z") }, { updated: true }),
   };
   for (const [label, e] of Object.entries(staff)) {
     assert.doesNotMatch(`${e.html}\n${e.text}`, /Get the TTFC app|GET THE TTFC APP|apps\.apple\.com|play\.google\.com/, label);

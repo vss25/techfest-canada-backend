@@ -32,6 +32,7 @@ import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
 import formsRoutes from "./routes/forms.js";
 import rsvpRoutes from "./routes/rsvp.js";           // TTFC 2026 RSVPs (website /rsvp, unlinked)
+import { publicRouter as stayUpdatedRouter, adminRouter as waitlistAdminRouter } from "./routes/stayUpdated.js"; // "Stay updated": the TTFC 2027 waitlist
 import agendaRoutes from "./routes/agenda.js";
 import subscriptionRoutes from "./routes/subscriptions.js";
 import campaignRoutes from "./routes/campaigns.js";
@@ -159,6 +160,7 @@ app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
 app.use("/api/forms", formsRoutes);         // POST /:form (volunteer, speaker, exhibit, sponsor, partnership, inquiry)
 app.use("/api/rsvp", rsvpRoutes);           // GET /options, POST /lookup, POST /
+app.use("/api/stay-updated", stayUpdatedRouter); // POST / : join the TTFC 2027 waitlist (website /stay-updated, the web app, the apps)
 app.use("/api/agenda", agendaRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/campaigns", campaignRoutes);
@@ -192,6 +194,7 @@ app.use("/api/console/purchase-email", purchaseEmailRouter); // the purchase con
 app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and moderators (app or admin sign-in), before the console router
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
+app.use("/api/console/waitlist", waitlistAdminRouter); // 2027 waitlist: the list, counts, CSV (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
 app.use("/api/console", consoleRouter);     // admin console (staff only)
