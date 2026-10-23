@@ -139,7 +139,9 @@ router.get("/stats", async (req, res) => {
          activeToday, activeWeek, eventsToday, topScreens, topTaps] = await Promise.all([
     User.countDocuments({}),
     User.countDocuments({ "tickets.0": { $exists: true } }),
-    Attendee.countDocuments({ claimedBy: { $exists: false } }),
+    // Guest tickets not on the app: real ones only. Passes staff hid (duplicates, tests, replaced passes)
+    // and Stripe re-sync copies don't count.
+    Attendee.countDocuments({ claimedBy: { $exists: false }, hiddenByStaff: { $ne: true }, syncDuplicate: { $ne: true } }),
     SocialPost.countDocuments({}),
     SocialMessage.countDocuments({}),
     CommunityGroup.countDocuments({}),
