@@ -18,7 +18,7 @@ import CampaignSend from "../models/CampaignSend.js";
 import { makePurchaseAlerter, alertStore, lazyResend } from "../services/purchaseAlert.js";
 
 /** The buyer's person types and VIP flag as the apps see them (a pass marked VIP or Media counts), for the
-    CxO Breakfasts on a new or upgraded pass (services/passExtras.js: speakers, VIPs and media on any pass). */
+    pass extras on a new or upgraded pass (services/passExtras.js: the CxO Breakfasts for speakers and VIPs, all four for Media). */
 async function holderOf(user) {
   const { types, vip } = typeInfo(user, await loadExhibitors().catch(() => null));
   return { types, vip };
@@ -217,7 +217,7 @@ router.post("/stripe", async (req, res) => {
         }
       } else if (!isBooth) {
         const ticketId = crypto.randomBytes(6).toString("hex");
-        // A speaker, VIP or media buyer gets the CxO Breakfasts with it (services/passExtras.js); else the pass's rules.
+        // A speaker or VIP buyer gets the CxO Breakfasts with it, a Media buyer all four extras (services/passExtras.js); else the pass's rules.
         let buyerTypes = [];
         let buyerVip = false;
         let onAccount = false;

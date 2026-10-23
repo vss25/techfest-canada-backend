@@ -76,7 +76,7 @@ import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js"
 import { runSearch } from "../services/adminSearch.js";
 import { makeSearchSources } from "../services/adminSearchSources.js";
 import { makeLimiter } from "../services/ticketAccess.js";
-import { directory as peopleDirectory } from "./people.js";
+import { directory as peopleDirectory, mediaOfPasses } from "./people.js";
 import { HIDE_SELECT, hiddenState, oids, personHide } from "../services/appHide.js";
 
 /* =========================================================
@@ -1180,7 +1180,7 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
 
 const SPEAKER_PASS_FIELDS = "name email alsoTo ticketId ticketType speakerId details passEmailSentAt passEmailSentTo " +
   "passEmailSentCount claimedBy checkedIn createdAt purchaseDate runOfShow speakerContact invitesSentAt invitesSentCount " +
-  "speakerNudgedAt speakerNudgeCount issuedPass cxoBreakfast luncheons galaDinner awardsNight";
+  "speakerNudgedAt speakerNudgeCount issuedPass cxoBreakfast luncheons galaDinner awardsNight media";
 // Who's copied on speaker emails and invites until staff change it in Edit email (SPEAKER_CC, comma-separated).
 // Nobody by default since Oct 23 2026 (the organiser: "remove lubna from cc from all rsvp emails").
 const DEFAULT_SPEAKER_CC = () => String(process.env.SPEAKER_CC ?? "").split(",")
@@ -1343,14 +1343,16 @@ router.post("/speaker-passes/send-selected", requireManagement, async (req, res)
 });
 
 // → { rows: [speakerPassRow], counts: { passes, withEmail, sent, ready } }
-// Each row also has sessionsSource ("agenda" | "saved" | null) and onWebsite (false: not a speaker on
-// the website any more, or never was: a manual pass).
+// Each row also has sessionsSource ("agenda" | "saved" | null), onWebsite (false: not a speaker on
+// the website any more, or never was: a manual pass) and media (Oct 23 2026: the speaker is Media = Yes,
+// People's answer for whoever holds the pass, else the pass's own mark).
 router.get("/speaker-passes", async (req, res) => {
   const docs = await Attendee.find(SPEAKER_SCOPE).select(SPEAKER_PASS_FIELDS).lean();
-  const [rsvps, site] = await Promise.all([speakerRsvps(docs.map((d) => d.ticketId)), loadWebsite()]);
+  const [rsvps, site, media] = await Promise.all([speakerRsvps(docs.map((d) => d.ticketId)), loadWebsite(), mediaOfPasses(docs.map((d) => d._id))]);
   const live = await Promise.all(docs.map((d) => livePass(d, site)));
   const rows = live.map(({ doc, source, onWebsite }) => ({
     ...speakerPassRow(doc), sessionsSource: source, onWebsite,
+    media: (media && media.get(String(doc._id))) ?? doc.media === true,
     rsvp: rsvps.get(String(doc.ticketId).toLowerCase()) || null,
   })).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
   res.json({ rows, counts: speakerPassCounts(rows), websiteOk: !!site });

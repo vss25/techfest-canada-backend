@@ -27,6 +27,7 @@ import { passEmailDefaults, passEmailFor, passVariant } from "../services/passEm
 import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor, mergeCopy, sameAsDefault, tierFor } from "../services/passEmailCopy.js";
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
+import { forgetPeople, mediaOfPasses } from "./people.js";
 
 /* =========================================================
    Staff-issued passes, two kinds on the same routes:
@@ -46,13 +47,16 @@ import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js"
                                      fields, sections, placeholders, extras, marks, markTiers }   (fields: one pass's editable email wording;
                                      extras: the pass extras [{ key, label, short, auto }], autoExtras: what each pass gets on Automatic;
                                      marks: ["vip", "media"], markTiers: the pass the form picks for a mark, { vip, media, volunteer })
-   GET    /                      → { rows, counts }
-   POST   /preview               → { subject, html, text, includes } for an unsaved pass (same body as POST /)
+   GET    /                      → { rows, counts }   (each row's `media` is the pass's own mark, `personMedia` whether the
+                                   person holding it is Media = Yes now: People's answer, null when not known)
+   POST   /preview               → { subject, html, text, includes, extras } for an unsaved pass (same body as POST /;
+                                   `extras`: { <cxo|lunch|gala|awards>: { override, auto, included } } with its VIP / Media marks)
    POST   /                      { name, email, tier, title?, company?, label?, rsvp?, booth?, zone?, passes?,
                                    extras?: { cxo?, lunch?, gala?, awards? } (each true | false | null = automatic),
                                    cxoBreakfast? (the same as extras.cxo),
                                    vip?, media? (true / false: mark the pass's holder VIP / Media, Attendee.vip / .media;
-                                     both get the CxO Breakfasts on Automatic; Oct 20 2026),
+                                     Oct 20 2026. On Automatic a VIP gets the CxO Breakfasts, Media everything a
+                                     Power Pass gets plus the CxO Breakfasts, Oct 23 2026: services/passExtras.js),
                                    + any field of the email (services/passEmailCopy.js, one pass's level) }
                                    → 201 { row }   (a new ticket ID; not emailed)
    PATCH  /:id                   any of the fields above → { row }
@@ -286,8 +290,13 @@ export function issuedPassRouter(kindName = "issued") {
 
   router.get("/", async (req, res) => {
     const docs = await Attendee.find(SCOPE).select(PASS_FIELDS).sort({ createdAt: -1 }).lean();
-    const rsvps = await rsvpsFor(docs.map((d) => d.ticketId));
-    const rows = docs.map((d) => ({ ...issuedPassRow(d), rsvpd: rsvps.get(String(d.ticketId).toLowerCase()) || null }));
+    const [rsvps, media] = await Promise.all([rsvpsFor(docs.map((d) => d.ticketId)), mediaOfPasses(docs.map((d) => d._id))]);
+    const rows = docs.map((d) => ({
+      ...issuedPassRow(d),
+      // Media = Yes for the person holding it (People: their account's type, or a pass marked Media), null = not known.
+      personMedia: media ? media.get(String(d._id)) ?? null : null,
+      rsvpd: rsvps.get(String(d.ticketId).toLowerCase()) || null,
+    }));
     res.json({
       rows,
       counts: { passes: rows.length, sent: rows.filter((r) => r.status === "sent").length, ready: rows.filter((r) => r.status === "ready").length, rsvpd: rows.filter((r) => r.rsvpd).length },
@@ -323,6 +332,8 @@ export function issuedPassRouter(kindName = "issued") {
     const { subject, html, text, defaults, includes } = await emailFor(fake, fake.issuedPass.copy, true);
     res.json({
       to: check.value.emails.join(", "), cc: DEFAULT_CC(), subject, html, text, defaults, includes,
+      // Each extra as this pass would have it (its marks count: Media gets all four on Automatic): the form's "Automatic (Yes)".
+      extras: issuedPassRow(fake).extras,
       attachments: kind.manual ? [{ filename: manualFileName(fake.details?.organisation) }] : [],
     });
   });
@@ -346,6 +357,7 @@ export function issuedPassRouter(kindName = "issued") {
       .map((e) => `, ${e.key === "cxo" ? "CxO Breakfast" : e.label} ${check.value[e.field] ? "Yes" : "No"}`).join("")
       + PASS_MARKS.filter((k) => check.value[k] === true).map((k) => `, ${k === "vip" ? "VIP" : "Media"} Yes`).join("");
     if (PASS_MARKS.some((k) => check.value[k] === true)) clearExhibitorCache(); // the apps see the mark within the minute
+    forgetPeople(); // People (and the pass lists' Media marks) read it at once
     const wording = Object.keys(compact(check.value.copy || {}));
     await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}${staffNote(isManagement(req.user))}`);
     res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
@@ -390,6 +402,7 @@ export function issuedPassRouter(kindName = "issued") {
     const rowBefore = issuedPassRow(before).extras;
     const rowAfter = issuedPassRow(a).extras;
     if (markChanges.length) clearExhibitorCache();
+    forgetPeople();
     const fields = [...Object.keys(set).filter((k) => !EXTRAS.some((e) => e.field === k) && !PASS_MARKS.includes(k) && k !== "issuedPass.copy"),
       ...extraChanges.map((e) => `${e.key === "cxo" ? "CxO Breakfast" : e.label} ${extraLabel(rowBefore[e.key].override ?? undefined, rowBefore[e.key].included)} → ${extraLabel(rowAfter[e.key].override ?? undefined, rowAfter[e.key].included)}`),
       ...markChanges,
@@ -461,6 +474,7 @@ export function issuedPassRouter(kindName = "issued") {
     if (!a) return res.status(404).json({ error: "Pass not found" });
     if (a.checkedIn || a.claimedBy) return res.status(409).json({ error: "This pass has been checked in or used in the app, so it can't be deleted." });
     await Attendee.deleteOne({ _id: a._id, ...SCOPE });
+    forgetPeople();
     await audit(req, "delete", a.ticketId, `${a.name} <${passRecipients(a).join(", ")}>`);
     res.json({ deleted: true });
   });

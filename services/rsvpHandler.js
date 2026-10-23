@@ -122,7 +122,7 @@ export function makeLookup({ verifyTicket, getHolders, getSpeakers, guessFromNam
     // `verified` here means the server settles the pass (the page locks it). The speaker list
     // is public, so resolvePass still saves a speaker RSVP as unverified for staff to confirm.
     // The verified pass's extras (services/passExtras.js): staff's switches, else the pass's rules (the CxO
-    // Breakfasts: Apex / Speaker Pass / speaker or media type / a VIP).
+    // Breakfasts: Apex / Speaker Pass / speaker or media type / a VIP; Media: all four on any pass).
     const extrasOf = (tier) => (ticket ? effectiveExtras({ ticketType: tier, types: ticket.types, vip: ticket.vip, override: ticket.extras }) : undefined);
     if (speaker) {
       const extras = extrasOf("speaker");

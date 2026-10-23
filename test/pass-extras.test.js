@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import PDFDocument from "pdfkit";
 import {
   EXTRAS, EXTRA_KEYS, autoExtras, effectiveExtras, extrasOverride, cleanExtras, extrasWrite, extraLabel, extrasView, ticketsWithExtras, timesWording,
+  personExtras, mediaPerson,
 } from "../services/passExtras.js";
+import { personBand } from "../services/checkinCard.js";
+import { filterPeople } from "../services/people.js";
 import { inclusionsFor, PASS_INCLUSIONS } from "../services/ticketInfo.js";
 import { buildTicketEmail, purchaseEmailDefaults } from "../services/ticketEmail.js";
 import { generateTicketPDF } from "../services/pdfTicket.js";
@@ -78,6 +81,9 @@ const TICKETS = {
   pow000000002: { ticketId: "POW000000002", type: "power", last: "kept", names: ["Kim Kept"], extras: { gala: false, awards: false } },
   inf000000001: { ticketId: "INF000000001", type: "influence", last: "awards", names: ["Ike Awards"], extras: { awards: true, cxo: true } },
   apx000000001: { ticketId: "APX000000001", type: "apex", last: "nolunch", names: ["Ada Nolunch"], extras: { lunch: false } },
+  // Media = Yes (Oct 23 2026): a Connect Pass, and one where staff said No to the Gala.
+  con000000003: { ticketId: "CON000000003", type: "connect", last: "press", names: ["Mo Press"], types: ["media"] },
+  con000000004: { ticketId: "CON000000004", type: "connect", last: "nogala", names: ["Max Nogala"], types: ["media"], extras: { gala: false } },
 };
 function rsvpWorld() {
   const rows = [];
@@ -94,7 +100,7 @@ function rsvpWorld() {
   const lookup = makeLookup({
     verifyTicket: async (id, last) => {
       const t = TICKETS[String(id).toLowerCase()];
-      return t && t.last === last.toLowerCase() ? { ticketId: t.ticketId, type: t.type, names: t.names, types: [], extras: t.extras || {} } : null;
+      return t && t.last === last.toLowerCase() ? { ticketId: t.ticketId, type: t.type, names: t.names, types: t.types || [], extras: t.extras || {} } : null;
     },
     getHolders: async () => [],
     getSpeakers: async () => [],
@@ -341,3 +347,132 @@ test("Admin → People: extras per pass (automatic, Yes, No), the row's badge da
   assert.deepEqual(cells("Pat Power"), ["No", "Yes", "Yes", "Yes", ""]);
   assert.deepEqual(cells("Ina Nolunch"), ["No", "No", "No", "Yes", "Networking Luncheons: No; Catalyst Awards Night: Yes"]);
 });
+
+/* ---------- Media = Yes (Oct 23 2026, the organiser: "Media has privilege of power pass with breakfast") ---------- */
+
+test("Media = Yes: everything a Power Pass gets plus the CxO Breakfasts, on any pass; staff's No still wins; booths never", () => {
+  for (const tier of ["connect", "influence", "power", "apex", "speaker", "All Access Pass", "early"]) {
+    assert.deepEqual(autoExtras(tier, ["media"]), ALL, tier);
+    assert.deepEqual(effectiveExtras({ ticketType: tier, types: ["media"] }), ALL, tier);
+  }
+  assert.equal(mediaPerson(["speaker", "media"]), true);
+  assert.equal(mediaPerson("media"), false); // a list only
+  // With other types or the VIP flag too.
+  assert.deepEqual(autoExtras("connect", ["exhibitor", "media"]), ALL);
+  assert.deepEqual(autoExtras("influence", ["speaker", "media"], { vip: true }), ALL);
+  // Staff's Yes / No per pass still wins over Automatic, one extra at a time.
+  assert.deepEqual(effectiveExtras({ ticketType: "connect", types: ["media"], override: { gala: false } }), { ...ALL, gala: false });
+  assert.deepEqual(effectiveExtras({ ticketType: "influence", types: ["media"], override: { cxo: false, lunch: false, gala: false, awards: false } }), NONE);
+  // Booths never, whoever holds them.
+  for (const booth of ["booth-standard", "booth-gold", "Booth-Premium"]) assert.deepEqual(autoExtras(booth, ["media"], { vip: true }), NONE, booth);
+  // Unchanged: a VIP or a speaker gets only the CxO Breakfasts beyond the pass; other types nothing.
+  assert.deepEqual(autoExtras("connect", [], { vip: true }), { ...NONE, cxo: true });
+  assert.deepEqual(autoExtras("connect", ["speaker"]), { ...NONE, cxo: true });
+  assert.deepEqual(autoExtras("connect", ["attendee", "exhibitor", "staff", "vendor", "volunteer"]), NONE);
+  // What the person gets whatever the pass (also the RSVP rules for someone without one).
+  assert.deepEqual(personExtras(["media"]), ALL);
+  assert.deepEqual(personExtras(["speaker"]), { ...NONE, cxo: true });
+  assert.deepEqual(personExtras([], { vip: true }), { ...NONE, cxo: true });
+  assert.deepEqual(personExtras(), NONE);
+  // The admin's "Automatic:" wording names Media on each of the four.
+  assert.ok(EXTRAS.every((x) => /Media on any pass/.test(x.auto)), EXTRAS.map((x) => x.auto).join(" | "));
+});
+
+test("Media = Yes: the apps' inclusions, the pass email's list and RSVP reason, the issued-pass row", () => {
+  const [t, booth] = ticketsWithExtras([{ ticketId: "con000000009", type: "connect" }, { ticketId: "BOOTH-STANDARD", type: "booth-standard" }], { types: ["media"] });
+  assert.equal(t.cxoBreakfast, true);
+  for (const line of ["2× CxO Breakfasts", "2× Luncheons", "1× Gala Dinner & Networking Reception", "1× Awards Night"]) assert.ok(t.inclusions.includes(line), line);
+  assert.deepEqual([booth.cxoBreakfast, booth.inclusions], [false, []]);
+  // Give a pass: a Connect Pass marked Media lists all four in its email and asks them to RSVP for them.
+  const doc = { _id: "a1", ...issuedPassDoc({ name: "Mo Press", emails: ["mo.press@example.com"], tier: "connect", media: true }, { ticketId: "AAA000000001" }) };
+  const v = issuedVariant(doc);
+  assert.deepEqual(v.extras, ALL);
+  const heads = v.includes.map((row) => (Array.isArray(row) ? row[0] : row)).join(" | ");
+  for (const word of [/CxO Breakfast/i, /Luncheon/i, /Gala Dinner/i, /Awards Night/i]) assert.match(heads, word);
+  assert.equal(v.rsvpReason, rsvpReasonFor("connect", ALL));
+  assert.match(v.rsvpReason, /CxO breakfasts, luncheons, the Gala Dinner and the Catalyst Awards Night/);
+  const row = issuedPassRow(doc);
+  assert.equal(row.media, true);
+  assert.deepEqual(Object.fromEntries(EXTRA_KEYS.map((x) => [x, [row.extras[x].auto, row.extras[x].included]])), Object.fromEntries(EXTRA_KEYS.map((x) => [x, [true, true]])));
+  // The same pass not marked: the Connect Pass's own list.
+  assert.deepEqual(issuedVariant({ ...doc, media: undefined }).extras, NONE);
+});
+
+test("Media = Yes: the RSVP page offers a media Connect holder the four extras and saves them; staff's No is refused", async () => {
+  const w = rsvpWorld();
+  const mo = await w.look(who("Mo", "Press", "CON000000003"));
+  assert.equal(mo.tier, "connect");
+  assert.equal(mo.cxoBreakfast, true);
+  for (const k of ["cxo_d1", "cxo_d2", "lunch_d1", "lunch_d2", "gala", "awards"]) assert.ok(mo.allowedOptions.includes(k), k);
+  assert.ok(!mo.allowedOptions.includes("meetings") && !mo.allowedOptions.includes("lounge")); // Apex's own, not Power's
+  assert.deepEqual(mo.allowedOptions, allowedExperiences("connect", DAY_KEYS, { extras: ALL }));
+  const saved = await w.submit({ ...who("Mo", "Press", "CON000000003"), options: ["cxo_d1", "lunch_d1", "awards", "cxo_d2", "lunch_d2", "gala"] });
+  assert.equal(saved.statusCode, 201, JSON.stringify(saved.body));
+  assert.deepEqual(w.rows[0].options, ["cxo_d1", "lunch_d1", "awards", "cxo_d2", "lunch_d2", "gala"]);
+  // Staff said No to the Gala on Max's pass: everything else offered, the Gala refused.
+  const max = await w.look(who("Max", "Nogala", "CON000000004"));
+  assert.ok(!max.allowedOptions.includes("gala") && max.allowedOptions.includes("awards") && max.allowedOptions.includes("lunch_d2"));
+  const no = await w.submit({ ...who("Max", "Nogala", "CON000000004"), options: ["gala", "awards"] });
+  assert.deepEqual([no.statusCode, no.body.invalid], [400, ["gala"]]);
+});
+
+test("Media = Yes in Admin › People: extras, eligibility, RSVP rules without a pass, the filter, counts, CSV and the dark-blue band", () => {
+  const users = [
+    { _id: "u1", name: "Mo Press", email: "mo@example.com", role: "user", types: ["media"], tickets: [{ ticketId: "CON1", type: "connect" }] },
+    { _id: "u2", name: "Nia Nopass", email: "nia@example.com", role: "user", types: ["media"] },
+    { _id: "u3", name: "Val Vip", email: "val@example.com", role: "user", vip: true, types: ["media"], tickets: [{ ticketId: "INF1", type: "influence" }] },
+    { _id: "u4", name: "Cy Plain", email: "cy@example.com", role: "user", tickets: [{ ticketId: "CON2", type: "connect" }] },
+  ];
+  const attendees = [
+    // A pass-only person marked Media on their pass, with staff's No on the Awards Night.
+    { _id: "a1", name: "Pia Pass", email: "pia@example.com", ticketId: "INF2", ticketType: "influence", media: true, awardsNight: false },
+  ];
+  const { people } = buildPeople({ users, attendees });
+  const by = (n) => people.find((p) => p.name === n);
+  const mo = personDetail(by("Mo Press"));
+  assert.equal(mo.media, true);
+  assert.deepEqual(Object.fromEntries(EXTRA_KEYS.map((x) => [x, mo.passes[0].extras[x]])), Object.fromEntries(EXTRA_KEYS.map((x) => [x, { override: null, auto: true, included: true }])));
+  assert.deepEqual(mo.rsvpRules.extras, ALL);
+  assert.deepEqual(mo.band, { key: "media", label: "Media", bg: "#0B3D91", text: "#FFFFFF", passName: "Connect Pass" });
+  const pia = personRow(by("Pia Pass"));
+  assert.equal(pia.media, true);
+  assert.deepEqual(Object.fromEntries(EXTRA_KEYS.map((x) => [x, pia.pass.extras[x].included])), { ...ALL, awards: false });
+  assert.deepEqual([pia.band.key, pia.band.passName], ["media", "Influence Pass"]);
+  // No pass: staff can RSVP them to all four; no band.
+  assert.deepEqual(rsvpRulesFor(by("Nia Nopass")).extras, ALL);
+  assert.equal(rsvpRulesFor(by("Nia Nopass")).cxo, true);
+  assert.equal(personRow(by("Nia Nopass")).band, null);
+  // VIP gold is still above Media; an ordinary pass is green with its name.
+  assert.deepEqual([personRow(by("Val Vip")).band.key, personRow(by("Val Vip")).band.label, personRow(by("Val Vip")).band.bg], ["vip", "VIP", "#F5C400"]);
+  assert.deepEqual(personRow(by("Val Vip")).pass.extras.gala.included, true);
+  assert.deepEqual(personRow(by("Cy Plain")).band, { key: "pass", label: "Connect Pass", bg: "#18A957", text: "#052E16", passName: "Connect Pass" });
+  assert.equal(personRow(by("Cy Plain")).media, false);
+  // The filter, the counts and the CSV.
+  assert.deepEqual(filterPeople(people, { media: "yes" }).map((p) => p.name).sort(), ["Mo Press", "Nia Nopass", "Pia Pass", "Val Vip"]);
+  assert.deepEqual(filterPeople(people, { media: "no" }).map((p) => p.name), ["Cy Plain"]);
+  assert.equal(filterPeople(people, { media: "" }).length, people.length);
+  assert.equal(peopleCounts(people).media, 4);
+  // Eligibility: Mo (4), Pia (3 of 4), Val (VIP + Media: 4); Cy's Connect Pass none.
+  const el = eligibleCounts(people);
+  assert.deepEqual(el.byExtra, { cxo: 3, lunch: 3, gala: 3, awards: 2 });
+  assert.equal(el.passes, 4);
+  const head = PEOPLE_CSV_HEAD;
+  assert.equal(head.indexOf("Media"), head.indexOf("VIP") + 1);
+  const lines = peopleCsv(people).replace(/^﻿/, "").split("\n").slice(1);
+  const cell = (n, h) => lines.find((x) => x.startsWith(n)).split(",")[head.indexOf(h)];
+  assert.deepEqual([cell("Mo Press", "Media"), cell("Cy Plain", "Media"), cell("Mo Press", "Gala Dinner & Networking Reception")], ["Yes", "No", "Yes"]);
+});
+
+test("the admin's colour band follows the door's precedence: VIP gold > Media dark blue > Speaker > Staff > Volunteer > the pass", () => {
+  const band = (o) => { const b = personBand(o); return [b.key, b.label, b.bg, b.text, b.passName]; };
+  const connect = [{ ticketId: "CON1", type: "connect" }];
+  assert.deepEqual(band({ types: ["media"], passes: connect, passName: "Connect Pass" }), ["media", "Media", "#0B3D91", "#FFFFFF", "Connect Pass"]);
+  assert.deepEqual(band({ vip: true, types: ["media"], passes: connect, passName: "Connect Pass" }).slice(0, 3), ["vip", "VIP", "#F5C400"]);
+  assert.deepEqual(band({ types: ["speaker", "media"], passes: [{ ticketId: "SPK1", type: "speaker" }], passName: "Speaker Pass" }).slice(0, 2), ["media", "Media"]);
+  assert.deepEqual(band({ types: ["speaker"], passes: [{ ticketId: "SPK1", type: "speaker" }], passName: "Speaker Pass" }).slice(0, 2), ["speaker", "Speaker"]);
+  assert.deepEqual(band({ types: ["staff", "volunteer"], passes: connect, passName: "Connect Pass" }).slice(0, 2), ["staff", "Staff"]);
+  assert.deepEqual(band({ types: ["volunteer"], passes: connect, passName: "Connect Pass" }).slice(0, 2), ["volunteer", "Volunteer"]);
+  assert.deepEqual(band({ types: ["exhibitor"], passes: connect, passName: "Connect Pass" }), ["pass", "Exhibitor", "#18A957", "#052E16", "Connect Pass"]);
+  assert.deepEqual(band({ types: ["attendee"], passes: [{ ticketId: "POW1", type: "power" }], passName: "Power Pass" }), ["pass", "Power Pass", "#18A957", "#052E16", "Power Pass"]);
+});
+

@@ -15,8 +15,16 @@
    speaker type, and (Oct 20 2026, the organiser: "Media will be a
    power pass with breakfast included by default, VIP will be power
    pass with breakfast included by default") any VIP (the yes / no
-   flag, services/teamRoles.js isVip) and anyone of the media type,
-   whatever their pass. Booths get none.
+   flag, services/teamRoles.js isVip), whatever their pass.
+   Media = Yes (Oct 23 2026, the organiser: "Media has privilege of
+   power pass with breakfast"): the media type (an account's type, or
+   a pass staff marked Media, Attendee.media) gets everything a Power
+   Pass gets plus the CxO Breakfasts, on any pass: CxO Breakfasts,
+   Networking Luncheons, Gala Dinner and Catalyst Awards Night
+   (personExtras). This file is the only place that rule lives:
+   the RSVP page, the door card, People and the headcounts, the
+   event summary, pass emails and the apps' `inclusions` all read
+   autoExtras / effectiveExtras. Booths get none.
    Staff's switch is stored on the ticket record, true / false
    (unset = automatic), in one field per extra: `cxoBreakfast` (the
    existing "CxO Breakfast included", unchanged), `luncheons`,
@@ -41,10 +49,10 @@ export { EXTRA_KEYS, EXTRA_OPTIONS };
 
 /** The extras, in the order the admin panel lists them. `field`: where staff's switch is stored. */
 export const EXTRAS = Object.freeze([
-  Object.freeze({ key: "cxo", field: "cxoBreakfast", label: "CxO Breakfasts", short: "CxO", auto: "Apex and Speaker Passes, speakers, VIPs and media on any pass" }),
-  Object.freeze({ key: "lunch", field: "luncheons", label: "Networking Luncheons", short: "Luncheons", auto: "Influence, Power, Apex and Speaker Passes" }),
-  Object.freeze({ key: "gala", field: "galaDinner", label: "Gala Dinner & Networking Reception", short: "Gala", auto: "Power, Apex and Speaker Passes" }),
-  Object.freeze({ key: "awards", field: "awardsNight", label: "Catalyst Awards Night", short: "Awards", auto: "Power, Apex and Speaker Passes" }),
+  Object.freeze({ key: "cxo", field: "cxoBreakfast", label: "CxO Breakfasts", short: "CxO", auto: "Apex and Speaker Passes, and speakers, VIPs and Media on any pass" }),
+  Object.freeze({ key: "lunch", field: "luncheons", label: "Networking Luncheons", short: "Luncheons", auto: "Influence, Power, Apex and Speaker Passes, and Media on any pass" }),
+  Object.freeze({ key: "gala", field: "galaDinner", label: "Gala Dinner & Networking Reception", short: "Gala", auto: "Power, Apex and Speaker Passes, and Media on any pass" }),
+  Object.freeze({ key: "awards", field: "awardsNight", label: "Catalyst Awards Night", short: "Awards", auto: "Power, Apex and Speaker Passes, and Media on any pass" }),
 ]);
 const BY_KEY = Object.fromEntries(EXTRAS.map((x) => [x.key, x]));
 export const extraInfo = (key) => BY_KEY[key] || null;
@@ -66,20 +74,35 @@ export function extrasOverride(...records) {
   return out;
 }
 
-/** The people who get the CxO Breakfasts on any pass: the speaker or media type, or a VIP (`vip`: the flag). */
-export const cxoPerson = (types = [], vip = false) => !!vip || (Array.isArray(types) && (types.includes("speaker") || types.includes("media")));
+/** Media = Yes: the media type (an account's, or a pass staff marked Media, which callers put in `types`). */
+export const mediaPerson = (types = []) => Array.isArray(types) && types.includes("media");
 
-/** Automatic, per extra: the pass's own rule (CxO Breakfasts: also a speaker- or media-type holder, or a VIP:
-    `vip`, the person's VIP flag). Booths never. */
+/** The people who get the CxO Breakfasts on any pass: the speaker or media type, or a VIP (`vip`: the flag). */
+export const cxoPerson = (types = [], vip = false) => !!vip || mediaPerson(types) || (Array.isArray(types) && types.includes("speaker"));
+
+/**
+ * What the person gets on any pass, whatever its tier (Automatic; staff's switches still win):
+ *   the CxO Breakfasts: the speaker type, a VIP (`vip`: the flag) and Media;
+ *   the luncheons, the Gala Dinner and the Awards Night: Media (a Power Pass's extras, Oct 23 2026).
+ * → { cxo, lunch, gala, awards } (true / false). With no pass at all it's what staff can RSVP them to.
+ */
+export function personExtras(types = [], { vip = false } = {}) {
+  const media = mediaPerson(types);
+  const cxo = cxoPerson(types, vip);
+  return Object.fromEntries(EXTRA_KEYS.map((x) => [x, x === "cxo" ? cxo : media]));
+}
+
+/** Automatic, per extra: the pass's own rule, or the person's (personExtras: speakers, VIPs and Media).
+    `vip`: the person's VIP flag. Booths never. */
 export function autoExtras(ticketType, types = [], { vip = false } = {}) {
   const booth = isBoothType(ticketType);
   const tier = tierFromTicketType(ticketType);
-  const person = cxoPerson(types, vip);
-  return Object.fromEntries(EXTRA_KEYS.map((x) => [x, !booth && (AUTO_TIERS[x].includes(tier) || (x === "cxo" && person))]));
+  const person = personExtras(types, { vip });
+  return Object.fromEntries(EXTRA_KEYS.map((x) => [x, !booth && (AUTO_TIERS[x].includes(tier) || person[x])]));
 }
 
 /** Effective, per extra: staff's switch when it's set, else automatic. `override`: extrasOverride's shape;
-    `vip`: the holder is a VIP (their CxO Breakfasts are automatic). */
+    `types`: the holder's person types (Media: all four automatic); `vip`: the holder is a VIP (their CxO Breakfasts are automatic). */
 export function effectiveExtras({ ticketType = "", types = [], vip = false, override = {} } = {}) {
   const auto = autoExtras(ticketType, types, { vip });
   return Object.fromEntries(EXTRA_KEYS.map((x) => [x, typeof override?.[x] === "boolean" ? override[x] : auto[x]]));

@@ -78,6 +78,21 @@ export function checkinBadge({ vip = false, tag = null, passName = "" } = {}) {
   return { key, label, bg: CHECKIN_BADGE_COLORS[key].bg, text: CHECKIN_BADGE_COLORS[key].text };
 }
 
+/**
+ * The same band for a person in the admin panel (Admin › People rows and the profile header, Oct 23 2026: "Media
+ * yes is dark blue pass"), so the panel shows what the door shows, by the same rule (checkinBadge):
+ *   vip       the VIP flag
+ *   types     their effective person types (Media: the media type, from their account or a pass marked Media)
+ *   passes    their passes ({ ticketId, type | ticketType, promoCode }): a Speaker Pass, and the best pass for "Exhibitor"
+ *   passName  the pass to name ("Connect Pass"): the green band's words, and shown small beside the others
+ * → { key, label, bg, text, passName }, e.g. Media on a Connect Pass: { key: "media", label: "Media", bg: "#0B3D91",
+ *   text: "#FFFFFF", passName: "Connect Pass" }.
+ */
+export function personBand({ vip = false, types = [], passes = [], passName = "" } = {}) {
+  const tag = profileTagOf({ tickets: (Array.isArray(passes) ? passes : []).filter(Boolean) }, { types: Array.isArray(types) ? types : [] });
+  return { ...checkinBadge({ vip: !!vip, tag, passName }), passName: str(passName) };
+}
+
 /** The name the pass carries: the checkout form's first + last name, else the guest record's name ("" when none). */
 const nameOnPass = (ticket, attendee) => (ticket ? displayName(ticket.details) : displayName(attendee?.details, attendee?.name));
 

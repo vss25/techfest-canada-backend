@@ -210,6 +210,32 @@ export async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   return pending;
 }
 const invalidate = () => { dir = { at: 0, data: null, pending: null, gen: dir.gen + 1 }; };
+/** After a change made elsewhere (Give a pass, Exhibitor passes): the next read builds the directory again. */
+export const forgetPeople = () => invalidate();
+
+/**
+ * Media = Yes for the people holding these passes (Attendee ids, the directory's `a-<id>` aliases), for the pass
+ * lists (Give a pass, Exhibitor passes, Speaker passes, Oct 23 2026): Map(attendeeId → true | false | null = not in
+ * the directory), or null when the directory isn't ready within `waitMs` or can't be read. Callers then fall
+ * back to the pass's own mark (Attendee.media). Never throws.
+ */
+export async function mediaOfPasses(ids = [], { waitMs = 2500 } = {}) {
+  let timer;
+  const slow = new Promise((ok) => { timer = setTimeout(() => ok(null), waitMs); });
+  try {
+    const d = await Promise.race([directory(), slow]);
+    if (!d) return null;
+    return new Map(ids.map((id) => {
+      const p = d.byId.get(`a-${id}`);
+      return [String(id), p ? p.types.includes("media") : null];
+    }));
+  } catch (err) {
+    console.error("PEOPLE MEDIA LOOKUP ERROR:", err?.message || err);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   const raw = String(id || "").slice(0, 80);

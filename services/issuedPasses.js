@@ -183,13 +183,14 @@ export function validateIssuedPass(body = {}, { partial = false } = {}) {
 export const newIssuedTicketId = () => crypto.randomBytes(6).toString("hex");
 
 /** Who a pass can be marked as on Give a pass (Oct 20 2026): VIP and Media, saved on the pass (Attendee.vip,
-    Attendee.media; the account that claims it follows, services/teamRoles.js). Both get the CxO Breakfasts
-    on Automatic. Volunteer is a type on an app account (People, management), so it isn't one of these. */
+    Attendee.media; the account that claims it follows, services/teamRoles.js). On Automatic a VIP gets the CxO
+    Breakfasts, Media everything a Power Pass gets plus the CxO Breakfasts (services/passExtras.js personExtras).
+    Volunteer is a type on an app account (People, management), so it isn't one of these. */
 export const PASS_MARKS = Object.freeze(["vip", "media"]);
 /** The pass the Give a pass form picks first for a mark (staff can change it): VIP and Media → Power, Volunteer → Connect. */
 export const MARK_TIERS = Object.freeze({ vip: "power", media: "power", volunteer: "connect" });
 
-/** The pass's own marks as the CxO rule reads them: { types: ["media"] | [], vip }. */
+/** The pass's own marks as the pass extras' rule reads them (services/passExtras.js): { types: ["media"] | [], vip }. */
 export const passHolder = (a) => ({ types: isMediaPass(a) ? ["media"] : [], vip: isVipPass(a) });
 
 /** The Attendee document for a new issued pass (`promo`: ISSUED, or EXHIBITOR for exhibitor passes). */
@@ -256,7 +257,7 @@ export function issuedVariant(a, { copyFor = defaultIssuedCopy } = {}) {
   const tier = ISSUE_TIERS[key];
   const label = printedLabel(a?.issuedPass?.label) || tier.label;
   // The pass's extras (CxO Breakfasts, luncheons, Gala, Awards): staff's switch on this pass, else the pass's own rule
-  // (the CxO Breakfasts also when the pass is marked VIP or Media).
+  // (the CxO Breakfasts also when the pass is marked VIP; all four when it is marked Media).
   const extras = effectiveExtras({ ticketType: key, ...passHolder(a), override: extrasOverride(a) });
   const asSold = autoExtras(key);
   const rsvpReason = EXTRA_KEYS.every((x) => extras[x] === asSold[x]) ? tier.rsvpReason : rsvpReasonFor(key, extras);
