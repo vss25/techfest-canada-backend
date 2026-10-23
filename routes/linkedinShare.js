@@ -9,7 +9,7 @@ import LinkedinShare from "../models/LinkedinShare.js";
 import LinkedinShareDraft from "../models/LinkedinShareDraft.js";
 import { Discussion } from "../models/Community.js";
 import { SessionVote } from "../models/Social.js";
-import { makeLimiter } from "../services/ticketAccess.js";
+import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import { frontendUrl } from "../services/profileRequest.js";
 import { LI_POST_SCOPE, attendingLink, cleanPostText, linkedinAuthUrl, linkedinConfigured, readCookie, splitName } from "../services/attendingCampaign.js";
 import { signTrack } from "../services/trackToken.js";
@@ -54,7 +54,7 @@ export const appRouter = express.Router();
 export const publicRouter = express.Router();
 
 const sharePerUser = makeLimiter({ max: 30, windowMs: 60 * 60 * 1000 });
-const pagePerIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 });
+const pagePerIp = makeLimiter(SHARED_ADDRESS); // a venue shares one address; each share is 3 calls
 const COOKIE_PATH = "/api/auth/linkedin";
 const COOKIE_MAX_AGE_S = 10 * 60;
 const pointsOf = (key) => RULES.find((r) => r.key === key)?.points || 0;

@@ -1,8 +1,8 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
-import Attendee from "../models/Attendee.js";
-import { buildDirectory, GUEST_DETAILS_SELECT } from "../services/ticketAccess.js";
+import { buildDirectory } from "../services/ticketAccess.js";
+import { directoryRows } from "../services/directoryCache.js";
 import { Block } from "../models/Admin.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
@@ -22,7 +22,7 @@ import { sessionAllows, OFF_ERRORS } from "../services/sessionLive.js";
 import { notificationDTO, parseSince, parseReadBody } from "../services/notifyHelpers.js";
 import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
-  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO, avatarFor,
+  publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO, avatarFor, findPostsLight,
 } from "../services/socialHelpers.js";
 import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
 import { onRegistration } from "../services/sessionGroups.js";
@@ -204,11 +204,8 @@ router.get("/users", async (req, res) => {
    seen but not messaged. Never returns email. */
 router.get("/attendees", async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
-  const [users, guests] = await Promise.all([
-    User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
-      .select("name email role jobTitle organization linkedinUrl country topics tickets directoryHidden avatarVersion lastActiveAt appOnboarded tagline availabilitySlots meetingSpot availabilitySpots messagesOff requestsOff types typesOff vip").lean(),
-    Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } }).select(`name email ticketId ticketType purchaseDate promoCode exhibitor vip issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
-  ]);
+  // Shared for a few seconds and between requests in flight together (services/directoryCache.js); read only.
+  const { users, guests } = await directoryRows();
   const { exhibitors, matrix } = req.ctx;
   // Hidden people (and their passes not on the app yet) aren't in anyone else's directory.
   const listed = req.shadow.size ? users.filter((u) => !req.shadow.has(String(u._id))) : users;
@@ -304,10 +301,10 @@ router.get("/feed", async (req, res) => {
   const filter = { $or: [{ status: "approved" }, { authorId: req.user._id, status: "held" }] };
   if (req.unseen.size) filter.authorId = { $nin: oids(req.unseen) };
   const pinCutoff = new Date(Date.now() - PINNED_MS);
+  // Without the legacy inline photos (findPostsLight): every phone polls this every 30 s.
   const [newest, pinned] = await Promise.all([
-    SocialPost.find(after ? { ...filter, createdAt: { $gt: after } } : filter).sort({ createdAt: -1 }).limit(limit).lean(),
-    SocialPost.find({ ...filter, kind: "announcement", createdAt: { $gt: after && after > pinCutoff ? after : pinCutoff } })
-      .sort({ createdAt: -1 }).limit(10).lean(),
+    findPostsLight(SocialPost, after ? { ...filter, createdAt: { $gt: after } } : filter, { limit }),
+    findPostsLight(SocialPost, { ...filter, kind: "announcement", createdAt: { $gt: after && after > pinCutoff ? after : pinCutoff } }, { limit: 10 }),
   ]);
   const seen = new Set(newest.map((p) => String(p._id)));
   let page = [...newest, ...pinned.filter((p) => !seen.has(String(p._id)))];
@@ -383,7 +380,8 @@ router.post("/feed", needRight("post"), async (req, res) => {
 /** One post (opened from an activity row, a mention or a shared link). */
 router.get("/feed/:id", async (req, res) => {
   if (!isObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
-  const post = await SocialPost.findById(req.params.id).lean();
+  // The iOS app checks up to 12 of these at a time on each feed refresh: no inline photo (findPostsLight).
+  const [post = null] = await findPostsLight(SocialPost, { _id: oids([req.params.id])[0] }, { limit: 1 });
   if (!canViewPost(post, req.user, req.unseen, req.rights)) return res.status(404).json({ error: "Not found" });
   const avatars = await avatarUrls([post.authorId]);
   res.json(postDTO(await postView(req, post), req.user._id, avatars, { staff: req.rights.deleteAnyPost }));
@@ -968,7 +966,7 @@ router.post("/notifications/read", async (req, res) => {
 
 router.get("/admin/held", needRight("moderate"), async (req, res) => {
   const [posts, comments, questions, messages] = await Promise.all([
-    SocialPost.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
+    findPostsLight(SocialPost, { status: "held" }, { limit: 100 }),
     SocialComment.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
     SessionQuestion.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),
     SocialMessage.find({ status: "held" }).sort({ createdAt: -1 }).limit(100).lean(),

@@ -47,7 +47,7 @@
    the answer is the same, as fast, whatever it does.
 ========================================================= */
 
-import { makeLimiter, ticketGuesses, ticketGuessKey, normalizeTicketId } from "./ticketAccess.js";
+import { makeLimiter, SHARED_ADDRESS, ticketGuesses, ticketGuessKey, normalizeTicketId } from "./ticketAccess.js";
 import { cleanText, isHoneypotFilled, botReason } from "./brochureDownloads.js";
 import {
   cleanLookup, foldName, personNameKey, matchSpeaker, matchHolder, tierFromTicketType, fullNameMatches, lastNameIs,
@@ -189,10 +189,10 @@ export function makeRsvpHandlers({
   lookup, store, log = console,
   notify = null, // (row, { updated }) => Promise: email the team; failures are logged, never block the RSVP
   requireTicket = true, // every RSVP needs a ticket ID that matches the last name (client decision, Oct 2026)
-  lookupIpLimiter = makeLimiter({ max: 40, windowMs: 15 * 60 * 1000 }),
+  lookupIpLimiter = makeLimiter(SHARED_ADDRESS), // a venue shares one address; the per-name and per-ticket limits stop guessing
   lookupNameLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }), // per address + name
   ticketGuessLimiter = ticketGuesses,
-  submitIpLimiter = makeLimiter({ max: 12, windowMs: 15 * 60 * 1000 }),
+  submitIpLimiter = makeLimiter(SHARED_ADDRESS),
   submitNameLimiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 }), // per address + name, RSVPs about to be saved
   agendaTimes = async () => null, // { optionKey: "7:55 AM" } from the CMS agenda; null keeps the fallback times
   onFormOpen = null, // (ticketId, ip) => void: a lookup verified this ticket (People › RSVP form opened); never awaited

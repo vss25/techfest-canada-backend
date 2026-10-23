@@ -242,6 +242,14 @@ export function buildDirectory(users, guests, { excludeUserId = null, excludeEma
     .sort((a, b) => (a.onApp === b.onApp ? a.name.localeCompare(b.name) : a.onApp ? -1 : 1));
 }
 
+/**
+ * Per-address limit for sign-in and other attendee requests (Oct 22 2026, before the event days). On the venue's
+ * Wi-Fi, and behind a mobile carrier's NAT, hundreds of people share one public address, so a limit sized for one
+ * person (8 ticket sign-ins per 15 min) locked the whole room out after a few typos. Guessing is stopped by the
+ * per-ticket, per-email and per-name limits next to each of these; this one only stops floods.
+ */
+export const SHARED_ADDRESS = Object.freeze({ max: 300, windowMs: 15 * 60 * 1000 });
+
 /** Simple in-memory attempt limiter (per key) for ticket sign-in. */
 export function makeLimiter({ max = 8, windowMs = 15 * 60 * 1000 } = {}) {
   const hits = new Map();

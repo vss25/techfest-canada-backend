@@ -2,7 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
+import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, SHARED_ADDRESS, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
 import { isTeam, isVolunteer } from "../services/teamRoles.js";
 import { tokenClaims, cleanVia, VIA_TICKET } from "../services/signInMethod.js";
 
@@ -18,7 +18,9 @@ const teamPasswordOnly = (u) => (isVolunteer(u)
 ========================================================= */
 
 const router = express.Router();
-const limiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
+// Per address, sized for a venue's shared Wi-Fi (SHARED_ADDRESS: one public IP for the whole room).
+const limiter = makeLimiter(SHARED_ADDRESS);
+const claimLimiter = makeLimiter({ max: 8, windowMs: 15 * 60 * 1000 }); // per account
 // Per ticket too (`ticketGuesses`, 5 last names per 15 min), so guessing one person's last name
 // can't be spread across addresses. The website RSVP (routes/rsvp.js) checks the same pair and
 // draws on the same budget.
@@ -152,7 +154,7 @@ router.post("/claim-ticket", async (req, res) => {
   try {
     const me = await userFromToken(req);
     if (!me) return res.status(401).json({ error: "Unauthorized" });
-    if (!limiter.hit(`claim:${me._id}`)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
+    if (!claimLimiter.hit(`claim:${me._id}`)) return res.status(429).json({ error: "Too many attempts. Try again in 15 minutes." });
 
     const { lastName, ticketId } = req.body || {};
     if (!lastName || !ticketId) return res.status(400).json({ error: "Last name and ticket ID are required." });

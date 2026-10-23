@@ -48,9 +48,25 @@ export function avatarFor(user) {
   return avatarPath(user._id || user.id, user.avatarVersion) || speakerPhotoFor(user);
 }
 
-/** Public URL path of a post's photo ("" when none). */
+/** Public URL path of a post's photo ("" when none). `hasPhoto` comes from findPostsLight (no imageData loaded). */
 export function postImagePath(post) {
-  return post?.imageData ? `/api/files/post/${post._id}` : "";
+  return post?.imageData || post?.hasPhoto ? `/api/files/post/${post._id}` : "";
+}
+
+/**
+ * Posts for showing, without their legacy inline photo (Oct 22 2026). A post from before Cloudinary keeps its photo
+ * as base64 in imageData (up to ~450 KB); the feed loaded up to 60 of them on every phone's 30-second poll only to
+ * drop them in postDTO. This leaves them in the database and sets `hasPhoto` instead, which postImagePath and postDTO
+ * read like imageData. Like find(match).sort(sort).limit(limit).lean(), but `match` isn't cast: pass ObjectIds and Dates.
+ */
+export function findPostsLight(SocialPost, match, { sort = { createdAt: -1 }, limit = 50 } = {}) {
+  return SocialPost.aggregate([
+    { $match: match },
+    { $sort: sort },
+    { $limit: limit },
+    { $set: { hasPhoto: { $gt: [{ $strLenBytes: { $ifNull: ["$imageData", ""] } }, 0] } } },
+    { $unset: "imageData" },
+  ]);
 }
 
 /** Splits a data URL into { contentType, buffer } (null when malformed). */
@@ -175,7 +191,7 @@ export function postDTO(post, viewerId, avatars = new Map(), { staff = false } =
   const me = String(viewerId || "");
   // Cloudinary media first; a legacy inline photo shows as a one-item list.
   const media = (post.media || []).map(deliveryMedia);
-  if (!media.length && post.imageData) media.push({ type: "image", url: postImagePath(post), posterUrl: "", width: 0, height: 0, duration: 0 });
+  if (!media.length && (post.imageData || post.hasPhoto)) media.push({ type: "image", url: postImagePath(post), posterUrl: "", width: 0, height: 0, duration: 0 });
   return {
     id: String(post._id),
     authorId: String(post.authorId),

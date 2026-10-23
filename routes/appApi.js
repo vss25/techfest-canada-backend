@@ -16,7 +16,10 @@ import { cleanToken, cleanEnv, upsertToken, isConfigured } from "../services/apn
 import { cleanFcmToken, upsertFcmToken, isConfigured as fcmConfigured } from "../services/fcm.js";
 import * as webPush from "../services/webPush.js";
 
-const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });   // batches per IP per minute
+// Usage analytics are limited per device (Oct 22 2026): at the venue every phone shares one address, and 70 phones'
+// batches (up to 3 a minute each) went past the old 120 per address, so the apps' queues filled and re-sent on every tap.
+const eventLimiter = makeLimiter({ max: 120, windowMs: 60 * 1000 });     // batches per device per minute
+const eventIpLimiter = makeLimiter({ max: 1500, windowMs: 60 * 1000 });  // batches per address per minute: only a flood
 const reportAlertLimiter = makeLimiter({ max: 10, windowMs: 10 * 60 * 1000 });   // staff alerts per reporter
 const webPushLimiter = makeLimiter({ max: 30, windowMs: 10 * 60 * 1000 });   // web push subscribes per account
 
@@ -61,10 +64,12 @@ async function requireUser(req, res) {
 }
 
 router.post("/events", async (req, res) => {
-  if (!eventLimiter.hit(req.ip)) return res.status(429).json({ error: "Slow down" });
+  const deviceId = String(req.body?.deviceId || "").slice(0, 64);
+  if (!eventIpLimiter.hit(req.ip) || !eventLimiter.hit(deviceId ? `d:${deviceId}` : `ip:${req.ip}`)) {
+    return res.status(429).json({ error: "Slow down" });
+  }
   const list = Array.isArray(req.body?.events) ? req.body.events.slice(0, 200) : [];
   const user = await optionalUser(req);
-  const deviceId = String(req.body?.deviceId || "").slice(0, 64);
   const appVersion = String(req.body?.appVersion || "").slice(0, 20);
   const platform = eventPlatform(req.body);
   const docs = list.map((e) => cleanEvent(e)).filter(Boolean)

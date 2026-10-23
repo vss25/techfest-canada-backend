@@ -295,6 +295,16 @@ The organiser: "make sure people who have unsubscribed don't get the emails". Un
 
 Tests: pure parts in `test/unsubscribe.test.js`; routes and the senders against a database in `test/unsubscribe-db.test.js`.
 
+## Event-day load (Oct 22 2026)
+
+300 people on Oct 25–27, 50–70 on the app at once, most on the venue's Wi-Fi behind one public address. Tests: `test/event-load-db.test.js`.
+
+- **Per-address limits** are `SHARED_ADDRESS` (`services/ticketAccess.js`: 300 per 15 min) for ticket sign-in, the emailed code (verify: 600), password sign-in, the RSVP lookup and submit, and the LinkedIn / "I'm attending" pages (drafts 100). Guessing is stopped by the per-ticket (`ticketGuesses`), per-email, per-account and per-name limits, unchanged. Ticket sign-in used to allow 8 per address, so a few typos locked the whole room out. Analytics (`POST /api/app/events`): 120 batches a minute per `deviceId` (per address without one) and 1,500 per address.
+- **Legacy inline photos** (`SocialPost.imageData`, up to ~450 KB of base64) are no longer loaded to show posts: the feed, `GET /feed/:id` and the held queue use `findPostsLight` (`services/socialHelpers.js`: an aggregate that sets `hasPhoto` and drops `imageData`; `match` isn't cast). `postImagePath` / `postDTO` read `hasPhoto` like `imageData`. Staff's person view (`routes/console.js`) still loads them.
+- **Chat list**: index `SocialMessage { fromUserId: 1, createdAt: -1 }` for the "sent by me" half of its `$or`.
+- **Attendee directory** (`GET /api/social/attendees`): its two reads go through `services/directoryCache.js` (15 s per server, one read at a time, the last good rows kept on a failure); everything per viewer is worked out per request. 0 s under `node --test` unless `TTFC_DIRECTORY_CACHE_MS` is set.
+- The web app's typing indicator keeps one check in flight (frontend `src/app/lib/typingPoll.js`).
+
 ## Batch 7 (Oct 22 2026): "Win the TTFC swag kit"
 
 Tests: `test/swag.test.js` (pure), `test/swag-db.test.js` (routes).

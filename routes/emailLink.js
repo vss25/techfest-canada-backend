@@ -2,7 +2,7 @@ import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import SignInRequest from "../models/SignInRequest.js";
-import { makeLimiter } from "../services/ticketAccess.js";
+import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import {
   normalizeEmail, isValidEmail, createSignInSecrets, hashToken, looksLikeToken, requestState,
   checkCode, cleanCode, messageFor, signInLink, frontendBase, cleanClient, emailRegex, LINK_TTL_MS, MAX_CODE_ATTEMPTS, codeMessageFor,
@@ -85,8 +85,9 @@ async function defaultSend(kind, payload) {
 export function createEmailLinkRouter({ send = defaultSend } = {}) {
   const router = express.Router();
   const perEmail = makeLimiter({ max: 5, windowMs: 15 * 60 * 1000 });
-  const perIp = makeLimiter({ max: 20, windowMs: 15 * 60 * 1000 });
-  const verifyPerIp = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 });
+  // Per address, sized for a venue's shared Wi-Fi; codes are guarded per email and per request (MAX_CODE_ATTEMPTS).
+  const perIp = makeLimiter(SHARED_ADDRESS);
+  const verifyPerIp = makeLimiter({ ...SHARED_ADDRESS, max: SHARED_ADDRESS.max * 2 });
 
   /* ---------- Send the link ---------- */
   router.post("/email-link", async (req, res) => {

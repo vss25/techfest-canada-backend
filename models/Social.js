@@ -79,6 +79,9 @@ const socialMessageSchema = new Schema({
   readAt:     Date,
 }, { timestamps: true });
 socialMessageSchema.index({ threadKey: 1, createdAt: 1 });
+// The chat list (GET /api/social/messages, every phone every 30 s) matches { fromUserId: me } OR { toUserId: me }:
+// without this the "sent by me" half scanned every message (Oct 22 2026).
+socialMessageSchema.index({ fromUserId: 1, createdAt: -1 });
 // "Delivered" marking on every chat-list poll: { toUserId, deliveredAt: null } only walks what's still undelivered.
 socialMessageSchema.index({ toUserId: 1, deliveredAt: 1 });
 
