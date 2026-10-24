@@ -19,6 +19,7 @@ import { requireAdmin, requireManagementAdmin } from "../middleware/adminAuth.js
 import { createEmailLinkRouter } from "../routes/emailLink.js";
 import ticketAuthRouter from "../routes/ticketAuth.js";
 import checkinRouter from "../routes/checkin.js";
+import { setDeskClock } from "../services/checkinDeskLog.js";
 import cmsRouter from "../routes/cms.js";
 
 /* Email one-time-code sign-in for everyone (staff and volunteers too), with the
@@ -311,13 +312,19 @@ test("password tokens are unchanged: staff sign-in, admin panel login and older 
 });
 
 test("door check-in accepts staff and volunteer email-code tokens", async () => {
-  for (const email of ["sam@thetechfestival.com", "val@example.com"]) {
-    P.attendee.tickets[0].checkedIn = false;
-    const { body: { token } } = await signInByCode(email);
-    const r = await call("POST", "/api/checkin/scan", { token, body: { ticketId: "TECHFEST:aaaa1111bbbb" } });
-    assert.equal(r.status, 200, `${email}: ${JSON.stringify(r.body)}`);
-    assert.equal(r.body.status, "success");
-    assert.equal(r.body.name, "Ada Attendee");
+  // On Day 1 (the desk's clock): a door scan checks in for real only on an event day (a practice scan otherwise).
+  setDeskClock(() => new Date("2026-10-26T14:00:00Z"));
+  try {
+    for (const email of ["sam@thetechfestival.com", "val@example.com"]) {
+      P.attendee.tickets[0].checkedIn = false;
+      const { body: { token } } = await signInByCode(email);
+      const r = await call("POST", "/api/checkin/scan", { token, body: { ticketId: "TECHFEST:aaaa1111bbbb" } });
+      assert.equal(r.status, 200, `${email}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.status, "success");
+      assert.equal(r.body.name, "Ada Attendee");
+    }
+  } finally {
+    setDeskClock(null);
   }
   // An attendee's email-code token still can't check people in (no checkIn right).
   const { body: { token } } = await signInByCode("ada@example.com");

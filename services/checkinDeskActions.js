@@ -71,8 +71,9 @@ import { normalizeTicketId } from "./ticketAccess.js";
      C6 a day that isn't Day 1 / Day 2 (Toronto): marks are practice
         marks, never the ticket's checkedIn / checkedInAt; undo and reset
         clear them (a volunteer's own practice tap: undo at any time). The
-        door's QR scan too: its desk marks are practice marks then (the
-        scanner's own ticket write is unchanged).
+        door's QR scan too: its desk marks are practice marks then, and
+        since Oct 24 2026 the scanner writes nothing to the ticket either
+        (status "practice": the card, nothing checked in).
      C7 ISSUE PASS: someone on the list with no pass on file ("n" keys,
         subject "person:<id>") is marked Arrived and Checked in (= a pass
         issued at the desk: the mark only, no ticket to collect).
@@ -883,20 +884,23 @@ async function doUnknownLink(a, ctx, actor, view) {
 /**
  * A QR scan at the door also checks the guest in on the desk app for today: success = the scan just collected the pass
  * (it set checkedIn / checkedInAt); already = collected before (Day 2, or a second scan): today's check-in is still
- * recorded once. Never fails the scan (errors are logged). The door route answers the scanner first and calls this
- * after (routes/checkin.js), so it adds nothing to the scan's wait. → the event, or null.
+ * recorded once; practice = a scan on a day that isn't Day 1 / Day 2, which wrote nothing to the ticket (Oct 24 2026).
+ * Only "success" ever owns the pass collection. `at`: the instant the door route judged the day by (its deskNow()),
+ * so the scanner's answer and these marks agree on it. Never fails the scan (errors are logged). The door route answers
+ * the scanner first and calls this after (routes/checkin.js), so it adds nothing to the scan's wait. → the event, or null.
  */
-export async function recordScan({ ticketId, user, outcome, collectedAt = null }) {
+export async function recordScan({ ticketId, user, outcome, collectedAt = null, at: when = null }) {
   try {
     const subject = normalizeTicketId(ticketId);
     if (!subject || !user) return null;
     const actor = actorOf(user, user.role === "admin");
-    const at = deskNow();
+    const at = when ? new Date(when) : deskNow();
     const state = stationState({ station: "desk", at });
     const day = state.date;
     // Not Day 1 or Day 2 (contract C6): a rehearsal scan's desk marks are practice marks, in no attendance, and they
-    // never own the ticket's collection (the scanner's own ticket write, routes/checkin.js, is unchanged).
-    const practice = !state.eventDay;
+    // never own the ticket's collection (since Oct 24 2026 the scanner, routes/checkin.js, writes nothing to the ticket
+    // then either: outcome "practice"). A "practice" outcome is never a real mark, whatever the day.
+    const practice = !state.eventDay || outcome === "practice";
     const ref = `scan-${crypto.randomBytes(8).toString("hex")}`;
     const passSetAt = !practice && outcome === "success" && collectedAt ? new Date(collectedAt) : null;
     const res = await setMark({ subject, day, point: "checked_in", at, actor, station: "scanner", ref, passSetAt, practice });
