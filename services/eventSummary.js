@@ -42,7 +42,7 @@
 
 import { primaryPass } from "./people.js";
 import { rsvpStatusOf } from "./rsvpStaff.js";
-import { DAYS, DIETARY, TIER_LABELS, extraForOption } from "./rsvp.js";
+import { DAYS, DIETARY, EXTRA_KEYS, TIER_LABELS, extraForOption } from "./rsvp.js";
 
 export const EVENT_TZ = "America/Toronto";
 
@@ -92,6 +92,11 @@ export function mainPass(passes = []) {
   return speaker || primaryPass(passes);
 }
 
+/** What a person is entitled to: an extra one of their counting passes includes (by the pass, or staff's switch in
+    People). The one rule for "entitled": this page and the check-in desk (services/checkinDesk.js) both use it.
+    → { cxo, lunch, gala, awards } */
+export const entitledExtras = (passes = []) => Object.fromEntries(EXTRA_KEYS.map((k) => [k, (passes || []).some((t) => !!t.extras?.[k])]));
+
 /** Why someone with passes isn't counted: "refunded" (every visible pass refunded), "hidden" (every pass hidden), "" otherwise. */
 function leftOutWhy(p) {
   const all = (p?.passList || []).filter((t) => !isBooth(t.ticketId));
@@ -125,7 +130,11 @@ function addCheckin(line, c, rsvpd) {
   if (!rsvpd) line.notRsvpd += 1;
 }
 
-/** A person's facts for the summary, or null when they have no counting pass. */
+/** A person's facts for the summary, or null when they have no counting pass. Also the check-in desk's attendance
+    (services/checkinAttendance.js: entitled and RSVP'd per meal, by the same rule). */
+export function summaryFacts(p) {
+  return factsOf(p);
+}
 function factsOf(p) {
   const passes = countingPasses(p);
   if (!passes.length) return null;
@@ -143,7 +152,7 @@ function factsOf(p) {
     passes, main, tier: main.tier, pending: passes.every((t) => t.status === "pending"), rsvpd,
     day1: days.has("day1"), day2: days.has("day2"), options, dietary,
     dietaryOther: rsvpd && dietary.includes("other") ? String(p.rsvp?.dietaryOther || "").trim().slice(0, 200) : "",
-    entitled: (extra) => passes.some((t) => !!t.extras?.[extra]),
+    entitled: (extra) => !!entitledExtras(passes)[extra],
     checkin: { checkedIn: scanned.length > 0, first, day: first ? eventDayOf(first) : "" },
     vip: !!p.vip, media: (p.types || []).includes("media"), exhibitorPass: !!main.exhibitorPass,
   };

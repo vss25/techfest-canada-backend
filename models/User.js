@@ -203,6 +203,10 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ "appHidden.at": 1 }, { sparse: true });   // the hidden set (services/appHide.js)
 userSchema.index({ "webPushSubs.endpoint": 1 }, { sparse: true });   // one owner per endpoint, web push fan-out
+userSchema.index({ "tickets.ticketId": 1 });   // a ticket's holder: the door scan, ticket sign-in, the check-in desk (not unique: old data)
+// Accounts with a collected ticket (services/checkinAttendance.js: passes collected to date, every Counts refresh):
+// only those are in the index, so the read never goes through every account.
+userSchema.index({ "tickets.checkedIn": 1 }, { partialFilterExpression: { "tickets.checkedIn": true } });
 
 const User = mongoose.model("User", userSchema);
 
