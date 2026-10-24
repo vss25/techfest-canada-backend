@@ -10,6 +10,7 @@ import { TIERS } from "../services/rsvp.js";
 import {
   DESK_TIERS, HOLE_MS, UNDO_GRACE_MS, buildDeskIndex, canUndo, cleanAction, deskTier, entitlement, eventView, guestKey, guestView, isGuestKey,
   boothKey, isBoothKey, markView, notifyStations, safeCursor, sessionsIndex, tapTime, auditLine,
+  CLIENT_AT_MAX_AGE_MS, CLIENT_AT_MAX_AHEAD_MS, LATE_SYNC_MS, HOLE_ANCIENT_MS, tapClock, speakerNameMatches, guestExtras, boothsOf,
 } from "../services/checkinDesk.js";
 
 const t = (ticketId, type, extra = {}) => ({ ticketId, type, purchaseDate: new Date("2026-10-01"), ...extra });
@@ -146,13 +147,21 @@ test("actions as the app sends them", () => {
   assert.ok(!ok({ clientId: "abcdefgh1", kind: "query_update", id: "6a1b2c3d4e5f6a1b2c3d4e5f", status: "closed", station: "media" }));
 });
 
-test("taps from the offline queue keep their time (within hours, never in the future)", () => {
+test("contract C4: a tap's time is its clientAt clamped to [now − 12 h, now + 2 min]; over a minute old is a late sync", () => {
   const now = new Date("2026-10-26T13:00:00Z");
   assert.equal(tapTime("2026-10-26T12:58:00Z", now).toISOString(), "2026-10-26T12:58:00.000Z");
-  assert.equal(tapTime("2026-10-26T13:05:00Z", now).toISOString(), now.toISOString());
-  assert.equal(tapTime("2026-10-25T13:00:00Z", now).toISOString(), now.toISOString());
+  assert.equal(tapTime("2026-10-26T13:01:30Z", now).toISOString(), "2026-10-26T13:01:30.000Z", "a device a little ahead keeps its time");
+  assert.equal(tapTime("2026-10-26T13:05:00Z", now).toISOString(), new Date(now.getTime() + CLIENT_AT_MAX_AHEAD_MS).toISOString());
+  assert.equal(tapTime("2026-10-25T13:00:00Z", now).toISOString(), new Date(now.getTime() - CLIENT_AT_MAX_AGE_MS).toISOString());
   assert.equal(tapTime(null, now).toISOString(), now.toISOString());
+  assert.deepEqual(pickC(tapClock("2026-10-26T12:59:30Z", now)), [false, false]);
+  assert.deepEqual(pickC(tapClock("2026-10-26T12:58:59Z", now)), [true, false]);
+  assert.deepEqual(pickC(tapClock("2026-10-25T00:00:00Z", now)), [true, true]);
+  assert.deepEqual(pickC(tapClock("2026-10-26T14:00:00Z", now)), [false, true]);
+  assert.equal(CLIENT_AT_MAX_AGE_MS, 12 * 3600 * 1000);
+  assert.equal(LATE_SYNC_MS, 60 * 1000);
 });
+const pickC = (c) => [c.late, c.clamped];
 
 test("undo: volunteers their own taps within the window (device clock), staff anything", () => {
   const now = new Date("2026-10-26T13:01:00Z");
@@ -222,4 +231,127 @@ test("audit lines say who, what and where", () => {
     "Nina · Speaker Pass: Admitted to CxO Breakfast outside its hours (override) (CxO Breakfast)");
   assert.equal(auditLine({ booth: { booth: "A12" }, kind: "reset", point: "booth", station: "exhibitor" }), "Booth A12: cleared Booth set up (Exhibitor desk)");
   assert.equal(auditLine({ guest: { name: "Vera", passName: "Power Pass" }, kind: "note", note: "", station: "desk" }), "Vera · Power Pass: desk note cleared (Pass desk)");
+});
+
+test("contract C2 / C3 on the wire: undo by `target` (ref still works), queuedBy { id, name }", () => {
+  const key = guestKey("abc123def456");
+  assert.equal(cleanAction({ clientId: "abcdefgh1", kind: "undo", target: "abcdefgh2", station: "lobby" }).value.ref, "abcdefgh2");
+  assert.equal(cleanAction({ clientId: "abcdefgh1", kind: "undo", target: "abcdefgh3", ref: "abcdefgh2", station: "lobby" }).value.ref, "abcdefgh3", "target wins");
+  assert.ok(!cleanAction({ clientId: "abcdefgh1", kind: "undo", target: "abcdefgh1", station: "lobby" }).ok);
+  const q = cleanAction({ clientId: "abcdefgh1", kind: "mark", point: "arrived", key, station: "lobby", queuedBy: { id: "6a1b2c3d4e5f6a1b2c3d4e5f", name: "  Val   Volunteer " } });
+  assert.deepEqual(q.value.queuedBy, { id: "6a1b2c3d4e5f6a1b2c3d4e5f", name: "Val Volunteer" });
+  assert.ok(!cleanAction({ clientId: "abcdefgh1", kind: "mark", point: "arrived", key, station: "lobby", queuedBy: { id: "not-an-id" } }).ok);
+  assert.ok(!cleanAction({ clientId: "abcdefgh1", kind: "mark", point: "arrived", key, station: "lobby", queuedBy: "Val" }).ok);
+  assert.equal(cleanAction({ clientId: "abcdefgh1", kind: "mark", point: "arrived", key, station: "lobby", queuedBy: null }).value.queuedBy, undefined);
+});
+
+test("the cursor: a gap counts from when this reader first saw it missing, so a write that commits late isn't skipped", () => {
+  const now = Date.parse("2026-10-26T13:00:10Z");
+  const ev = (seq, ago = 0) => ({ seq, at: new Date(now - ago) });
+  // 5 was stamped 20 s ago (it waited for a slow database, like 4); this reader only now sees 4 missing: wait.
+  const seen = new Map();
+  const firstSeen = (k) => { if (!seen.has(k)) seen.set(k, 1000); return seen.get(k); };
+  assert.equal(safeCursor([ev(5, 20000), ev(6)], 3, { now, firstSeen, seenNow: 1000 }), 3);
+  assert.equal(safeCursor([ev(5, 20000), ev(6)], 3, { now, firstSeen, seenNow: 1000 + HOLE_MS - 1 }), 3);
+  // Missing for longer than HOLE_MS here: a failed write, move on.
+  assert.equal(safeCursor([ev(5, 20000), ev(6)], 3, { now, firstSeen, seenNow: 1000 + HOLE_MS + 1 }), 6);
+  // A gap before an event that is ancient (a failed write long ago) is skipped at once.
+  assert.equal(safeCursor([ev(5, HOLE_ANCIENT_MS + 1), ev(6)], 3, { now, firstSeen: () => 5000, seenNow: 5000 }), 6);
+  // Two missing numbers: the newest sighting decides.
+  const two = new Map([[4, 0], [5, 9000]]);
+  assert.equal(safeCursor([ev(6, 30000)], 3, { now, firstSeen: (k) => two.get(k), seenNow: 0 + HOLE_MS + 1 }), 3);
+});
+
+test("inclusions: an extra any of their counting passes includes (the Event summary's rule), switches on the pass that decides", () => {
+  const users = [];
+  const attendees = [
+    // Ava bought a Connect Pass, then staff gave her a Power Pass (emailed, not claimed yet): the main pass is the paid Connect.
+    { _id: "b1", name: "Ava Twopass", email: "ava@example.com", ticketId: "con000000031", ticketType: "connect", stripeSessionId: "cs31", purchaseDate: new Date("2026-09-01") },
+    { _id: "b2", name: "Ava Twopass", email: "ava@example.com", ticketId: "pow000000032", ticketType: "power", promoCode: "ISSUED", passEmailSentAt: new Date("2026-10-10"), purchaseDate: new Date("2026-10-10") },
+    // Ben's second pass is refunded-or-hidden (hidden by staff): it never counts.
+    { _id: "b3", name: "Ben Hidden", email: "ben@example.com", ticketId: "con000000033", ticketType: "connect", stripeSessionId: "cs33" },
+    { _id: "b4", name: "Ben Hidden", email: "ben@example.com", ticketId: "apx000000034", ticketType: "apex", stripeSessionId: "cs34", hiddenByStaff: true },
+  ];
+  const idx = buildDeskIndex(buildPeople({ users, attendees, rsvps: [], speakers: [] }).people);
+  const ava = idx.guests.find((g) => g.name === "Ava Twopass");
+  assert.equal(ava.passName, "Connect Pass", "counted under the paid pass");
+  assert.deepEqual(ava.extras, { cxo: false, lunch: true, gala: true, awards: true });
+  assert.equal(entitlement(ava, "lunch", "day1").included, true);
+  assert.equal(entitlement(ava, "evening", "day1").included, true);
+  assert.equal(ava.extrasView.lunch.ticketId, "pow000000032", "the Power Pass decides the luncheons");
+  assert.equal(ava.extrasView.lunch.included, true);
+  assert.equal(ava.extrasView.cxo.ticketId, "con000000031", "nothing includes it: the main pass's switch");
+  assert.deepEqual(ava.passExtras.map((p) => [p.ticketId, p.extrasView.lunch.included]), [["con000000031", false], ["pow000000032", true]]);
+  assert.ok(!("passExtras" in guestView(ava)), "staff only");
+  const ben = idx.guests.find((g) => g.name === "Ben Hidden");
+  assert.deepEqual(ben.extras, { cxo: false, lunch: false, gala: false, awards: false });
+  assert.deepEqual(guestExtras([]).extras, { cxo: false, lunch: false, gala: false, awards: false });
+});
+
+test("Exhibitor = No from staff wins over an exhibitor pass: no exhibitor mark, no booth", () => {
+  const attendees = [
+    { _id: "e1", name: "Eve Exhibitor", email: "eve@example.com", ticketId: "exh000000041", ticketType: "connect", promoCode: "EXHIBITOR", exhibitor: false,
+      passEmailSentAt: new Date("2026-10-04"), issuedPass: { booth: { booth: "B7" } } },
+    { _id: "e2", name: "Ed Exhibitor", email: "ed@example.com", ticketId: "exh000000042", ticketType: "connect", promoCode: "EXHIBITOR",
+      passEmailSentAt: new Date("2026-10-04"), issuedPass: { booth: { booth: "B7" } } },
+  ];
+  const users = [{ _id: "u41", name: "Oz Account", email: "oz@example.com", typesOff: ["exhibitor"], tickets: [t("exh000000043", "connect", { promoCode: "EXHIBITOR" })] }];
+  const idx = buildDeskIndex(buildPeople({ users, attendees, rsvps: [], speakers: [] }).people);
+  const by = Object.fromEntries(idx.guests.map((g) => [g.name, g]));
+  assert.equal(by["Eve Exhibitor"].marks.exhibitor, false);
+  assert.equal(by["Eve Exhibitor"].booth, "");
+  assert.equal(by["Oz Account"].marks.exhibitor, false, "typesOff on an account");
+  assert.equal(by["Ed Exhibitor"].marks.exhibitor, true);
+  assert.deepEqual(idx.booths.map((b) => [b.booth, b.guests.length]), [["B7", 1]]);
+  assert.deepEqual(notifyStations(by["Eve Exhibitor"]), ["desk"]);
+  assert.deepEqual(boothsOf(idx.guests), idx.booths);
+});
+
+test("AV: speakers are matched to sessions by name the way the agenda prints it (titles, middle names, nicknames, slips)", () => {
+  const pairs = [
+    ["Dr. Christian Weedbrook", "Christian Weedbrook"], ["Vic Fedeli", "Victor (Vic) Fedeli"], ["Ashley J. Casovan", "Ashley Casovan"],
+    ["Ashley Casovan", "Ashley J. Casovan"], ["Dr. Rulan S. Parekh", "Rulan Parekh"], ["Heling (Alex) Pu", "Alex Pu"],
+    ["Kulbir (Colin) Singh Dhillon", "Colin Dhillon"], ["Dr. Chris Golden", "Christopher Golden"], ["Hon. Vic Fedelli", "Victor Fedeli"],
+    ["Prof. Aspuru-Guzik", "Alán Aspuru-Guzik"], ["BGen Jane Roe", "Jane Roe"], ["Jo-Anne Ryan", "Jo Anne Ryan"], ["Geneviève Decambra", "Genevieve DECAMBRA"],
+    ["Na'im Merchant", "Naim Merchant"], ["Dr Maha Hosain Aziz", "Maha Aziz"],
+  ];
+  for (const [agenda, person] of pairs) assert.ok(speakerNameMatches(agenda, person), `${agenda} ~ ${person}`);
+  const different = [["Daniel Sax", "Daniel Wigdor"], ["Chris Golden", "Chris Gold"], ["Mark Paulsen", "Mark Schaan"], ["Peter Aceto", "Peter Routledge"], ["Ryan Gariepy", "Ryan"]];
+  for (const [agenda, person] of different) assert.ok(!speakerNameMatches(agenda, person), `${agenda} ≠ ${person}`);
+
+  const of = sessionsIndex([
+    { day: 1, time: "10:00", endTime: "10:30", title: "Light Years", speakers: [{ name: "Dr. Christian Weedbrook" }] },
+    { day: 1, time: "09:30", endTime: "10:00", title: "From Investment to Industrial Capacity", speakers: [{ name: "Hon. Vic Fedelli" }, { name: "Ashley J. Casovan" }] },
+    { day: 2, time: "14:00", endTime: "14:30", title: "Regulation", speakers: [{ name: "Vic Fedeli" }], moderator: { name: "Heling (Alex) Pu" } },
+  ]);
+  assert.deepEqual(of({ name: "Christian Weedbrook" }).map((x) => x.title), ["Light Years"]);
+  assert.deepEqual(of({ name: "Victor (Vic) Fedeli" }).map((x) => [x.day, x.title]), [["day1", "From Investment to Industrial Capacity"], ["day2", "Regulation"]]);
+  assert.deepEqual(of({ name: "Ashley Casovan" }).map((x) => x.start), ["09:30"]);
+  assert.deepEqual(of({ name: "Alex Pu" }).map((x) => x.title), ["Regulation"]);
+  // Their website speaker profile's name counts too (People links it to their pass).
+  assert.deepEqual(of({ name: "C. Weedbrook-Smith", speaker: { name: "Christian Weedbrook" } }).map((x) => x.title), ["Light Years"]);
+  assert.deepEqual(of({ name: "Nobody Here" }), []);
+});
+
+test("on the wire: practice marks, late syncs, offline taps sent from another sign-in, override reasons, guest rows", () => {
+  const m = markView({ subject: "con000000010", day: "2026-10-25", point: "checked_in", rev: 1, at: new Date("2026-10-25T15:00:00Z"), byId: "u9", byName: "Val",
+    station: "desk", practice: true, lateSync: true, queuedOffline: true, recordedById: "u8", recordedByName: "Sam", override: "late_sync" });
+  assert.equal(m.practice, true);
+  assert.equal(m.lateSync, true);
+  assert.equal(m.queuedOffline, true);
+  assert.deepEqual(m.recordedBy, { id: "u8", name: "Sam" });
+  assert.equal(m.overrideReason, "late sync outside hours");
+  const plain = markView({ subject: "con000000010", day: "2026-10-26", point: "arrived", rev: 1, at: new Date(), byName: "Val" });
+  for (const k of ["practice", "lateSync", "queuedOffline", "recordedBy", "overrideReason"]) assert.ok(!(k in plain), k);
+  const row = { key: guestKey("con000000010"), keys: [guestKey("con000000010")], name: "Gus Guest", email: "gus@example.com", ticketId: "con000000010", norm: "con000000010", norms: ["con000000010"] };
+  const ev = eventView({ seq: 3, kind: "guest", subject: "con000000010", at: new Date(), guest: row });
+  assert.equal(ev.guest.name, "Gus Guest");
+  assert.ok(!JSON.stringify(ev).includes("gus@example.com") && !JSON.stringify(ev).includes("con000000010"), "volunteers: no email or ticket ID");
+  assert.equal(eventView({ seq: 3, kind: "guest", subject: "con000000010", at: new Date(), guest: row }, { staff: true }).guest.email, "gus@example.com");
+  const tomb = eventView({ seq: 4, kind: "undo", tombstone: true, ref: "abcdefgh2", at: new Date(), queuedOffline: true, recordedById: "u8", recordedByName: "Sam" });
+  assert.equal(tomb.tombstone, true);
+  assert.equal(tomb.target, "abcdefgh2");
+  assert.equal(tomb.recordedBy.name, "Sam");
+  assert.equal(auditLine({ guest: { name: "Nina", passName: "Speaker Pass" }, kind: "mark", point: "cxo", station: "breakfast", override: "late_sync", item: { label: "CxO Breakfast" } }),
+    "Nina · Speaker Pass: Admitted to CxO Breakfast outside its hours (late sync from an offline device) (CxO Breakfast)");
 });

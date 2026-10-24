@@ -9,7 +9,10 @@ import mongoose from "mongoose";
    changes in any order (the newest rev wins). `ref` = the clientId of the tap that set it (undo checks it).
    `override`: "outside_window" when it was set outside the station's hours ("Admit anyway"). `passSetAt`: a check-in
    that also marked the ticket's pass collected (User.tickets[].checkedInAt / Attendee.checkedInAt), so undoing it
-   can take that back. */
+   can take that back. `practice`: set on a day that isn't Day 1 / Day 2 (contract C6: a rehearsal, never the
+   ticket's pass collection). `queuedOffline`: tapped offline by `byId` / `byName`, sent later from `recordedById`'s
+   sign-in (contract C3). `lateSync`: it reached the server more than a minute after the tap (contract C4); override
+   "late_sync" = judged at its own time it was outside the station's hours and the device didn't ask for it. */
 const checkinMarkSchema = new mongoose.Schema({
   subject: { type: String, required: true },
   day: { type: String, required: true },
@@ -24,6 +27,11 @@ const checkinMarkSchema = new mongoose.Schema({
   note: { type: String, default: "" },
   item: { type: String, default: "" },
   passSetAt: { type: Date, default: null },
+  practice: { type: Boolean, default: false },
+  lateSync: { type: Boolean, default: false },
+  queuedOffline: { type: Boolean, default: false },
+  recordedById: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  recordedByName: { type: String, default: "" },
   rev: { type: Number, default: 0 },
 }, { timestamps: true, versionKey: false });
 checkinMarkSchema.index({ subject: 1, day: 1, point: 1 }, { unique: true });

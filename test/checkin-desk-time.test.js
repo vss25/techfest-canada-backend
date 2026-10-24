@@ -179,3 +179,19 @@ test("times read the Toronto way", () => {
   assert.equal(fmtRange("11:30", "13:15"), "11:30 AM–1:15 PM");
   assert.equal(fmtClock("7:30"), "");
 });
+
+test("the CxO Breakfast station follows the CxO Breakfast (the RSVP page's rule), not any session with 'breakfast' in it", () => {
+  const withRegistration = [
+    { day: 1, time: "07:00", endTime: "07:45", title: "Registration & Networking Breakfast", isBreak: true, format: "networking" },
+    { day: 1, time: "07:55", endTime: "08:55", title: "CxO Breakfast", isBreak: true, format: "networking" },
+    { day: 2, time: "07:15", endTime: "08:00", title: "Networking Breakfast", isBreak: true },
+  ];
+  const a = agendaTimes(withRegistration);
+  assert.deepEqual(a.breakfast.day1, { start: "07:55", end: "08:55", title: "CxO Breakfast" });
+  // A day with no CxO Breakfast on the agenda: any breakfast is still better than none.
+  assert.deepEqual(a.breakfast.day2, { start: "07:15", end: "08:00", title: "Networking Breakfast" });
+  const w = resolveWindows({ agenda: a });
+  assert.deepEqual([w.breakfast.day1.open, w.breakfast.day1.close], ["07:25", "09:25"]);
+  // The evening on Day 1: "Catalyst …" as the RSVP page reads it.
+  assert.deepEqual(agendaTimes([{ day: 1, time: "18:00", endTime: "21:00", title: "Catalyst Night", isBreak: true }]).evening.day1, { start: "18:00", end: "21:00", title: "Catalyst Night" });
+});

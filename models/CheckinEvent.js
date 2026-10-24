@@ -6,7 +6,12 @@ import mongoose from "mongoose";
    kind: mark | undo | reset | note | inclusions | guest | query. `subject`: the pass's normalized ticket ID (or
    "booth:<booth>"); `marks`: the rows it changed, as they are after it (with their `rev`); `pass`: the ticket's
    pass-collected state after it; `clientId`: the device's id for the tap (unique: the same tap sent twice is done
-   once). `clientAt`: when it was tapped on the device. Kept: it is the desk's log (who did what, where, when). */
+   once). `clientAt`: when it was tapped on the device. Kept: it is the desk's log (who did what, where, when).
+   kind "void": a number a failed write spent (nothing happened; readers needn't wait for it). An undo whose tap
+   hasn't reached the server is a `tombstone` (ref = that tap's clientId): when the tap arrives it isn't applied.
+   `practice`: on a day that isn't Day 1 / Day 2 (never the ticket's pass collection). `queuedOffline`: tapped
+   offline by `byId` / `byName`, sent later from `recordedById`'s sign-in. `lateSync`: reached the server more than a
+   minute after it was tapped. `guest`: on guest / inclusions events, the guest's desk row after the change. */
 const checkinEventSchema = new mongoose.Schema({
   seq: { type: Number, required: true, unique: true },
   kind: { type: String, required: true },
@@ -29,9 +34,18 @@ const checkinEventSchema = new mongoose.Schema({
   extras: { type: mongoose.Schema.Types.Mixed, default: undefined },
   extrasView: { type: mongoose.Schema.Types.Mixed, default: undefined },
   query: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  guest: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  tombstone: { type: Boolean, default: undefined },
+  practice: { type: Boolean, default: undefined },
+  lateSync: { type: Boolean, default: undefined },
+  queuedOffline: { type: Boolean, default: undefined },
+  recordedById: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: undefined },
+  recordedByName: { type: String, default: undefined },
 }, { versionKey: false });
 checkinEventSchema.index({ clientId: 1 }, { unique: true, partialFilterExpression: { clientId: { $type: "string" } } });
 checkinEventSchema.index({ kind: 1, subject: 1, seq: 1 });
+checkinEventSchema.index({ kind: 1, seq: 1 });   // the guest generation (newest guest / inclusions event)
+checkinEventSchema.index({ kind: 1, ref: 1 });   // undos (and tombstones) of a tap
 
 /* The one sequence: { _id: "events", seq }. */
 const checkinCounterSchema = new mongoose.Schema({

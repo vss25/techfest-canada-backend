@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import { countingPasses, mainPass } from "./eventSummary.js";
-import { TIER_LABELS, DIETARY, tierFromTicketType, personNameKey } from "./rsvp.js";
-import { rsvpStatusOf } from "./rsvpStaff.js";
+import { countingPasses, entitledExtras, mainPass } from "./eventSummary.js";
+import { TIER_LABELS, DIETARY, tierFromTicketType, personNameKey, nameVariants, fullNameMatches } from "./rsvp.js";
+import { rsvpStatusOf, splitName } from "./rsvpStaff.js";
 import { EXTRA_KEYS, extrasView } from "./passExtras.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, mealItem, isHHMM, toMin } from "./checkinDeskTime.js";
@@ -33,8 +33,10 @@ import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, mealItem, is
    (services/eventSummary.js): one row per person with a counting pass
    (not hidden by staff, not refunded, not a booth), under their main
    pass (a Speaker Pass first, else the pass People shows). Inclusions
-   are the directory's (services/passExtras.js): nothing is worked out
-   again here.
+   are the directory's (services/passExtras.js), and a person is
+   entitled to an extra when ANY of their counting passes includes it
+   (the Event summary's rule, eventSummary.js entitledExtras): nothing
+   is worked out again here.
 
    Keys: guests and their passes travel as opaque keys ("g" + 20 hex of
    an HMAC of the ticket ID), never ticket IDs, for volunteers: a ticket
@@ -99,13 +101,26 @@ export const UNDO_WINDOW_MS = 15 * 1000;
 export const UNDO_GRACE_MS = 25 * 1000;
 /** …and never later than this after the server stored the tap. */
 export const UNDO_SERVER_MAX_MS = 15 * 60 * 1000;
-/** A tap queued offline keeps the time it was made, if that's within this long before it reaches the server. */
-export const CLIENT_AT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+/** When a tap was made (its clientAt: the device's clock corrected by the server's, contract C4) is clamped to
+    [now − 12 h, now + 2 min] on the server. A tap more than LATE_SYNC_MS old when it arrives is a late sync (an
+    offline queue): judged at its own time, and flagged (override "late_sync", audited) when that is outside the
+    station's hours and the device didn't ask for "Admit anyway". */
+export const CLIENT_AT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+export const CLIENT_AT_MAX_AHEAD_MS = 2 * 60 * 1000;
+export const LATE_SYNC_MS = 60 * 1000;
+/** Why a mark is an override, for the log and the apps. */
+export const OVERRIDE_REASONS = Object.freeze({
+  outside_window: "admitted outside its hours (Admit anyway)",
+  late_sync: "late sync outside hours",
+});
 export const NOTE_MAX = 140;
 export const AV_NOTE_MAX = 80;
 export const QUERY_LIMITS = Object.freeze({ who: 80, outlet: 80, request: 240 });
-/** A sequence number missing for longer than this is a write that failed: the cursor moves past it. */
-export const HOLE_MS = 8 * 1000;
+/** A sequence number missing for longer than this, counted from when a reader FIRST saw it missing, is a write that
+    failed: the cursor moves past it. (Counting from the next event's own `at` would skip a write that commits late.) */
+export const HOLE_MS = 15 * 1000;
+/** …and a gap whose next event is older than this was a failed write long ago: skipped at once. */
+export const HOLE_ANCIENT_MS = 5 * 60 * 1000;
 export const MAX_BATCH = 25;
 
 const str = (v) => String(v ?? "").trim();
@@ -151,7 +166,9 @@ function marksOf(p, main) {
     vip: !!p.vip,
     media: types.has("media"),
     speaker: types.has("speaker") || main.tier === "speaker",
-    exhibitor: types.has("exhibitor") || !!main.exhibitorPass,
+    // The directory's answer (People's Exhibitor yes / no): an exhibitor pass makes them one unless staff switched it
+    // off (typesOff on an account, Attendee.exhibitor false on a pass). Never the promo code on its own.
+    exhibitor: types.has("exhibitor"),
     staff: types.has("staff"),
     volunteer: types.has("volunteer"),
   };
@@ -207,6 +224,26 @@ export function deskTier(rawType, { log = console } = {}) {
 /** A booth for this person: their main pass's, else any of their exhibitor passes'. */
 const boothOf = (passes, main) => str(main.booth) || str(passes.find((t) => t.booth)?.booth);
 
+const passView = (t) => extrasView(t.extrasOverride || {}, t.extrasAuto || {}, t.extras || {});
+
+/**
+ * A person's inclusions on the desk (the Event summary's rule: an extra any counting pass includes) and, for staff,
+ * each extra's switch on the pass that decides it: the main pass when it includes the extra (or nothing does), else
+ * the first other pass that includes it, with that pass's `ticketId`.
+ * → { extras: { cxo, lunch, gala, awards }, extrasView: { <extra>: { override, auto, included, ticketId } } }
+ */
+export function guestExtras(passes = [], main = passes[0]) {
+  const extras = entitledExtras(passes);
+  const mainView = main ? passView(main) : {};
+  const extrasViewOut = {};
+  for (const k of EXTRA_KEYS) {
+    const from = main?.extras?.[k] || !extras[k] ? main : passes.find((t) => t.extras?.[k]) || main;
+    const v = from === main ? mainView[k] : passView(from)[k];
+    extrasViewOut[k] = { ...(v || { override: null, auto: false, included: false }), included: !!extras[k], ticketId: from?.ticketId || "" };
+  }
+  return { extras, extrasView: extrasViewOut };
+}
+
 /**
  * A desk guest from a directory person, or null (no counting pass). Everything staff may see; guestView() cuts it
  * down for volunteers. `keyOf`: ticket ID → key; `sessionsOf`: person → their agenda sessions (speakers).
@@ -215,7 +252,7 @@ export function deskGuestFrom(p, { keyOf = (id) => guestKey(id), sessionsOf = ()
   const passes = countingPasses(p);
   if (!passes.length) return null;
   const main = mainPass(passes);
-  const extras = Object.fromEntries(EXTRA_KEYS.map((k) => [k, !!main.extras?.[k]]));
+  const { extras, extrasView: extrasViewOut } = guestExtras(passes, main);
   const collected = collectedOf(passes);
   const marks = marksOf(p, main);
   const { tier, passName } = deskTier(main.type);
@@ -244,7 +281,9 @@ export function deskGuestFrom(p, { keyOf = (id) => guestKey(id), sessionsOf = ()
     email: str(p.email),
     ticketId: main.ticketId,
     ticketIds: passes.map((t) => t.ticketId),
-    extrasView: extrasView(main.extrasOverride || {}, main.extrasAuto || {}, main.extras || {}),
+    extrasView: extrasViewOut,
+    // Each counting pass's own switches, when they hold more than one (the inclusions editor can point at the right one).
+    passExtras: passes.length > 1 ? passes.map((t) => ({ ticketId: t.ticketId, passName: deskTier(t.type, { log: { warn() {} } }).passName, extrasView: passView(t) })) : [],
     // Server only:
     norm: normalizeTicketId(main.ticketId),
     norms: passes.map((t) => normalizeTicketId(t.ticketId)),
@@ -257,27 +296,33 @@ export function buildDeskIndex(people = [], { keyOf = (id) => guestKey(id), sess
   const guests = [];
   const byKey = new Map();
   const byNorm = new Map();
-  const booths = new Map();
   for (const p of people || []) {
     const g = deskGuestFrom(p, { keyOf, sessionsOf });
     if (!g) continue;
     guests.push(g);
     g.keys.forEach((k, i) => { byKey.set(k, { guest: g, norm: g.norms[i] }); byNorm.set(g.norms[i], g); });
-    if (g.boothKey) {
-      const b = booths.get(g.boothKey) || { key: g.boothKey, booth: g.booth.toUpperCase(), companies: [], guests: [] };
-      if (g.company && !b.companies.includes(g.company)) b.companies.push(g.company);
-      b.guests.push(g.key);
-      booths.set(g.boothKey, b);
-    }
   }
   guests.sort((a, b) => fold(a.name).localeCompare(fold(b.name)));
-  const boothList = [...booths.values()].sort((a, b) => a.booth.localeCompare(b.booth, "en", { numeric: true }));
+  const boothList = boothsOf(guests);
   return { guests, byKey, byNorm, booths: boothList, boothByKey: new Map(boothList.map((b) => [b.key, b])) };
+}
+
+/** The exhibitor desk's booths from guest rows: [{ key, booth, companies, guests: [key] }] by booth. */
+export function boothsOf(guests = []) {
+  const booths = new Map();
+  for (const g of guests || []) {
+    if (!g?.boothKey) continue;
+    const b = booths.get(g.boothKey) || { key: g.boothKey, booth: String(g.booth).toUpperCase(), companies: [], guests: [] };
+    if (g.company && !b.companies.includes(g.company)) b.companies.push(g.company);
+    b.guests.push(g.key);
+    booths.set(g.boothKey, b);
+  }
+  return [...booths.values()].sort((a, b) => a.booth.localeCompare(b.booth, "en", { numeric: true }));
 }
 
 const VOLUNTEER_FIELDS = ["key", "keys", "name", "firstName", "lastName", "company", "title", "tier", "passName", "marks", "extras",
   "passCollectedAt", "passCollected", "pending", "rsvp", "booth", "boothKey", "sessions"];
-const STAFF_FIELDS = [...VOLUNTEER_FIELDS, "personId", "email", "ticketId", "ticketIds", "extrasView"];
+const STAFF_FIELDS = [...VOLUNTEER_FIELDS, "personId", "email", "ticketId", "ticketIds", "extrasView", "passExtras"];
 
 /** What a device gets about a guest: volunteers name, job, company, pass, marks, inclusions, RSVP'd meals and dietary
     needs (the meal stations), booth, sessions (never an email, phone or ticket ID); staff also the email (to check who
@@ -298,16 +343,88 @@ const dayOfSession = (d) => {
   return "";
 };
 
+/* Matching a speaker's names to the names the agenda prints. The agenda's session speakers are inline { name, org }
+   objects (no speaker ids), so names it is: case, accents, punctuation and hyphens, honorifics and ranks ("Dr.",
+   "Hon.", "Prof.", "BGen"), post-nominals, middle names and initials, bracketed or quoted nicknames ("Heling (Alex)
+   Pu"), everyday first-name forms ("Chris" / "Christopher", "Vic" / "Victor"), a one-letter slip in a long last name
+   ("Fedelli" / "Fedeli"), and a last name on its own ("Prof. Aspuru-Guzik"). */
+const RANK_WORDS = new Set(["bgen", "mgen", "lgen", "brig", "brigadier", "general", "lcol", "ltcol", "cdr", "cmdr", "commander", "adm",
+  "admiral", "vadm", "radm", "cmdre", "commodore", "sgt", "cpl", "insp", "supt", "honourable", "honorable", "hon", "dr", "prof"]);
+const foldWord = (w) => String(w || "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+/** Ranks and titles the RSVP matcher doesn't know, off the front: "BGen Jane Roe" → "Jane Roe". */
+function withoutRanks(name) {
+  const words = String(name || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  while (words.length > 1 && RANK_WORDS.has(foldWord(words[0]))) words.shift();
+  return words.join(" ");
+}
+const NICK_GROUPS = [
+  ["christopher", "chris", "kit"], ["christian", "chris"], ["christine", "christina", "chris", "tina"], ["michael", "mike", "mick"],
+  ["robert", "rob", "bob", "bobby", "robbie"], ["william", "will", "bill", "billy", "liam"], ["james", "jim", "jimmy", "jamie"], ["david", "dave"],
+  ["daniel", "dan", "danny"], ["thomas", "tom", "tommy"], ["anthony", "tony"], ["alexander", "alex", "sandy"], ["alexandra", "alex", "sandra"],
+  ["samuel", "sam"], ["samantha", "sam"], ["benjamin", "ben"], ["nicholas", "nick", "nico"], ["matthew", "matt"], ["steven", "steve"],
+  ["stephen", "steve"], ["joseph", "joe", "joey"], ["katherine", "kate", "kathy", "katie"], ["catherine", "cathy", "kate", "katie"],
+  ["elizabeth", "liz", "beth", "betty", "eliza"], ["jennifer", "jen", "jenny"], ["andrew", "andy", "drew"], ["gregory", "greg"],
+  ["jeffrey", "jeff"], ["patrick", "pat"], ["patricia", "pat", "patty", "trish"], ["richard", "rick", "rich", "dick"], ["edward", "ed", "eddie", "ted"],
+  ["victor", "vic"], ["ronald", "ron"], ["donald", "don"], ["kenneth", "ken"], ["jonathan", "jon"], ["joshua", "josh"], ["zachary", "zach"],
+  ["frederick", "fred"], ["lawrence", "larry"], ["timothy", "tim"], ["peter", "pete"], ["philip", "phil"], ["phillip", "phil"], ["raymond", "ray"],
+  ["gerald", "gerry"], ["margaret", "maggie", "meg", "peggy"], ["deborah", "deb", "debbie"], ["susan", "sue"], ["rebecca", "becky", "becca"],
+  ["victoria", "vicky", "tori"], ["nathaniel", "nate", "nat"], ["nathan", "nate"], ["vincent", "vince"], ["douglas", "doug"],
+  ["charles", "charlie", "chuck"], ["henry", "hank", "harry"], ["harold", "harry"], ["abigail", "abby"], ["pamela", "pam"], ["kimberly", "kim"],
+  ["jacqueline", "jackie"], ["theodore", "theo", "ted"], ["leonard", "leo", "len"], ["gabriel", "gabe"], ["john", "jack", "johnny"],
+  ["mohammed", "mohammad", "muhammad", "mohamed"],
+];
+const NICKS = new Map();
+NICK_GROUPS.forEach((g, i) => { for (const w of g) { if (!NICKS.has(w)) NICKS.set(w, new Set()); NICKS.get(w).add(i); } });
+const sameFirst = (a, b) => a === b || [...(NICKS.get(a) || [])].some((i) => NICKS.get(b)?.has(i));
+/** Two words one edit apart (a slip in a long last name: "fedelli" / "fedeli"). */
+function oneEditApart(a, b) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1);
+  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+/** A name as matching needs it: its word forms (nameVariants: nicknames in brackets / quotes) and its first / last split. */
+function nameForms(raw) {
+  const name = withoutRanks(raw);
+  const variants = nameVariants(name).filter((w) => w.length);
+  return { name, variants, split: splitName(String(name).replace(/\([^)]*\)|["“”][^"“”]*["“”]/g, " ")) };
+}
+/** Does an agenda name name this person (one of their names)? */
+export function speakerNameMatches(agendaName, personName) {
+  const a = typeof agendaName === "string" ? nameForms(agendaName) : agendaName;
+  const b = typeof personName === "string" ? nameForms(personName) : personName;
+  if (!a.variants.length || !b.variants.length) return false;
+  for (const x of a.variants) {
+    for (const y of b.variants) {
+      if (x.join(" ") === y.join(" ")) return true;
+      if (x.length >= 2 && y.length >= 2) {
+        const [xf, xl, yf, yl] = [x[0], x[x.length - 1], y[0], y[y.length - 1]];
+        // Middle names and initials don't matter; first names may be the everyday form.
+        if (xl === yl && sameFirst(xf, yf)) return true;
+        if (sameFirst(xf, yf) && xl.length >= 5 && yl.length >= 5 && oneEditApart(xl, yl)) return true;
+      }
+      // Only a last name on the agenda (or on their record).
+      if (x.length === 1 && y.length >= 2 && x[0].length >= 4 && x[0] === y[y.length - 1]) return true;
+      if (y.length === 1 && x.length >= 2 && y[0].length >= 4 && y[0] === x[x.length - 1]) return true;
+    }
+  }
+  // Hyphens and spaces in first or last names ("Jo-Anne" / "Jo Anne").
+  return (!!b.split.lastName && fullNameMatches(a.name, b.split.firstName, b.split.lastName))
+    || (!!a.split.lastName && fullNameMatches(b.name, a.split.firstName, a.split.lastName));
+}
+
 /**
- * The agenda (Sanity sessions with their speakers' and moderator's ids and names) → a lookup for the AV station:
- * person → [{ day, start, end, title, room }] by day and time. A person's sessions are found by their Sanity speaker id
- * (the directory's p.speaker) when the agenda has ids, else by their name (services/rsvp.js personNameKey: accents,
- * honorifics and middle names don't matter). Breaks (meals, the evening) aren't sessions.
+ * The agenda (Sanity sessions: their speakers' and moderator's names) → a lookup for the AV station:
+ * person → [{ day, start, end, title, room }] by day and time. A person's sessions are the ones whose speaker or
+ * moderator names them (speakerNameMatches) under any of their names: the website speaker profile linked to them
+ * (p.speaker.name, usually spelled as the agenda spells it), their name, their first + last name. Breaks (meals,
+ * the evening) aren't sessions.
  */
 export function sessionsIndex(sessions = []) {
-  const byId = new Map();
-  const byName = new Map();
-  const add = (map, k, s) => { if (!k) return; if (!map.has(k)) map.set(k, []); map.get(k).push(s); };
+  const entries = [];
+  const byKey = new Map();
   for (const s of Array.isArray(sessions) ? sessions : []) {
     if (s?.isBreak) continue;
     const day = dayOfSession(s?.day);
@@ -316,15 +433,21 @@ export function sessionsIndex(sessions = []) {
     const end = isHHMM(String(s?.endTime || "").slice(0, 5)) ? String(s.endTime).slice(0, 5) : "";
     const row = { day, start, end, title: line(s.title, 140) || "Session", room: line(s.stage, 60) || DEFAULT_ROOM };
     for (const sp of [...(Array.isArray(s.speakers) ? s.speakers : []), s.moderator].filter(Boolean)) {
-      add(byId, sp._id ? String(sp._id) : "", row);
-      add(byName, personNameKey(sp.name, ""), row);
+      const name = str(sp?.name);
+      if (!name) continue;
+      const key = personNameKey(withoutRanks(name), "");
+      if (!byKey.has(key)) { const e = { forms: nameForms(name), rows: [] }; byKey.set(key, e); entries.push(e); }
+      byKey.get(key).rows.push(row);
     }
   }
   const sort = (list) => [...new Map(list.map((r) => [`${r.day} ${r.start} ${r.title}`, r])).values()]
     .sort((a, b) => a.day.localeCompare(b.day) || toMin(a.start) - toMin(b.start));
   return (p) => {
-    const id = p?.speaker?._id ? String(p.speaker._id) : "";
-    const list = (id && byId.get(id)) || byName.get(personNameKey(p?.name, "")) || [];
+    const names = [...new Set([p?.speaker?.name, p?.name, [p?.firstName, p?.lastName].filter(Boolean).join(" ")].map(str).filter(Boolean))];
+    if (!names.length || !entries.length) return [];
+    const forms = names.map(nameForms);
+    const list = [];
+    for (const e of entries) if (forms.some((f) => speakerNameMatches(e.forms, f))) list.push(...e.rows);
     return sort(list).slice(0, 8);
   };
 }
@@ -349,6 +472,12 @@ export function markView(doc, { keyOf = (id) => guestKey(id) } = {}) {
     note: set ? str(doc.note) : "",
     // The device id of the tap that set it (random, made on the iPad): lets a device undo its own tap before the server answers.
     ref: set ? str(doc.ref) : "",
+    ...(set && doc.override ? { overrideReason: OVERRIDE_REASONS[doc.override] || doc.override } : {}),
+    // A practice mark (a day that isn't Day 1 or Day 2, contract C6): never the ticket's pass collection.
+    ...(set && doc.practice ? { practice: true } : {}),
+    // Tapped offline by `by`, sent later from someone else's sign-in (`recordedBy`, contract C3).
+    ...(set && doc.queuedOffline ? { queuedOffline: true, recordedBy: who(doc.recordedById, doc.recordedByName) } : {}),
+    ...(set && doc.lateSync ? { lateSync: true } : {}),
   };
 }
 
@@ -385,14 +514,21 @@ export function eventView(ev, { keyOf = (id) => guestKey(id), staff = false } = 
     by: { id: ev.byId ? String(ev.byId) : "", name: str(ev.byName), role: ev.byRole || "" },
     clientId: ev.clientId || "",
   };
-  if (ev.ref) out.ref = ev.ref;
+  if (ev.ref) { out.ref = ev.ref; out.target = ev.ref; }
   if (ev.refPoint) out.refPoint = ev.refPoint;
-  if (ev.override) out.override = ev.override;
+  if (ev.override) { out.override = ev.override; out.overrideReason = OVERRIDE_REASONS[ev.override] || ev.override; }
+  if (ev.tombstone) out.tombstone = true;
+  if (ev.practice) out.practice = true;
+  if (ev.lateSync) out.lateSync = true;
+  if (ev.queuedOffline) { out.queuedOffline = true; out.recordedBy = who(ev.recordedById, ev.recordedByName); }
   if (ev.kind === "note") out.note = str(ev.note);
   if (Array.isArray(ev.marks) && ev.marks.length) out.marks = ev.marks.map((m) => markView(m, { keyOf }));
   if (ev.pass) out.pass = { key: keyOf(ev.pass.ticketId || ev.subject), collected: !!ev.pass.collected, collectedAt: iso(ev.pass.collectedAt) };
   if (ev.extras) out.extras = Object.fromEntries(EXTRA_KEYS.map((k) => [k, !!ev.extras[k]]));
   if (staff && ev.extrasView) out.extrasView = ev.extrasView;
+  // A guest or inclusions event carries the guest's row as it is after the change (the directory rebuilt where the
+  // change was made), so a device can update it without a reload, and a snapshot from any instance can use it.
+  if (ev.guest && typeof ev.guest === "object") out.guest = guestView(ev.guest, { staff });
   if (ev.query) out.query = queryView(ev.query);
   return out;
 }
@@ -400,18 +536,29 @@ export function eventView(ev, { keyOf = (id) => guestKey(id), staff = false } = 
 /**
  * How far a reader can safely move its cursor after reading `events` (sorted by seq, all > since): up to the last
  * sequence number with none missing before it. A missing number is a write still in flight (numbers are handed out
- * just before the event is saved), unless the next event after it is older than `holeMs`: then that write failed and
- * the cursor moves past it. Events after a gap are still delivered (devices skip ones they've seen); the cursor just
- * stays before the gap, so the next read asks again from there.
+ * just before the event is saved), unless this reader first saw it missing more than `holeMs` ago (`firstSeen(seq)`
+ * → ms, on `seenNow`'s clock), or the event after it is older than `ancientMs` (on `now`'s clock, the events' own):
+ * then that write failed and the cursor moves past it. Without `firstSeen`, the gap counts from the next event's
+ * `at` (a pure caller with no memory). Events after a gap are still delivered (devices skip ones they've seen); the
+ * cursor just stays before the gap, so the next read asks again from there.
  */
-export function safeCursor(events = [], since = 0, { now = Date.now(), holeMs = HOLE_MS } = {}) {
+export function safeCursor(events = [], since = 0, {
+  now = Date.now(), holeMs = HOLE_MS, ancientMs = HOLE_ANCIENT_MS, firstSeen = null, seenNow = Date.now(),
+} = {}) {
   let cursor = Number(since) || 0;
   for (const ev of events) {
     const seq = Number(ev.seq);
     if (!(seq > cursor)) continue;
     if (seq === cursor + 1) { cursor = seq; continue; }
-    // A gap before this one: still being written, unless this event is old enough that it can't be.
-    if (now - ms(ev.at) > holeMs) { cursor = seq; continue; }
+    // A gap before this one: still being written, unless it has been missing too long (or the next event is ancient).
+    const age = now - ms(ev.at);
+    let missingFor = age;
+    // (A gap of more than 100 numbers isn't writes in flight: judged by the next event's age.)
+    if (firstSeen && seq - cursor - 1 <= 100) {
+      missingFor = Infinity;
+      for (let k = cursor + 1; k < seq; k++) missingFor = Math.min(missingFor, seenNow - firstSeen(k));
+    }
+    if (missingFor > holeMs || age > ancientMs) { cursor = seq; continue; }
     break;
   }
   return cursor;
@@ -428,10 +575,11 @@ const bad = (error, field) => ({ ok: false, error, field });
  *   clientId  made on the device (8–64 letters, digits, _ -): the same tap sent twice is done once
  *   kind      mark | undo | reset | note | query_add | query_update
  *   station   the station it was made at (lobby, desk, breakfast, lunch, evening, media, av, exhibitor)
- *   clientAt  when it was tapped, on the device's clock (ISO): taps that waited in the offline queue keep it
+ *   clientAt  when it was tapped, on the device's server-corrected clock (ISO; contract C4: clamped and judged there)
+ *   queuedBy  { id, name }: who made the tap, when it was made offline and is sent from someone else's sign-in (C3)
  *   mark:   key (a guest's pass, or a booth for point "booth"), point, override (true: "Admit anyway" after the
  *           outside-the-window warning), note (AV: "slides on USB", ≤ 80)
- *   undo:   ref (the clientId of the tap to undo)
+ *   undo:   target (the clientId of the tap to undo; `ref`, the older name, works too): contract C2
  *   reset:  key, point (staff: clears it; clearing "arrived" also clears "checked_in")
  *   note:   key, note (staff: the desk note, ≤ 140; "" clears it)
  *   query_add:    who, outlet, request, key? (a media guest)
@@ -448,9 +596,18 @@ export function cleanAction(raw) {
   const value = { clientId, kind, station, clientAt: null };
   const at = ms(a.clientAt);
   if (Number.isFinite(at)) value.clientAt = new Date(at);
+  // Tapped offline by someone else (contract C3): { id, name } of who made the tap.
+  if (a.queuedBy !== undefined && a.queuedBy !== null) {
+    const q = a.queuedBy;
+    const id = str(q?.id);
+    if (typeof q !== "object" || (id && !OBJECT_ID.test(id))) return bad("queuedBy must be { id, name }.", "queuedBy");
+    const name = line(q.name, 80);
+    if (id || name) value.queuedBy = { id, name };
+  }
 
   if (kind === "undo") {
-    const ref = str(a.ref);
+    // Undo by reference (contract C2): `target` = the clientId of the tap to undo (`ref`, the older name, still works).
+    const ref = str(a.target ?? a.ref);
     if (!CLIENT_ID.test(ref)) return bad("What to undo is missing.", "ref");
     if (ref === clientId) return bad("An undo can't undo itself.", "ref");
     value.ref = ref;
@@ -515,12 +672,19 @@ export function cleanAction(raw) {
   return { ok: true, value };
 }
 
-/** When a tap counts as made: its device time when that's in the last few hours (an offline queue), else now. */
+/** When a tap counts as made: its clientAt (the device's server-corrected clock) clamped to [now − 12 h, now + 2 min];
+    none → now. */
 export function tapTime(clientAt, now = new Date()) {
+  return tapClock(clientAt, now).at;
+}
+/** tapTime, and whether it is a late sync (made more than LATE_SYNC_MS before it reached the server) or was clamped.
+    → { at: Date, late, clamped } */
+export function tapClock(clientAt, now = new Date()) {
   const t = ms(clientAt);
   const n = ms(now);
-  if (!Number.isFinite(t) || t > n || n - t > CLIENT_AT_MAX_AGE_MS) return new Date(n);
-  return new Date(t);
+  if (!Number.isFinite(t)) return { at: new Date(n), late: false, clamped: false };
+  const at = Math.min(n + CLIENT_AT_MAX_AHEAD_MS, Math.max(n - CLIENT_AT_MAX_AGE_MS, t));
+  return { at: new Date(at), late: n - at > LATE_SYNC_MS, clamped: at !== t };
 }
 
 /**
@@ -544,8 +708,9 @@ export function canUndo({ target, actorId = "", staff = false, undoClientAt = nu
 
 /**
  * Is this guest entitled to today's meal / evening item at a meal station? → { item, included, rsvpd }
- * (item null: not a meal station, or not an event day). Included = their main pass's extra (services/passExtras.js, staff's
- * switch first); RSVP'd = the option is on their RSVP.
+ * (item null: not a meal station, or not an event day). Included = an extra any of their counting passes includes
+ * (guest.extras: guestExtras, the Event summary's rule; services/passExtras.js, staff's switch first); RSVP'd = the
+ * option is on their RSVP.
  */
 export function entitlement(guest, station, eventDay) {
   const item = mealItem(station, eventDay);
@@ -571,6 +736,7 @@ export function auditLine({ guest = null, booth = null, kind, point = "", to = "
   if (kind === "reset") return `${whoTxt}: cleared ${what}${where}`;
   if (kind === "note") return `${whoTxt}: desk note ${note ? `“${note}”` : "cleared"}${where}`;
   if (kind === "undo") return `${whoTxt}: undid ${what}${where}`;
+  if (override === "late_sync") return `${whoTxt}: ${what} outside its hours (late sync from an offline device)${where}`;
   if (override) return `${whoTxt}: ${what} outside its hours (override)${where}`;
   return `${whoTxt}: ${what}${to ? ` ${to}` : ""}${where}`;
 }

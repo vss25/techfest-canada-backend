@@ -1,4 +1,4 @@
-import { DAYS } from "./rsvp.js";
+import { AGENDA_MATCH, DAYS } from "./rsvp.js";
 
 /* =========================================================
    TTFC Check-in: event days, stations and their opening windows
@@ -17,9 +17,12 @@ import { DAYS } from "./rsvp.js";
    open <= now < close). The organiser: "pick it from agenda page".
      - CxO Breakfast, Lunch and the evening event (Awards Night on Day 1,
        the Gala on Day 2) follow the live agenda, the same Sanity
-       sessions the website's /agenda page shows (matched by title:
-       "CxO Breakfast", "Networking Lunch" / "Lunch", "Awards Evening",
-       "Gala Dinner"; the evening also by its "awards" format): doors
+       sessions the website's /agenda page shows (matched by title the
+       way the RSVP page matches them, services/rsvp.js AGENDA_MATCH:
+       "CxO Breakfast" (any other "… Breakfast" only when a day has no
+       CxO one), "Networking Lunch" / "Lunch", "Awards Evening" /
+       "Catalyst …", "Gala Dinner"; the evening also by its "awards"
+       format): doors
        open `before` minutes before the session starts and close `after`
        minutes after it ends (30 and 30; the Awards Evening is listed as
        an hour, short for a dinner, so its `after` is 180). If the agenda
@@ -206,10 +209,14 @@ export function cleanSettings(raw) {
   return { ok: true, value: { windows, buffers, stations } };
 }
 
+// The RSVP page's matchers (services/rsvp.js AGENDA_MATCH) where they exist, so the desk and the RSVP page pick the
+// same session: the CxO Breakfast by /cxo\s*breakfast/ (a "Registration & Networking Breakfast" can't take its
+// place), the Awards Night by /award|catalyst/. Any breakfast only when a day has no CxO one.
 const MATCH = {
+  cxoBreakfast: (t) => AGENDA_MATCH.cxo_d1.title.test(t),
   breakfast: (t) => /breakfast/i.test(t),
   lunch: (t) => /\blunch(eon)?\b/i.test(t),
-  evening: { day1: (t, f) => /award/i.test(t) || /^awards?$/i.test(f), day2: (t, f) => /gala/i.test(t) || /^awards?$/i.test(f) },
+  evening: { day1: (t, f) => AGENDA_MATCH.awards.title.test(t) || /^awards?$/i.test(f), day2: (t, f) => AGENDA_MATCH.gala.title.test(t) || /^awards?$/i.test(f) },
 };
 const dayKeyOf = (d) => {
   const s = String(d ?? "").trim().toLowerCase();
@@ -222,10 +229,12 @@ const dayKeyOf = (d) => {
  * The agenda's sessions for the agenda stations (the website's Sanity "session" docs: day, time, endTime, title, format)
  * → { breakfast: { day1: { start, end, title } … }, lunch, evening }. The first matching session of each day, by time.
  * A session without a usable end gets an hour (the agenda lists the Awards Evening that way). Sessions the agenda marks
- * as breaks (isBreak, or a networking / awards format) are matched before talks.
+ * as breaks (isBreak, or a networking / awards format) are matched before talks. The breakfast is the day's CxO
+ * Breakfast; another breakfast only when the day has none.
  */
 export function agendaTimes(sessions = []) {
   const out = { breakfast: {}, lunch: {}, evening: {} };
+  const otherBreakfast = {};
   const list = (Array.isArray(sessions) ? sessions : [])
     .map((s) => ({ s, day: dayKeyOf(s?.day), start: String(s?.time || "").slice(0, 5), end: String(s?.endTime || "").slice(0, 5) }))
     .filter((x) => x.day && isHHMM(x.start))
@@ -237,11 +246,14 @@ export function agendaTimes(sessions = []) {
     const end = isHHMM(rawEnd) && toMin(rawEnd) > toMin(start) ? rawEnd : fromMin(Math.min(24 * 60 - 1, toMin(start) + 60));
     const title = String(s?.title || "").trim();
     const format = String(s?.format || s?.type || "").trim();
-    const take = (station) => { if (!out[station][day]) out[station][day] = { start, end, title: title.slice(0, 80) }; };
-    if (MATCH.breakfast(title)) take("breakfast");
+    const slot = { start, end, title: title.slice(0, 80) };
+    const take = (station) => { if (!out[station][day]) out[station][day] = slot; };
+    if (MATCH.cxoBreakfast(title)) take("breakfast");
+    else if (MATCH.breakfast(title)) { if (!otherBreakfast[day]) otherBreakfast[day] = slot; }
     else if (MATCH.lunch(title)) take("lunch");
     else if (MATCH.evening[day](title, format)) take("evening");
   }
+  for (const [day, slot] of Object.entries(otherBreakfast)) if (!out.breakfast[day]) out.breakfast[day] = slot;
   return out;
 }
 

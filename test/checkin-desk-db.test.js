@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 
 const BIN = process.env.TTFC_TEST_MONGOD || path.join(os.homedir(), ".cache/mongodb-binaries/mongod-arm64-darwin-8.2.6");
 const HAVE = fs.existsSync(BIN);
@@ -46,6 +47,8 @@ let jwt;
 let mongoose;
 let setDeskClock;
 let guestKey;
+let Log;
+let Other;
 const U = {};
 let fakeNow = new Date("2026-10-26T13:00:00Z"); // Day 1, 9:00 AM Toronto
 let seq = 0;
@@ -65,6 +68,10 @@ before(async () => {
   }
   ({ default: jwt } = await import("jsonwebtoken"));
   ({ setDeskClock } = await import("../services/checkinDeskLog.js"));
+  Log = await import("../services/checkinDeskLog.js");
+  // A second server instance's log (its own streams and tail, the same database), for the multi-instance tests.
+  Other = await import("../services/checkinDeskLog.js?instance=b");
+  Other.setDeskClock(() => new Date(fakeNow));
   ({ guestKey } = await import("../services/checkinDesk.js"));
   setDeskClock(() => new Date(fakeNow));
   const imp = async (p) => (await import(p)).default;
@@ -72,14 +79,16 @@ before(async () => {
   M.Attendee = await imp("../models/Attendee.js");
   M.CheckinMark = await imp("../models/CheckinMark.js");
   M.CheckinEvent = await imp("../models/CheckinEvent.js");
+  M.CheckinCounter = (await import("../models/CheckinEvent.js")).CheckinCounter;
   Object.assign(M, await import("../models/Admin.js"));
-  await Promise.all([M.CheckinMark.init(), M.CheckinEvent.init()]);
+  await Promise.all([M.CheckinMark.init(), M.CheckinEvent.init(), M.User.init()]);
   const { default: express } = await import("express");
   const app = express();
   app.use(express.json());
   app.use("/api/checkin/desk", (await import("../routes/checkinDesk.js")).default);
   app.use("/api/checkin", (await import("../routes/checkin.js")).default);
   app.use("/api/console/people", (await import("../routes/people.js")).default);
+  app.use("/api/auth", (await import("../routes/ticketAuth.js")).default);
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -92,6 +101,10 @@ before(async () => {
     mk("vic", { name: "Vic Volunteer", email: "vic.volunteer@example.com", role: "volunteer" }),
     mk("ada", { name: "Ada Attendee", email: "ada.attendee@example.com", tickets: [ticket("apx100000010", "apex")] }),
     mk("priya", { name: "Priya Sharma", email: "priya.sharma@example.com", organization: "Northwind", jobTitle: "CTO", tickets: [ticket("pow100000001", "power", { stripeSessionId: "cs_p" })] }),
+    // An attendee account staff tagged Volunteer in People (contract C1), holding a pass.
+    mk("tara", { name: "Tara Typed", email: "tara.typed@example.com", types: ["volunteer"], tickets: [ticket("vol100000020", "connect", { stripeSessionId: "cs_t" })] }),
+    // A speaker with a Speaker Pass and a Power Pass of their own (attendance counts them once).
+    mk("sid", { name: "Sid Speaker", email: "sid.speaker@example.com", tickets: [ticket("spk100000023", "speaker"), ticket("pow100000024", "power", { stripeSessionId: "cs_s" })] }),
   ]);
   await M.Attendee.create([
     { name: "Priya Sharma", email: "priya.sharma@example.com", ticketId: "pow100000001", ticketType: "power", claimedBy: U.priya._id, stripeSessionId: "cs_p" },
@@ -105,6 +118,14 @@ before(async () => {
     { name: "Ian Influence", email: "ian.influence@example.com", ticketId: "inf100000009", ticketType: "influence", stripeSessionId: "cs_i" },
     { name: "Dot Discover", email: "dot.discover@example.com", ticketId: "dis100000011", ticketType: "discover", stripeSessionId: "cs_d" },
     { name: "Pat Pending", email: "pat.pending@example.com", ticketId: "spk100000012", ticketType: "speaker", promoCode: "SPEAKER" },
+    { name: "Tom Tomb", email: "tom.tomb@example.com", ticketId: "tom100000021", ticketType: "connect", stripeSessionId: "cs_tt" },
+    { name: "Quinn Queued", email: "quinn.queued@example.com", ticketId: "qqq100000022", ticketType: "connect", stripeSessionId: "cs_q" },
+    { name: "Pru Practice", email: "pru.practice@example.com", ticketId: "prc100000025", ticketType: "connect", stripeSessionId: "cs_pr" },
+    { name: "Lena Late", email: "lena.late@example.com", ticketId: "apx100000026", ticketType: "apex", stripeSessionId: "cs_l" },
+    { name: "Mona Meal", email: "mona.meal@example.com", ticketId: "con100000027", ticketType: "connect", stripeSessionId: "cs_mm" },
+    // Ava bought a Connect Pass; staff then gave her a Power Pass (emailed, not claimed yet). Her main pass is the paid one.
+    { name: "Ava Twopass", email: "ava.twopass@example.com", ticketId: "con100000028", ticketType: "connect", stripeSessionId: "cs_a", purchaseDate: new Date("2026-09-01") },
+    { name: "Ava Twopass", email: "ava.twopass@example.com", ticketId: "pow100000029", ticketType: "power", promoCode: "ISSUED", passEmailSentAt: new Date("2026-10-10"), purchaseDate: new Date("2026-10-10") },
   ]);
 });
 
@@ -134,6 +155,16 @@ const ticketOf = async (id) => {
   return { checkedIn: !!a?.checkedIn, checkedInAt: a?.checkedInAt || null };
 };
 const markOf = (subject, point, day = "2026-10-26") => M.CheckinMark.findOne({ subject, day, point }).lean();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Polls `fn` until it gives something truthy (at most `ms`). */
+async function until(fn, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (v || Date.now() - t0 > ms) return v;
+    await sleep(25);
+  }
+}
 
 test("who may use it: no sign-in 401, attendees 403, volunteers without emails or ticket IDs, staff with them", { skip }, async () => {
   assert.equal((await call("GET", `${D}/snapshot`, { as: null })).status, 401);
@@ -158,11 +189,13 @@ test("who may use it: no sign-in 401, attendees 403, volunteers without emails o
   const gus = staff.body.guests.find((g) => g.name === "Gus Guest");
   assert.equal(gus.email, "gus.guest@example.com");
   assert.equal(gus.ticketId, "con100000002");
-  // Staff signed in to an app with an emailed code are volunteers here (the admin panel's password rule).
-  const byEmail = await call("GET", `${D}/snapshot`, { token: tokenFor(U.sam, { via: "email" }) });
-  assert.equal(byEmail.status, 200);
-  assert.equal(byEmail.body.staff, false);
-  assert.ok(!("email" in byEmail.body.guests[0]));
+  // Contract C1: a passwordless token (emailed code, pass ID + last name) never reaches the desk, staff's included.
+  for (const via of ["email", "ticket"]) {
+    const no = await call("GET", `${D}/snapshot`, { token: tokenFor(U.sam, { via }) });
+    assert.equal(no.status, 403, via);
+    assert.equal(no.body.code, "password_required");
+    assert.equal(no.body.error, "This app needs your staff or volunteer password sign-in.");
+  }
 });
 
 test("the guests: pass types (Other for an unknown one), Media / VIP / Exhibitor marks, pending, booths, today", { skip }, async () => {
@@ -344,7 +377,8 @@ test("a QR scan at the door shows on the pass desk as checked in", { skip }, asy
   const before = (await call("GET", `${D}/snapshot`, { as: U.val })).body.cursor;
   const scan = await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "TECHFEST:con100000003" } });
   assert.equal(scan.body.status, "success");
-  const m = await markOf("con100000003", "checked_in");
+  // The desk's record is written after the scanner's answer (it never slows the scan).
+  const m = await until(() => markOf("con100000003", "checked_in"));
   assert.equal(m.station, "scanner");
   assert.ok(m.passSetAt);
   const ev = await call("GET", `${D}/events?since=${before}`, { as: U.val });
@@ -354,6 +388,7 @@ test("a QR scan at the door shows on the pass desk as checked in", { skip }, asy
   assert.equal(mine.pass.collected, true);
   // Scanning again records nothing more today.
   await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "con100000003" } });
+  await sleep(300);
   assert.equal(await M.CheckinEvent.countDocuments({ subject: "con100000003", kind: "mark" }), 1);
 });
 
@@ -428,8 +463,7 @@ test("desk notes (staff), ticket ID lookup, the evening station switched off", {
 });
 
 /** Reads a Server-Sent Events stream until `until(frames)` is true (or the time runs out). */
-async function readStream(p, { as = U.val, until, ms = 4000 } = {}) {
-  const ctl = new AbortController();
+async function readStream(p, { as = U.val, until: stop, ms = 4000, onFrame = null, ctl = new AbortController() } = {}) {
   const frames = [];
   const r = await realFetch(`${base}${p}`, { headers: { authorization: `Bearer ${tokenFor(as)}`, accept: "text/event-stream" }, signal: ctl.signal });
   assert.equal(r.status, 200);
@@ -441,7 +475,7 @@ async function readStream(p, { as = U.val, until, ms = 4000 } = {}) {
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) { frames.ended = true; break; }
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf("\n\n")) !== -1) {
@@ -449,9 +483,9 @@ async function readStream(p, { as = U.val, until, ms = 4000 } = {}) {
         buf = buf.slice(i + 2);
         const ev = /^event: (.+)$/m.exec(raw)?.[1];
         const data = /^data: (.+)$/m.exec(raw)?.[1];
-        if (ev) frames.push({ event: ev, data: data ? JSON.parse(data) : null });
+        if (ev) { frames.push({ event: ev, data: data ? JSON.parse(data) : null, t: Date.now() }); onFrame?.(frames); }
       }
-      if (until(frames)) break;
+      if (stop(frames)) break;
     }
   } catch (err) { if (err.name !== "AbortError") throw err; }
   finally { clearTimeout(timer); ctl.abort(); }
@@ -486,6 +520,441 @@ test("the live stream: catch-up from a cursor, then new events within a second; 
   // A cursor ahead of the log (a wiped database): reload everything.
   assert.equal((await call("GET", `${D}/events?since=999999`, { as: U.val })).body.reset, true);
   assert.equal((await call("GET", `${D}/stream?since=0`, { as: U.ada })).status, 403);
+});
+
+test("contract C1: passwordless sign-ins, and accounts that aren't staff or volunteers, never reach the desk; a pass ID never opens one that can", { skip }, async () => {
+  // Tara: an attendee account staff typed Volunteer in People. With her password: in, as a volunteer.
+  const pw = await call("GET", `${D}/snapshot`, { as: U.tara });
+  assert.equal(pw.status, 200, JSON.stringify(pw.body));
+  assert.equal(pw.body.staff, false);
+  // Her pass ID + last name, or an emailed code: 403 password_required on every route (the guest list and the taps).
+  for (const via of ["ticket", "email"]) {
+    const token = tokenFor(U.tara, { via });
+    const routes = [["GET", `${D}/snapshot`], ["GET", `${D}/me`], ["GET", `${D}/clock`], ["GET", `${D}/events?since=0`],
+      ["POST", `${D}/actions`, { clientId: cid("c1"), kind: "mark", point: "arrived", key: K("con100000002"), station: "lobby" }],
+      ["POST", `${D}/lookup`, { ticketId: "con100000002" }]];
+    for (const [m, path, body] of routes) {
+      const r = await call(m, path, { token, body });
+      assert.equal(r.status, 403, `${via} ${m} ${path}`);
+      assert.equal(r.body.code, "password_required");
+    }
+    const st = await realFetch(`${base}${D}/stream?since=0`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(st.status, 403);
+    await st.text();
+  }
+  assert.equal(await M.CheckinMark.countDocuments({ subject: "con100000002", byId: U.tara._id }), 0, "nothing recorded");
+  // The pass ID sign-in itself refuses an account that can check people in (role or type), and still lets attendees in.
+  const tl = await call("POST", "/api/auth/ticket-login", { as: null, body: { lastName: "Typed", ticketId: "vol100000020" } });
+  assert.equal(tl.status, 400);
+  assert.match(tl.body.error, /^Volunteer accounts sign in with a code sent to their email or their password\.$/);
+  const ok = await call("POST", "/api/auth/ticket-login", { as: null, body: { lastName: "Sharma", ticketId: "pow100000001" } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal((await call("GET", `${D}/snapshot`, { token: ok.body.token })).status, 403);
+  // A type staff give the checkIn right in the App rights matrix (here: speakers) keeps the door scanner only, not the desk.
+  const { saveMatrix, clearRightsCache } = await import("../services/rightsStore.js");
+  const { DEFAULT_MATRIX } = await import("../services/appRights.js");
+  await saveMatrix({ ...DEFAULT_MATRIX, speaker: { ...DEFAULT_MATRIX.speaker, checkIn: true } }, "test");
+  try {
+    const sp = await call("GET", `${D}/snapshot`, { as: U.sid });
+    assert.equal(sp.status, 403);
+    assert.equal(sp.body.code, "team_only");
+  } finally {
+    await M.AppContent.deleteOne({ key: "app.rights" });
+    clearRightsCache();
+  }
+});
+
+test("contract C5: staff read the desk app's address from the API (it's in no public website file)", { skip }, async () => {
+  const r = await call("GET", `${D}/info`, { as: U.sam });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { path: "/checkin-j0s8e5p4akvh/" });
+  assert.equal((await call("GET", `${D}/info`, { as: U.val })).status, 403, "volunteers don't hand out the link");
+  assert.equal((await call("GET", `${D}/info`, { token: tokenFor(U.sam, { via: "email" }) })).status, 403);
+  try {
+    process.env.CHECKIN_DESK_PATH = "/checkin-n3wt0ken9876/";
+    assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin-n3wt0ken9876/");
+    process.env.CHECKIN_DESK_PATH = "https://evil.example.com/";
+    assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin-j0s8e5p4akvh/");
+  } finally { delete process.env.CHECKIN_DESK_PATH; }
+});
+
+test("contract C2: undo by reference; an undo that reaches the server before its tap leaves a tombstone, and the tap is never recorded", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T14:00:00Z"); // 10:00 AM
+  const key = K("tom100000021");
+  // The server has the tap: undone; the same undo again (or another one): nothing more to undo.
+  const tap = cid("tap");
+  await act({ clientId: tap, kind: "mark", point: "arrived", key, station: "lobby" });
+  const u1 = await act({ clientId: cid("und"), kind: "undo", target: tap, station: "lobby" });
+  assert.equal(u1.status, 200, JSON.stringify(u1.body));
+  assert.equal(u1.body.events[0].target, tap);
+  assert.equal((await markOf("tom100000021", "arrived")).at, null);
+  const u2 = await act({ clientId: cid("und"), kind: "undo", target: tap, station: "lobby" });
+  assert.equal(u2.status, 200);
+  assert.equal(u2.body.noop, true);
+  // The undo arrives first (the tap's request was lost and resent later, or two requests raced): a tombstone.
+  const lost = cid("chk");
+  const tomb = await act({ clientId: cid("und"), kind: "undo", target: lost, station: "desk" });
+  assert.equal(tomb.status, 200, JSON.stringify(tomb.body));
+  assert.equal(tomb.body.tombstone, true);
+  assert.equal(tomb.body.events[0].tombstone, true);
+  const late = await act({ clientId: lost, kind: "mark", point: "checked_in", key, station: "desk" });
+  assert.equal(late.status, 200, JSON.stringify(late.body));
+  assert.equal(late.body.undone, true);
+  assert.equal((await markOf("tom100000021", "checked_in"))?.at ?? null, null, "not checked in");
+  assert.equal((await ticketOf("tom100000021")).checkedIn, false, "the pass isn't collected");
+  assert.equal((await act({ clientId: lost, kind: "mark", point: "checked_in", key, station: "desk" })).body.undone, true, "sent again: still not");
+  assert.equal(await M.CheckinEvent.countDocuments({ clientId: lost }), 0);
+  // Someone else's tombstone doesn't cancel a volunteer's tap (only the tap's own author, or staff).
+  const other = cid("chk");
+  await act({ clientId: cid("und"), kind: "undo", target: other, station: "desk" }, U.vic);
+  const mine = await act({ clientId: other, kind: "mark", point: "checked_in", key, station: "desk" });
+  assert.equal(mine.status, 200);
+  assert.ok(!mine.body.undone);
+  assert.ok((await markOf("tom100000021", "checked_in")).at);
+  // The older field name still works.
+  const legacy = await act({ clientId: cid("und"), kind: "undo", ref: other, station: "desk" });
+  assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+  assert.equal((await markOf("tom100000021", "checked_in")).at, null);
+  assert.equal((await ticketOf("tom100000021")).checkedIn, false);
+});
+
+test("contract C3: a tap made offline by one person and sent from another's sign-in is theirs, recorded by the sign-in", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T10:30:00Z"); // 6:30 AM: the lobby opens at 7
+  const key = K("qqq100000022");
+  const q = { id: String(U.val._id), name: "Val Volunteer" };
+  // Val tapped "Admit anyway" offline; Sam signed in on that iPad afterwards and the queue went out with his sign-in.
+  const r = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby", override: true, queuedBy: q }, U.sam);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ev = r.body.events[0];
+  assert.deepEqual([ev.by.id, ev.by.name, ev.by.role], [String(U.val._id), "Val Volunteer", "volunteer"]);
+  assert.equal(ev.queuedOffline, true);
+  assert.deepEqual(ev.recordedBy, { id: String(U.sam._id), name: "Sam Staff" });
+  const m = await markOf("qqq100000022", "arrived");
+  assert.equal(String(m.byId), String(U.val._id));
+  assert.equal(m.queuedOffline, true);
+  assert.equal(String(m.recordedById), String(U.sam._id));
+  const au = await M.AdminAudit.findOne({ action: "checkin_desk_override", targetId: "qqq100000022" }).lean();
+  assert.equal(String(au.adminId), String(U.val._id));
+  assert.equal(au.adminName, "Val Volunteer");
+  assert.match(au.detail, /\[tapped offline by Val Volunteer; sent from Sam Staff's sign-in\]$/);
+  // Staff powers only when both are staff: Val's queued reset, sent from Sam's sign-in, is refused.
+  assert.equal((await act({ clientId: cid("rst"), kind: "reset", point: "arrived", key, station: "lobby", queuedBy: q }, U.sam)).status, 403);
+  // Val's own undo of it, queued offline and sent from Vic's sign-in: hers to undo, and recorded as hers.
+  const un = await act({ clientId: cid("und"), kind: "undo", target: ev.clientId, station: "lobby", queuedBy: q, clientAt: new Date(fakeNow.getTime() + 5000).toISOString() }, U.vic);
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.equal(un.body.events[0].by.name, "Val Volunteer");
+  assert.equal(un.body.events[0].recordedBy.name, "Vic Volunteer");
+  // queuedBy naming the sign-in itself: an ordinary tap.
+  const same = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby", override: true, queuedBy: { id: String(U.vic._id), name: "Vic" } }, U.vic);
+  assert.equal(same.status, 200);
+  assert.ok(!same.body.events[0].queuedOffline);
+  assert.equal(same.body.events[0].by.name, "Vic Volunteer");
+});
+
+test("contract C4: a late sync is judged at its own time; outside the hours it's still recorded, flagged and audited", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T14:30:00Z"); // 10:30 AM: breakfast closed at 9:25
+  // Lena (Apex: CxO) admitted at 10:00 on an offline iPad that didn't ask "Admit anyway"; it reaches the server now.
+  const late = await act({ clientId: cid("brk"), kind: "mark", point: "cxo", key: K("apx100000026"), station: "breakfast", clientAt: "2026-10-26T14:00:00.000Z" });
+  assert.equal(late.status, 200, JSON.stringify(late.body));
+  assert.equal(late.body.events[0].override, "late_sync");
+  assert.equal(late.body.events[0].overrideReason, "late sync outside hours");
+  assert.equal(late.body.events[0].lateSync, true);
+  const m = await markOf("apx100000026", "cxo");
+  assert.equal(m.override, "late_sync");
+  assert.equal(new Date(m.at).toISOString(), "2026-10-26T14:00:00.000Z");
+  const au = await M.AdminAudit.findOne({ action: "checkin_desk_override", targetId: "apx100000026" }).lean();
+  assert.match(au.detail, /Lena Late · Apex Pass: Admitted to CxO Breakfast outside its hours \(late sync from an offline device\)/);
+  // A live tap outside the hours is still refused until "Admit anyway".
+  const live = await act({ clientId: cid("brk"), kind: "mark", point: "cxo", key: K("con100000003"), station: "breakfast" });
+  assert.equal(live.status, 409);
+  assert.equal(live.body.code, "outside_window");
+  // Mo (Media: CxO) admitted at 8:30, in the hours, synced at 10:30: recorded as tapped, and the gap audited.
+  const inHours = await act({ clientId: cid("brk"), kind: "mark", point: "cxo", key: K("con100000003"), station: "breakfast", clientAt: "2026-10-26T12:30:00.000Z" });
+  assert.equal(inHours.status, 200, JSON.stringify(inHours.body));
+  assert.equal(inHours.body.events[0].override, undefined);
+  assert.equal(inHours.body.events[0].lateSync, true);
+  const gap = await M.AdminAudit.findOne({ action: "checkin_desk_late_sync", targetId: "con100000003" }).lean();
+  assert.match(gap.detail, /tapped 8:30 AM \(device\), reached the server 10:30 AM/);
+  // A clock ahead is clamped to 2 minutes ahead; every answer carries the server's time (the device's offset).
+  const ahead = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: K("apx100000026"), station: "lobby", clientAt: "2026-10-26T15:30:00.000Z" });
+  assert.equal(ahead.status, 200, JSON.stringify(ahead.body));
+  assert.equal(ahead.body.mark.at, "2026-10-26T14:32:00.000Z");
+  assert.equal(ahead.body.serverTime, fakeNow.toISOString());
+});
+
+test("contract C6: on a day that isn't Day 1 or Day 2, marks are practice marks: never the ticket's pass, and undo / reset clear them", { skip }, async () => {
+  fakeNow = new Date("2026-10-25T15:00:00Z"); // Sun Oct 25, 11 AM: a rehearsal with a real guest
+  const key = K("prc100000025");
+  const tap = cid("chk");
+  const c = await act({ clientId: tap, kind: "mark", point: "checked_in", key, station: "desk" });
+  assert.equal(c.status, 200, JSON.stringify(c.body));
+  assert.equal(c.body.events[0].practice, true);
+  assert.equal(c.body.events[0].pass, undefined, "the pass isn't touched");
+  assert.equal(c.body.mark.practice, true);
+  assert.deepEqual(await ticketOf("prc100000025"), { checkedIn: false, checkedInAt: null });
+  assert.equal((await markOf("prc100000025", "checked_in", "2026-10-25")).practice, true);
+  // "Admit anyway" (the app asks on a closed day) is a practice mark too, and a rehearsal isn't an audited override.
+  const meal = await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key, station: "lunch", override: true });
+  assert.equal(meal.status, 200, JSON.stringify(meal.body));
+  assert.equal(meal.body.events[0].practice, true);
+  assert.equal(meal.body.events[0].override, undefined);
+  assert.equal(await M.AdminAudit.countDocuments({ action: "checkin_desk_override", targetId: "prc100000025" }), 0);
+  // Undo and a staff reset clear them.
+  const un = await act({ clientId: cid("und"), kind: "undo", target: tap, station: "desk" });
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.equal((await markOf("prc100000025", "checked_in", "2026-10-25")).at, null);
+  const rs = await act({ clientId: cid("rst"), kind: "reset", point: "lunch", key, station: "lunch" }, U.sam);
+  assert.equal(rs.status, 200, JSON.stringify(rs.body));
+  assert.equal((await markOf("prc100000025", "lunch", "2026-10-25")).at, null);
+  // Day 1: her pass is still to be collected; the rehearsal is in no day's attendance.
+  await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby" });
+  fakeNow = new Date("2026-10-26T14:40:00Z");
+  const s = (await call("GET", `${D}/snapshot`, { as: U.sam })).body;
+  assert.equal(s.guests.find((g) => g.name === "Pru Practice").passCollected, false);
+  assert.ok(!s.marks.some((x) => x.key === key));
+  assert.ok(!s.attendance.some((a) => a.day === "2026-10-25"), "practice marks don't count");
+});
+
+test("inclusions from any of their passes: a paid Connect Pass plus an issued Power Pass gets the luncheons and the evenings", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T16:40:00Z"); // 12:40 PM: lunch open
+  const s = (await call("GET", `${D}/snapshot`, { as: U.sam })).body;
+  const ava = s.guests.find((g) => g.name === "Ava Twopass");
+  assert.equal(ava.passName, "Connect Pass");
+  assert.deepEqual(ava.extras, { cxo: false, lunch: true, gala: true, awards: true });
+  assert.equal(ava.extrasView.lunch.ticketId, "pow100000029");
+  assert.equal(ava.passExtras.length, 2);
+  const lunch = await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key: ava.key, station: "lunch" });
+  assert.equal(lunch.status, 200, JSON.stringify(lunch.body));
+  // The Event summary counts her as entitled the same way (one rule: eventSummary.js entitledExtras).
+  const { directory } = await import("../routes/people.js");
+  const { eventSummary } = await import("../services/eventSummary.js");
+  const d = await directory();
+  const one = eventSummary(d.people.filter((p) => p.name === "Ava Twopass"));
+  assert.equal(one.meals.rows.find((x) => x.key === "lunch_d1").entitled, 1);
+  assert.equal(one.meals.rows.find((x) => x.key === "cxo_d1").entitled, 0);
+});
+
+test("Exhibitor = No from the desk (People's PATCH) takes an exhibitor-pass holder off the exhibitor desk", { skip }, async () => {
+  const s0 = (await call("GET", `${D}/snapshot`, { as: U.sam })).body;
+  const eve = s0.guests.find((g) => g.name === "Eve Exhibitor");
+  assert.equal(eve.marks.exhibitor, true);
+  const r = await call("PATCH", `/api/console/people/${eve.personId}`, { as: U.sam, body: { exhibitor: false } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const ev = await M.CheckinEvent.findOne({ kind: "guest", subject: "exh100000006" }).sort({ seq: -1 }).lean();
+  assert.equal(ev.guest.marks.exhibitor, false, "the event carries her row");
+  const s1 = (await call("GET", `${D}/snapshot`, { as: U.val })).body;
+  const after = s1.guests.find((g) => g.name === "Eve Exhibitor");
+  assert.equal(after.marks.exhibitor, false);
+  assert.equal(after.booth, "");
+  assert.deepEqual(s1.booths.map((b) => [b.booth, b.guests.length]), [["A12", 1]]);
+  // Devices get the row with the event (volunteers: no email, no ticket ID).
+  const evs = await call("GET", `${D}/events?since=${ev.seq - 1}`, { as: U.val });
+  const gv = evs.body.events.find((e) => e.seq === ev.seq);
+  assert.equal(gv.guest.name, "Eve Exhibitor");
+  assert.ok(!("email" in gv.guest) && !("ticketId" in gv.guest));
+});
+
+test("staff's attendance by day counts each person once (a speaker's two passes, a door scan of the other one)", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T14:50:00Z");
+  const line = (s, point) => s.attendance.find((a) => a.day === "2026-10-26" && a.point === point) || { people: 0, passes: 0 };
+  const before = (await call("GET", `${D}/snapshot`, { as: U.sam })).body;
+  const sid = before.guests.find((g) => g.name === "Sid Speaker");
+  assert.equal(sid.ticketId, "spk100000023", "counted under the Speaker Pass");
+  const a = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: sid.key, station: "lobby" });
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  const scan = await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "pow100000024" } });
+  assert.equal(scan.body.status, "success");
+  assert.ok(await until(() => markOf("pow100000024", "arrived")));
+  await sleep(100);
+  const after = (await call("GET", `${D}/snapshot`, { as: U.sam })).body;
+  assert.equal(line(after, "arrived").people - line(before, "arrived").people, 1);
+  assert.equal(line(after, "arrived").passes - line(before, "arrived").passes, 2);
+  assert.equal(line(after, "checked_in").people - line(before, "checked_in").people, 1);
+  assert.equal(line(after, "arrived").rows, line(after, "arrived").people);
+});
+
+test("an unknown guest key: refused, with at most one directory rebuild, never one per tap", { skip }, async () => {
+  const { deskIndexStats } = await import("../routes/checkinDesk.js");
+  await call("GET", `${D}/snapshot`, { as: U.val });
+  const before = deskIndexStats().freshBuilds;
+  const unknown = () => `g${crypto.randomBytes(10).toString("hex")}`;
+  const batch = () => Array.from({ length: 10 }, () => ({ clientId: cid("unk"), kind: "mark", point: "arrived", key: unknown(), station: "lobby", clientAt: fakeNow.toISOString() }));
+  for (let i = 0; i < 3; i++) {
+    const r = await call("POST", `${D}/actions`, { as: U.val, body: { actions: batch() } });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.results.every((x) => x.status === 404 && x.code === "not_found"), JSON.stringify(r.body.results[0]));
+  }
+  assert.ok(deskIndexStats().freshBuilds - before <= 1, `fresh rebuilds: ${deskIndexStats().freshBuilds - before}`);
+  assert.equal((await call("GET", `${D}/history/not-a-key`, { as: U.sam })).status, 404);
+});
+
+test("several instances: a change staff made on another instance counts at once at the meal door and in every snapshot", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T16:45:00Z"); // 12:45 PM: lunch
+  const key = K("con100000027");
+  const s0 = (await call("GET", `${D}/snapshot`, { as: U.val })).body;
+  assert.equal(s0.guests.find((g) => g.key === key).extras.lunch, false);
+  // Staff switch the luncheons on for Mona's pass on another instance (the record, then its event): this instance isn't told.
+  await M.Attendee.updateOne({ ticketId: "con100000027" }, { $set: { luncheons: true } });
+  await Other.deskInclusionsChanged({ ticketId: "con100000027", extras: { cxo: false, lunch: true, gala: false, awards: false }, user: U.sam });
+  // "Include + admit": the admit lands here straight away and is let in (the door reads her inclusions from the database).
+  const admit = await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key, station: "lunch" });
+  assert.equal(admit.status, 200, JSON.stringify(admit.body));
+  // The devices' reload from this instance has it too.
+  const s1 = (await call("GET", `${D}/snapshot`, { as: U.val })).body;
+  assert.equal(s1.guests.find((g) => g.key === key).extras.lunch, true);
+  // Switched off again elsewhere (no event yet): Day 2's lunch door refuses at once.
+  await M.Attendee.updateOne({ ticketId: "con100000027" }, { $set: { luncheons: false } });
+  fakeNow = new Date("2026-10-27T16:10:00Z");
+  const no = await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key, station: "lunch" });
+  assert.equal(no.status, 409, JSON.stringify(no.body));
+  assert.equal(no.body.code, "not_included");
+  fakeNow = new Date("2026-10-26T16:45:00Z");
+  // A guest event from another instance carries the guest's row: a snapshot here uses it at once.
+  const { directory } = await import("../routes/people.js");
+  const { deskGuestFrom } = await import("../services/checkinDesk.js");
+  const p = (await directory()).byId.get("t-con100000002");
+  const row = { ...deskGuestFrom(p), company: "Overlay Co" };
+  await Other.appendEvent({ kind: "guest", subject: row.norm, guest: row, station: "admin", byName: "Sam Staff", byRole: "staff" });
+  const s2 = (await call("GET", `${D}/snapshot`, { as: U.val })).body;
+  const gus = s2.guests.filter((g) => g.key === row.key);
+  assert.equal(gus.length, 1);
+  assert.equal(gus[0].company, "Overlay Co");
+  assert.ok(!("email" in gus[0]));
+});
+
+test("a tap never waits for a directory rebuild (the last index is used while a new one is read)", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T15:00:00Z");
+  const { deskIndexStats } = await import("../routes/checkinDesk.js");
+  await call("GET", `${D}/snapshot`, { as: U.val });
+  // Another instance changed a guest (an event without a row): this instance's index is behind and is rebuilt…
+  await Other.deskGuestChanged({ ticketIds: ["con100000002"], user: U.sam });
+  // …slowly (a slow read of every pass).
+  const orig = M.Attendee.find;
+  M.Attendee.find = function (...args) {
+    const q = orig.apply(this, args);
+    const exec = q.exec.bind(q);
+    q.exec = async (...a) => { await sleep(2500); return exec(...a); };
+    return q;
+  };
+  try {
+    const snap = call("GET", `${D}/snapshot`, { as: U.val }); // a reload waits for it (the event has no row)
+    assert.ok(await until(() => deskIndexStats().pending, 1500), "a rebuild is running");
+    const t0 = Date.now();
+    const r = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: K("tom100000021"), station: "lobby" });
+    const took = Date.now() - t0;
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.ok(took < 1500, `the tap took ${took} ms`);
+    assert.ok(deskIndexStats().pending, "the rebuild was still running");
+    M.Attendee.find = orig;
+    assert.equal((await snap).status, 200);
+  } finally { M.Attendee.find = orig; }
+});
+
+test("live stream: a catch-up that fails ends the stream (the device polls from its own cursor)", { skip }, async () => {
+  const cursor = (await call("GET", `${D}/snapshot`, { as: U.val })).body.cursor;
+  await until(() => !Log.tailState().running, 3000);
+  const orig = M.CheckinEvent.find;
+  let failed = false;
+  M.CheckinEvent.find = function (filter, ...rest) {
+    if (!failed && filter?.seq?.$gt !== undefined) { failed = true; M.CheckinEvent.find = orig; throw new Error("database blip (test)"); }
+    return orig.call(this, filter, ...rest);
+  };
+  try {
+    const frames = await readStream(`${D}/stream?since=${cursor}`, { until: () => false, ms: 3000 });
+    assert.ok(failed);
+    assert.ok(frames.some((f) => f.event === "error"), JSON.stringify(frames.map((f) => f.event)));
+    assert.ok(frames.ended, "the stream ended");
+    assert.ok(!frames.some((f) => f.data && typeof f.data === "object" && "cursor" in f.data), "no cursor without a catch-up");
+  } finally { M.CheckinEvent.find = orig; }
+  assert.ok(await until(() => !Log.tailState().running, 2000), "the tail stopped with it");
+});
+
+test("live stream: no cursor before the catch-up; another instance's writes arrive through the tail; a write that commits late isn't skipped", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T15:10:00Z");
+  await until(() => !Log.tailState().running, 3000);
+  const cursor = (await call("GET", `${D}/snapshot`, { as: U.val })).body.cursor;
+  await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: K("pow100000004"), station: "lobby" }); // missed while asleep
+  // The catch-up read is slow; a tap made here meanwhile reaches the stream first, without a cursor.
+  const orig = M.CheckinEvent.find;
+  let slowed = false;
+  M.CheckinEvent.find = function (filter, ...rest) {
+    const q = orig.call(this, filter, ...rest);
+    if (!slowed && filter?.seq?.$gt === cursor) {
+      slowed = true;
+      const exec = q.exec.bind(q);
+      q.exec = async (...a) => { await sleep(800); return exec(...a); };
+    }
+    return q;
+  };
+  const during = cid("arr");
+  setTimeout(() => { act({ clientId: during, kind: "mark", point: "arrived", key: K("con100000028"), station: "lobby" }); }, 300);
+  let otherSeq = 0;
+  let k = 0;
+  let started = false;
+  const ctl = new AbortController();
+  const onFrame = (frames) => {
+    if (started || !frames.some((f) => f.data?.catchUp)) return;
+    started = true;
+    M.CheckinEvent.find = orig;
+    (async () => {
+      // Another instance writes: this stream gets it through the tail.
+      await sleep(200);
+      otherSeq = (await Other.appendEvent({ kind: "mark", point: "arrived", subject: "zzz100000090", station: "lobby", byName: "Elsewhere" })).seq;
+      // Then a write takes its number (k) but is held up; the next one (k + 1, stamped 20 s ago) commits first.
+      await sleep(1200);
+      const c = await M.CheckinCounter.findOneAndUpdate({ _id: "events" }, { $inc: { seq: 2 } }, { returnDocument: "after" }).lean();
+      k = c.seq - 1;
+      await M.CheckinEvent.create({ seq: k + 1, kind: "mark", point: "arrived", subject: "zzz100000092", at: new Date(fakeNow.getTime() - 20000) });
+      await sleep(2500);
+      await M.CheckinEvent.create({ seq: k, kind: "mark", point: "arrived", subject: "zzz100000091", at: new Date(fakeNow.getTime() - 21000) });
+    })().catch((err) => { console.error(err); ctl.abort(); });
+  };
+  let frames;
+  try {
+    frames = await readStream(`${D}/stream?since=${cursor}`, {
+      ctl, onFrame, ms: 9000,
+      until: (f) => k > 0 && f.some((x) => x.event === "events" && x.data.events.some((e) => e.seq === k)),
+    });
+  } finally { M.CheckinEvent.find = orig; }
+  const firstCursor = frames.findIndex((f) => f.data && typeof f.data === "object" && "cursor" in f.data);
+  assert.ok(firstCursor >= 0);
+  assert.equal(frames[firstCursor].data.catchUp, true, "the first cursor is the catch-up's");
+  const got = frames.flatMap((f) => (f.event === "events" ? f.data.events.map((e) => ({ ...e, frameCursor: f.data.cursor ?? null, i: frames.indexOf(f) })) : []));
+  assert.ok(got.some((e) => e.clientId === during), "the tap made during the catch-up arrived");
+  assert.ok(got.some((e) => e.seq === otherSeq), "the other instance's write arrived (the tail)");
+  const lateOne = got.find((e) => e.seq === k);
+  assert.ok(lateOne, "the late write was delivered, not skipped");
+  assert.ok(got.some((e) => e.seq === k + 1));
+  // No cursor at or past k reached the device before k itself.
+  for (const f of frames.slice(0, lateOne.i)) if (f.data && Number.isFinite(f.data.cursor)) assert.ok(f.data.cursor < k, `cursor ${f.data.cursor} before ${k}`);
+});
+
+test("the tail stops with the last stream, and a read still in flight never brings back its old cursor", { skip }, async () => {
+  await until(() => !Log.tailState().running, 3000);
+  const cursor = (await call("GET", `${D}/snapshot`, { as: U.val })).body.cursor;
+  const ctl = new AbortController();
+  const reading = readStream(`${D}/stream?since=${cursor}`, { ctl, until: () => false, ms: 6000 });
+  assert.ok(await until(() => Log.tailState().cursor !== null, 3000), "the tail starts at the catch-up's cursor");
+  const orig = M.CheckinEvent.find;
+  M.CheckinEvent.find = function (filter, ...rest) {
+    const q = orig.call(this, filter, ...rest);
+    if (filter?.seq?.$gt !== undefined) { const exec = q.exec.bind(q); q.exec = async (...a) => { await sleep(700); return exec(...a); }; }
+    return q;
+  };
+  try {
+    assert.ok(await until(() => Log.tailState().busy, 2500), "a tail read is in flight");
+    ctl.abort();
+    assert.ok(await until(() => !Log.tailState().running, 2000));
+    await sleep(900); // the slow read finishes
+    assert.equal(Log.tailState().cursor, null);
+    assert.equal(Log.tailState().running, false);
+  } finally { M.CheckinEvent.find = orig; }
+  await reading;
+});
+
+test("users are indexed by their tickets' IDs (the door scan, ticket sign-in, the desk's check-ins)", { skip }, async () => {
+  const idx = await M.User.collection.indexes();
+  assert.ok(idx.some((i) => i.key["tickets.ticketId"] === 1), JSON.stringify(idx.map((i) => i.key)));
 });
 
 test("nothing was emailed", { skip }, () => {

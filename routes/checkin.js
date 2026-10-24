@@ -84,13 +84,15 @@ router.post("/scan", requireCheckIn, async (req, res) => {
 
       // already used (the desk app still records today's check-in once: Day 2, services/checkinDeskActions.js)
       if (ticket.checkedIn) {
-        await recordScan({ ticketId, user: req.user, outcome: "already" });
-        return res.json({
+        res.json({
           ...card,
           status: "already_checked_in",
           ticketId,
           time: ticket.checkedInAt,
         });
+        // After the answer: the scanner never waits for the desk app's records (recordScan never throws).
+        void recordScan({ ticketId, user: req.user, outcome: "already" });
+        return;
       }
 
       // mark as checked in
@@ -99,15 +101,14 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       await user.save();
       // Keep the admin attendee list in step when a guest ticket was linked to this account.
       await Attendee.updateOne({ ticketId }, { $set: { checkedIn: true, checkedInAt: ticket.checkedInAt } });
-      // The check-in desk app's pass desk shows them checked in (never fails the scan).
-      await recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: ticket.checkedInAt });
-
       res.json({
         ...card,
         status: "success",
         ticketId,
         checkedInAt: ticket.checkedInAt,
       });
+      // Then the check-in desk app's pass desk shows them checked in (never fails or slows the scan).
+      void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: ticket.checkedInAt });
 
       return;
     }
@@ -126,19 +127,19 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     const card = await cardFor({ ticketId, attendee: attendee.toObject(), fallbackName: attendee.name });
 
     if (attendee.checkedIn) {
-      await recordScan({ ticketId, user: req.user, outcome: "already" });
-      return res.json({
+      res.json({
         ...card,
         status: "already_checked_in",
         ticketId,
         time: attendee.checkedInAt,
       });
+      void recordScan({ ticketId, user: req.user, outcome: "already" });
+      return;
     }
 
     attendee.checkedIn = true;
     attendee.checkedInAt = new Date();
     await attendee.save();
-    await recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: attendee.checkedInAt });
 
     res.json({
       ...card,
@@ -146,6 +147,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       ticketId,
       checkedInAt: attendee.checkedInAt,
     });
+    void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: attendee.checkedInAt });
   } catch (err) {
     console.error("CHECK-IN ERROR:", err);
     res.status(500).json({ error: "Server error" });
