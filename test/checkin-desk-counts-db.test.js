@@ -551,6 +551,11 @@ test("R2: at the meal door, someone whose only pass was hidden a moment ago gets
   assert.equal((await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key: jo.key, station: "lunch" })).status, 200, "shown again: admitted");
 });
 
+test("GET /counts: several iPads on one staff sign-in may refresh often (130 in a minute, no 429)", { skip }, async () => {
+  const all = await Promise.all(Array.from({ length: 130 }, () => call("GET", `${D}/counts`)));
+  assert.deepEqual([...new Set(all.map((r) => r.status))], [200]);
+});
+
 test("nothing was emailed", { skip }, () => {
   assert.equal(resendCalls, 0);
 });

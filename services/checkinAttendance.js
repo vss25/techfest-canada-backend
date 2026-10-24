@@ -25,7 +25,9 @@ import { deskNow } from "./checkinDeskLog.js";
        check-in marks arrived too); Checked in = the pass desk;
        passesCollectedToDate = people with a counting pass collected
        (the ticket's checkedIn, the QR scanner's field) by the end of
-       that day (or with no time recorded);
+       that day (or with no time recorded); one collected before Day 1
+       (a rehearsal door scan) only once they're checked in on an
+       event day;
      - each meal (CxO Breakfast, Networking Luncheon, the evening: the
        Catalyst Awards Night on Day 1, the Gala Dinner & Networking
        Reception on Day 2): admitted, and the Event summary's own
@@ -130,6 +132,7 @@ export function attendanceFrom({ people = [], byId = new Map(), marks = [], coll
   };
   const anyDay = { arrived: new Set(), checkedIn: new Set() };
   const arrivedByDay = [];
+  const checkedInSoFar = new Set(); // checked in on this day or an earlier event day (DAYS is in order)
 
   const days = DAYS.map((d) => {
     const pts = Object.fromEntries(ATTENDANCE_POINTS.map((k) => [k, new Map()]));
@@ -179,13 +182,18 @@ export function attendanceFrom({ people = [], byId = new Map(), marks = [], coll
     addAll(pts.lunch.keys(), "lunch");
     addAll(pts.evening.keys(), "dinner");
 
+    for (const w of checkedIn) checkedInSoFar.add(w);
     const passes = new Set();
     for (const c of collected || []) {
       const date = c?.at ? torontoDate(c.at) : "";
       if (date && date > d.date) continue;
       const p = byId.get(`t-${c?.norm}`);
       const inf = p && base.info.get(p);
-      if (inf && !inf.noPass && inf.norms.has(c.norm)) passes.add(p);
+      if (!inf || inf.noPass || !inf.norms.has(c.norm)) continue;
+      // Collected before Day 1: a rehearsal door scan (the door keeps the first scan's time), not a pass handed over;
+      // it counts once they're checked in on an event day, never before (someone scanned at a rehearsal who never came).
+      if (date && date < DAYS[0].date && !checkedInSoFar.has(p)) continue;
+      passes.add(p);
     }
 
     const dayCards = (cards || []).filter((u) => u?.day === d.date && !u.practice);

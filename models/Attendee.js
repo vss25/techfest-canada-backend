@@ -140,6 +140,12 @@ const attendeeSchema = new mongoose.Schema(
 );
 
 attendeeSchema.index({ "appHidden.at": 1 }, { sparse: true });   // the hidden set (services/appHide.js)
+// One person's passes (routes/people.js personNow: the check-in desk's meal doors, Oct 24 2026): every clause of its
+// $or needs an index, or the whole query reads every pass.
+attendeeSchema.index({ email: 1 });
+attendeeSchema.index({ claimedBy: 1 }, { sparse: true });
+// Collected passes (services/checkinAttendance.js, every Counts refresh): only those are in the index.
+attendeeSchema.index({ checkedIn: 1 }, { partialFilterExpression: { checkedIn: true } });
 
 const Attendee = mongoose.model("Attendee", attendeeSchema);
 

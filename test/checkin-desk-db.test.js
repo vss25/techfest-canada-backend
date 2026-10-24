@@ -1207,6 +1207,21 @@ test("users are indexed by their tickets' IDs (the door scan, ticket sign-in, th
   assert.ok(idx.some((i) => i.key["tickets.ticketId"] === 1), JSON.stringify(idx.map((i) => i.key)));
 });
 
+test("the meal door's one-person read and the Counts' collected passes use indexes (never every pass or account)", { skip }, async () => {
+  await Promise.all([M.Attendee.init(), M.User.init()]);
+  const scans = (plan) => JSON.stringify(plan).includes("COLLSCAN");
+  // routes/people.js personNow: every clause of its $or has an index.
+  const or = [{ _id: { $in: [] } }, { ticketId: { $in: ["con000000001", "CON000000001"] } }, { email: { $in: ["someone@example.com"] } }, { claimedBy: U.sam._id }, { speakerId: "spk-x" }];
+  assert.equal(scans(await M.Attendee.find({ $or: or }).explain("queryPlanner")), false, "personNow reads one person's passes by index");
+  // services/checkinAttendance.js loadAttendance: collected passes and accounts with a collected ticket.
+  assert.equal(scans(await M.Attendee.find({ checkedIn: true }).select("ticketId checkedInAt").explain("queryPlanner")), false);
+  const agg = await M.User.aggregate([
+    { $match: { "tickets.checkedIn": true } }, { $unwind: "$tickets" }, { $match: { "tickets.checkedIn": true } },
+    { $project: { _id: 0, ticketId: "$tickets.ticketId", at: "$tickets.checkedInAt" } },
+  ]).explain("queryPlanner");
+  assert.equal(scans(agg), false, "accounts with a collected ticket, by index");
+});
+
 test("nothing was emailed", { skip }, () => {
   assert.equal(resendCalls, 0);
 });

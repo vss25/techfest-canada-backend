@@ -117,3 +117,24 @@ test("nothing marked: zeros, and the entitled / RSVP'd still there", () => {
   assert.equal(a.days[0].meals.cxo.pctOfRsvpd, 0);
   assert.equal(attendanceFrom({}).days[0].meals.cxo.pctOfRsvpd, null, "nobody RSVP'd: no percentage");
 });
+
+test("passes collected to date: one collected before Day 1 (a rehearsal door scan) counts once they're checked in on an event day, never before", () => {
+  const built = buildPeople({
+    users: [],
+    attendees: [
+      { _id: "a1", name: "Ray Rehearsal", email: "ray@example.com", ticketId: "con000000101", ticketType: "connect", stripeSessionId: "cs101" },
+      { _id: "a2", name: "Nan Noshow", email: "nan@example.com", ticketId: "con000000102", ticketType: "connect", stripeSessionId: "cs102" },
+      { _id: "a3", name: "Dee Daytwo", email: "dee@example.com", ticketId: "con000000103", ticketType: "connect", stripeSessionId: "cs103" },
+    ],
+    rsvps: [],
+  });
+  const rehearsal = new Date("2026-10-25T20:00:00Z"); // Oct 25: the rehearsal's door scans
+  const collected = ["con000000101", "con000000102", "con000000103"].map((norm) => ({ norm, at: rehearsal }));
+  const marks = [
+    { subject: "con000000101", day: "2026-10-26", point: "checked_in", at: new Date("2026-10-26T13:00:00Z") }, // Ray: Day 1
+    { subject: "con000000103", day: "2026-10-27", point: "checked_in", at: new Date("2026-10-27T13:00:00Z") }, // Dee: Day 2
+  ];
+  const a = attendanceFrom({ people: built.people, byId: built.byId, marks, collected, cards: [] });
+  assert.equal(a.days[0].passesCollectedToDate, 1, "Ray (checked in on Day 1); not Nan (scanned at the rehearsal, never came), not yet Dee");
+  assert.equal(a.days[1].passesCollectedToDate, 2, "Ray and Dee");
+});

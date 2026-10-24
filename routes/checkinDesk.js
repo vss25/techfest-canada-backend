@@ -585,7 +585,9 @@ async function countsNow(dir) {
   countsCache = { ...countsCache, dir, pending };
   return pending;
 }
-limiters.counts = makeLimiter({ max: 120, windowMs: 60 * 1000 });
+// Several iPads may share one staff sign-in, each refreshing on every counted event and every 30 s; the answer is one
+// computation per instance kept for a second (countsNow), so a high limit per sign-in costs little.
+limiters.counts = makeLimiter({ max: 600, windowMs: 60 * 1000 });
 router.get("/counts", staffOnly, limit("counts"), wrap(async (req, res) => {
   let idx = await deskIndex();
   if (peopleMoved(idx)) idx = await indexWithPeople();
