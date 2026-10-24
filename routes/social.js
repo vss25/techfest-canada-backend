@@ -36,9 +36,11 @@ import { personAccess, rightsFor, overridesContact, rightError, RIGHT_ERRORS } f
 import { rightsContext, RIGHTS_SELECT } from "../services/rightsStore.js";
 import {
   CONTACT_SELECT, SHARE_OFF_ERROR, contactItemsFor, contactCardDTO, cleanItems, cleanShareIds, accountEmailOf,
-  setShare, shareFields, legacyEmail, firstLinkedIn, applyQrShare,
+  setShare, shareFields, legacyEmail, firstLinkedIn, applyQrShare, pickedShare,
 } from "../services/contactCard.js";
 import { makeLimiter } from "../services/ticketAccess.js";
+import { PASS_CONNECT_ERRORS, passConnectPush, passConnectNotification } from "../services/passConnect.js";
+import { resolvePassHolder } from "../services/passHolder.js";
 import {
   viewerHide, isHiddenGuest, postForViewer, postsForViewer, hiddenCommentCounts, hiddenAmong, visible, unseenOf, oids,
 } from "../services/appHide.js";
@@ -518,6 +520,8 @@ async function connectionDTO(c, req) {
     user: (await cardsFor(viewer, [other]))[0] || { id: String(otherId), name: "Attendee" },
     direction: String(c.fromUserId) === String(meId) ? "outgoing" : "incoming",
     status: c.status, kind: c.kind, note: c.note || "",
+    // "pass": made by scanning their entry QR (POST /connections/by-pass); left out otherwise.
+    via: c.via || undefined,
     createdAt: c.createdAt, respondedAt: c.respondedAt,
     ...share,
     // Older app builds read these two on in-person rows only.
@@ -628,6 +632,79 @@ router.post("/connections/in-person", async (req, res) => {
   applyQrShare(c, target, rightsFor(target, req.ctx));
   await c.save();
   res.json(await connectionDTO(c, req));
+});
+
+/* Connect by pass (C-PASS, Oct 24 2026, approved by the organiser: "one QR for everything"; "for staff it should
+   default to checkin and for other attendees it should be share contact"). Scanning someone's ENTRY QR (the door QR,
+   "TECHFEST:<ticketId>", any form) connects you with the pass holder exactly as their connect QR does
+   (/connections/in-person above): accepted at once, kind "inPerson", via "pass"; the scanner's `share` applied (not
+   over an earlier pick of theirs on a rescan); the
+   person scanned shares what their connect QR sheet says, else their share-by-default items (applyQrShare). Unlike a
+   connect QR scan the person scanned is told ("<name> connected with you", "Scanned your TTFC pass"), once, when the
+   connection is new. The holder (services/passHolder.js): the account that holds the ticket, claimed the pass, or has
+   its email AND an agreeing name; never a buyer for a colleague's pass. Answers (services/passConnect.js):
+     200 connectionDTO + via: "pass", alreadyConnected (true: accepted before this scan; no push then)
+     403 { code: "share_off" } without the shareContact right (checked before anything is looked up)
+     404 { code: "not_found" } unknown or invalid code, a pass hidden by staff / a sync duplicate / fully refunded, and
+         anyone this scanner can't reach (hidden from the app, banned, a block either way): all the same answer
+     409 { code: "not_on_app" } the holder has no account, or hasn't opened the app (and you aren't connected yet)
+     400 { code: "self" } your own pass
+   Nothing about the holder (name, email, ticket) in any refusal; nothing logged. No cap on scans (the organiser: "Don't
+   keep a cap on scan"): the apps tell people that what they allow to share goes to anyone who scans their pass. */
+router.post("/connections/by-pass", async (req, res) => {
+  if (!req.rights.shareContact) return res.status(403).json({ code: "share_off", error: SHARE_OFF_ERROR });
+  const refuse = (key) => {
+    const e = PASS_CONNECT_ERRORS[key];
+    return res.status(e.status).json({ code: e.code, error: e.error });
+  };
+  const pass = await resolvePassHolder(req.body?.ticketId);
+  if (!pass.found) return refuse("not_found");
+  const holder = pass.account;
+  const me = String(req.user._id);
+  if (holder && String(holder._id) === me) return refuse("self");
+  // A hidden person's pass (or one under their email) and people this scanner can't reach answer like no pass at all.
+  if (pass.attendee && isHiddenGuest(pass.attendee, req.hide)) return refuse("not_found");
+  if (!holder) return refuse("not_on_app");
+  const toUserId = String(holder._id);
+  if (holder.banned || isShadowed(req, toUserId) || req.blocked.has(toUserId)) return refuse("not_found");
+  let c = await SocialConnection.findOne({
+    $or: [{ fromUserId: req.user._id, toUserId }, { fromUserId: toUserId, toUserId: req.user._id }],
+  });
+  if (!c && !isOnApp(holder)) return refuse("not_on_app");
+  const target = await User.findById(toUserId).select(`_id ${RIGHTS_SELECT} ${CONTACT_SELECT}`).lean();
+  if (!target) return refuse("not_found");
+  const alreadyConnected = c?.status === "accepted";
+  if (!c) c = new SocialConnection({ fromUserId: req.user._id, toUserId });
+  // A connect QR scan before stays one (no via); anything else becomes a pass scan.
+  if (!(alreadyConnected && c.kind === "inPerson")) c.via = "pass";
+  c.status = "accepted"; c.kind = "inPerson"; c.respondedAt = new Date();
+  // The sheet can't know whose pass it is, so it offers the defaults: a rescan of someone I'm already connected with
+  // keeps what I picked for them before (changed from their profile), never resets it.
+  const share = shareFromBody(req);
+  if (share && !(alreadyConnected && pickedShare(c, req.user._id).picked)) setShare(c, req.user._id, share);
+  applyQrShare(c, target, rightsFor(target, req.ctx));
+  try {
+    await c.save();
+  } catch (err) {
+    // The same scan twice at once (a double tap): the other one made the row; answer with it, no second push.
+    const made = err?.code === 11000 && await SocialConnection.findOne({
+      $or: [{ fromUserId: req.user._id, toUserId }, { fromUserId: toUserId, toUserId: req.user._id }],
+    });
+    if (!made) throw err;
+    return res.json({ ...(await connectionDTO(made, req)), via: "pass", alreadyConnected: true });
+  }
+  // Told twice, the same words: a row in their in-app Notifications (unread, counted) and a push. A hidden scanner's
+  // connection is saved (they see it) but nobody is told; services/push.js drops the push too.
+  if (!alreadyConnected && !req.appHidden) {
+    try {
+      await AppNotification.create(passConnectNotification({ toUserId, scanner: req.user, connectionId: String(c._id) }));
+    } catch (err) {
+      console.error("PASS CONNECT NOTIFICATION ERROR:", err?.message || err);
+    }
+    pushToUsers([toUserId], { ...passConnectPush(req.user.name), link: "ttfc://tab/network", kind: "conn", id: String(c._id) },
+      { from: req.user._id, pref: "connections" });
+  }
+  res.json({ ...(await connectionDTO(c, req)), via: "pass", alreadyConnected });
 });
 
 /* ================= MESSAGES =================
@@ -954,22 +1031,35 @@ router.get("/activity", async (req, res) => {
 });
 
 /* ================= MY NOTIFICATIONS =================
-   Personal notifications staff sent from the admin panel, and (for staff)
-   "Content reported" ones from POST /api/app/report. The apps poll this
-   (on open and in the background) and show new ones as local notifications.
+   Personal notifications staff sent from the admin panel, (for staff)
+   "Content reported" ones from POST /api/app/report, and (Oct 24 2026)
+   "<name> connected with you" / "Scanned your TTFC pass" (kind "conn", from
+   POST /connections/by-pass; with fromUserId, avatarUrl and connectionId).
+   The apps poll this (on open and in the background) and show new ones as
+   local notifications. A "conn" row from someone this person can't see now
+   (hidden from the app, a block either way) is left out, and not counted.
    Read is for good: readAt is only ever set where it's null, never cleared. "Mark all as read" sends the newest one
    it showed as `upTo`, so one that arrived meanwhile stays unread. Never cached. */
 
+/** My notifications as I may see them: "conn" rows only from people I can see. */
+const myNotifications = (req) => ({
+  userId: req.user._id,
+  ...(req.unseen.size ? { $or: [{ kind: { $ne: "conn" } }, { sentBy: { $nin: oids(req.unseen) } }] } : {}),
+});
+
 router.get("/notifications", async (req, res) => {
-  const filter = { userId: req.user._id };
+  const mine = myNotifications(req);
+  const filter = { ...mine };
   const since = parseSince(req.query.since);
   if (since) filter.createdAt = { $gt: since };
   const [rows, unread] = await Promise.all([
     AppNotification.find(filter).sort({ createdAt: -1 }).limit(100).lean(),
-    AppNotification.countDocuments({ userId: req.user._id, readAt: null }),
+    AppNotification.countDocuments({ ...mine, readAt: null }),
   ]);
+  const senders = rows.filter((n) => n.kind === "conn" && n.sentBy).map((n) => n.sentBy);
+  const avatars = senders.length ? await avatarUrls(senders) : null;
   noStore(res);
-  res.json({ notifications: rows.map(notificationDTO), unread });
+  res.json({ notifications: rows.map((n) => notificationDTO(n, { avatars })), unread });
 });
 
 router.post("/notifications/read", async (req, res) => {
@@ -979,7 +1069,7 @@ router.post("/notifications/read", async (req, res) => {
   if (which.ids) filter._id = { $in: which.ids };
   if (which.upTo) filter.createdAt = { $lte: which.upTo };
   const r = await AppNotification.updateMany(filter, { $set: { readAt: new Date() } });
-  const unread = await AppNotification.countDocuments({ userId: req.user._id, readAt: null });
+  const unread = await AppNotification.countDocuments({ ...myNotifications(req), readAt: null });
   noStore(res);
   res.json({ ok: true, updated: r.modifiedCount ?? 0, unread });
 });

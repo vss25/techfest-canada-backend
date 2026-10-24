@@ -64,6 +64,9 @@ const socialConnectionSchema = new Schema({
   fromShareAt: Date,
   toShare:     { type: [String], default: undefined },
   toShareAt:   Date,
+  /** How an in-person connection was made: "pass" = the scanner scanned the other person's entry QR (POST
+      /api/social/connections/by-pass, Oct 24 2026); unset = a connect QR, a request, or older rows. */
+  via:         { type: String, enum: ["pass"], default: undefined },
 }, { timestamps: true });
 socialConnectionSchema.index({ fromUserId: 1, toUserId: 1 }, { unique: true });
 
