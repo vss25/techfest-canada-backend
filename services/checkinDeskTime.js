@@ -334,7 +334,8 @@ export const stationEnabled = (station, settings = {}) => (station === "evening"
 
 /** The label of what a station handles on a day ("CxO Breakfast", "Catalyst Awards Night", "Lobby"). */
 const whatOn = (station, eventDay) => mealItem(station, eventDay)?.label || STATION_LABELS[station] || station;
-const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
+// Lower-cased for the middle of a sentence, except an acronym ("AV station" stays "AV station", not "aV station").
+const lower = (s) => (/^[A-Z]{2,}\b/.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1));
 
 /**
  * Where a station is at a moment: today's event day, whether it's open, and the line its header shows.
