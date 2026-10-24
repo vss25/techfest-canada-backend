@@ -1,0 +1,556 @@
+/* The volunteer panel and the removed kill switch, through the REAL app (server.js imported with TTFC_IMPORT_ONLY=1:
+   every router exactly as production mounts them, without .env, the database connection, the jobs or listening)
+   against a throwaway local mongod. Starts mongod in a temp folder on a free port and stops
+   it after; skipped when the binary isn't there (TTFC_TEST_MONGOD, else ~/.cache/mongodb-binaries/mongod-arm64-darwin-8.2.6).
+   Nothing leaves the machine: Sanity is answered here, every other outside call is refused, Stripe gets a dummy key
+   only while server.js loads (then none), Resend a dummy key, and nothing here sends email. Fictional people,
+   example.com addresses.
+
+   1. The route sweep: walks the app's router stack (mount paths recorded as server.js mounts them) and calls every
+      admin route (under /api/console, /api/cms, /api/admin, /api/leads, /api/campaigns, or behind requireAdmin
+      anywhere) with a volunteer's token: all but the allow-list answer 403 volunteer_forbidden, so a route added
+      later is covered without touching this file. Nothing named kill or maintenance answers data or changes state.
+   2. What a volunteer gets back: no forbidden key anywhere, none of the seeded emails, phone, ticket IDs, code,
+      Stripe session, amounts or notes anywhere (deep scan of the list, the profiles, the search).
+   3. No writes. 4. Staff and management unchanged. 5. A volunteer's emailed-code token is refused.
+   6. An attendee's account with the volunteer type is refused. 7. The read limit. 8. The kill switch is gone. */
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import net from "node:net";
+import { spawn } from "node:child_process";
+
+const BIN = process.env.TTFC_TEST_MONGOD || path.join(os.homedir(), ".cache/mongodb-binaries/mongod-arm64-darwin-8.2.6");
+const HAVE = fs.existsSync(BIN);
+const skip = HAVE ? false : `no local mongod at ${BIN}`;
+
+process.env.TTFC_IMPORT_ONLY = "1";
+process.env.JWT_SECRET ||= "local-test-only";
+process.env.RESEND_API_KEY ||= "re_dummy";
+process.env.APIFY_API_TOKEN ||= "apify_dummy_test";
+delete process.env.GEMINI_API_KEY;
+delete process.env.KILL_SWITCH_PASSWORD;
+
+const d = (s) => new Date(`2026-${s}T12:00:00Z`);
+const SECRETS = {
+  email: "mara.secret@example.com", guestEmail: "omar.guest@example.com", rsvpEmail: "walkin.rsvp@example.com",
+  ticket: "beefcafe0001", guestTicket: "c0ffee000002", speakerTicket: "5bea4e000003",
+  code: "SECRETCODE20", stripe: "cs_test_secretsession", phone: "4165550199", linkedin: "linkedin.com/in/mara-secret",
+  manualNote: "Invoice SECRET-NOTE-77", hideReason: "SECRET-HIDE-REASON", accessibility: "Wheelchair SECRET-ACCESS",
+  contactPhone: "6475550142", killMessage: "OFFLINE-SECRET-MESSAGE",
+};
+const AMOUNTS = ["1234.56"];
+
+// The public Sanity CDN: the website speakers and the agenda (who speaks where). Never the network.
+const SPEAKERS = [{ _id: "spk-kai", name: "Kai Speaker", title: "Chief Scientist", company: "Quantum Example" }];
+const SESSIONS = [
+  { day: 1, time: "10:00", endTime: "10:30", title: "Quantum Computing in Finance", format: "panel", speakers: [{ name: "Kai Speaker" }, { name: "Ann Other" }] },
+  { day: 2, time: "11:00", endTime: "11:30", title: "Somebody Else's Talk", format: "keynote", speakers: [{ name: "Ann Other" }] },
+];
+const realFetch = globalThis.fetch;
+const outside = [];
+globalThis.fetch = async (input, opts) => {
+  const url = String(input?.url || input);
+  if (/^http:\/\/127\.0\.0\.1/.test(url)) return realFetch(input, opts);
+  if (url.includes(".sanity.io/")) {
+    const q = decodeURIComponent(url.split("query=")[1] || "");
+    const result = /moderator, speakers/.test(q) ? SESSIONS : /_type=="speaker"/.test(q) ? SPEAKERS : [];
+    return new Response(JSON.stringify({ result }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  outside.push(url);
+  throw new Error(`blocked in the test: ${url}`);
+};
+
+const freePort = () => new Promise((ok) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => ok(p)); }); });
+
+let mongod = null;
+let dbDir = "";
+let server = null;
+let base = "";
+let app = null;
+let mongoose;
+let adminAuth;
+const M = {};
+const T = {};   // tokens
+const ID = {};  // ids
+
+before(async () => {
+  if (!HAVE) return;
+  dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "ttfc-volpanel-"));
+  const port = await freePort();
+  mongod = spawn(BIN, ["--dbpath", dbDir, "--port", String(port), "--bind_ip", "127.0.0.1", "--quiet"], { stdio: "ignore" });
+  ({ default: mongoose } = await import("mongoose"));
+  for (let i = 0; i < 60; i++) {
+    try { await mongoose.connect(`mongodb://127.0.0.1:${port}/ttfc_volunteer_panel_test`, { serverSelectionTimeoutMS: 500 }); break; }
+    catch { await new Promise((r) => setTimeout(r, 250)); }
+  }
+
+  // Record each mount path as server.js mounts it (Express 5 layers don't keep it), before server.js loads.
+  const { default: express } = await import("express");
+  const proto = express.Router.prototype;
+  const use = proto.use;
+  proto.use = function recordMount(...args) {
+    const from = this.stack.length;
+    const out = use.apply(this, args);
+    const first = args[0];
+    const mount = typeof first === "string" || first instanceof RegExp || Array.isArray(first) ? first : "/";
+    for (let i = from; i < this.stack.length; i++) this.stack[i].__mount = mount;
+    return out;
+  };
+  // webhook.js makes its Stripe client when it loads: a dummy key for that, then none (nothing here calls Stripe).
+  process.env.STRIPE_SECRET_KEY = "sk_test_dummy_volunteer_panel";
+  ({ default: app } = await import("../server.js"));
+  delete process.env.STRIPE_SECRET_KEY;
+  proto.use = use;
+  adminAuth = await import("../middleware/adminAuth.js");
+
+  const imp = async (p) => (await import(p)).default;
+  for (const m of ["User", "Attendee", "Rsvp", "Promo", "CampaignSend", "EmailEngagement"]) M[m] = await imp(`../models/${m}.js`);
+  ({ AppContent: M.AppContent, AdminAudit: M.AdminAudit } = await import("../models/Admin.js"));
+
+  const bcrypt = (await import("bcryptjs")).default;
+  const pw = await bcrypt.hash("a long enough passphrase", 4);
+  const [mia, sam, val, vic, rae, ban, mara] = await M.User.create([
+    { name: "Mia Manager", email: "mia.manager@example.com", role: "admin", staffRole: "management", password: pw },
+    { name: "Sam Staff", email: "sam.staff@example.com", role: "admin", staffRole: "staff", password: pw },
+    { name: "Val Volunteer", email: "val.volunteer@example.com", role: "volunteer", password: pw },
+    // An attendee whose account carries the volunteer person type: the apps' staff sign-in, never the panel.
+    { name: "Vic Typed", email: "vic.typed@example.com", role: "user", types: ["volunteer"], password: pw },
+    { name: "Rae Rate", email: "rae.rate@example.com", role: "volunteer", password: pw },
+    { name: "Ben Banned", email: "ben.banned@example.com", role: "volunteer", banned: true, password: pw },
+    { name: "Mara Delegate", email: SECRETS.email, role: "user", organization: "Example Bank", jobTitle: "Head of Digital",
+      linkedinUrl: `https://${SECRETS.linkedin}`, vip: true, avatarVersion: 3,
+      contactCardSavedAt: d("10-15"), contactItems: [{ id: "c1", kind: "phone", label: "Mobile", value: `+1 ${SECRETS.contactPhone}`, shareByDefault: true }],
+      appHidden: { at: d("10-20"), by: "64b0000000000000000000ee", byName: "Sam Staff", reason: SECRETS.hideReason },
+      tickets: [{ ticketId: SECRETS.ticket, type: "power", purchaseDate: d("10-01"), stripeSessionId: SECRETS.stripe, promoCode: SECRETS.code,
+        checkedIn: true, checkedInAt: d("10-26"), details: { phone: `+1 ${SECRETS.phone}`, linkedin: SECRETS.linkedin } }] },
+  ]);
+  Object.assign(ID, { mia: mia._id, sam: sam._id, val: val._id, mara: mara._id });
+  const [omar, kai] = await M.Attendee.create([
+    { name: "Omar Guest", email: SECRETS.guestEmail, ticketId: SECRETS.guestTicket, ticketType: "connect", purchaseDate: d("10-02"),
+      manualValue: 1234.56, manualValueNote: SECRETS.manualNote, details: { firstName: "Omar", lastName: "Guest", organisation: "Robotics Example", phone: SECRETS.phone } },
+    { name: "Kai Speaker", ticketId: SECRETS.speakerTicket, ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-kai", purchaseDate: d("10-03"),
+      issuedPass: { booth: { booth: "B7" } }, details: { jobTitle: "Chief Scientist", organisation: "Quantum Example" } },
+  ]);
+  Object.assign(ID, { omar: omar._id, kai: kai._id });
+  await M.Rsvp.create([
+    { key: `t:${SECRETS.ticket}`, nameKey: "mara delegate", firstName: "Mara", lastName: "Delegate", name: "Mara Delegate", email: SECRETS.email,
+      ticketId: SECRETS.ticket, ticketVerified: true, tier: "power", days: ["day1", "day2"], options: ["sessions_d1", "lunch_d1", "gala", "awards"],
+      dietary: ["vegan"], dietaryOther: "No mushrooms", accessibility: SECRETS.accessibility, source: "attendee", spam: false, attendeeSubmittedAt: d("10-10") },
+    { key: "n:walk in", nameKey: "walk in", firstName: "Walk", lastName: "In", name: "Walk In", email: SECRETS.rsvpEmail, tier: "connect", days: ["day1"],
+      options: [], source: "attendee", spam: false },
+  ]);
+  await M.Promo.create({ code: SECRETS.code, discount: 20 }).catch(() => {});
+  await M.CampaignSend.create({ campaign: "rsvp-reminder-2026", email: SECRETS.email, status: "sent", sentAt: d("10-12"), sends: 1 });
+  await M.EmailEngagement.create({ campaign: "attending-2026", email: SECRETS.email, opens: 3, firstOpenAt: d("10-12"), lastOpenAt: d("10-13") });
+  // An old kill switch row, switched ON: nothing may read it any more.
+  await M.AppContent.create({ key: "site.kill", value: { enabled: true, message: SECRETS.killMessage, by: "Old Manager", since: d("10-01") }, updatedBy: "Old Manager" });
+
+  const { default: jwt } = await import("jsonwebtoken");
+  const tok = (u, via) => jwt.sign({ id: String(u._id), role: u.role, ...(via ? { via } : {}) }, process.env.JWT_SECRET, { expiresIn: "1h" });
+  Object.assign(T, {
+    mia: tok(mia), sam: tok(sam), val: tok(val), vic: tok(vic), rae: tok(rae), ban: tok(ban), mara: tok(mara),
+    valEmail: tok(val, "email"), valTicket: tok(val, "ticket"),
+  });
+
+  server = app.listen(0, "127.0.0.1");
+  await new Promise((r) => server.once("listening", r));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(async () => {
+  server?.close();
+  if (mongoose) await mongoose.disconnect().catch(() => {});
+  if (mongod) { mongod.kill("SIGTERM"); await new Promise((r) => mongod.once("exit", r)); }
+  if (dbDir) fs.rmSync(dbDir, { recursive: true, force: true });
+});
+
+async function call(method, url, { token, body } = {}) {
+  const r = await realFetch(base + url, {
+    method, headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined || method === "GET" || method === "HEAD" ? undefined : JSON.stringify(body),
+  });
+  const text = await r.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { json = text; }
+  return { status: r.status, body: json, text, headers: r.headers };
+}
+const isForbidden = (r) => r.status === 403 && r.body?.code === "volunteer_forbidden" && r.body?.error === "Volunteer accounts can only look up people.";
+
+/* ---------- the router stack ---------- */
+
+const ADMIN_PREFIXES = [/^\/api\/console(\/|$)/, /^\/api\/cms(\/|$)/, /^\/api\/admin(\/|$)/, /^\/api\/leads(\/|$)/, /^\/api\/campaigns(\/|$)/];
+/** Under an admin prefix but not the panel: the public ticket inventory (the website's Tickets page). */
+const PUBLIC_UNDER_ADMIN = new Set(["get /api/admin/inventory/public"]);
+/** Under /api/console but an in-app feature (app rights, any sign-in): Help & SOS responders. A volunteer without the
+    moderate right (the default) is refused there too, by that router's own check. */
+const IN_APP_UNDER_CONSOLE = [/^\/api\/console\/sos(\/|$)/];
+/** The volunteer panel: the only admin routes a volunteer's token opens. */
+const ALLOW = new Set(["get /api/console/me", "get /api/console/search", "post /api/console/search", "get /api/console/people/", "get /api/console/people/:id"]);
+
+function guardOf(fn) {
+  if (typeof fn !== "function") return false;
+  if ([adminAuth.requireAdmin, adminAuth.requireManagementAdmin, adminAuth.requireManagement].includes(fn)) return true;
+  return /\brequire(Admin|ManagementAdmin)\s*\(/.test(Function.prototype.toString.call(fn));
+}
+const joinPath = (a, b) => (`${a}/${b}`).replace(/\/+/g, "/");
+
+/** Every route of the app: { method, path, guarded, chain }. And every middleware layer's name (for the kill switch check). */
+function routesOf(appInstance) {
+  const routes = [];
+  const middleware = [];
+  const walk = (stack, prefix, guards) => {
+    const mine = [...guards];
+    for (const layer of stack) {
+      const mount = layer.__mount && layer.__mount !== "/" ? String(layer.__mount) : "";
+      if (layer.route) {
+        const handlers = layer.route.stack.map((l) => l.handle);
+        const paths = Array.isArray(layer.route.path) ? layer.route.path : [layer.route.path];
+        const methods = Object.keys(layer.route.methods);
+        for (const p of paths) {
+          const full = joinPath(prefix, p) || "/";
+          const guarded = mine.some((g) => full.startsWith(g.prefix) && g.guard) || handlers.some(guardOf);
+          for (const m of methods.includes("_all") ? ["get", "post", "put", "patch", "delete"] : methods) {
+            if (m === "head" && methods.includes("get")) continue;
+            routes.push({ method: m, path: full, guarded });
+          }
+        }
+      } else if (layer.handle?.stack) {
+        walk(layer.handle.stack, joinPath(prefix, mount), mine);
+      } else {
+        middleware.push({ name: layer.name, path: joinPath(prefix, mount) });
+        mine.push({ prefix: joinPath(prefix, mount), guard: guardOf(layer.handle) });
+      }
+    }
+  };
+  walk(appInstance.router.stack, "", []);
+  return { routes, middleware };
+}
+const SAMPLE_ID = "64b000000000000000000001";
+const concrete = (p) => p.replace(/\{[^}]*\}/g, "").replace(/:[A-Za-z_][A-Za-z0-9_]*/g, SAMPLE_ID).replace(/\*[A-Za-z_][A-Za-z0-9_]*/g, "x") || "/";
+const key = (r) => `${r.method} ${r.path}`;
+const adminSurface = (r) => ADMIN_PREFIXES.some((rx) => rx.test(r.path)) || r.guarded;
+
+test("the route sweep: every admin route but the volunteer panel's answers a volunteer 403 volunteer_forbidden", { skip }, async () => {
+  const { routes, middleware } = routesOf(app);
+  const admin = routes.filter(adminSurface);
+  // The walk saw the whole app (not a broken walk that passes by finding nothing).
+  assert.ok(routes.length > 400, `routes found: ${routes.length}`);
+  assert.ok(admin.length > 250, `admin routes found: ${admin.length}`);
+  const keys = new Set(admin.map(key));
+  // What the organiser named: financials, tickets sold, website permissions, campaigns, inventory, coupon codes, staff,
+  // content, settings, audit, leads, the kill switch.
+  for (const k of [
+    "get /api/console/sales", "get /api/admin/analytics", "get /api/console/tickets", "get /api/console/tickets/export",
+    "get /api/console/app-rights", "put /api/console/app-rights", "get /api/campaigns/", "post /api/campaigns/:id/launch",
+    "post /api/console/attending-campaign/send-all", "get /api/admin/inventory", "put /api/admin/inventory/:tier", "post /api/console/inventory/recount",
+    "get /api/admin/promos", "post /api/admin/promos", "get /api/console/staff", "post /api/console/staff", "get /api/console/audit",
+    "get /api/console/app-content", "put /api/console/app-content/:key", "get /api/cms/:type", "post /api/cms/upload-file",
+    "get /api/leads/", "get /api/kyc/", "post /api/intel/refresh", "get /api/subscriptions/stats", "get /api/console/kill-switch", "post /api/console/kill-switch",
+    "get /api/console/people/export", "post /api/console/people/reminder", "post /api/console/people/nudge", "patch /api/console/people/:id",
+    "delete /api/console/people/:id", "post /api/console/companies/logo", "get /api/console/digest/", "get /api/console/waitlist/",
+  ]) assert.ok(keys.has(k), `missing from the sweep: ${k}`);
+  for (const k of ALLOW) assert.ok(keys.has(k), `allow-list route missing: ${k}`);
+
+  const failures = [];
+  let swept = 0;
+  for (const r of admin) {
+    if (ALLOW.has(key(r)) || PUBLIC_UNDER_ADMIN.has(key(r))) continue;
+    const res = await call(r.method.toUpperCase(), concrete(r.path), { token: T.val, body: {} });
+    swept += 1;
+    if (IN_APP_UNDER_CONSOLE.some((rx) => rx.test(r.path))) {
+      if (res.status !== 403) failures.push(`${key(r)} → ${res.status} (in-app, expected 403)`);
+      continue;
+    }
+    // Outside the admin paths, a route behind requireAdmin may have an in-app guard first (an app feature with one
+    // staff-only action): 403 whichever refuses. Under the admin paths: always the volunteer's own answer.
+    const prefixed = ADMIN_PREFIXES.some((rx) => rx.test(r.path));
+    if (prefixed ? !isForbidden(res) : res.status !== 403) failures.push(`${key(r)} → ${res.status} ${res.text.slice(0, 80)}`);
+  }
+  assert.deepEqual(failures, []);
+  assert.ok(swept > 250, `swept ${swept}`);
+  // The public inventory stays public (and is the same for a volunteer as for nobody).
+  for (const k of PUBLIC_UNDER_ADMIN) {
+    const [m, p] = k.split(" ");
+    const [anon, vol] = [await call(m.toUpperCase(), p), await call(m.toUpperCase(), p, { token: T.val })];
+    assert.equal(anon.status, 200, k);
+    assert.deepEqual(vol.body, anon.body, k);
+  }
+  // An address no route has under the console: still the volunteer's 403, not a 404 that says what exists.
+  assert.ok(isForbidden(await call("GET", "/api/console/no-such-page", { token: T.val })));
+  assert.ok(isForbidden(await call("POST", "/api/console/maintenance", { token: T.val, body: { enabled: true } })));
+
+  // Nothing named kill or maintenance answers data or changes anything: the only such route is the gone kill switch.
+  const killish = routes.filter((r) => /kill|maintenance/i.test(r.path));
+  assert.deepEqual([...new Set(killish.map((r) => r.path))], ["/api/console/kill-switch"]);
+  assert.deepEqual(middleware.filter((m) => /kill|maintenance/i.test(m.name)), [], "no kill switch middleware");
+  const before = await M.AppContent.findOne({ key: "site.kill" }).lean();
+  for (const r of killish) {
+    for (const [who, token] of [["volunteer", T.val], ["staff", T.sam], ["management", T.mia], ["nobody", null]]) {
+      const res = await call(r.method.toUpperCase(), r.path, { token, body: { enabled: r.method === "post" ? false : undefined, password: "a long enough passphrase", message: "x" } });
+      if (who === "volunteer") assert.ok(isForbidden(res), `${key(r)} ${who}`);
+      else if (who === "nobody") assert.equal(res.status, 401, `${key(r)} ${who}`);
+      else {
+        assert.equal(res.status, 410, `${key(r)} ${who}`);
+        assert.deepEqual(Object.keys(res.body).sort(), ["code", "error"], `${key(r)} ${who}`);
+        assert.equal(res.body.code, "kill_switch_removed");
+      }
+    }
+  }
+  const after_ = await M.AppContent.findOne({ key: "site.kill" }).lean();
+  assert.deepEqual(after_.value, before.value, "the old row is untouched");
+  assert.equal(await M.AdminAudit.countDocuments({ action: /^kill_switch/ }), 0, "nothing switched on or off");
+  assert.deepEqual(outside, []);
+});
+
+/* ---------- what a volunteer sees ---------- */
+
+function keysOf(v, out = new Set()) {
+  if (Array.isArray(v)) for (const x of v) keysOf(x, out);
+  else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { out.add(k); keysOf(x, out); }
+  return out;
+}
+const FORBIDDEN_KEY = /email|phone|linkedin|ticketid|stripe|promo|coupon|^code$|value|price|engagement|attending|rsvpemail|note|audit|manual|hidden|contact|outreach|qr|userid|account|refund|paid|source|^edit$|apphide|reminder|nudge|catalog|stripe|staffrole|ismanagement/i;
+function assertSafe(json, label) {
+  const bad = [...keysOf(json)].filter((k) => FORBIDDEN_KEY.test(k) && k !== "dietaryOther");
+  assert.deepEqual(bad, [], `${label}: forbidden keys`);
+  const text = JSON.stringify(json).toLowerCase();
+  for (const [name, secret] of Object.entries(SECRETS)) assert.ok(!text.includes(String(secret).toLowerCase()), `${label}: ${name} leaked`);
+  for (const amount of AMOUNTS) assert.ok(!text.includes(amount), `${label}: ${amount}`);
+}
+
+test("a volunteer's People list, profiles and search: only the safe fields, nothing financial, no contact details, no ticket IDs", { skip }, async () => {
+  const me = await call("GET", "/api/console/me", { token: T.val });
+  assert.equal(me.status, 200);
+  assert.deepEqual([me.body.staffRole, me.body.panelRole, me.body.isManagement], ["volunteer", "volunteer", false]);
+  const authMe = await call("GET", "/api/auth/me", { token: T.val });
+  assert.equal(authMe.status, 200);
+  assert.equal(authMe.body.role, "volunteer");
+
+  const list = await call("GET", "/api/console/people", { token: T.val });
+  assert.equal(list.status, 200);
+  assert.equal(list.body.volunteer, true);
+  assert.equal(list.body.banner, "Volunteer view: look-up only");
+  assert.equal(list.body.size, 50);
+  assert.ok(list.body.total >= 10, `total ${list.body.total}`);
+  assert.equal(list.headers.get("cache-control"), "no-store");
+  assertSafe(list.body, "list");
+  const mara = list.body.rows.find((r) => r.name === "Mara Delegate");
+  assert.deepEqual([mara.company, mara.jobTitle, mara.vip, mara.pass.label, mara.pass.pending, mara.checkedIn], ["Example Bank", "Head of Digital", true, "Power Pass", false, true]);
+  assert.deepEqual(mara.pass.extras, { cxo: true, lunch: true, gala: true, awards: true });
+  assert.deepEqual(mara.rsvp.days, ["day1", "day2"]);
+
+  // Every profile in the directory, and by the ticket-ID link (t-…): safe.
+  for (const row of list.body.rows) {
+    const prof = await call("GET", `/api/console/people/${encodeURIComponent(row.id)}`, { token: T.val });
+    assert.equal(prof.status, 200, row.id);
+    assertSafe(prof.body, `profile ${row.name}`);
+  }
+  const byTicket = await call("GET", `/api/console/people/t-${SECRETS.ticket}`, { token: T.val });
+  assert.equal(byTicket.status, 200);
+  assert.equal(byTicket.body.person.name, "Mara Delegate");
+  assertSafe(byTicket.body, "profile by ticket");
+  const p = byTicket.body.person;
+  assert.deepEqual(p.rsvp.events.map((e) => e.key), ["lunch_d1", "awards", "gala"]);
+  assert.deepEqual(p.rsvp.dietary, [{ key: "vegan", label: "Vegan" }]);
+  assert.equal(p.rsvp.dietaryOther, "No mushrooms");
+  assert.equal(p.rsvp.accessibility, true);
+  assert.equal(p.checkedIn, true);
+  const kai = await call("GET", `/api/console/people/a-${ID.kai}`, { token: T.val });
+  assert.equal(kai.status, 200);
+  assert.equal(kai.body.person.booth, "B7");
+  assert.equal(kai.body.person.pass.pending, true);
+  assert.deepEqual(kai.body.person.sessions.map((s) => s.title), ["Quantum Computing in Finance"]);
+  assert.equal((await call("GET", "/api/console/people/u-64b0000000000000000000aa", { token: T.val })).status, 404);
+
+  // Search the list: exact email or ticket ID finds them, the answer never repeats it; part of an email finds nobody.
+  for (const q of [SECRETS.email, SECRETS.email.toUpperCase(), SECRETS.ticket, `TECHFEST:${SECRETS.ticket.toUpperCase()}`]) {
+    const r = await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.val });
+    assert.deepEqual(r.body.rows.map((x) => x.name), ["Mara Delegate"], q);
+    assertSafe(r.body, `list q=${q}`);
+  }
+  for (const q of ["mara.secret", "example.com", "beefcafe", SECRETS.code, "4165550199", "cs_test"]) {
+    const r = await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.val });
+    assert.equal(r.body.total, 0, q);
+  }
+  assert.deepEqual((await call("GET", "/api/console/people?q=example%20bank", { token: T.val })).body.rows.map((x) => x.name), ["Mara Delegate"]);
+
+  // The search box: People only, safe; an exact email / ticket ID never echoed.
+  for (const q of ["mara", SECRETS.email, SECRETS.ticket, SECRETS.guestEmail]) {
+    for (const method of ["POST", "GET"]) {
+      const r = method === "POST" ? await call("POST", "/api/console/search", { token: T.val, body: { q } })
+        : await call("GET", `/api/console/search?q=${encodeURIComponent(q)}`, { token: T.val });
+      assert.equal(r.status, 200, `${method} ${q}`);
+      assert.deepEqual(r.body.groups.map((g) => g.key), ["people"], `${method} ${q}`);
+      assertSafe(r.body, `search ${method} ${q}`);
+    }
+  }
+  const staffSearch = await call("POST", "/api/console/search", { token: T.sam, body: { q: SECRETS.ticket } });
+  assert.ok(staffSearch.body.groups.some((g) => g.key === "tickets"), "staff keep the Tickets group");
+});
+
+test("a volunteer can't filter or sort by money, codes, RSVP emails or engagement, and can't force a rebuild", { skip }, async () => {
+  const get = async (qs) => (await call("GET", `/api/console/people${qs}`, { token: T.val })).body;
+  const all = await get("");
+  for (const qs of ["?value=above", "?value=below", "?status=paid", "?status=complimentary", "?rsvpEmail=yes", "?rsvpEmail=opened", "?attending=yes",
+    "?attending=opened", "?appHidden=yes", "?rsvp=form", "?refresh=1"]) {
+    const r = await get(qs);
+    assert.equal(r.total, all.total, qs);
+  }
+  for (const qs of ["?sort=value", "?sort=code", "?sort=status", "?sort=rsvpEmail", "?sort=attending"]) {
+    assert.deepEqual((await get(qs)).rows.map((x) => x.id), all.rows.map((x) => x.id), qs);
+  }
+  assert.deepEqual((await get("?type=speaker")).rows.map((x) => x.name), ["Kai Speaker"]);
+  assert.deepEqual((await get("?vip=yes")).rows.map((x) => x.name), ["Mara Delegate"]);
+  // Normal pages only: there's no "all" size.
+  const big = await get("?size=all&limit=100000&page=0");
+  assert.equal(big.size, 50);
+});
+
+test("a volunteer can't write anything: every change, send, export, delete and logo upload is refused and nothing changes", { skip }, async () => {
+  const id = `u-${ID.mara}`;
+  const refused = [
+    ["PATCH", `/api/console/people/${id}`, { name: "Changed Name", vip: false }],
+    ["PATCH", `/api/console/people/${id}/passes/${SECRETS.ticket}`, { extras: { gala: false } }],
+    ["PUT", `/api/console/people/${id}/rsvp`, { days: ["day1"], options: [] }],
+    ["DELETE", `/api/console/people/${id}`, { confirmName: "Mara Delegate" }],
+    ["POST", `/api/console/people/${id}/reminder`, {}],
+    ["POST", `/api/console/people/${id}/nudge`, {}],
+    ["POST", `/api/console/people/${id}/app-invite`, {}],
+    ["POST", `/api/console/people/${id}/app-hide`, { reason: "x" }],
+    ["POST", `/api/console/people/${id}/app-unhide`, {}],
+    ["GET", `/api/console/people/${id}/delete-plan`],
+    ["POST", "/api/console/people/reminder", { confirm: "SEND", expected: 1 }],
+    ["POST", "/api/console/people/nudge", { confirm: "SEND", expected: 1 }],
+    ["GET", "/api/console/people/reminder"], ["GET", "/api/console/people/nudge"], ["GET", "/api/console/people/export"],
+    ["GET", "/api/console/people/eligible"], ["GET", "/api/console/people/app-hidden"],
+    ["GET", "/api/console/companies/candidates?name=Example%20Bank"],
+    ["POST", "/api/console/companies/logo", { name: "Example Bank", url: "https://example.com/logo.png" }],
+    ["POST", "/api/console/companies/logo/clear", { personId: id }],
+    ["HEAD", "/api/console/people"],
+    ["POST", "/api/console/people", {}], ["PUT", `/api/console/people/${id}`, {}],
+    ["POST", "/api/console/me/password", { current: "a long enough passphrase", next: "another long passphrase" }],
+    ["PUT", "/api/console/app-content/home.announcement", { value: "Hello from a volunteer" }],
+  ];
+  for (const [method, url, body] of refused) {
+    const r = await call(method, url, { token: T.val, body });
+    if (method === "HEAD") assert.equal(r.status, 403, url);
+    else assert.ok(isForbidden(r), `${method} ${url} → ${r.status} ${r.text.slice(0, 80)}`);
+  }
+  const mara = await M.User.findById(ID.mara).lean();
+  assert.equal(mara.name, "Mara Delegate");
+  assert.equal(mara.vip, true);
+  assert.equal(await M.CampaignSend.countDocuments({}), 1);
+  assert.equal(await M.AppContent.countDocuments({ key: "home.announcement" }), 0);
+  assert.equal(await M.AdminAudit.countDocuments({ adminName: "Val Volunteer" }), 0);
+});
+
+test("who gets the panel: a volunteer's password sign-in only; emailed code / pass ID, the volunteer type on an attendee, suspended: no", { skip }, async () => {
+  for (const t of [T.valEmail, T.valTicket]) {
+    for (const [m, u, b] of [["GET", "/api/console/people"], ["GET", `/api/console/people/u-${ID.mara}`], ["POST", "/api/console/search", { q: "mara" }], ["GET", "/api/console/me"]]) {
+      const r = await call(m, u, { token: t, body: b });
+      assert.deepEqual([r.status, r.body.code], [403, "password_required"], `${m} ${u}`);
+    }
+    // Everything else: a volunteer is refused however they signed in.
+    assert.ok(isForbidden(await call("GET", "/api/console/stats", { token: t })));
+  }
+  for (const [m, u, b] of [["GET", "/api/console/people"], ["GET", `/api/console/people/u-${ID.mara}`], ["POST", "/api/console/search", { q: "mara" }], ["GET", "/api/console/me"]]) {
+    const vic = await call(m, u, { token: T.vic, body: b });
+    assert.deepEqual([vic.status, vic.body.error], [403, "Admin only"], `type-only volunteer ${m} ${u}`);
+    const att = await call(m, u, { token: T.mara, body: b });
+    assert.equal(att.status, 403, `attendee ${m} ${u}`);
+    const ban = await call(m, u, { token: T.ban, body: b });
+    assert.deepEqual([ban.status, ban.body.code], [403, "suspended"], `banned ${m} ${u}`);
+    assert.equal((await call(m, u, { body: b })).status, 401, `nobody ${m} ${u}`);
+    assert.equal((await call(m, u, { token: "not.a.token", body: b })).status, 401, `bad token ${m} ${u}`);
+  }
+  assert.deepEqual([(await call("GET", "/api/console/stats", { token: T.vic })).body.error], ["Admin only"]);
+  // Staff signed in with an emailed code: unchanged (password_required).
+  const { default: jwt } = await import("jsonwebtoken");
+  const samEmail = jwt.sign({ id: String(ID.sam), via: "email" }, process.env.JWT_SECRET, { expiresIn: "1h" });
+  for (const u of ["/api/console/people", "/api/console/stats"]) {
+    const r = await call("GET", u, { token: samEmail });
+    assert.deepEqual([r.status, r.body.code], [403, "password_required"], u);
+  }
+});
+
+test("staff and management: People, the profile and the search exactly as before", { skip }, async () => {
+  const id = `u-${ID.mara}`;
+  for (const [who, t] of [["staff", T.sam], ["management", T.mia]]) {
+    const list = await call("GET", "/api/console/people", { token: t });
+    assert.equal(list.status, 200, who);
+    assert.equal(list.body.volunteer, undefined);
+    const row = list.body.rows.find((r) => r.name === "Mara Delegate");
+    assert.equal(row.email, SECRETS.email, who);
+    assert.equal(row.pass.ticketId, SECRETS.ticket, who);
+    assert.equal(row.pass.code.code, SECRETS.code, who);
+    assert.ok("rsvpEmail" in row && "engagement" in row && "attending" in row && "valueBand" in row, who);
+    assert.ok("byValue" in list.body.counts && "rsvpEmailSent" in list.body.counts, who);
+    assert.equal(list.body.stripe, "off");
+    const prof = await call("GET", `/api/console/people/${id}`, { token: t });
+    assert.equal(prof.status, 200, who);
+    assert.ok(prof.body.contactCard.some((c) => c.value.includes(SECRETS.contactPhone)), who);
+    assert.ok(prof.body.outreach && prof.body.appHide && prof.body.person.edit, who);
+    assert.equal(prof.body.person.appHidden.reason, SECRETS.hideReason, who);
+    const me = await call("GET", "/api/console/me", { token: t });
+    assert.deepEqual(Object.keys(me.body).sort(), ["email", "id", "isManagement", "name", "staffRole"], who);
+    assert.equal(me.body.staffRole, who);
+    assert.equal((await call("GET", "/api/console/stats", { token: t })).status, 200, who);
+  }
+  const omar = await call("GET", `/api/console/people/a-${ID.omar}`, { token: T.mia });
+  assert.equal(omar.body.person.passes[0].manualValue, 1234.56, "management still sees the manual value");
+  const omarStaff = await call("GET", `/api/console/people/a-${ID.omar}`, { token: T.sam });
+  assert.equal(omarStaff.body.person.passes[0].manualValue, undefined, "staff still don't");
+  const csv = await call("GET", "/api/console/people/export", { token: T.mia });
+  assert.equal(csv.status, 200);
+  assert.match(csv.text, /mara\.secret@example\.com/);
+  assert.equal((await call("GET", "/api/console/people/export", { token: T.sam })).status, 403, "the CSV stays management's");
+});
+
+test("a volunteer's reads are limited: 120 a minute per account", { skip }, async () => {
+  let ok = 0;
+  for (let i = 0; i < 120; i++) {
+    const r = await call("GET", i % 2 ? "/api/console/people" : `/api/console/people/u-${ID.mara}`, { token: T.rae });
+    if (r.status === 200) ok += 1;
+  }
+  assert.equal(ok, 120);
+  const r = await call("GET", "/api/console/people", { token: T.rae });
+  assert.deepEqual([r.status, r.body.code], [429, "rate_limited"]);
+  // Another volunteer, and staff, aren't held up.
+  assert.equal((await call("GET", "/api/console/people", { token: T.val })).status, 200);
+  for (let i = 0; i < 3; i++) assert.equal((await call("GET", "/api/console/people", { token: T.sam })).status, 200);
+});
+
+test("the kill switch is gone: the site is always live, whatever the old row says, and its key can't be written", { skip }, async () => {
+  const row = await M.AppContent.findOne({ key: "site.kill" }).lean();
+  assert.equal(row.value.enabled, true, "the old row says ON");
+  const status = await call("GET", "/api/status");
+  assert.deepEqual([status.status, status.body], [200, { live: true, message: "" }]);
+  for (const t of [T.val, T.sam, T.mara]) assert.deepEqual((await call("GET", "/api/status", { token: t })).body, { live: true, message: "" });
+  // The public site and the apps keep working (no 503 maintenance anywhere).
+  assert.equal((await call("GET", "/api/rsvp/options")).status, 200);
+  assert.equal((await call("GET", "/api/app/content")).status, 200);
+  assert.equal((await call("GET", "/api/social/feed", { token: T.mara })).status === 503, false);
+
+  for (const [who, t] of [["management", T.mia], ["staff", T.sam]]) {
+    for (const k of ["site.kill", "SITE.KILL"]) {
+      const r = await call("PUT", `/api/console/app-content/${k}`, { token: t, body: { value: { enabled: false } } });
+      assert.deepEqual([r.status, r.body.code], [410, "kill_switch_removed"], `${who} ${k}`);
+    }
+    for (const m of ["GET", "POST", "PUT", "DELETE"]) {
+      const r = await call(m, "/api/console/kill-switch", { token: t, body: { enabled: true, password: "a long enough passphrase" } });
+      assert.deepEqual([r.status, r.body.code], [410, "kill_switch_removed"], `${who} ${m}`);
+    }
+  }
+  assert.ok(isForbidden(await call("PUT", "/api/console/app-content/site.kill", { token: T.val, body: { value: { enabled: true } } })));
+  const after_ = await M.AppContent.findOne({ key: "site.kill" }).lean();
+  assert.deepEqual(after_.value, row.value);
+  // The texts and switches page doesn't list it.
+  const content = await call("GET", "/api/console/app-content", { token: T.mia });
+  assert.ok(!content.body.some((c) => c.key === "site.kill"));
+  // Refusals are audited (who tried), never a switch.
+  assert.ok(await M.AdminAudit.countDocuments({ action: "edit_app_text_refused", detail: "kill_switch_removed" }) >= 4);
+  assert.equal(await M.AdminAudit.countDocuments({ action: /^kill_switch/ }), 0);
+});

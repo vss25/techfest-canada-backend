@@ -21,6 +21,11 @@
    `seeAll` where a full page with its own search exists.
    Amounts (what a pass was paid) go to management only. Search
    terms are never logged (see runSearch's `log`).
+   Volunteers (the volunteer panel, Oct 23 2026, viewer { volunteer:
+   true }): the People group only, without emails in the subtitle or
+   the staff-only "Hidden from app" badge; an exact email or ticket ID
+   still finds the person, but the answer never repeats it (query.text
+   is "" and there's no "See all" link with it in the address).
 ========================================================= */
 
 import { normalizeTicketId } from "./ticketAccess.js";
@@ -137,13 +142,13 @@ const upperId = (id) => String(id || "").toUpperCase();
 
 /**
  * Every group, in the order they're shown. `access`: "staff" = everyone who can open the admin panel (role admin,
- * management or not; volunteers never reach it), "management" = management only, like their pages. `sources`: what
- * the group is built from (the first one must answer, others are optional).
+ * management or not), "management" = management only, like their pages. `volunteer: true`: also the volunteer
+ * panel's (People only). `sources`: what the group is built from (the first one must answer, others are optional).
  */
 export const GROUPS = [
   { key: "tickets", label: "Tickets", access: "staff", sources: ["directory", "ticketDocs"], exactOnly: true,
     seeAll: (pq) => ({ label: "See it in Tickets", link: `/admin/attendees?q=${enc(pq.text)}` }) },
-  { key: "people", label: "People", access: "staff", sources: ["directory"],
+  { key: "people", label: "People", access: "staff", volunteer: true, sources: ["directory"],
     seeAll: (pq) => ({ label: "See all in People", link: `/admin/people?q=${enc(pq.text)}` }) },
   { key: "passes", label: "Speaker, issued and exhibitor passes", access: "staff", sources: ["directory"] },
   { key: "rsvps", label: "RSVPs", access: "staff", sources: ["directory"],
@@ -166,8 +171,9 @@ export const GROUPS = [
     seeAll: () => ({ label: "Open Staff accounts", link: "/admin/staff" }) },
 ];
 
-/** The groups this viewer may search: { management } → group definitions. */
+/** The groups this viewer may search: { management } | { volunteer: true } → group definitions. */
 export function groupsFor(viewer = {}) {
+  if (viewer.volunteer === true) return GROUPS.filter((g) => g.volunteer === true);
   return GROUPS.filter((g) => g.access === "staff" || (g.access === "management" && viewer.management === true));
 }
 
@@ -182,8 +188,9 @@ const ticketHit = (pq, id) => !!pq.ticket && normalizeTicketId(id) === pq.ticket
 /** CA$849.00 (management only). */
 export const money = (v) => (typeof v === "number" && Number.isFinite(v) ? `CA$${v.toFixed(2)}` : "");
 
-/** People: accounts, pass holders, website speakers and RSVP-only people, by the directory's merged person ids. */
-export function peopleItems(people = [], pq) {
+/** People: accounts, pass holders, website speakers and RSVP-only people, by the directory's merged person ids.
+    `volunteer`: no email in the subtitle and no "Hidden from app" badge (the volunteer panel). */
+export function peopleItems(people = [], pq, { volunteer = false } = {}) {
   const out = [];
   for (const p of people) {
     const exact = (pq.email && personEmails(p).has(pq.email))
@@ -192,10 +199,10 @@ export function peopleItems(people = [], pq) {
     if (!score) continue;
     const work = [p.jobTitle, p.company].filter(Boolean).join(", ");
     // "Hidden from app" first, so staff searching for someone see it straight away (services/appHide.js).
-    const badges = [...(p.appHidden ? ["Hidden from app"] : []), ...(p.types || []).filter((t) => t !== "attendee").map((t) => TYPE_LABELS[t] || t), ...(p.vip ? ["VIP"] : [])].slice(0, 3);
+    const badges = [...(p.appHidden && !volunteer ? ["Hidden from app"] : []), ...(p.types || []).filter((t) => t !== "attendee").map((t) => TYPE_LABELS[t] || t), ...(p.vip ? ["VIP"] : [])].slice(0, 3);
     out.push({
       type: "person", id: p.id, title: p.name, score, exact: !!exact,
-      subtitle: join(work, p.email, p.primary ? p.primary.label : KIND_LABELS[p.kind] || ""),
+      subtitle: join(work, volunteer ? "" : p.email, p.primary ? p.primary.label : KIND_LABELS[p.kind] || ""),
       link: personLink(p), badges,
     });
   }
@@ -496,7 +503,7 @@ function cmsOnce(s, pq) {
 /** Group key → (sources' answers, query, viewer) → items. */
 const BUILDERS = {
   tickets: (s, pq, v) => ticketItems(s.directory.people, pq, { extra: s.ticketDocs || [], amounts: v.management === true }),
-  people: (s, pq) => peopleItems(s.directory.people, pq),
+  people: (s, pq, v) => peopleItems(s.directory.people, pq, { volunteer: v.volunteer === true }),
   passes: (s, pq) => passItems(s.directory.people, pq),
   rsvps: (s, pq) => rsvpItems(s.directory.rsvps, pq),
   sessions: (s, pq) => cmsOnce(s, pq).sessions,
@@ -513,7 +520,8 @@ const BUILDERS = {
 /**
  * Search everything this viewer may see.
  *   q        the query as typed
- *   viewer   { management: boolean, isManagement?: (user) => boolean (for the Staff accounts labels) }
+ *   viewer   { management: boolean, isManagement?: (user) => boolean (for the Staff accounts labels) },
+ *            or { volunteer: true } (the volunteer panel: People only, see groupsFor / peopleItems)
  *   sources  { directory, ticketDocs, cms, nominations, forms, brochures, pavilion, staff }: (pq) => Promise of rows
  *            (directory → { people, rsvps }); only the ones the allowed groups need are called, each once
  *   log      where failures are reported: the source's name and the error's name / code only, never the query
@@ -524,7 +532,9 @@ const BUILDERS = {
 export async function runSearch({ q, viewer = {}, sources = {}, cap = GROUP_CAP, timeoutMs = SOURCE_TIMEOUT_MS, log = console, now = () => Date.now() } = {}) {
   const started = now();
   const pq = parseQuery(q);
-  const base = { query: { text: pq.text, exact: pq.email ? "email" : pq.ticket ? "ticket" : "" }, minChars: SEARCH_MIN_CHARS };
+  // A volunteer's answer never repeats an email or a ticket ID they searched for.
+  const hideText = viewer.volunteer === true && !!(pq.email || pq.ticket);
+  const base = { query: { text: hideText ? "" : pq.text, exact: pq.email ? "email" : pq.ticket ? "ticket" : "" }, minChars: SEARCH_MIN_CHARS };
   if (pq.tooShort) return { ...base, tooShort: true, groups: [], failed: [], tookMs: 0 };
 
   const allowed = groupsFor(viewer).filter((g) => !g.exactOnly || pq.ticket);
@@ -561,7 +571,7 @@ export async function runSearch({ q, viewer = {}, sources = {}, cap = GROUP_CAP,
     groups.push({
       key: g.key, label: g.label, total: items.length, more: items.length > cap,
       items: items.slice(0, cap).map(({ score: _s, ...it }) => it),
-      ...(g.seeAll ? { seeAll: g.seeAll(pq) } : {}),
+      ...(g.seeAll && !hideText ? { seeAll: g.seeAll(pq) } : {}),
     });
   }
   // An exact hit (that email, that ticket ID) puts its group first; otherwise the fixed order.

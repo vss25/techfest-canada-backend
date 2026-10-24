@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { toSanityPatch, CMS_TYPES } from "../services/cmsSchema.js";
-import { allowedWhileOff } from "../services/killSwitch.js";
 import { avatarPath, decodeDataUrl, postDTO } from "../services/socialHelpers.js";
 import { sanitizeProfilePatch } from "../routes/profile.js";
 import { upgradeQuote } from "../routes/payments.js";
@@ -37,13 +36,6 @@ test("partners take a Partners-page group, and only known ones", () => {
   assert.equal(toSanityPatch("partner", { matrixGroup: "quantum" }, { creating: false }).set.matrixGroup, "quantum");
   assert.ok(toSanityPatch("partner", { matrixGroup: "nope" }, { creating: false }).error);
   assert.deepEqual(toSanityPatch("partner", { matrixGroup: "" }, { creating: false }).unset, ["matrixGroup"]);
-});
-
-test("kill switch keeps staff, sign-in and webhooks working", () => {
-  for (const ok of ["/api/status", "/api/console/kill-switch", "/api/cms/speaker", "/api/admin/attendees",
-                    "/api/webhook", "/api/auth/login", "/api/auth/me", "/api/checkin/scan"]) assert.ok(allowedWhileOff(ok), ok);
-  for (const off of ["/api/social/feed", "/api/auth/register", "/api/payments/create-checkout", "/api/app/content", "/api/statusx"])
-    assert.ok(!allowedWhileOff(off), off);
 });
 
 test("upgrade charges the difference only", () => {

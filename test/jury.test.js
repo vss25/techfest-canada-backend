@@ -12,7 +12,6 @@ const A = await import("../services/juryAuth.js");
 const Copy = await import("../services/juryEmailCopy.js");
 const Mail = await import("../services/juryEmail.js");
 const { hashCode } = await import("../services/emailLink.js");
-const { allowedWhileOff } = await import("../services/killSwitch.js");
 
 const crit = J.DEFAULT_CRITERIA;
 
@@ -263,8 +262,6 @@ test("jury tokens: their own key and audience; a staff token never opens the por
   assert.equal(A.passwordProblem("short"), "Use at least 10 characters.");
   assert.equal(A.passwordProblem("jo@example.com", { email: "jo@example.com" }), "Don't use your email address as the password.");
   assert.equal(A.passwordProblem("a long enough passphrase"), "");
-  assert.equal(allowedWhileOff("/api/jury/me"), true);
-  assert.equal(allowedWhileOff("/api/juryx"), false);
 });
 
 test("email wording: placeholders per juror, defaults aren't stored, every field escaped", () => {

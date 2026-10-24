@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement, requirePanel, isManagement, isVolunteerPanel } from "../middleware/adminAuth.js";
 import { staffDirectoryHide } from "../services/directoryHide.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage, SessionRegistration, SessionQuestion,
@@ -24,7 +24,7 @@ import {
 } from "../services/appRights.js";
 import { rightsContext, matrixInfo, loadMatrix, saveMatrix, loadFlags } from "../services/rightsStore.js";
 import { loadExhibitors } from "../services/exhibitorCache.js";
-import { getKillState, setKillState, DEFAULT_MESSAGE } from "../services/killSwitch.js";
+import { isRetiredContentKey, killSwitchGone, KILL_SWITCH_REMOVED, KILL_SWITCH_REMOVED_CODE } from "../services/siteStatus.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
 import Promo from "../models/Promo.js";
@@ -84,13 +84,21 @@ import { HIDE_SELECT, hiddenState, oids, personHide } from "../services/appHide.
    Everything here is restricted to role "admin". Viewing a
    person's private messages and every change is written to the
    audit log, which the console also shows.
+   The volunteer panel (Oct 23 2026, middleware/adminAuth.js
+   requirePanel): volunteer accounts signed in with their
+   password reach GET /me and the search (people only, below)
+   here; everything after router.use(requireAdmin) answers them
+   403 volunteer_forbidden.
 ========================================================= */
 
 const router = express.Router();
-router.use(requireAdmin);
 
-/* Who am I, and what may I see? (The panel hides sales/money for non-management staff.) */
-router.get("/me", (req, res) => {
+/* Who am I, and what may I see? (The panel hides sales/money for non-management staff; a volunteer sees People only.) */
+router.get("/me", requirePanel, (req, res) => {
+  if (isVolunteerPanel(req)) {
+    return res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
+                      staffRole: "volunteer", isManagement: false, panelRole: "volunteer" });
+  }
   res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
              staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user) });
 });
@@ -100,7 +108,9 @@ router.get("/me", (req, res) => {
    → { query: { text, exact: "" | "email" | "ticket" }, tooShort, minChars, groups: [{ key, label, items: [{ type, id,
        title, subtitle, link, badges?, exact?, meta? }], total, more, seeAll? }], failed: [{ key, label, reason }], tookMs }
    Same rights as the pages: every staff member sees what their pages show; Staff accounts and amounts paid only
-   management (volunteers never get here: requireAdmin). At most 5 per group. 120 searches a minute per staff member;
+   management. Volunteers (the volunteer panel, requirePanel) get the People group only, in the volunteer's safe form:
+   no email in the subtitle, no staff-only badge, and an exact email or ticket ID finds the person without the answer
+   repeating it (query.text "", no "See all" link; services/adminSearch.js). At most 5 per group. 120 searches a minute per staff member;
    each source has 5 s (services/adminSearch.js), and a failed one only leaves its own groups out. Never logged
    with the terms. Matching and groups: services/adminSearch.js; what's read: services/adminSearchSources.js. */
 const searchSources = makeSearchSources({ directory: () => peopleDirectory() });
@@ -111,8 +121,9 @@ async function globalSearch(req, res) {
   }
   const q = req.method === "POST" ? req.body?.q : req.query.q;
   const management = isManagement(req.user);
+  const viewer = isVolunteerPanel(req) ? { volunteer: true } : { management, isManagement };
   try {
-    const out = await runSearch({ q, viewer: { management, isManagement }, sources: searchSources });
+    const out = await runSearch({ q, viewer, sources: searchSources });
     res.set("Cache-Control", "no-store");
     res.json(out);
   } catch (err) {
@@ -120,8 +131,11 @@ async function globalSearch(req, res) {
     res.status(500).json({ error: "Search isn't working right now. Try again." });
   }
 }
-router.get("/search", globalSearch);
-router.post("/search", globalSearch);
+router.get("/search", requirePanel, globalSearch);
+router.post("/search", requirePanel, globalSearch);
+
+// Everything below: staff and management only (a volunteer's token gets 403 volunteer_forbidden).
+router.use(requireAdmin);
 
 const isId = (s) => mongoose.isValidObjectId(String(s || ""));
 const rx = (q) => new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -471,6 +485,11 @@ router.get("/app-content", async (req, res) => {
 });
 
 router.put("/app-content/:key", async (req, res) => {
+  // The kill switch's key (services/siteStatus.js): removed Oct 23 2026, never written again, whoever asks.
+  if (isRetiredContentKey(req.params.key)) {
+    await audit(req, "edit_app_text_refused", "content", String(req.params.key).slice(0, 60), KILL_SWITCH_REMOVED_CODE);
+    return res.status(410).json({ error: KILL_SWITCH_REMOVED, code: KILL_SWITCH_REMOVED_CODE });
+  }
   const c = cleanContent(req.params.key, req.body?.value);
   if (!c) {
     // A known key whose value can't be saved (e.g. the 2027 journey, services/stayJourney.js) says why.
@@ -674,29 +693,10 @@ router.post("/me/password", async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Kill switch (website + app offline) ----------
-   Needs the signed-in admin's own password, or KILL_SWITCH_PASSWORD
-   if that is set on the server. */
-router.get("/kill-switch", async (req, res) => {
-  const s = await getKillState();
-  res.json({ enabled: s.enabled, message: s.message || DEFAULT_MESSAGE, by: s.by || "", since: s.since || null });
-});
-
-router.post("/kill-switch", requireManagement, async (req, res) => {
-  const { enabled, password, message } = req.body || {};
-  if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
-  const pw = String(password || "");
-  const me = await User.findById(req.user._id);
-  const okOwn = me.password ? await bcrypt.compare(pw, me.password) : false;
-  const okEnv = !!process.env.KILL_SWITCH_PASSWORD && pw === process.env.KILL_SWITCH_PASSWORD;
-  if (!okOwn && !okEnv) {
-    await audit(req, "kill_switch_denied", "site", "", enabled ? "on" : "off");
-    return res.status(403).json({ error: me.password ? "Wrong password" : "Set a password for your account first (Staff → Change password)" });
-  }
-  const s = await setKillState({ enabled, message: message || DEFAULT_MESSAGE, by: req.user.name || req.user.email });
-  await audit(req, enabled ? "kill_switch_on" : "kill_switch_off", "site", "", s.message);
-  res.json({ enabled: s.enabled, message: s.message, by: s.by, since: s.since });
-});
+/* ---------- Kill switch: removed (Oct 23 2026, services/siteStatus.js) ----------
+   It took the website and the apps offline; nobody can switch it on any more, management included.
+   Any method → 410 { error, code: "kill_switch_removed" } (an admin panel open from before gets a clear answer). */
+router.all("/kill-switch", killSwitchGone);
 
 /* ---------- Tickets (staff view) ----------
    Hiding a ticket only removes it from staff lists and analytics. The
@@ -968,7 +968,7 @@ router.patch("/form-submissions/:id", async (req, res) => {
    (`verifiedCounts`: verified passes only). Bots are never listed or counted;
    possible duplicates (`duplicateOf`) are listed but not counted until staff
    resolve them (POST /rsvps/:id/resolve). `catalog` is GET /api/rsvp/options,
-   so this page keeps its labels while the kill switch has the public API off. */
+   so this page has the labels without a second call. */
 /** Map(ticket ID → code) for these RSVPs' tickets (one query each for accounts, passes and promo codes). */
 const rsvpCodes = (rows) => codesForTickets(rows.map(rsvpTicketId), { User, Attendee, Promo });
 

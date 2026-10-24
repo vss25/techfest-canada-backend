@@ -128,10 +128,15 @@ const search = (token, q) => call("POST", "/api/console/search", { token, body: 
 const keys = (b) => b.groups.map((g) => g.key);
 const group = (b, k) => b.groups.find((g) => g.key === k);
 
-test("who may search: staff and management only, with their password sign-in", { skip }, async () => {
+test("who may search: staff and management, with their password sign-in; volunteers People only (the volunteer panel)", { skip }, async () => {
   assert.equal((await search(null, "kai")).status, 401);
   assert.equal((await search(T.ann, "kai")).status, 403, "an attendee");
-  assert.equal((await search(T.val, "kai")).status, 403, "a volunteer: the app's check-in only");
+  const vol = await search(T.val, "kai");
+  assert.equal(vol.status, 200, "a volunteer: the volunteer panel's People look-up");
+  assert.deepEqual(keys(vol.body), ["people"]);
+  const volEmail = await search(T.val, "eve.exhibitor@example.com");
+  assert.deepEqual(volEmail.body.groups[0].items.map((i) => i.title), ["Eve Exhibitor"]);
+  assert.ok(!JSON.stringify(volEmail.body).includes("eve.exhibitor@example.com"), "never echoed to a volunteer");
   const viaCode = await search(T.samEmailCode, "kai");
   assert.deepEqual([viaCode.status, viaCode.body.code], [403, "password_required"]);
   for (const t of [T.sam, T.mia]) assert.equal((await search(t, "kai")).status, 200);

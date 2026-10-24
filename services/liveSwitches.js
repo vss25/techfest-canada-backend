@@ -5,7 +5,7 @@ import { CONTENT_KEYS } from "./adminHelpers.js";
    Polls, Q&A and pass-upgrade switches (admin → App content →
    switches). The apps hide what's off; these routes refuse it
    too, so switching off takes effect at once. Cached for 10 s
-   like the kill switch so votes don't each hit the database
+   so votes don't each hit the database
    (a change from the admin clears the cache on this server).
    The default is CONTENT_KEYS': polls and Q&A on, upgrades off.
 ========================================================= */

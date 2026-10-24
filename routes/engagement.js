@@ -13,7 +13,7 @@ import { trackLater } from "../services/engagementStore.js";
    recorded only when the token is ours (services/trackToken.js), at
    most a few times per token in 15 minutes, after the image has gone,
    and nothing about the visitor is kept. Mounted in server.js before
-   the kill switch, so emails never show a broken image.
+   the API routes, so emails never show a broken image.
    What it means and its limits: services/engagement.js.
 ========================================================= */
 
