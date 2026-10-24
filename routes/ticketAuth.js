@@ -3,10 +3,13 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { normalizeTicketId, lastNameMatches, latestTicket, makeLimiter, SHARED_ADDRESS, ticketGuesses, ticketGuessKey } from "../services/ticketAccess.js";
-import { isTeam, isVolunteer } from "../services/teamRoles.js";
+import { canUseStaffSignIn, effectiveTypes, isStaff, isVolunteer } from "../services/teamRoles.js";
 import { tokenClaims, cleanVia, VIA_TICKET } from "../services/signInMethod.js";
 
-const teamPasswordOnly = (u) => (isVolunteer(u)
+/* A ticket ID never opens an account that can use the apps' staff sign-in (canUseStaffSignIn: role admin / volunteer,
+   or the Staff / Volunteer type staff gave an attendee account in Admin › People): those accounts can check people in.
+   They sign in with an emailed code or their password. */
+const teamPasswordOnly = (u) => (isVolunteer(u) || (!isStaff(u) && !effectiveTypes(u).includes("staff"))
   ? "Volunteer accounts sign in with a code sent to their email or their password."
   : "Staff accounts sign in with a code sent to their email or their password.");
 
@@ -113,7 +116,7 @@ router.post("/ticket-login", async (req, res) => {
       if (!(await ticketNameMatches(found, lastName))) return res.status(401).json({ error: NO_MATCH });
       // Staff accounts reach the admin panel and volunteers can check tickets in: a ticket ID
       // never opens them. They sign in with an emailed code or their password.
-      if (isTeam(found.owner)) return res.status(400).json({ error: teamPasswordOnly(found.owner) });
+      if (canUseStaffSignIn(found.owner)) return res.status(400).json({ error: teamPasswordOnly(found.owner) });
       limiter.reset(key);
       return res.json({ token: sign(found.owner, { via: VIA_TICKET }), created: false });
     }
@@ -126,7 +129,7 @@ router.post("/ticket-login", async (req, res) => {
     if (!user && a.email) user = await User.findOne({ email: String(a.email).toLowerCase() });
     // Same rule as above: a ticket ID never opens a staff account (staff-issued passes such as
     // Speaker Passes can carry a staff member's email).
-    if (user && isTeam(user)) return res.status(400).json({ error: teamPasswordOnly(user) });
+    if (user && canUseStaffSignIn(user)) return res.status(400).json({ error: teamPasswordOnly(user) });
     let created = false;
     if (!user) {
       user = new User({

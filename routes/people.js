@@ -49,6 +49,8 @@ import EmailTemplate from "../models/EmailTemplate.js";
 import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites } from "../services/appInvite.js";
 import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
 import { loadSwag } from "../services/swag.js";
+import { deskGuestChanged, deskInclusionsChanged } from "../services/checkinDeskLog.js";
+import { guestView } from "../services/checkinDesk.js";
 import { accessOf } from "../services/rightsStore.js";
 import {
   HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
@@ -207,23 +209,30 @@ async function loadDirectory() {
 }
 
 const DIR_TTL_MS = 20 * 1000;
-let dir = { at: 0, data: null, pending: null, gen: 0 };
-/** The directory (also read by the admin search, routes/console.js /search). */
+let dir = { at: 0, startedAt: 0, data: null, pending: null, gen: 0 };
+/** The directory (also read by the admin search, routes/console.js /search). `fresh`: a new read now (the check-in
+    desk asks for one only when another instance changed a guest, one at a time). A read keeps its copy only when no
+    read that started later has finished first. */
 export async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   if (!fresh && dir.data && Date.now() - dir.at < maxAgeMs) return dir.data;
   if (dir.pending && !fresh) return dir.pending;
   const gen = dir.gen;
+  const startedAt = Date.now();
   const pending = loadDirectory().then((data) => {
-    // A change made while this was loading (invalidate) wins: don't keep the older copy.
-    if (dir.gen === gen) dir = { at: Date.now(), data, pending: null, gen };
+    // A change made while this was loading (invalidate) wins: don't keep the older copy; nor over a newer read's.
+    if (dir.gen === gen && startedAt >= dir.startedAt) dir = { at: Date.now(), startedAt, data, pending: dir.pending === pending ? null : dir.pending, gen };
+    else if (dir.pending === pending) dir.pending = null;
     return data;
   }).catch((err) => { if (dir.pending === pending) dir.pending = null; throw err; });
   dir.pending = pending;
   return pending;
 }
-const invalidate = () => { dir = { at: 0, data: null, pending: null, gen: dir.gen + 1 }; };
+const invalidate = () => { dir = { at: 0, startedAt: 0, data: null, pending: null, gen: dir.gen + 1 }; };
 /** After a change made elsewhere (Give a pass, Exhibitor passes): the next read builds the directory again. */
 export const forgetPeople = () => invalidate();
+/** How many times this instance's directory was invalidated (a People change made here): the check-in desk rebuilds
+    its guest index when this moves (routes/checkinDesk.js). */
+export const peopleGeneration = () => dir.gen;
 
 /**
  * Media = Yes for the people holding these passes (Attendee ids, the directory's `a-<id>` aliases), for the pass
@@ -249,6 +258,63 @@ export async function mediaOfPasses(ids = [], { waitMs = 2500 } = {}) {
   }
 }
 
+/**
+ * One person as the database has them now (the check-in desk's meal doors, Oct 23 2026): their account and pass
+ * records read again and joined with the directory's own rules (buildPeople, services/passExtras.js), so a switch
+ * staff just made on any server instance counts at once. `p`: their directory record (which records are theirs):
+ * the passes it lists, and any pass since on their account, claimed by it, sent to one of their email addresses or
+ * made for their speaker profile (a pass given a moment ago with Give a pass; buildPeople's name rule still decides
+ * whether it's theirs). Refunds aren't read (the caller leaves out what the directory knew as refunded). The person
+ * is found only by their own records (their main pass, account, passes, pass records, speaker profile), never as
+ * whoever else the email search found (a colleague's pass on a shared address); when none of them is theirs any more
+ * (their only pass hidden or deleted a moment ago), a person with no pass: nothing included. → the person record,
+ * or null (no `p`).
+ */
+export async function personNow(p) {
+  if (!p) return null;
+  const passIds = (p.passList || []).map((t) => t.ticketId).filter(Boolean);
+  const variants = (ids) => [...new Set(ids.flatMap((id) => [String(id), normalizeTicketId(id), normalizeTicketId(id).toUpperCase()]))];
+  const emails = [...new Set([...(p.emails || []), p.email, p.user?.email].map((e) => String(e || "").trim().toLowerCase()).filter((e) => e && !/@ticket\.thetechfestival\.com$/.test(e)))];
+  const or = [{ _id: { $in: (p.attendees || []).map((a) => a._id) } }, { ticketId: { $in: variants(passIds) } }];
+  if (emails.length) or.push({ email: { $in: emails } });
+  if (p.user?._id) or.push({ claimedBy: p.user._id });
+  if (p.speaker?._id) or.push({ speakerId: String(p.speaker._id) });
+  const first = await Attendee.find({ $or: or }).select(ATTENDEE_SELECT).lean();
+  const userIds = [...new Set([p.user?._id, ...first.map((a) => a.claimedBy)].filter(Boolean).map(String))];
+  const users = userIds.length ? await User.find({ _id: { $in: userIds } }).select(USER_SELECT).lean() : [];
+  const have = new Set(first.map((a) => String(a._id)));
+  const more = variants(users.flatMap((u) => (u.tickets || []).map((t) => t.ticketId)).filter(Boolean)).filter((id) => !first.some((a) => a.ticketId === id));
+  const extra = more.length ? (await Attendee.find({ ticketId: { $in: more } }).select(ATTENDEE_SELECT).lean()).filter((a) => !have.has(String(a._id))) : [];
+  const built = buildPeople({ users, attendees: [...first, ...extra], speakers: p.speaker ? [p.speaker] : [] });
+  const main = normalizeTicketId(p.primary?.ticketId || passIds[0] || "");
+  const own = [
+    main && `t-${main}`, p.user?._id && `u-${p.user._id}`, ...passIds.map((id) => `t-${normalizeTicketId(id)}`),
+    ...(p.attendees || []).map((a) => a?._id && `a-${a._id}`), p.speaker?._id && `s-${p.speaker._id}`,
+  ].filter(Boolean);
+  for (const id of own) {
+    const hit = built.byId.get(id);
+    if (hit) return hit;
+  }
+  return { id: p.id, kind: p.kind, name: p.name, types: [], passList: [], primary: null, attendees: [], user: null, speaker: null };
+}
+
+/** The directory's person for an id (t-<ticket ID>, u-…, a-…, s-…) as they are after a change made here: one fresh
+    directory read (the desk's next rebuild reuses it), at most `waitMs`. → the person, or null (slower, or gone). */
+export async function personAfterChange(id, { waitMs = 4000 } = {}) {
+  const raw = String(id || "");
+  const key = raw.startsWith("t-") ? `t-${normalizeTicketId(raw.slice(2))}` : raw;
+  let timer;
+  const slow = new Promise((ok) => { timer = setTimeout(() => ok(null), waitMs); timer.unref?.(); });
+  try {
+    const d = await Promise.race([directory(), slow]);
+    return d?.byId?.get(key) || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   const raw = String(id || "").slice(0, 80);
   const key = raw.startsWith("t-") ? `t-${normalizeTicketId(raw.slice(2))}` : raw; // t-<ticket ID>: from Ticket records
@@ -258,6 +324,11 @@ async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   if (!p && !fresh) { d = await directory({ fresh: true }); p = d.byId.get(key); }
   return p || null;
 }
+
+/** What a change sent the check-in desk app (its guest / inclusions event): `deskGuest`, the guest's whole desk row as
+    it is now (staff's view: inclusions across all their passes), and `deskSeq`, so the desk app uses it as it is and
+    never merges one pass's answer into it. Nothing when no row was sent (the desks reload). */
+const deskReply = (ev) => (ev?.guest ? { deskGuest: guestView(ev.guest, { staff: true }), deskSeq: ev.seq } : {});
 
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
   console.error("PEOPLE ERROR:", err);
@@ -1021,7 +1092,10 @@ router.patch("/:id", wrap(async (req, res) => {
   }
   invalidate();
   const after = await findPerson(p.id);
-  res.json({ ok: true, changed, person: after ? personRow(after) : null });
+  // The check-in desk app updates this guest (name, company, Media / VIP / Exhibitor marks, inclusions): the event
+  // carries their row from the directory just rebuilt, so every server instance and device has it at once.
+  const deskEv = changed.length ? await deskGuestChanged({ ticketIds: p.passList.map((x) => x.ticketId), user: req.user, person: after }) : null;
+  res.json({ ok: true, changed, person: after ? personRow(after) : null, ...deskReply(deskEv) });
 }));
 
 /* One pass of theirs: PATCH /:id/passes/:ticketId, any of
@@ -1060,6 +1134,8 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     await Attendee.updateMany({ ticketId: { $in: variants } }, onTicket(set, unset));
   };
   let did = false;
+  let deskInclusions = null;
+  let deskGuest = false;
   const warnings = [];
 
   // Validate first.
@@ -1099,6 +1175,9 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
       const what = x.key === "cxo" ? "CxO Breakfast" : x.label; // the CxO line reads as it always has
       await audit(req, EXTRA_AUDIT[x.key], "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: ${what} ${before} → ${after}`);
     }
+    // The check-in desk app shows the new inclusions straight away (services/checkinDeskLog.js): sent below, once the
+    // directory is rebuilt, with the guest's row and their inclusions across all their passes.
+    deskInclusions = { ticketId: t.ticketId, user: req.user };
     did = true;
   }
   if (Object.keys(extrasAsked).length) did = true;
@@ -1130,6 +1209,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     }
     const moved = moves.length ? `inventory ${moves.join(", ")}` : "inventory unchanged";
     await audit(req, "pass_tier", "ticket", t.ticketId, `${p.name} · ${t.ticketId.toUpperCase()}: ${t.label} → ${TIER_LABELS[tier]} (no charge; ${moved})`);
+    deskGuest = true;
     did = true;
   }
   if (value !== undefined) {
@@ -1145,7 +1225,11 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   }
   if (did) invalidate();
   const fresh = await findPerson(p.id);
-  res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null });
+  // The check-in desk app: the guest's row as it is now (a pass change reloads them; extras update their inclusions).
+  let deskEv = null;
+  if (deskGuest) deskEv = await deskGuestChanged({ ticketIds: [t.ticketId], user: req.user, person: fresh });
+  else if (deskInclusions) deskEv = await deskInclusionsChanged({ ...deskInclusions, person: fresh });
+  res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null, ...deskReply(deskEv) });
 }));
 
 /* ---------- Delete person (management) ----------
@@ -1187,6 +1271,9 @@ router.delete("/:id", requireManagement, wrap(async (req, res) => {
   if (!result.total) return res.status(409).json({ error: "There's nothing about them in our database to delete.", code: "nothing" });
   invalidate();
   clearExhibitorCache();
+  // The check-in desk app drops them on every server instance (the event has no row: the desks read the list again).
+  const passIds = (ctx.p.passList || []).map((t) => t.ticketId).filter(Boolean);
+  if (passIds.length) await deskGuestChanged({ ticketIds: passIds, user: req.user });
   // Counts only, the main records first (the detail is capped at 500 characters), and an email hash: never the name or address.
   const first = ["account", "accountTickets", "passes", "rsvps"];
   const counts = [...first.map((k) => result.items.find((x) => x.key === k)).filter(Boolean), ...result.items.filter((x) => !first.includes(x.key))]

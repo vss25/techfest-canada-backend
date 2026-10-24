@@ -366,3 +366,30 @@ test("listing never needs anything but the records it's given", () => {
   assert.equal(people.length, 5);
   assert.deepEqual(buildPeople().people, []);
 });
+
+test("hidden passes the directory leaves out (never claimed) are remembered as their holder's (hiddenPasses), never a colleague's", () => {
+  const built = buildPeople({
+    users: [
+      { _id: "u1", name: "Ann Account", email: "ann@corp.example", types: ["media"] },
+      { _id: "u2", name: "Cal Claimer", email: "cal@corp.example" },
+    ],
+    attendees: [
+      // A test pass staff hid, on Ann's address with her name: hers.
+      { _id: "a1", name: "Ann Account", email: "ann@corp.example", ticketId: "con000000001", ticketType: "connect", hiddenByStaff: true },
+      // A Speaker Pass made for a website speaker, hidden: the speaker's.
+      { _id: "a2", name: "Sol Speaker", email: "", ticketId: "spk000000002", ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-sol", hiddenByStaff: true },
+      // A colleague's hidden pass on Ann's address, another name: not Ann's.
+      { _id: "a3", name: "Kim Colleague", email: "ann@corp.example", ticketId: "pow000000003", ticketType: "power", syncDuplicate: true },
+      // Named as claimed by an account that isn't in the list given: nobody's.
+      { _id: "a4", name: "Zed Ghost", email: "zed@corp.example", ticketId: "con000000004", ticketType: "connect", hiddenByStaff: true, claimedBy: "u404" },
+    ],
+    rsvps: [],
+    speakers: [{ _id: "spk-sol", name: "Sol Speaker" }],
+  });
+  const by = (name) => built.people.find((p) => p.name === name);
+  assert.deepEqual(by("Ann Account").hiddenPasses, ["con000000001"]);
+  assert.deepEqual(by("Ann Account").passList, [], "still left out of the passes");
+  assert.deepEqual(by("Sol Speaker").hiddenPasses, ["spk000000002"]);
+  assert.equal(by("Cal Claimer").hiddenPasses, undefined);
+  assert.ok(!built.people.some((p) => p.name === "Kim Colleague" || p.name === "Zed Ghost"), "hidden passes still make nobody");
+});
