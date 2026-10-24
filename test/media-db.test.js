@@ -45,6 +45,8 @@ const M = {};
 const U = {};
 let jwt;
 let mongoose;
+// The desk's clock on Day 1: a door scan checks in for real only on an event day (a practice scan otherwise, Oct 24 2026).
+let setDeskClock;
 
 const ALL = { cxo: true, lunch: true, gala: true, awards: true };
 const NONE = { cxo: false, lunch: false, gala: false, awards: false };
@@ -62,6 +64,8 @@ before(async () => {
     catch { await new Promise((r) => setTimeout(r, 250)); }
   }
   ({ default: jwt } = await import("jsonwebtoken"));
+  ({ setDeskClock } = await import("../services/checkinDeskLog.js"));
+  setDeskClock(() => new Date("2026-10-26T14:00:00Z")); // Mon Oct 26, 10:00 AM Toronto
   const imp = async (p) => (await import(p)).default;
   M.User = await imp("../models/User.js");
   M.Attendee = await imp("../models/Attendee.js");
@@ -98,6 +102,7 @@ before(async () => {
 });
 
 after(async () => {
+  setDeskClock?.(null);
   server?.close();
   if (mongoose) await mongoose.disconnect().catch(() => {});
   if (mongod) { mongod.kill("SIGTERM"); await new Promise((r) => mongod.once("exit", r)); }

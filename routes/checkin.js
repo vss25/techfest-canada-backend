@@ -5,13 +5,34 @@ import { requireCheckIn } from "../middleware/adminAuth.js";
 import { checkinCard, plainCard, holderIsAccount } from "../services/checkinCard.js";
 import { recordScan } from "../services/checkinDeskActions.js";
 import { cleanTicketId } from "../services/doorQr.js";
+import { deskNow } from "../services/checkinDeskLog.js";
+import { eventDayInfo } from "../services/checkinDeskTime.js";
 
 /* What the scanner shows about the pass and its holder (services/checkinCard.js): `ticketType` (connect | influence |
    power | apex | speaker; the text "All Access" is Power), `passName` its name ("Speaker Pass" for the internal one),
    `speaker` true for a Speaker Pass, and since Oct 22 2026 the door card: `badge` { key, label, bg, text } (VIP gold >
    Media > Speaker > Staff > Volunteer > the pass, green), `avatarUrl` (uploaded photo, else speaker photo, else ""),
-   `name`, `title`, `company`, `extras` { cxo, lunch, gala, awards } and `cxoBreakfast`. Sent with "success" and
-   "already_checked_in"; never with "invalid", and nothing without the checkIn right (requireCheckIn). */
+   `name`, `title`, `company`, `extras` { cxo, lunch, gala, awards } and `cxoBreakfast`. Sent with "success",
+   "already_checked_in" and "practice"; never with "invalid", and nothing without the checkIn right (requireCheckIn). */
+
+/* A practice scan (Oct 24 2026, approved by the organiser): on a day that isn't Day 1 or Day 2 (Toronto, the desk's
+   clock: deskNow(), which tests and a local rehearsal can set), a scan finds the pass and shows its card exactly as on
+   the day, but writes NOTHING to the ticket (no checkedIn / checkedInAt on User.tickets or the Attendee row). Staff
+   and volunteers scan people's entry passes in the apps' Network › Scan days before the event (to connect with them),
+   and that used to collect the pass for real. Answer: 200 { ...card, status: "practice", practice: true, ticketId (as
+   stored), alreadyCheckedIn, time (when it was collected before), message }. The check-in desk app still gets its
+   practice marks (recordScan, contract C6), so a Sunday dry run shows on the desk board without touching real data.
+   An unknown ticket is still 404 "invalid", on any day. */
+const PRACTICE_MESSAGE = "Not an event day: nothing was checked in.";
+const practiceAnswer = ({ card, ticketId, rec }) => ({
+  ...card,
+  status: "practice",
+  practice: true,
+  ticketId,
+  alreadyCheckedIn: !!rec.checkedIn,
+  ...(rec.checkedIn ? { time: rec.checkedInAt || null } : {}),
+  message: PRACTICE_MESSAGE,
+});
 
 // What the card reads from an account (types, VIP flag, passes, photo, job). The email only to find their speaker photo.
 const HOLDER_SELECT = "name email role types typesOff vip tickets jobTitle organization avatarVersion";
@@ -71,6 +92,9 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       });
     }
     const variants = [...new Set([typed, typed.toUpperCase(), raw])].filter(Boolean);
+    // Judged once, at one instant: the answer and the desk's marks (recordScan) agree on the day.
+    const now = deskNow();
+    const practice = !eventDayInfo(now).eventDay;
 
     // First check in User collection
     const user = await User.findOne({
@@ -89,6 +113,13 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         ticketId, account: holder, ticket: holder.tickets.find((t) => t.ticketId === ticketId), attendee, fallbackName: user.name,
       });
 
+      // Not an event day: the card, nothing written (see practiceAnswer above).
+      if (practice) {
+        res.json(practiceAnswer({ card, ticketId, rec: ticket }));
+        void recordScan({ ticketId, user: req.user, outcome: "practice", at: now });
+        return;
+      }
+
       // already used (the desk app still records today's check-in once: Day 2, services/checkinDeskActions.js)
       if (ticket.checkedIn) {
         res.json({
@@ -98,7 +129,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
           time: ticket.checkedInAt,
         });
         // After the answer: the scanner never waits for the desk app's records (recordScan never throws).
-        void recordScan({ ticketId, user: req.user, outcome: "already" });
+        void recordScan({ ticketId, user: req.user, outcome: "already", at: now });
         return;
       }
 
@@ -115,7 +146,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         checkedInAt: ticket.checkedInAt,
       });
       // Then the check-in desk app's pass desk shows them checked in (never fails or slows the scan).
-      void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: ticket.checkedInAt });
+      void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: ticket.checkedInAt, at: now });
 
       return;
     }
@@ -134,6 +165,12 @@ router.post("/scan", requireCheckIn, async (req, res) => {
 
     const card = await cardFor({ ticketId, attendee: attendee.toObject(), fallbackName: attendee.name });
 
+    if (practice) {
+      res.json(practiceAnswer({ card, ticketId, rec: attendee }));
+      void recordScan({ ticketId, user: req.user, outcome: "practice", at: now });
+      return;
+    }
+
     if (attendee.checkedIn) {
       res.json({
         ...card,
@@ -141,7 +178,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         ticketId,
         time: attendee.checkedInAt,
       });
-      void recordScan({ ticketId, user: req.user, outcome: "already" });
+      void recordScan({ ticketId, user: req.user, outcome: "already", at: now });
       return;
     }
 
@@ -155,7 +192,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       ticketId,
       checkedInAt: attendee.checkedInAt,
     });
-    void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: attendee.checkedInAt });
+    void recordScan({ ticketId, user: req.user, outcome: "success", collectedAt: attendee.checkedInAt, at: now });
   } catch (err) {
     console.error("CHECK-IN ERROR:", err);
     res.status(500).json({ error: "Server error" });

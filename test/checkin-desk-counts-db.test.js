@@ -9,7 +9,8 @@
                      /api/console/summary: each person once per point and day, practice marks out, overrides counted,
                      a two-pass person, Media = Yes, an override admit, an ISSUE PASS guest, NO DETAILS FOUND
      R2              a pass given a moment ago (on another instance) counts at the meal door before any rebuild
-     R3              a rehearsal door scan's desk marks are practice marks (in no attendance); the ticket write is unchanged
+     R3              a rehearsal door scan's desk marks are practice marks (in no attendance), and since Oct 24 2026 the
+                     scanner writes nothing to the ticket on a day that isn't Day 1 / Day 2 ("practice")
      R8              guest / inclusions events (and People's PATCH replies) carry the whole guest row
    Starts a local mongod in a temp folder (skipped when the binary isn't there). Sanity answers one speaker and an
    empty agenda (the fallback times); nothing else leaves the machine; no Stripe key. Fictional people. */
@@ -298,10 +299,12 @@ test("meals: a two-pass speaker, Media = Yes at the breakfast, an override admit
   assert.equal((await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: K("pow300000001"), station: "lobby" })).status, 200);
 });
 
-test("R3: a rehearsal door scan's desk marks are practice marks (in no attendance); the scanner's own ticket write is unchanged", { skip }, async () => {
+test("R3: a rehearsal door scan's desk marks are practice marks (in no attendance); the scanner writes nothing to the ticket", { skip }, async () => {
   fakeNow = new Date("2026-10-25T15:00:00Z"); // Sun Oct 25
   const scan = await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "con300000007" } });
-  assert.equal(scan.body.status, "success", JSON.stringify(scan.body));
+  // A practice scan (Oct 24 2026): the card, nothing checked in.
+  assert.deepEqual([scan.status, scan.body.status, scan.body.practice, scan.body.alreadyCheckedIn, scan.body.name],
+    [200, "practice", true, false, "Ray Rehearsal"], JSON.stringify(scan.body));
   // The desk's records come after the scanner's answer: wait for its event.
   const evOf = async (day) => { for (let i = 0; i < 80; i++) { const x = await M.CheckinEvent.findOne({ subject: "con300000007", kind: "mark", day }).lean(); if (x) return x; await sleep(25); } return null; };
   assert.ok(await evOf("2026-10-25"));
@@ -311,18 +314,23 @@ test("R3: a rehearsal door scan's desk marks are practice marks (in no attendanc
   assert.equal(m.passSetAt, null, "a practice mark never owns the pass collection");
   assert.equal((await markOf("con300000007", "arrived", "2026-10-25")).practice, true);
   assert.equal((await evOf("2026-10-25")).practice, true);
-  assert.equal((await M.Attendee.findOne({ ticketId: "con300000007" }).lean()).checkedIn, true, "the scanner collected the pass as it always has");
-  // A staff reset of the practice check-in doesn't give the scanner's collection back.
+  const ray = async () => M.Attendee.findOne({ ticketId: "con300000007" }).lean();
+  assert.equal((await ray()).checkedIn, false, "the rehearsal scan collected nothing");
+  assert.equal((await ray()).checkedInAt, undefined);
+  // A staff reset of the practice check-in leaves the ticket alone too.
   const rs = await act({ clientId: cid("rst"), kind: "reset", point: "arrived", key: K("con300000007"), station: "desk" }, U.sam);
   assert.equal(rs.status, 200, JSON.stringify(rs.body));
-  assert.equal((await M.Attendee.findOne({ ticketId: "con300000007" }).lean()).checkedIn, true);
-  // Scanned again on Day 1: a real check-in mark (the pass was collected before).
+  assert.equal((await ray()).checkedIn, false);
+  // Scanned on Day 1: the real check-in, and a real desk mark that owns the collection.
   fakeNow = new Date("2026-10-26T13:30:00Z");
-  await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "con300000007" } });
+  const real = await call("POST", "/api/checkin/scan", { as: U.val, body: { ticketId: "con300000007" } });
+  assert.equal(real.body.status, "success", JSON.stringify(real.body));
+  assert.equal((await ray()).checkedIn, true);
   assert.ok(await evOf(DAY1));
   const d1 = await markOf("con300000007", "checked_in");
   assert.ok(d1?.at);
   assert.equal(d1.practice, false);
+  assert.equal(new Date(d1.passSetAt).toISOString(), new Date(real.body.checkedInAt).toISOString());
 });
 
 test("R2: a pass given a moment ago on another instance counts at the meal door at once (before any rebuild here)", { skip }, async () => {
