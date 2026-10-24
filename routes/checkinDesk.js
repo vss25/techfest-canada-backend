@@ -29,8 +29,8 @@ import { performAction } from "../services/checkinDeskActions.js";
 /* =========================================================
    TTFC Check-in desk app API (Oct 23 2026): /api/checkin/desk
    ---------------------------------------------------------
-   Under /api/checkin so the kill switch leaves it working, like the
-   door scanner. Every route needs a staff or volunteer PASSWORD sign-in
+   Under /api/checkin, next to the door scanner. Every route needs a
+   staff or volunteer PASSWORD sign-in
    (contract C1): the checkIn right (requireCheckIn), an account that can
    use the apps' staff sign-in (canUseStaffSignIn: role admin / volunteer,
    or the Staff / Volunteer type), and never a passwordless token (pass ID

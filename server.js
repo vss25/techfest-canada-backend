@@ -164,7 +164,7 @@ app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /r
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
 app.use("/api/jury", juryRouter);       // the jury portal: jury tokens only (services/juryAuth.js)
 app.use("/api/payments", paymentRoutes);
-app.use("/api/checkin/desk", checkinDeskRoutes); // the desk app: under /api/checkin so the kill switch leaves it on
+app.use("/api/checkin/desk", checkinDeskRoutes); // the check-in desk app (next to the door scanner)
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/leads", leadsRoutes);
