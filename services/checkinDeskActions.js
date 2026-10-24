@@ -6,7 +6,8 @@ import Attendee from "../models/Attendee.js";
 import { AdminAudit } from "../models/Admin.js";
 import CheckinEvent from "../models/CheckinEvent.js";
 import {
-  POINTS, POINT_LABELS, STAFF_KINDS, auditLine, boothSubject, canUndo, entitlement, eventView, markView, mealStationOf, queryView, tapClock,
+  POINTS, POINT_LABELS, STAFF_KINDS, UNKNOWN_OUTCOME_TEXT, auditLine, boothSubject, canUndo, entitlement, eventView, isUnknownKey, markView,
+  mealStationOf, queryView, tapClock, unknownKeyOf,
 } from "./checkinDesk.js";
 import { stationState, fmtClock, STATION_LABELS } from "./checkinDeskTime.js";
 import { appendEvent, deskNow, DuplicateTap, eventForClientId } from "./checkinDeskLog.js";
@@ -53,6 +54,12 @@ import { normalizeTicketId } from "./ticketAccess.js";
      C6 a day that isn't Day 1 / Day 2 (Toronto): marks are practice
         marks, never the ticket's checkedIn / checkedInAt; undo and reset
         clear them (a volunteer's own practice tap: undo at any time).
+     C8 NO DETAILS FOUND: the lobby couldn't find the person and records
+        the arrival as typed (unknown_arrival: an event, card key
+        "u:<its clientId>", never a mark or a ticket); the pass desk
+        closes it (unknown_done: sent to help / pass issued / left), or
+        staff find them on the list (unknown_link: that guest is marked
+        arrived at the arrival's time, audited); undo like a lobby tap.
 ========================================================= */
 
 const fail = (status, error, extra = {}) => ({ ok: false, status, error, ...extra });
@@ -198,7 +205,7 @@ export async function performAction(action, ctx) {
   if (prior) return { ok: true, duplicate: true, events: view([prior]) };
 
   // Undone on the device before it reached the server (a tombstone, contract C2): not recorded.
-  if (action.kind === "mark") {
+  if (action.kind === "mark" || action.kind === "unknown_arrival") {
     const undo = await undoOf(action.clientId, actor);
     if (undo) return { ok: true, undone: true, events: [], message: "Undone on the device before it reached the server: not recorded." };
   }
@@ -212,6 +219,9 @@ export async function performAction(action, ctx) {
       case "note": return await doNote(action, c, actor, view);
       case "query_add": return await doQueryAdd(action, c, actor, view);
       case "query_update": return await doQueryUpdate(action, c, actor, view);
+      case "unknown_arrival": r = await doUnknownArrival(action, c, actor, view); break;
+      case "unknown_done": return await doUnknownDone(action, c, actor, view);
+      case "unknown_link": return await doUnknownLink(action, c, actor, view);
       default: return fail(400, "Unknown action.");
     }
     // A tombstone stored while this tap was being recorded (the same device, two requests in flight): take it back.
@@ -221,7 +231,7 @@ export async function performAction(action, ctx) {
     if (err instanceof DuplicateTap) {
       const ev = await eventForClientId(action.clientId);
       // Recorded twice at once and undone in between: make sure it ends undone.
-      if (action.kind === "mark") await settleUndone(action.clientId, actor);
+      if (action.kind === "mark" || action.kind === "unknown_arrival") await settleUndone(action.clientId, actor);
       return { ok: true, duplicate: true, events: ev ? view([ev]) : [] };
     }
     throw err;
@@ -233,6 +243,14 @@ async function settleUndone(clientId, actor) {
   const undo = await undoOf(clientId, actor);
   if (!undo) return;
   const target = await eventForClientId(clientId);
+  if (target?.kind === "unknown_arrival") {
+    if ((await unknownCard(unknownKeyOf(clientId))).undone) return;
+    await appendEvent({
+      kind: "undo", subject: unknownKeyOf(clientId), day: target.day, station: target.station, byId: undo.byId, byName: undo.byName, byRole: undo.byRole,
+      ref: clientId, refPoint: "unknown_arrival",
+    });
+    return;
+  }
   if (!target || target.kind !== "mark") return;
   const { changed, pass } = await clearTap(target);
   if (!changed.length) return;
@@ -381,6 +399,7 @@ async function doUndo(a, ctx, actor, view) {
   const signedInId = ctx.recordedBy && !ctx.signedInStaff ? String(ctx.recordedBy.id) : "";
   const allowed = canUndo({ target, actorId: String(actor.id), staff: ctx.staff, undoClientAt: a.clientAt, now: deskNow(), signedInId });
   if (!allowed.ok) return fail(allowed.status, allowed.error, { code: "undo_refused" });
+  if (target.kind === "unknown_arrival") return undoUnknownArrival(a, ctx, actor, view, target);
   const { subject, day, point } = target;
   if (point === "arrived") {
     const desk = await CheckinMark.findOne({ subject, day, point: "checked_in", at: { $ne: null } }).lean();
@@ -513,6 +532,88 @@ async function doQueryUpdate(a, ctx, actor, view) {
     await audit(actor, "checkin_desk_media_query", String(q._id), `Media query “${q.request.slice(0, 80)}” (${q.who || "?"}): ${a.status ? `status → ${a.status}` : ""}${a.assignee !== undefined ? ` assignee → ${after.assigneeName || "nobody"}` : ""}`, ctx.recordedBy);
   }
   return { ok: true, events: view([ev]), query: queryView(after) };
+}
+
+/* ---------- NO DETAILS FOUND (contract C8) ---------- */
+
+/** A NO DETAILS FOUND card by its key ("u:<clientId>"): its arrival event (or null), whether it was undone, and how
+    the pass desk closed it (the last unknown_done / unknown_link event, or null). */
+async function unknownCard(key) {
+  if (!isUnknownKey(key)) return { arrival: null, undone: false, closed: null };
+  const [arrival, after] = await Promise.all([
+    CheckinEvent.findOne({ clientId: key.slice(2), kind: "unknown_arrival" }).lean(),
+    CheckinEvent.find({ kind: { $in: ["undo", "unknown_done", "unknown_link"] }, subject: key }).sort({ seq: 1 }).lean(),
+  ]);
+  const closes = after.filter((e) => e.kind !== "undo");
+  return { arrival, undone: after.some((e) => e.kind === "undo"), closed: closes[closes.length - 1] || null };
+}
+const closedText = (e) => `${UNKNOWN_OUTCOME_TEXT[e.kind === "unknown_link" ? "linked" : e.outcome] || "closed"} at ${whenText(e.at)}${e.byName ? ` by ${e.byName}` : ""}`;
+
+/** The lobby couldn't find them: the arrival as typed, for the pass desk's card (no mark, no ticket, any hour). */
+async function doUnknownArrival(a, ctx, actor, view) {
+  const now = deskNow();
+  const clock = tapClock(a.clientAt, now);
+  const state = stationState({ station: "lobby", at: clock.at, windows: ctx.windows });
+  const ev = await appendEvent({
+    kind: "unknown_arrival", subject: unknownKeyOf(a.clientId), day: state.date, clientAt: a.clientAt, arrivedAt: clock.at, station: a.station,
+    byId: actor.id, byName: actor.name, byRole: actor.role, clientId: a.clientId, name: a.name, company: a.company || "", note: a.note || "",
+    ...(!state.eventDay ? { practice: true } : {}), ...(clock.late ? { lateSync: true } : {}), ...queuedFields(ctx.recordedBy),
+  });
+  return { ok: true, events: view([ev]) };
+}
+
+/** Undo the lobby's NO DETAILS FOUND arrival (canUndo has allowed it): the card goes. */
+async function undoUnknownArrival(a, ctx, actor, view, target) {
+  const key = unknownKeyOf(target.clientId);
+  if ((await unknownCard(key)).undone) return { ok: true, events: [], noop: true, message: "Nothing to undo: it was already undone." };
+  const ev = await appendEvent({
+    kind: "undo", subject: key, day: target.day, clientAt: a.clientAt, station: a.station, byId: actor.id, byName: actor.name, byRole: actor.role,
+    clientId: a.clientId, ref: target.clientId, refPoint: "unknown_arrival", ...queuedFields(ctx.recordedBy),
+  });
+  if (String(target.byId) !== String(actor.id)) {
+    await audit(actor, "checkin_desk_undo", key, `Undid a NO DETAILS FOUND arrival (“${target.name || "?"}”) at ${STATION_LABELS[a.station] || a.station} (tap by ${target.byName || "someone else"})`, ctx.recordedBy);
+  }
+  return { ok: true, events: view([ev]) };
+}
+
+/** The pass desk closes a card: sent to the help desk, pass issued, or left. */
+async function doUnknownDone(a, ctx, actor, view) {
+  const card = await unknownCard(a.target);
+  if (!card.arrival) return fail(404, "That arrival isn't on the list any more. Refresh and try again.", { code: "not_found" });
+  if (card.undone) return { ok: true, events: [], noop: true, message: "The lobby undid that arrival: nothing to close." };
+  if (card.closed) return { ok: true, already: true, events: [], message: `Already closed: ${closedText(card.closed)}` };
+  const ev = await appendEvent({
+    kind: "unknown_done", subject: a.target, day: card.arrival.day, clientAt: a.clientAt, station: a.station, byId: actor.id, byName: actor.name,
+    byRole: actor.role, clientId: a.clientId, ref: a.target, outcome: a.outcome, ...queuedFields(ctx.recordedBy),
+  });
+  return { ok: true, events: view([ev]) };
+}
+
+/** Staff found them on the list ("Found them"): that guest is marked arrived when the lobby recorded them, the card
+    closes, and it's audited. */
+async function doUnknownLink(a, ctx, actor, view) {
+  const card = await unknownCard(a.target);
+  if (!card.arrival) return fail(404, "That arrival isn't on the list any more. Refresh and try again.", { code: "not_found" });
+  if (card.undone) return { ok: true, events: [], noop: true, message: "The lobby undid that arrival: nothing to close." };
+  if (card.closed?.kind === "unknown_link") return { ok: true, already: true, events: [], message: `Already ${closedText(card.closed)}` };
+  const hit = await ctx.resolve(a.guestKey);
+  if (!hit) return fail(404, "This guest isn't on the list any more. Refresh and try again.", { code: "not_found" });
+  const at = card.arrival.arrivedAt || card.arrival.at;
+  const state = stationState({ station: "lobby", at, windows: ctx.windows });
+  const day = card.arrival.day || state.date;
+  const res = await setMark({ subject: hit.norm, day, point: "arrived", at, actor, station: "lobby", ref: a.clientId, practice: !state.eventDay, recordedBy: ctx.recordedBy });
+  const ev = await appendEvent({
+    kind: "unknown_link", subject: a.target, day, clientAt: a.clientAt, station: a.station, byId: actor.id, byName: actor.name, byRole: actor.role,
+    clientId: a.clientId, ref: a.target, guestKey: a.guestKey, marks: res.changed ? [res.doc] : undefined, ...queuedFields(ctx.recordedBy),
+  });
+  const typed = `“${card.arrival.name || "?"}”${card.arrival.company ? ` (${card.arrival.company})` : ""}`;
+  await audit(actor, "checkin_desk_unknown_link", hit.norm,
+    `NO DETAILS FOUND arrival ${typed}, lobby ${whenText(at)}, found on the list: ${auditLine({ guest: hit.guest, kind: "mark", point: "arrived", station: a.station })}`, ctx.recordedBy);
+  if (!res.changed) {
+    const d = res.doc;
+    return { ok: true, already: true, events: view([ev]), mark: markView(d), message: `Already marked arrived at ${whenText(d.at)}${d.byName ? ` by ${d.byName}` : ""}` };
+  }
+  return { ok: true, events: view([ev]), mark: markView(res.doc) };
 }
 
 /* ---------- The door's QR scanner (routes/checkin.js) ---------- */

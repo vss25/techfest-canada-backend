@@ -1115,6 +1115,86 @@ test("a pass given here (Give a pass) is on the desk at once: the reload, the ti
   assert.equal(await M.CheckinEvent.countDocuments({ kind: "guest", subject: normalizeTicketId(tid) }), 2);
 });
 
+test("contract C8: NO DETAILS FOUND: the lobby records the arrival as typed, the pass desk closes it, staff find them on the list, undo", { skip }, async () => {
+  fakeNow = new Date("2026-10-27T13:30:00Z"); // Day 2, 9:30 AM
+  const day = "2026-10-27";
+  const snap = async (as = U.val) => (await call("GET", `${D}/snapshot`, { as })).body;
+  const arrivedPeople = async () => (await snap(U.sam)).attendance.find((x) => x.day === day && x.point === "arrived")?.people || 0;
+  const people0 = await arrivedPeople();
+  // The lobby (a volunteer) can't find Jo: records the arrival with the name as typed.
+  const jo = cid("unk");
+  const a1 = await act({ clientId: jo, kind: "unknown_arrival", name: "Jo  Bloggs", company: "Acme", note: "says she registered", station: "lobby" });
+  assert.equal(a1.status, 200, JSON.stringify(a1.body));
+  const ev = a1.body.events[0];
+  assert.deepEqual([ev.kind, ev.key, ev.name, ev.company, ev.note, ev.byName, ev.day, ev.at], ["unknown_arrival", `u:${jo}`, "Jo Bloggs", "Acme", "says she registered", "Val Volunteer", day, fakeNow.toISOString()]);
+  assert.equal((await act({ clientId: jo, kind: "unknown_arrival", name: "Jo Bloggs", station: "lobby" })).body.duplicate, true, "the same tap again");
+  assert.equal(await M.CheckinMark.countDocuments({ subject: { $regex: "^u:" } }), 0, "no mark, no ticket");
+  assert.equal(await arrivedPeople(), people0, "never in the attendance counts");
+  let s = await snap();
+  let card = s.unknowns.find((u) => u.key === `u:${jo}`);
+  assert.deepEqual([card.status, card.name, card.company, card.byName, card.at, card.day], ["open", "Jo Bloggs", "Acme", "Val Volunteer", fakeNow.toISOString(), day]);
+  // The live log carries it to the pass desk (volunteers included).
+  const polled = (await call("GET", `${D}/events?since=${ev.seq - 1}`, { as: U.vic })).body.events;
+  assert.equal(polled.find((e) => e.seq === ev.seq).name, "Jo Bloggs");
+  // The pass desk (another volunteer) sends her to the help desk; a second close is "already".
+  const done = await act({ clientId: cid("und"), kind: "unknown_done", target: `u:${jo}`, outcome: "sent_to_help", station: "desk" }, U.vic);
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.deepEqual([done.body.events[0].kind, done.body.events[0].key, done.body.events[0].outcome], ["unknown_done", `u:${jo}`, "sent_to_help"]);
+  const again = await act({ clientId: cid("und"), kind: "unknown_done", target: `u:${jo}`, outcome: "left", station: "desk" });
+  assert.equal(again.body.already, true);
+  assert.match(again.body.message, /^Already closed: sent to the help desk at 9:30 AM by Vic Volunteer$/);
+  card = (await snap()).unknowns.find((u) => u.key === `u:${jo}`);
+  assert.deepEqual([card.status, card.outcome, card.doneBy], ["sent_to_help", "sent_to_help", "Vic Volunteer"]);
+  assert.equal((await act({ clientId: cid("und"), kind: "unknown_done", target: `u:${cid("zz")}`, outcome: "left", station: "desk" })).status, 404);
+
+  // Dee: staff find her on the list (Dot Discover): she's marked arrived when the lobby recorded her; audited.
+  const dee = cid("unk");
+  fakeNow = new Date("2026-10-27T13:31:00Z");
+  await act({ clientId: dee, kind: "unknown_arrival", name: "Dee Discovery", station: "lobby" });
+  fakeNow = new Date("2026-10-27T13:36:00Z");
+  const dot = K("dis100000011");
+  const vol = await act({ clientId: cid("lnk"), kind: "unknown_link", target: `u:${dee}`, guestKey: dot, station: "desk" }, U.vic);
+  assert.equal(vol.status, 403, "Found them is staff's");
+  const link = await act({ clientId: cid("lnk"), kind: "unknown_link", target: `u:${dee}`, guestKey: dot, station: "desk" }, U.sam);
+  assert.equal(link.status, 200, JSON.stringify(link.body));
+  assert.deepEqual([link.body.events[0].kind, link.body.events[0].guestKey], ["unknown_link", dot]);
+  assert.equal(link.body.events[0].marks[0].key, dot);
+  assert.equal(await arrivedPeople(), people0 + 1, "Dot counts, as herself");
+  const m = await markOf("dis100000011", "arrived", day);
+  assert.equal(new Date(m.at).toISOString(), "2026-10-27T13:31:00.000Z", "arrived when the lobby recorded her");
+  assert.equal(m.byName, "Sam Staff");
+  const au = await M.AdminAudit.findOne({ action: "checkin_desk_unknown_link", targetId: "dis100000011" }).lean();
+  assert.match(au.detail, /NO DETAILS FOUND arrival “Dee Discovery”, lobby 9:31 AM, found on the list: Dot Discover · Other: Discover: Arrived/);
+  s = await snap(U.sam);
+  card = s.unknowns.find((u) => u.key === `u:${dee}`);
+  assert.deepEqual([card.status, card.guestKey], ["linked", dot]);
+  assert.ok(s.marks.some((x) => x.key === dot && x.point === "arrived" && x.at));
+  assert.equal((await act({ clientId: cid("lnk"), kind: "unknown_link", target: `u:${dee}`, guestKey: dot, station: "desk" }, U.sam)).body.already, true);
+
+  // Ray: the lobby undoes its own arrival (within the window): the card goes; again: nothing more; it can't be closed.
+  const ray = cid("unk");
+  await act({ clientId: ray, kind: "unknown_arrival", name: "Ray Mistake", station: "lobby" });
+  assert.equal((await act({ clientId: cid("und"), kind: "undo", target: ray, station: "lobby", clientAt: fakeNow.toISOString() }, U.vic)).status, 403, "someone else's: staff only");
+  const un = await act({ clientId: cid("und"), kind: "undo", target: ray, station: "lobby", clientAt: new Date(fakeNow.getTime() + 4000).toISOString() });
+  assert.equal(un.status, 200, JSON.stringify(un.body));
+  assert.deepEqual([un.body.events[0].kind, un.body.events[0].key, un.body.events[0].target], ["undo", `u:${ray}`, ray]);
+  assert.equal((await act({ clientId: cid("und"), kind: "undo", target: ray, station: "lobby", clientAt: new Date(fakeNow.getTime() + 5000).toISOString() })).body.noop, true);
+  assert.equal((await act({ clientId: cid("und"), kind: "unknown_done", target: `u:${ray}`, outcome: "left", station: "desk" })).body.noop, true);
+  assert.ok(!(await snap()).unknowns.some((u) => u.key === `u:${ray}`), "undone: not in the snapshot");
+  // The undo reached the server before the arrival (a tombstone): the arrival is never recorded.
+  const lost = cid("unk");
+  assert.equal((await act({ clientId: cid("und"), kind: "undo", target: lost, station: "lobby" })).body.tombstone, true);
+  const late = await act({ clientId: lost, kind: "unknown_arrival", name: "Lou Lost", station: "lobby" });
+  assert.equal(late.body.undone, true);
+  assert.equal(await M.CheckinEvent.countDocuments({ clientId: lost }), 0);
+  // The name is required.
+  assert.equal((await act({ clientId: cid("unk"), kind: "unknown_arrival", name: " ", station: "lobby" })).status, 400);
+  // Sun Oct 25 (not an event day): a practice arrival.
+  fakeNow = new Date("2026-10-25T15:00:00Z");
+  const pr = await act({ clientId: cid("unk"), kind: "unknown_arrival", name: "Pat Practice", station: "lobby" });
+  assert.equal(pr.body.events[0].practice, true);
+});
+
 test("users are indexed by their tickets' IDs (the door scan, ticket sign-in, the desk's check-ins)", { skip }, async () => {
   const idx = await M.User.collection.indexes();
   assert.ok(idx.some((i) => i.key["tickets.ticketId"] === 1), JSON.stringify(idx.map((i) => i.key)));

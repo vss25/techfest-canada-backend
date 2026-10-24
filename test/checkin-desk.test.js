@@ -2,7 +2,7 @@
    the Event summary's counting passes, the main pass), every pass type the backend can produce mapped to a desk pass
    (and "Other: …" for anything else), the yes / no marks, what volunteers never get (emails, ticket IDs), keys, the
    cursor that never skips a write in flight, actions as the app sends them, the undo window, entitlement per day,
-   where lobby arrivals are announced, speakers' sessions from the agenda. */
+   where lobby arrivals are announced, speakers' sessions from the agenda, NO DETAILS FOUND actions and cards (C8). */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildPeople } from "../services/people.js";
@@ -11,6 +11,7 @@ import {
   DESK_TIERS, HOLE_MS, UNDO_GRACE_MS, buildDeskIndex, canUndo, cleanAction, deskTier, entitlement, eventView, guestKey, guestView, isGuestKey,
   boothKey, isBoothKey, markView, notifyStations, safeCursor, sessionsIndex, tapTime, auditLine,
   CLIENT_AT_MAX_AGE_MS, CLIENT_AT_MAX_AHEAD_MS, LATE_SYNC_MS, HOLE_ANCIENT_MS, tapClock, speakerNameMatches, guestExtras, boothsOf,
+  UNKNOWN_LIMITS, isUnknownKey, keyOfSubject, unknownKeyOf, unknownRows,
 } from "../services/checkinDesk.js";
 
 const t = (ticketId, type, extra = {}) => ({ ticketId, type, purchaseDate: new Date("2026-10-01"), ...extra });
@@ -378,4 +379,65 @@ test("on the wire: practice marks, late syncs, offline taps sent from another si
   assert.equal(tomb.recordedBy.name, "Sam");
   assert.equal(auditLine({ guest: { name: "Nina", passName: "Speaker Pass" }, kind: "mark", point: "cxo", station: "breakfast", override: "late_sync", item: { label: "CxO Breakfast" } }),
     "Nina · Speaker Pass: Admitted to CxO Breakfast outside its hours (late sync from an offline device) (CxO Breakfast)");
+});
+
+/* ---------- Contract C8: NO DETAILS FOUND ---------- */
+
+test("C8 actions as the app sends them: unknown_arrival (name as typed), unknown_done (outcome), unknown_link (staff)", () => {
+  const base = { clientId: "lobbytap01", station: "lobby" };
+  const a = cleanAction({ ...base, kind: "unknown_arrival", name: "  Jo   Bloggs ", company: "Acme", note: "says registered" });
+  assert.equal(a.ok, true, JSON.stringify(a));
+  assert.deepEqual([a.value.name, a.value.company, a.value.note], ["Jo Bloggs", "Acme", "says registered"]);
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "Jo" }).value.company, "", "company and note are optional");
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "   " }).field, "name");
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "x".repeat(UNKNOWN_LIMITS.name + 1) }).field, "name");
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "Jo", company: "x".repeat(81) }).field, "company");
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "Jo", note: "x".repeat(201) }).field, "note");
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: "Jo", note: "x".repeat(200) }).ok, true);
+  assert.equal(cleanAction({ ...base, kind: "unknown_arrival", name: 42 }).ok, false);
+  const done = cleanAction({ clientId: "desktap001", station: "desk", kind: "unknown_done", target: "u:lobbytap01", outcome: "pass_issued" });
+  assert.deepEqual([done.ok, done.value.target, done.value.outcome], [true, "u:lobbytap01", "pass_issued"]);
+  assert.equal(cleanAction({ clientId: "desktap001", station: "desk", kind: "unknown_done", target: "u:lobbytap01", outcome: "vanished" }).field, "outcome");
+  assert.equal(cleanAction({ clientId: "desktap001", station: "desk", kind: "unknown_done", target: "lobbytap01", outcome: "left" }).field, "target");
+  const key = guestKey("con000000005");
+  const link = cleanAction({ clientId: "desktap002", station: "desk", kind: "unknown_link", target: "u:lobbytap01", guestKey: key });
+  assert.deepEqual([link.ok, link.value.guestKey], [true, key]);
+  assert.equal(cleanAction({ clientId: "desktap002", station: "desk", kind: "unknown_link", target: "u:lobbytap01", guestKey: "con000000005" }).field, "guestKey");
+  assert.equal(unknownKeyOf("lobbytap01"), "u:lobbytap01");
+  assert.ok(isUnknownKey("u:lobbytap01") && !isUnknownKey("u:") && !isUnknownKey("g0123"));
+  assert.equal(keyOfSubject("u:lobbytap01"), "u:lobbytap01", "a card's events travel under its own key");
+  // The lobby's arrival can be undone like a tap (its author within the window; staff any time).
+  const target = { kind: "unknown_arrival", byId: "v1", at: new Date("2026-10-26T13:00:01Z"), clientAt: new Date("2026-10-26T13:00:00Z") };
+  assert.ok(canUndo({ target, actorId: "v1", undoClientAt: new Date("2026-10-26T13:00:05Z"), now: new Date("2026-10-26T13:00:06Z") }).ok);
+  assert.equal(canUndo({ target: { ...target, kind: "unknown_done" }, actorId: "v1", now: new Date("2026-10-26T13:00:06Z") }).status, 400);
+});
+
+test("C8 on the wire: the arrival as typed (at = when it was tapped); a snapshot's cards, newest event wins, undone left out", () => {
+  const arrival = (seq, clientId, extra = {}) => ({
+    seq, kind: "unknown_arrival", clientId, subject: `u:${clientId}`, day: "2026-10-26", at: new Date("2026-10-26T13:10:00Z"),
+    arrivedAt: new Date("2026-10-26T13:05:00Z"), station: "lobby", byName: "Val Volunteer", name: "Jo Bloggs", company: "Acme", note: "", ...extra,
+  });
+  const v = eventView(arrival(5, "lobbytap01"));
+  assert.deepEqual([v.kind, v.key, v.name, v.company, v.byName, v.at, v.day], ["unknown_arrival", "u:lobbytap01", "Jo Bloggs", "Acme", "Val Volunteer", "2026-10-26T13:05:00.000Z", "2026-10-26"]);
+  const d = eventView({ seq: 6, kind: "unknown_done", subject: "u:lobbytap01", ref: "u:lobbytap01", outcome: "left", at: new Date(), byName: "Dee" });
+  assert.deepEqual([d.key, d.target, d.outcome], ["u:lobbytap01", "u:lobbytap01", "left"]);
+  const l = eventView({ seq: 7, kind: "unknown_link", subject: "u:lobbytap02", guestKey: "g0123456789abcdef0123", at: new Date() });
+  assert.equal(l.guestKey, "g0123456789abcdef0123");
+  const u = eventView({ seq: 8, kind: "undo", subject: "u:lobbytap03", ref: "lobbytap03", at: new Date() });
+  assert.deepEqual([u.key, u.target], ["u:lobbytap03", "lobbytap03"]);
+
+  const rows = unknownRows(
+    [arrival(5, "lobbytap01"), arrival(9, "lobbytap02"), arrival(11, "lobbytap03"), arrival(12, "lobbytap04")],
+    [
+      { seq: 13, kind: "unknown_done", subject: "u:lobbytap01", outcome: "sent_to_help", at: new Date("2026-10-26T13:20:00Z"), byName: "Dee" },
+      { seq: 14, kind: "unknown_link", subject: "u:lobbytap02", guestKey: "g0123456789abcdef0123", at: new Date("2026-10-26T13:21:00Z"), byName: "Sam" },
+      { seq: 15, kind: "undo", subject: "u:lobbytap03", at: new Date() },
+      { seq: 4, kind: "unknown_done", subject: "u:lobbytap04", outcome: "left", at: new Date() }, // older than its arrival: ignored
+    ],
+  );
+  assert.deepEqual(rows.map((r) => [r.key, r.status]), [["u:lobbytap01", "sent_to_help"], ["u:lobbytap02", "linked"], ["u:lobbytap04", "open"]]);
+  assert.deepEqual([rows[0].outcome, rows[0].doneBy, rows[0].doneAt], ["sent_to_help", "Dee", "2026-10-26T13:20:00.000Z"]);
+  assert.equal(rows[1].guestKey, "g0123456789abcdef0123");
+  assert.equal(rows[2].at, "2026-10-26T13:05:00.000Z");
+  assert.ok(!("seq" in rows[0]));
 });

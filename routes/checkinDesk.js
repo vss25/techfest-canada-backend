@@ -14,6 +14,7 @@ import { SANITY_PROJECT } from "../services/rsvp.js";
 import { directory, peopleGeneration, personNow } from "./people.js";
 import {
   MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskGuestFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, markView, queryView, sessionsIndex,
+  unknownKeyOf, unknownRows,
 } from "../services/checkinDesk.js";
 import {
   STATIONS, agendaTimes, cleanSettings, eventDayInfo, resolveWindows, stationEnabled, stationState, DEFAULT_BUFFERS, FALLBACK_AGENDA, DEFAULT_WINDOWS,
@@ -39,7 +40,8 @@ import { performAction } from "../services/checkinDeskActions.js";
      GET  /me             who's signed in, staff or volunteer, the stations, today
      GET  /clock          the time, today and each station's window state (each device every 30 s)
      GET  /snapshot       everything a device needs: guests (staff see emails and ticket IDs; volunteers never),
-                          today's marks, desk notes, booths, media queries, the stations' windows, the cursor
+                          today's marks, desk notes, booths, media queries, today's NO DETAILS FOUND cards (`unknowns`,
+                          contract C8), the stations' windows, the cursor
      GET  /events?since=  the events after a cursor (the polling fallback) → { events, cursor, reset }
      GET  /stream?since=  the same as Server-Sent Events (Authorization header: the app reads it with fetch, so no
                           token ever goes in a URL); a ping every 5 s; ends after 10 minutes (the app reconnects)
@@ -325,7 +327,7 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
     idx = await rebuildForMiss({}) || await indexWithGen(gen);
     overlay = overlay.filter(() => idx.gen < gen);
   }
-  const [w, marks, notes, queries, attendance] = await Promise.all([
+  const [w, marks, notes, queries, attendance, unknowns] = await Promise.all([
     windowsNow(),
     CheckinMark.find({ day: today.date }).lean(),
     CheckinEvent.aggregate([{ $match: { kind: "note" } }, { $sort: { seq: 1 } }, { $group: { _id: "$subject", last: { $last: "$$ROOT" } } }]),
@@ -335,6 +337,7 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
       { $match: { at: { $ne: null }, point: { $in: ["arrived", "checked_in"] }, practice: { $ne: true } } },
       { $group: { _id: { day: "$day", point: "$point", subject: "$subject" } } },
     ]) : [],
+    unknownsFor(today.date),
   ]);
   // The directory is a copy up to a little while old: passes collected (or given back) since it was read come from the log.
   const passEvents = await CheckinEvent.find({ pass: { $exists: true }, at: { $gte: new Date(new Date(idx.builtAt).getTime() - 60 * 1000) } })
@@ -396,6 +399,8 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
     marks: marks.map((m) => markView(m)),
     notes: noteMap,
     queries: queries.map(queryView),
+    // Today's NO DETAILS FOUND cards (contract C8), open or closed, never undone ones; never in any count.
+    unknowns,
     // Staff: people per day and point (each person once; `rows` = the same, for app versions that read it; `passes`:
     // the pass rows behind it).
     attendance: [...people.values()].sort((a, b) => a.day.localeCompare(b.day) || a.point.localeCompare(b.point))
@@ -403,6 +408,15 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
     builtAt: idx.builtAt,
   });
 }));
+
+/** A day's NO DETAILS FOUND cards (contract C8): its unknown_arrival events and what happened to them since. */
+async function unknownsFor(day) {
+  const arrivals = await CheckinEvent.find({ kind: "unknown_arrival", day }).sort({ seq: 1 }).limit(500).lean();
+  if (!arrivals.length) return [];
+  const after = await CheckinEvent.find({ kind: { $in: ["undo", "unknown_done", "unknown_link"] }, subject: { $in: arrivals.map((e) => unknownKeyOf(e.clientId)) } })
+    .sort({ seq: 1 }).lean();
+  return unknownRows(arrivals, after);
+}
 
 router.get("/events", limit("events"), wrap(async (req, res) => {
   const r = await readSince(req.query.since, { limit: 500 });

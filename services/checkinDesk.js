@@ -89,9 +89,12 @@ export const POINT_LABELS = Object.freeze({
   media: "Checked in at the media desk", av: "AV checked", exhibitor: "Checked in at the exhibitor desk", booth: "Booth set up",
   flag_cxo: "Sent to staff", flag_lunch: "Sent to staff", flag_evening: "Sent to staff",
 });
-/** What can be sent. Staff only: reset (clear a mark) and desk notes; undo of someone else's tap. */
-export const ACTION_KINDS = Object.freeze(["mark", "undo", "reset", "note", "query_add", "query_update"]);
-export const STAFF_KINDS = Object.freeze(["reset", "note"]);
+/** What can be sent. Staff only: reset (clear a mark), desk notes, linking a NO DETAILS FOUND arrival to a guest
+    (contract C8); undo of someone else's tap. */
+export const ACTION_KINDS = Object.freeze(["mark", "undo", "reset", "note", "query_add", "query_update", "unknown_arrival", "unknown_done", "unknown_link"]);
+export const STAFF_KINDS = Object.freeze(["reset", "note", "unknown_link"]);
+/** The taps an undo can take back: check-in marks, and a NO DETAILS FOUND arrival (contract C8). */
+export const UNDOABLE_KINDS = Object.freeze(["mark", "unknown_arrival"]);
 export const QUERY_STATUSES = Object.freeze(["new", "in_progress", "done"]);
 export const QUERY_STATUS_LABELS = Object.freeze({ new: "New", in_progress: "In progress", done: "Done" });
 
@@ -116,6 +119,11 @@ export const OVERRIDE_REASONS = Object.freeze({
 export const NOTE_MAX = 140;
 export const AV_NOTE_MAX = 80;
 export const QUERY_LIMITS = Object.freeze({ who: 80, outlet: 80, request: 240 });
+/** NO DETAILS FOUND (contract C8): the lobby couldn't find the person; it records the arrival with the name as typed.
+    The pass desk closes the card with one of these outcomes (or staff link it to a guest: "linked"). */
+export const UNKNOWN_LIMITS = Object.freeze({ name: 80, company: 80, note: 200 });
+export const UNKNOWN_OUTCOMES = Object.freeze(["sent_to_help", "pass_issued", "left"]);
+export const UNKNOWN_OUTCOME_TEXT = Object.freeze({ sent_to_help: "sent to the help desk", pass_issued: "pass issued", left: "left", linked: "found on the list" });
 /** A sequence number missing for longer than this, counted from when a reader FIRST saw it missing, is a write that
     failed: the cursor moves past it. (Counting from the next event's own `at` would skip a write that commits late.) */
 export const HOLE_MS = 15 * 1000;
@@ -151,8 +159,17 @@ export const boothNorm = (booth) => String(booth || "").trim().replace(/[^A-Za-z
 export const boothKey = (booth) => (boothNorm(booth) ? `b-${boothNorm(booth).toUpperCase()}` : "");
 export const isBoothKey = (k) => /^b-[A-Z0-9-]{1,20}$/.test(String(k || ""));
 export const boothSubject = (key) => `booth:${String(key).slice(2).toLowerCase()}`;
+/** A NO DETAILS FOUND card's key (contract C8): "u:" + the clientId of the lobby tap that recorded the arrival. It is
+    also the subject its events are stored under. */
+export const unknownKeyOf = (clientId) => `u:${clientId}`;
+export const isUnknownKey = (k) => /^u:[A-Za-z0-9_-]{8,64}$/.test(String(k || ""));
 /** The key a stored subject travels as. */
-export const keyOfSubject = (subject, keyOf = guestKey) => (String(subject).startsWith("booth:") ? `b-${String(subject).slice(6).toUpperCase()}` : keyOf(subject));
+export const keyOfSubject = (subject, keyOf = guestKey) => {
+  const s = String(subject);
+  if (s.startsWith("booth:")) return `b-${s.slice(6).toUpperCase()}`;
+  if (s.startsWith("u:")) return s;
+  return keyOf(subject);
+};
 
 /* ---------- Guests ---------- */
 
@@ -530,7 +547,45 @@ export function eventView(ev, { keyOf = (id) => guestKey(id), staff = false } = 
   // change was made), so a device can update it without a reload, and a snapshot from any instance can use it.
   if (ev.guest && typeof ev.guest === "object") out.guest = guestView(ev.guest, { staff });
   if (ev.query) out.query = queryView(ev.query);
+  // NO DETAILS FOUND (contract C8): the arrival as typed (`at` = when it was tapped), how the pass desk closed it.
+  if (ev.kind === "unknown_arrival") {
+    Object.assign(out, { name: str(ev.name), company: str(ev.company), note: str(ev.note), byName: str(ev.byName) });
+    if (ev.arrivedAt) out.at = iso(ev.arrivedAt);
+  }
+  if (ev.kind === "unknown_done") out.outcome = ev.outcome || "";
+  if (ev.kind === "unknown_link") out.guestKey = ev.guestKey || "";
   return out;
+}
+
+/**
+ * A day's NO DETAILS FOUND cards for a snapshot (contract C8), from their unknown_arrival events and the events after
+ * them on the same key (undo / unknown_done / unknown_link: the newest wins, as on the devices). Undone ones are left
+ * out. → [{ key, clientId, name, company, note, at (when it was tapped), day, byName, station, status: "open" |
+ * <outcome> | "linked", outcome, doneAt, doneBy, guestKey }], oldest first.
+ */
+export function unknownRows(arrivals = [], after = []) {
+  const rows = new Map();
+  for (const e of [...arrivals].sort((a, b) => a.seq - b.seq)) {
+    if (!e?.clientId || e.kind !== "unknown_arrival") continue;
+    const key = unknownKeyOf(e.clientId);
+    rows.set(key, {
+      seq: e.seq, key, clientId: e.clientId, name: str(e.name), company: str(e.company), note: str(e.note), at: iso(e.arrivedAt || e.at), day: e.day || "",
+      byName: str(e.byName), station: e.station || "lobby", status: "open", outcome: "", doneAt: null, doneBy: "", guestKey: "",
+      ...(e.practice ? { practice: true } : {}),
+    });
+  }
+  for (const e of [...after].sort((a, b) => a.seq - b.seq)) {
+    const u = rows.get(e?.subject);
+    if (!u || !(e.seq > u.seq)) continue;
+    if (e.kind === "undo") { u.status = "undone"; continue; }
+    if (e.kind !== "unknown_done" && e.kind !== "unknown_link") continue;
+    u.status = e.kind === "unknown_link" ? "linked" : e.outcome || "done";
+    if (e.kind === "unknown_done") u.outcome = e.outcome || "";
+    else u.guestKey = e.guestKey || "";
+    u.doneAt = iso(e.at);
+    u.doneBy = str(e.byName);
+  }
+  return [...rows.values()].filter((u) => u.status !== "undone").map(({ seq, ...u }) => u);
 }
 
 /**
@@ -573,7 +628,7 @@ const bad = (error, field) => ({ ok: false, error, field });
 /**
  * One action as the app sends it → { ok: true, value } | { ok: false, error, field }:
  *   clientId  made on the device (8–64 letters, digits, _ -): the same tap sent twice is done once
- *   kind      mark | undo | reset | note | query_add | query_update
+ *   kind      mark | undo | reset | note | query_add | query_update | unknown_arrival | unknown_done | unknown_link
  *   station   the station it was made at (lobby, desk, breakfast, lunch, evening, media, av, exhibitor)
  *   clientAt  when it was tapped, on the device's server-corrected clock (ISO; contract C4: clamped and judged there)
  *   queuedBy  { id, name }: who made the tap, when it was made offline and is sent from someone else's sign-in (C3)
@@ -584,6 +639,9 @@ const bad = (error, field) => ({ ok: false, error, field });
  *   note:   key, note (staff: the desk note, ≤ 140; "" clears it)
  *   query_add:    who, outlet, request, key? (a media guest)
  *   query_update: id, status? (new | in_progress | done), assignee? ("me", a user id, or null)
+ *   unknown_arrival: name (as typed, 1–80), company? (≤ 80), note? (≤ 200): NO DETAILS FOUND (contract C8)
+ *   unknown_done:    target ("u:<clientId of the arrival>"), outcome (sent_to_help | pass_issued | left)
+ *   unknown_link:    target, guestKey (staff: "Found them": that guest is marked arrived, the card closes)
  */
 export function cleanAction(raw) {
   const a = raw && typeof raw === "object" ? raw : {};
@@ -611,6 +669,31 @@ export function cleanAction(raw) {
     if (!CLIENT_ID.test(ref)) return bad("What to undo is missing.", "ref");
     if (ref === clientId) return bad("An undo can't undo itself.", "ref");
     value.ref = ref;
+    return { ok: true, value };
+  }
+  if (kind === "unknown_arrival") {
+    for (const f of ["name", "company", "note"]) {
+      if (a[f] !== undefined && a[f] !== null && typeof a[f] !== "string") return bad(`The ${f} must be text.`, f);
+      const v = line(a[f], UNKNOWN_LIMITS[f] + 1);
+      if (v.length > UNKNOWN_LIMITS[f]) return bad(`${f === "name" ? "The name" : f === "company" ? "The company" : "The note"} is ${UNKNOWN_LIMITS[f]} characters at most.`, f);
+      value[f] = v;
+    }
+    if (!value.name) return bad("Type their name as they said it.", "name");
+    return { ok: true, value };
+  }
+  if (kind === "unknown_done" || kind === "unknown_link") {
+    const target = str(a.target);
+    if (!isUnknownKey(target)) return bad("Which arrival is missing.", "target");
+    value.target = target;
+    if (kind === "unknown_done") {
+      const outcome = str(a.outcome);
+      if (!UNKNOWN_OUTCOMES.includes(outcome)) return bad("Outcome must be sent_to_help, pass_issued or left.", "outcome");
+      value.outcome = outcome;
+    } else {
+      const guestKeyIn = str(a.guestKey);
+      if (!isGuestKey(guestKeyIn)) return bad("Pick the guest.", "guestKey");
+      value.guestKey = guestKeyIn;
+    }
     return { ok: true, value };
   }
   if (kind === "query_add") {
@@ -698,7 +781,7 @@ export function tapClock(clientAt, now = new Date()) {
  */
 export function canUndo({ target, actorId = "", staff = false, undoClientAt = null, now = new Date(), signedInId = "" } = {}) {
   if (!target) return { ok: false, status: 404, error: "Nothing to undo: that tap never reached the server." };
-  if (target.kind !== "mark") return { ok: false, status: 400, error: "Only check-in taps can be undone." };
+  if (!UNDOABLE_KINDS.includes(target.kind)) return { ok: false, status: 400, error: "Only check-in taps can be undone." };
   if (staff) return { ok: true };
   const own = { ok: false, status: 403, error: "You can only undo your own taps. Ask a staff member." };
   if (String(target.byId || "") !== String(actorId || "")) return own;
