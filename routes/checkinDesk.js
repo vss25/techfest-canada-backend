@@ -13,9 +13,10 @@ import { makeAgendaCache } from "../services/points.js";
 import { SANITY_PROJECT } from "../services/rsvp.js";
 import { directory, peopleGeneration, personNow } from "./people.js";
 import {
-  MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskGuestFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, markView, queryView, sessionsIndex,
-  unknownKeyOf, unknownRows,
+  MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskRowFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, isPersonSubject, keyOfSubject, markView,
+  queryView, sessionsIndex, unknownKeyOf, unknownRows,
 } from "../services/checkinDesk.js";
+import { countingPasses } from "../services/eventSummary.js";
 import {
   STATIONS, agendaTimes, cleanSettings, eventDayInfo, resolveWindows, stationEnabled, stationState, DEFAULT_BUFFERS, FALLBACK_AGENDA, DEFAULT_WINDOWS,
 } from "../services/checkinDeskTime.js";
@@ -150,7 +151,7 @@ const MISS_GAP_MS = 10 * 1000;
 const deskIdx = { index: null, pending: null, pendingFresh: false, builds: 0, freshBuilds: 0, lastMissBuild: 0 };
 let sessionsOfNow = () => [];
 // The guest row that guest / inclusions events carry (services/checkinDeskLog.js), with the agenda's sessions.
-setGuestRowBuilder((p) => deskGuestFrom(p, { sessionsOf: (x) => sessionsOfNow(x) }));
+setGuestRowBuilder((p) => deskRowFrom(p, { sessionsOf: (x) => sessionsOfNow(x) }));
 const logError = (label) => (err) => console.error(`CHECKIN DESK ${label} ERROR:`, err?.message || err);
 
 function startBuild({ fresh = false } = {}) {
@@ -172,7 +173,7 @@ function startBuild({ fresh = false } = {}) {
       return prev;
     }
     const sessionsOf = sessionsIndex(sessions || []);
-    const index = buildDeskIndex(d.people, { sessionsOf });
+    const index = buildDeskIndex(d.people, { sessionsOf, aliases: d.byId });
     Object.assign(index, { builtAt: d.builtAt || new Date(), dir: d, sessions, gen: genOf, pgen, checkedAt, sessionsOf });
     deskIdx.index = index;
     deskIdx.builds += 1;
@@ -254,16 +255,17 @@ async function resolveKey(key, memo = {}) {
   return again?.byKey.get(key) || null;
 }
 
-/** The guest with their inclusions as the database has them now (one person's records: personNow), across the passes
-    the index counts for them. null: not found (the caller keeps the index's). */
+/** The guest with their inclusions as the database has them now (one person's records: personNow): every counting pass
+    of theirs, a pass given a moment ago (Give a pass) included, except one the index's directory knew as refunded
+    (personNow can't ask Stripe). No counting pass any more (hidden just now): nothing included. null: the person
+    isn't found (the caller keeps the index's). */
 async function freshGuest(hit, idx) {
   const p = idx?.dir?.byId?.get(hit?.guest?.personId);
   if (!p) return null;
   const now = await personNow(p);
   if (!now) return null;
-  const counted = new Set(hit.guest.norms);
-  const passes = (now.passList || []).filter((t) => counted.has(t.norm) && !t.hidden);
-  if (!passes.length) return null;
+  const refunded = new Set((p.passList || []).filter((t) => t.status === "refunded").map((t) => t.norm));
+  const passes = countingPasses(now).filter((t) => !refunded.has(t.norm));
   return { ...hit.guest, extras: guestExtras(passes).extras };
 }
 
@@ -346,6 +348,8 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
   for (const e of passEvents) if (e.pass?.ticketId) passNow.set(guestKey(e.pass.ticketId), e.pass);
   const guestOut = (g) => {
     const v = guestView(g, { staff });
+    const more = moreKeys.get(g.personId);
+    if (more) v.keys = [...new Set([...(v.keys || [v.key]), ...more])];
     const p = passNow.get(g.key) || (g.keys.length === 1 ? passNow.get(g.keys[0]) : null);
     if (p) { v.passCollected = !!p.collected; v.passCollectedAt = p.collected && p.collectedAt ? new Date(p.collectedAt).toISOString() : null; }
     return v;
@@ -370,7 +374,18 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
   const noteMap = {};
   for (const n of notes) {
     const text = String(n.last.note || "").trim();
-    if (text) noteMap[guestKey(n._id)] = { text, by: n.last.byName || "", at: n.last.at };
+    if (text) noteMap[keyOfSubject(n._id)] = { text, by: n.last.byName || "", at: n.last.at };
+  }
+  // ISSUE PASS (contract C7): today's marks made on someone's no-pass key ("person:<id>") show on their row, also once
+  // they hold a pass or go by another id (the key joins the row's keys).
+  const moreKeys = new Map();
+  for (const m of marks) {
+    if (!m.at || !isPersonSubject(m.subject)) continue;
+    const k = keyOfSubject(m.subject);
+    const g = idx.byKey.get(k)?.guest;
+    if (!g || g.keys.includes(k)) continue;
+    if (!moreKeys.has(g.personId)) moreKeys.set(g.personId, new Set());
+    moreKeys.get(g.personId).add(k);
   }
   // Each person once: a pass's rows count for the guest whose pass it is (a pass that isn't a guest's doesn't count).
   const byNorm = new Map();

@@ -1,5 +1,5 @@
 import CheckinEvent, { CheckinCounter } from "../models/CheckinEvent.js";
-import { deskGuestFrom, eventView, safeCursor } from "./checkinDesk.js";
+import { deskRowFrom, eventView, safeCursor } from "./checkinDesk.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
 /* =========================================================
@@ -250,9 +250,10 @@ async function tick() {
 
 /* ---------- Changes made elsewhere that the desks should see ---------- */
 
-/* The desk's guest row for a directory person (routes/checkinDesk.js sets one that knows the agenda's sessions). */
-let rowOf = (p) => deskGuestFrom(p);
-export function setGuestRowBuilder(fn) { rowOf = typeof fn === "function" ? fn : (p) => deskGuestFrom(p); }
+/* The desk's guest row for a directory person, a pass holder's or an ISSUE PASS one (routes/checkinDesk.js sets one
+   that knows the agenda's sessions). */
+let rowOf = (p) => deskRowFrom(p);
+export function setGuestRowBuilder(fn) { rowOf = typeof fn === "function" ? fn : (p) => deskRowFrom(p); }
 const rowFor = (person) => {
   if (!person) return null;
   try { return rowOf(person) || null; } catch (err) { console.error("CHECKIN DESK GUEST ROW ERROR:", err?.message || err); return null; }
@@ -261,29 +262,33 @@ const byOf = (user) => ({ station: "admin", byId: user?._id || null, byName: use
 
 /**
  * Staff changed a pass's extras (Admin › People, or the desk app through it): the desks update that guest's inclusions.
- * `person`: the directory's person after the change: the event then carries the guest's row and the guest's
- * inclusions (any counting pass's, services/checkinDesk.js guestExtras) under their main pass; without it, the edited
- * pass's `extras` / `extrasView`.
+ * `person`: the directory's person after the change: the event carries the guest's whole row and the guest's
+ * inclusions (any counting pass's, services/checkinDesk.js guestExtras) under their main pass, never one pass's on
+ * its own. Without it (the person couldn't be read), a `guest` event with no row: the desks reload.
+ * → the stored event, or null.
  */
-export async function deskInclusionsChanged({ ticketId, extras, extrasView = null, user = null, person = null } = {}) {
+export async function deskInclusionsChanged({ ticketId, user = null, person = null } = {}) {
   const guest = rowFor(person);
+  if (!guest) return deskGuestChanged({ ticketIds: [ticketId], user });
   try {
-    await appendEvent(guest
-      ? { kind: "inclusions", subject: guest.norm, extras: guest.extras, extrasView: guest.extrasView, guest, ...byOf(user) }
-      : { kind: "inclusions", subject: normalizeTicketId(ticketId), extras, extrasView: extrasView || undefined, ...byOf(user) });
+    return await appendEvent({ kind: "inclusions", subject: guest.norm, extras: guest.extras, extrasView: guest.extrasView, guest, ...byOf(user) });
   } catch (err) {
     console.error("CHECKIN DESK INCLUSIONS EVENT ERROR:", err?.message || err);
+    return null;
   }
 }
 
-/** Staff changed something else about a guest (name, company, Media / VIP / Exhibitor, the pass): the desks reload,
-    or (`person`: the directory's person after the change) take the row the event carries. */
+/** Staff changed something else about a guest (name, company, Media / VIP / Exhibitor, a pass given, edited or
+    deleted): the event carries the guest's whole row after the change (`person`: the directory's person, rebuilt
+    where the change was made), or none when they're gone or couldn't be read (the desks reload). → the stored event,
+    or null. */
 export async function deskGuestChanged({ ticketIds = [], user = null, person = null } = {}) {
   const guest = rowFor(person);
   const subject = guest?.norm || normalizeTicketId(ticketIds.find(Boolean) || "");
   try {
-    await appendEvent({ kind: "guest", subject, ...(guest ? { guest } : {}), ...byOf(user) });
+    return await appendEvent({ kind: "guest", subject, ...(guest ? { guest } : {}), ...byOf(user) });
   } catch (err) {
     console.error("CHECKIN DESK GUEST EVENT ERROR:", err?.message || err);
+    return null;
   }
 }

@@ -3,6 +3,7 @@ import { countingPasses, entitledExtras, mainPass } from "./eventSummary.js";
 import { TIER_LABELS, DIETARY, tierFromTicketType, personNameKey, nameVariants, fullNameMatches } from "./rsvp.js";
 import { rsvpStatusOf, splitName } from "./rsvpStaff.js";
 import { EXTRA_KEYS, extrasView } from "./passExtras.js";
+import { personBand } from "./checkinCard.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, mealItem, isHHMM, toMin } from "./checkinDeskTime.js";
 
@@ -36,7 +37,10 @@ import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, mealItem, is
    are the directory's (services/passExtras.js), and a person is
    entitled to an extra when ANY of their counting passes includes it
    (the Event summary's rule, eventSummary.js entitledExtras): nothing
-   is worked out again here.
+   is worked out again here. ISSUE PASS (contract C7): people on the list
+   with no pass on file (a speaker with no Speaker Pass, Media or an
+   exhibitor with no pass) are guests too, with `noPass: true` and an "n"
+   key of their directory id (deskNoPassFrom).
 
    Keys: guests and their passes travel as opaque keys ("g" + 20 hex of
    an HMAC of the ticket ID), never ticket IDs, for volunteers: a ticket
@@ -152,7 +156,18 @@ export function guestKey(ticketId, key = secret()) {
   if (!norm) return "";
   return `g${crypto.createHmac("sha256", key).update(norm).digest("hex").slice(0, 20)}`;
 }
-export const isGuestKey = (k) => /^g[0-9a-f]{20}$/.test(String(k || ""));
+/** A guest's key: a pass's ("g…"), or an ISSUE PASS person's ("n…", contract C7). */
+export const isGuestKey = (k) => /^[gn][0-9a-f]{20}$/.test(String(k || ""));
+
+/** ISSUE PASS (contract C7): someone on the list with no pass on file has no ticket ID, so their marks are stored under
+    their directory id ("person:<id>": u-<account>, s-<speaker>, a-…, r-…) and they travel as "n" + 20 hex characters
+    of an HMAC of it (stable: the same person id gives the same key on every server; never a ticket). */
+export const personSubject = (personId) => `person:${String(personId || "")}`;
+export const isPersonSubject = (s) => String(s || "").startsWith("person:");
+export function personKey(subject, key = secret()) {
+  const s = isPersonSubject(subject) ? String(subject) : personSubject(subject);
+  return `n${crypto.createHmac("sha256", key).update(s).digest("hex").slice(0, 20)}`;
+}
 
 /** A booth's key and the subject its marks are stored under: "b-A12" and "booth:a12". */
 export const boothNorm = (booth) => String(booth || "").trim().replace(/[^A-Za-z0-9-]/g, "").slice(0, 20).toLowerCase();
@@ -168,6 +183,7 @@ export const keyOfSubject = (subject, keyOf = guestKey) => {
   const s = String(subject);
   if (s.startsWith("booth:")) return `b-${s.slice(6).toUpperCase()}`;
   if (s.startsWith("u:")) return s;
+  if (isPersonSubject(s)) return personKey(s);
   return keyOf(subject);
 };
 
@@ -182,7 +198,7 @@ function marksOf(p, main) {
   return {
     vip: !!p.vip,
     media: types.has("media"),
-    speaker: types.has("speaker") || main.tier === "speaker",
+    speaker: types.has("speaker") || main?.tier === "speaker",
     // The directory's answer (People's Exhibitor yes / no): an exhibitor pass makes them one unless staff switched it
     // off (typesOff on an account, Attendee.exhibitor false on a pass). Never the promo code on its own.
     exhibitor: types.has("exhibitor"),
@@ -307,17 +323,100 @@ export function deskGuestFrom(p, { keyOf = (id) => guestKey(id), sessionsOf = ()
   };
 }
 
+/* ---------- ISSUE PASS: on the list, no pass on file (contract C7) ---------- */
+
+export const NO_PASS_LABEL = "No pass on file";
+const isBoothId = (id) => /^BOOTH-/i.test(String(id || ""));
+const NO_EXTRAS = Object.freeze(Object.fromEntries(EXTRA_KEYS.map((k) => [k, false])));
+
+/**
+ * Is this directory person on the list with no pass on file (the organiser, Oct 23: "If their pass isn't found but
+ * name is there, mark it as issue pass")? A speaker (the speaker type: the website's speaker list, an account's type)
+ * with no Speaker Pass row, or someone marked Media or Exhibitor, who holds no pass at all. Anyone with a pass row
+ * that doesn't count (hidden by staff, refunded) stays out, as on the Event summary; so does everyone else without a
+ * pass (staff, RSVPs). A booth order isn't a pass (an exhibitor with only a booth is in).
+ */
+export function noPassPerson(p) {
+  if (!p) return false;
+  if ((p.passList || []).some((t) => !isBoothId(t.ticketId))) return false;
+  const types = new Set(p.types || []);
+  return types.has("speaker") || types.has("media") || types.has("exhibitor");
+}
+
+/**
+ * A desk guest for an ISSUE PASS person (noPassPerson), or null: { key "n…", noPass: true, tier: null, passName: null,
+ * marks, band, no inclusions, … } with the same fields as a pass holder's row. Marked Arrived in the lobby and
+ * Checked in at the pass desk ("pass issued at the desk": the mark only, there's no ticket to collect).
+ */
+export function deskNoPassFrom(p, { sessionsOf = () => [] } = {}) {
+  if (!noPassPerson(p)) return null;
+  const subject = personSubject(p.id);
+  const key = personKey(subject);
+  const marks = marksOf(p, null);
+  const noView = { override: null, auto: false, included: false, ticketId: "" };
+  return {
+    key,
+    keys: [key],
+    name: str(p.name) || "No name",
+    firstName: str(p.firstName),
+    lastName: str(p.lastName),
+    company: str(p.company),
+    title: str(p.jobTitle),
+    tier: null,
+    passName: null,
+    noPass: true,
+    marks,
+    // The People band (services/checkinCard.js personBand): Speaker red, Media dark blue, VIP gold; "No pass on file".
+    band: personBand({ vip: !!p.vip, types: p.types || [], passes: [], passName: NO_PASS_LABEL }),
+    extras: { ...NO_EXTRAS },
+    passCollectedAt: null,
+    passCollected: false,
+    pending: false,
+    rsvp: rsvpOf(p),
+    booth: "",
+    boothKey: "",
+    sessions: marks.speaker ? sessionsOf(p) : [],
+    personId: p.id,
+    email: str(p.email),
+    ticketId: "",
+    ticketIds: [],
+    extrasView: Object.fromEntries(EXTRA_KEYS.map((k) => [k, { ...noView }])),
+    passExtras: [],
+    norm: subject,
+    norms: [subject],
+  };
+}
+
+/** The desk's row for a directory person: a pass holder's (deskGuestFrom), else an ISSUE PASS one (deskNoPassFrom), else null. */
+export const deskRowFrom = (p, opts = {}) => deskGuestFrom(p, opts) || deskNoPassFrom(p, opts);
+
+const PERSON_ALIAS = /^[uasr]-/;
+
 /** Every guest, by name, and the lookups the routes need: key → { guest, norm } (every counting pass), norm → guest,
-    and the booths (exhibitor desk): [{ key, booth, companies, guests: [key] }] by booth. */
-export function buildDeskIndex(people = [], { keyOf = (id) => guestKey(id), sessionsOf = () => [] } = {}) {
+    and the booths (exhibitor desk): [{ key, booth, companies, guests: [key] }] by booth. ISSUE PASS people (contract
+    C7) are guests too. `aliases`: the directory's id → person map (routes/people.js byId): every person id a guest
+    goes by also resolves ("n" keys of their u- / a- / s- / r- ids), so marks made on an ISSUE PASS row still find
+    the person once a pass is given (a tap on such a key is recorded on their main pass when they hold one). */
+export function buildDeskIndex(people = [], { keyOf = (id) => guestKey(id), sessionsOf = () => [], aliases = null } = {}) {
   const guests = [];
   const byKey = new Map();
   const byNorm = new Map();
+  const byPerson = new Map();
   for (const p of people || []) {
-    const g = deskGuestFrom(p, { keyOf, sessionsOf });
+    const g = deskRowFrom(p, { keyOf, sessionsOf });
     if (!g) continue;
     guests.push(g);
+    byPerson.set(p, g);
     g.keys.forEach((k, i) => { byKey.set(k, { guest: g, norm: g.norms[i] }); byNorm.set(g.norms[i], g); });
+  }
+  for (const [id, p] of aliases instanceof Map ? aliases : []) {
+    const g = byPerson.get(p);
+    if (!g || !PERSON_ALIAS.test(id)) continue;
+    const subject = personSubject(id);
+    const k = personKey(subject);
+    if (byKey.has(k)) continue;
+    byKey.set(k, { guest: g, norm: g.noPass ? subject : g.norm, alias: subject });
+    if (g.noPass) byNorm.set(subject, g);
   }
   guests.sort((a, b) => fold(a.name).localeCompare(fold(b.name)));
   const boothList = boothsOf(guests);
@@ -337,7 +436,7 @@ export function boothsOf(guests = []) {
   return [...booths.values()].sort((a, b) => a.booth.localeCompare(b.booth, "en", { numeric: true }));
 }
 
-const VOLUNTEER_FIELDS = ["key", "keys", "name", "firstName", "lastName", "company", "title", "tier", "passName", "marks", "extras",
+const VOLUNTEER_FIELDS = ["key", "keys", "name", "firstName", "lastName", "company", "title", "tier", "passName", "noPass", "band", "marks", "extras",
   "passCollectedAt", "passCollected", "pending", "rsvp", "booth", "boothKey", "sessions"];
 const STAFF_FIELDS = [...VOLUNTEER_FIELDS, "personId", "email", "ticketId", "ticketIds", "extrasView", "passExtras"];
 
@@ -346,7 +445,7 @@ const STAFF_FIELDS = [...VOLUNTEER_FIELDS, "personId", "email", "ticketId", "tic
     someone is), the ticket IDs and the inclusions' switches. */
 export function guestView(g, { staff = false } = {}) {
   const out = {};
-  for (const k of staff ? STAFF_FIELDS : VOLUNTEER_FIELDS) out[k] = g[k];
+  for (const k of staff ? STAFF_FIELDS : VOLUNTEER_FIELDS) if (g[k] !== undefined) out[k] = g[k];
   return out;
 }
 
@@ -507,7 +606,7 @@ export function queryView(q) {
     who: str(q.who),
     outlet: str(q.outlet),
     request: str(q.request),
-    key: q.subject ? guestKey(q.subject) : "",
+    key: q.subject ? keyOfSubject(q.subject) : "",
     status: q.status,
     assignee: q.assigneeId || q.assigneeName ? { id: q.assigneeId ? String(q.assigneeId) : "", name: str(q.assigneeName) } : null,
     createdBy: { id: q.createdById ? String(q.createdById) : "", name: str(q.createdByName) },
@@ -552,8 +651,9 @@ export function eventView(ev, { keyOf = (id) => guestKey(id), staff = false } = 
     Object.assign(out, { name: str(ev.name), company: str(ev.company), note: str(ev.note), byName: str(ev.byName) });
     if (ev.arrivedAt) out.at = iso(ev.arrivedAt);
   }
-  if (ev.kind === "unknown_done") out.outcome = ev.outcome || "";
-  if (ev.kind === "unknown_link") out.guestKey = ev.guestKey || "";
+  if (ev.kind === "unknown_done") Object.assign(out, { outcome: ev.outcome || "", byName: str(ev.byName) });
+  if (ev.kind === "unknown_link") Object.assign(out, { guestKey: ev.guestKey || "", byName: str(ev.byName) });
+  if (ev.kind === "undo" && String(ev.subject || "").startsWith("u:")) out.byName = str(ev.byName);
   return out;
 }
 

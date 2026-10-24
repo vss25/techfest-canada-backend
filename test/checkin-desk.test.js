@@ -441,3 +441,84 @@ test("C8 on the wire: the arrival as typed (at = when it was tapped); a snapshot
   assert.equal(rows[2].at, "2026-10-26T13:05:00.000Z");
   assert.ok(!("seq" in rows[0]));
 });
+
+/* ---------- Round 3 (Oct 23 2026): ISSUE PASS (C7), C8 events, undo coverage (C2) ---------- */
+
+function noPassPeople() {
+  const users = [
+    { _id: "u10", name: "Sia Speaker", email: "sia@example.com", types: ["speaker"], organization: "Talkco", jobTitle: "VP" },
+    { _id: "u11", name: "Mel Media", email: "mel@example.com", types: ["media"], vip: true },
+    // An exhibitor with only a booth order: a booth isn't a pass, so she's ISSUE PASS.
+    { _id: "u12", name: "Exa Exhibitor", email: "exa@example.com", types: ["exhibitor"], tickets: [t("BOOTH-A1", "booth")] },
+    // Hidden-only and refunded-only people stay out (as on the Event summary).
+    { _id: "u13", name: "Hank Hidden", email: "hank@example.com", types: ["speaker"], tickets: [t("apx000000020", "apex", { hiddenByStaff: true })] },
+    { _id: "u14", name: "Rhea Refunded", email: "rhea@example.com", types: ["media"], tickets: [t("pow000000021", "power", { stripeSessionId: "cs_refunded" })] },
+    // No type: not on the list.
+    { _id: "u15", name: "Ola Other", email: "ola@example.com" },
+  ];
+  const refunds = new Map([["cs_refunded", { total: 100, refunded: 100 }]]);
+  return buildPeople({ users, attendees: [], rsvps: [], speakers: [{ _id: "spk-noel", name: "Noel Nopass", company: "Quantumly", title: "Chief Scientist" }], refunds });
+}
+
+test("C7 ISSUE PASS: a speaker with no Speaker Pass, Media or an exhibitor with no pass; hidden-only, refunded-only and untyped people out", async () => {
+  const { noPassPerson, deskNoPassFrom, personKey, personSubject, NO_PASS_LABEL } = await import("../services/checkinDesk.js");
+  const built = noPassPeople();
+  const by = Object.fromEntries(built.people.map((p) => [p.name, p]));
+  for (const name of ["Sia Speaker", "Mel Media", "Exa Exhibitor", "Noel Nopass"]) assert.equal(noPassPerson(by[name]), true, name);
+  for (const name of ["Hank Hidden", "Rhea Refunded", "Ola Other"]) assert.equal(noPassPerson(by[name]), false, name);
+  const idx = buildDeskIndex(built.people, { aliases: built.byId });
+  assert.deepEqual(idx.guests.map((g) => g.name).sort(), ["Exa Exhibitor", "Mel Media", "Noel Nopass", "Sia Speaker"]);
+  const sia = deskNoPassFrom(by["Sia Speaker"]);
+  assert.equal(sia.key, personKey(personSubject("u-u10")));
+  assert.match(sia.key, /^n[0-9a-f]{20}$/);
+  assert.ok(isGuestKey(sia.key), "an ISSUE PASS key is a guest key (actions accept it)");
+  assert.deepEqual([sia.noPass, sia.tier, sia.passName, sia.norm, sia.company, sia.title], [true, null, null, "person:u-u10", "Talkco", "VP"]);
+  assert.deepEqual(sia.extras, { cxo: false, lunch: false, gala: false, awards: false });
+  assert.deepEqual([sia.band.key, sia.band.passName], ["speaker", NO_PASS_LABEL]);
+  assert.equal(deskNoPassFrom(by["Mel Media"]).band.key, "vip", "the People band: VIP gold first");
+  assert.equal(deskNoPassFrom(by["Mel Media"]).marks.vip, true);
+  assert.equal(deskNoPassFrom(by["Noel Nopass"]).marks.speaker, true);
+  // Volunteers: the row without who it is.
+  const v = guestView(sia, { staff: false });
+  assert.equal(v.noPass, true);
+  assert.equal(v.band.key, "speaker");
+  for (const k of ["personId", "email", "norm", "norms", "ticketIds"]) assert.ok(!(k in v), k);
+  assert.ok(!JSON.stringify(v).includes("u10"));
+  // On the wire: marks and notes on "person:<id>" travel by the person's key.
+  assert.equal(keyOfSubject("person:u-u10"), sia.key);
+  assert.equal(markView({ subject: "person:u-u10", day: "2026-10-26", point: "arrived", at: new Date(), rev: 1 }).key, sia.key);
+  // Every id the person goes by resolves (a speaker's s- id once an account joins them, say).
+  const noel = idx.guests.find((g) => g.name === "Noel Nopass");
+  assert.equal(idx.byKey.get(personKey("person:s-spk-noel")).guest, noel);
+});
+
+test("C7: once a person on the ISSUE PASS list holds a pass, their old key still finds them and a tap on it lands on their main pass", async () => {
+  const { personKey } = await import("../services/checkinDesk.js");
+  const built = buildPeople({ users: [{ _id: "u20", name: "Exa Exhibitor", email: "exa@example.com", types: ["exhibitor"], tickets: [t("con000000030", "connect", { stripeSessionId: "cs30" })] }], attendees: [], rsvps: [], speakers: [] });
+  const idx = buildDeskIndex(built.people, { aliases: built.byId });
+  const old = idx.byKey.get(personKey("person:u-u20"));
+  assert.equal(old.guest.name, "Exa Exhibitor");
+  assert.equal(old.norm, "con000000030", "recorded on the pass");
+  assert.equal(old.guest.noPass, undefined);
+  assert.deepEqual(old.guest.keys, [guestKey("con000000030")], "the row's own keys stay the pass's");
+});
+
+test("C2: whose undo may take a tap back (a tombstone): staff's, or the author's from the same sign-in (C3)", async () => {
+  const { tombCovers } = await import("../services/checkinDeskActions.js");
+  const tap = { byId: "a1", sentFromId: "a1" };
+  assert.equal(tombCovers({ byRole: "staff", byId: "s1" }, tap), true);
+  assert.equal(tombCovers({ byRole: "volunteer", byId: "a1" }, tap), true);
+  assert.equal(tombCovers({ byRole: "volunteer", byId: "b2" }, tap), false, "someone else's never hides the author's tap");
+  assert.equal(tombCovers({ byRole: "volunteer", byId: "a1", signedInId: "b2" }, tap), false, "queued as a1 from b2's sign-in: only a tap sent from b2");
+  assert.equal(tombCovers({ byRole: "volunteer", byId: "a1", signedInId: "b2" }, { byId: "a1", sentFromId: "b2" }), true);
+  assert.equal(tombCovers({ byRole: "volunteer", byId: null }, { byId: null }), false);
+});
+
+test("C8 events carry who closed a card (byName), and the undo of an arrival its u: key", () => {
+  const done = eventView({ seq: 5, kind: "unknown_done", subject: "u:t123456789", at: new Date("2026-10-26T13:30:00Z"), byName: "Vic", outcome: "left", ref: "u:t123456789" });
+  assert.deepEqual([done.key, done.outcome, done.byName, done.at], ["u:t123456789", "left", "Vic", "2026-10-26T13:30:00.000Z"]);
+  const link = eventView({ seq: 6, kind: "unknown_link", subject: "u:t123456789", at: new Date(), byName: "Sam", guestKey: "gabc", marks: [{ subject: "con000000010", day: "2026-10-26", point: "arrived", at: new Date(), rev: 1 }] });
+  assert.deepEqual([link.key, link.guestKey, link.byName, link.marks[0].point], ["u:t123456789", "gabc", "Sam", "arrived"]);
+  const undo = eventView({ seq: 7, kind: "undo", subject: "u:t123456789", ref: "t123456789", at: new Date(), byName: "Val" });
+  assert.deepEqual([undo.key, undo.target, undo.byName], ["u:t123456789", "t123456789", "Val"]);
+});

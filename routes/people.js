@@ -50,7 +50,7 @@ import { COOLDOWN_DAYS as APP_INVITE_COOLDOWN_DAYS, appInviteJob, planAppInvites
 import { inviteInputs, loadInviteTemplate, makeInviteSender } from "../services/appInviteSend.js";
 import { loadSwag } from "../services/swag.js";
 import { deskGuestChanged, deskInclusionsChanged } from "../services/checkinDeskLog.js";
-import { autoExtras, extrasView } from "../services/passExtras.js";
+import { guestView } from "../services/checkinDesk.js";
 import { accessOf } from "../services/rightsStore.js";
 import {
   HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
@@ -249,14 +249,22 @@ export async function mediaOfPasses(ids = [], { waitMs = 2500 } = {}) {
 /**
  * One person as the database has them now (the check-in desk's meal doors, Oct 23 2026): their account and pass
  * records read again and joined with the directory's own rules (buildPeople, services/passExtras.js), so a switch
- * staff just made on any server instance counts at once. `p`: their directory record (which records are theirs).
- * Refunds aren't read (the caller keeps to the passes the directory counted). → the person record, or null.
+ * staff just made on any server instance counts at once. `p`: their directory record (which records are theirs):
+ * the passes it lists, and any pass since on their account, claimed by it, sent to one of their email addresses or
+ * made for their speaker profile (a pass given a moment ago with Give a pass; buildPeople's name rule still decides
+ * whether it's theirs). Refunds aren't read (the caller leaves out what the directory knew as refunded). → the
+ * person record, or null.
  */
 export async function personNow(p) {
   if (!p) return null;
   const passIds = (p.passList || []).map((t) => t.ticketId).filter(Boolean);
   const variants = (ids) => [...new Set(ids.flatMap((id) => [String(id), normalizeTicketId(id), normalizeTicketId(id).toUpperCase()]))];
-  const first = await Attendee.find({ $or: [{ _id: { $in: (p.attendees || []).map((a) => a._id) } }, { ticketId: { $in: variants(passIds) } }] }).select(ATTENDEE_SELECT).lean();
+  const emails = [...new Set([...(p.emails || []), p.email, p.user?.email].map((e) => String(e || "").trim().toLowerCase()).filter((e) => e && !/@ticket\.thetechfestival\.com$/.test(e)))];
+  const or = [{ _id: { $in: (p.attendees || []).map((a) => a._id) } }, { ticketId: { $in: variants(passIds) } }];
+  if (emails.length) or.push({ email: { $in: emails } });
+  if (p.user?._id) or.push({ claimedBy: p.user._id });
+  if (p.speaker?._id) or.push({ speakerId: String(p.speaker._id) });
+  const first = await Attendee.find({ $or: or }).select(ATTENDEE_SELECT).lean();
   const userIds = [...new Set([p.user?._id, ...first.map((a) => a.claimedBy)].filter(Boolean).map(String))];
   const users = userIds.length ? await User.find({ _id: { $in: userIds } }).select(USER_SELECT).lean() : [];
   const have = new Set(first.map((a) => String(a._id)));
@@ -265,6 +273,23 @@ export async function personNow(p) {
   const built = buildPeople({ users, attendees: [...first, ...extra], speakers: p.speaker ? [p.speaker] : [] });
   const main = normalizeTicketId(p.primary?.ticketId || passIds[0] || "");
   return (main && built.byId.get(`t-${main}`)) || (p.user && built.byId.get(`u-${p.user._id}`)) || built.people[0] || null;
+}
+
+/** The directory's person for an id (t-<ticket ID>, u-…, a-…, s-…) as they are after a change made here: one fresh
+    directory read (the desk's next rebuild reuses it), at most `waitMs`. → the person, or null (slower, or gone). */
+export async function personAfterChange(id, { waitMs = 4000 } = {}) {
+  const raw = String(id || "");
+  const key = raw.startsWith("t-") ? `t-${normalizeTicketId(raw.slice(2))}` : raw;
+  let timer;
+  const slow = new Promise((ok) => { timer = setTimeout(() => ok(null), waitMs); timer.unref?.(); });
+  try {
+    const d = await Promise.race([directory(), slow]);
+    return d?.byId?.get(key) || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
@@ -276,6 +301,11 @@ async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   if (!p && !fresh) { d = await directory({ fresh: true }); p = d.byId.get(key); }
   return p || null;
 }
+
+/** What a change sent the check-in desk app (its guest / inclusions event): `deskGuest`, the guest's whole desk row as
+    it is now (staff's view: inclusions across all their passes), and `deskSeq`, so the desk app uses it as it is and
+    never merges one pass's answer into it. Nothing when no row was sent (the desks reload). */
+const deskReply = (ev) => (ev?.guest ? { deskGuest: guestView(ev.guest, { staff: true }), deskSeq: ev.seq } : {});
 
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
   console.error("PEOPLE ERROR:", err);
@@ -995,8 +1025,8 @@ router.patch("/:id", wrap(async (req, res) => {
   const after = await findPerson(p.id);
   // The check-in desk app updates this guest (name, company, Media / VIP / Exhibitor marks, inclusions): the event
   // carries their row from the directory just rebuilt, so every server instance and device has it at once.
-  if (changed.length) await deskGuestChanged({ ticketIds: p.passList.map((x) => x.ticketId), user: req.user, person: after });
-  res.json({ ok: true, changed, person: after ? personRow(after) : null });
+  const deskEv = changed.length ? await deskGuestChanged({ ticketIds: p.passList.map((x) => x.ticketId), user: req.user, person: after }) : null;
+  res.json({ ok: true, changed, person: after ? personRow(after) : null, ...deskReply(deskEv) });
 }));
 
 /* One pass of theirs: PATCH /:id/passes/:ticketId, any of
@@ -1078,8 +1108,7 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
     }
     // The check-in desk app shows the new inclusions straight away (services/checkinDeskLog.js): sent below, once the
     // directory is rebuilt, with the guest's row and their inclusions across all their passes.
-    deskInclusions = { ticketId: t.ticketId, extras: effectiveAfter, user: req.user,
-      extrasView: extrasView(overrideAfter, autoExtras(tier || t.type, p.types, { vip: p.vip }), effectiveAfter) };
+    deskInclusions = { ticketId: t.ticketId, user: req.user };
     did = true;
   }
   if (Object.keys(extrasAsked).length) did = true;
@@ -1128,9 +1157,10 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   if (did) invalidate();
   const fresh = await findPerson(p.id);
   // The check-in desk app: the guest's row as it is now (a pass change reloads them; extras update their inclusions).
-  if (deskGuest) await deskGuestChanged({ ticketIds: [t.ticketId], user: req.user, person: fresh });
-  else if (deskInclusions) await deskInclusionsChanged({ ...deskInclusions, person: fresh });
-  res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null });
+  let deskEv = null;
+  if (deskGuest) deskEv = await deskGuestChanged({ ticketIds: [t.ticketId], user: req.user, person: fresh });
+  else if (deskInclusions) deskEv = await deskInclusionsChanged({ ...deskInclusions, person: fresh });
+  res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null, ...deskReply(deskEv) });
 }));
 
 /* ---------- Delete person (management) ----------

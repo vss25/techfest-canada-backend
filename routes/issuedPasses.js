@@ -27,7 +27,7 @@ import { passEmailDefaults, passEmailFor, passVariant } from "../services/passEm
 import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor, mergeCopy, sameAsDefault, tierFor } from "../services/passEmailCopy.js";
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
-import { forgetPeople, mediaOfPasses } from "./people.js";
+import { forgetPeople, mediaOfPasses, personAfterChange } from "./people.js";
 import { deskGuestChanged } from "../services/checkinDeskLog.js";
 
 /* =========================================================
@@ -359,8 +359,9 @@ export function issuedPassRouter(kindName = "issued") {
       + PASS_MARKS.filter((k) => check.value[k] === true).map((k) => `, ${k === "vip" ? "VIP" : "Media"} Yes`).join("");
     if (PASS_MARKS.some((k) => check.value[k] === true)) clearExhibitorCache(); // the apps see the mark within the minute
     forgetPeople(); // People (and the pass lists' Media marks) read it at once
-    // The check-in desk app has the new guest on every server instance (Give a pass at the pass desk: look them up next).
-    await deskGuestChanged({ ticketIds: [doc.ticketId], user: req.user });
+    // The check-in desk app has the new guest on every server instance (Give a pass at the pass desk: look them up next),
+    // with their row as the directory now has it.
+    await deskGuestChanged({ ticketIds: [doc.ticketId], user: req.user, person: await personAfterChange(`t-${doc.ticketId}`) });
     const wording = Object.keys(compact(check.value.copy || {}));
     await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}${staffNote(isManagement(req.user))}`);
     res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
@@ -406,8 +407,8 @@ export function issuedPassRouter(kindName = "issued") {
     const rowAfter = issuedPassRow(a).extras;
     if (markChanges.length) clearExhibitorCache();
     forgetPeople();
-    // The check-in desk app: the pass's name, marks or inclusions as they are now, on every server instance.
-    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user });
+    // The check-in desk app: the pass's name, marks or inclusions as they are now, on every server instance (the row).
+    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user, person: await personAfterChange(`t-${a.ticketId}`) });
     const fields = [...Object.keys(set).filter((k) => !EXTRAS.some((e) => e.field === k) && !PASS_MARKS.includes(k) && k !== "issuedPass.copy"),
       ...extraChanges.map((e) => `${e.key === "cxo" ? "CxO Breakfast" : e.label} ${extraLabel(rowBefore[e.key].override ?? undefined, rowBefore[e.key].included)} → ${extraLabel(rowAfter[e.key].override ?? undefined, rowAfter[e.key].included)}`),
       ...markChanges,
@@ -478,9 +479,12 @@ export function issuedPassRouter(kindName = "issued") {
     const a = await find(req.params.id);
     if (!a) return res.status(404).json({ error: "Pass not found" });
     if (a.checkedIn || a.claimedBy) return res.status(409).json({ error: "This pass has been checked in or used in the app, so it can't be deleted." });
+    // Whoever held it (from the directory as it was): their row after, when they're still on the list some other way.
+    const holder = await personAfterChange(`t-${a.ticketId}`, { waitMs: 1500 });
     await Attendee.deleteOne({ _id: a._id, ...SCOPE });
     forgetPeople();
-    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user });
+    const after = holder ? await personAfterChange(holder.id) : null;
+    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user, person: after });
     await audit(req, "delete", a.ticketId, `${a.name} <${passRecipients(a).join(", ")}>`);
     res.json({ deleted: true });
   });

@@ -67,6 +67,9 @@ import { normalizeTicketId } from "./ticketAccess.js";
         clear them (a volunteer's own practice tap: undo at any time). The
         door's QR scan too: its desk marks are practice marks then (the
         scanner's own ticket write is unchanged).
+     C7 ISSUE PASS: someone on the list with no pass on file ("n" keys,
+        subject "person:<id>") is marked Arrived and Checked in (= a pass
+        issued at the desk: the mark only, no ticket to collect).
      C8 NO DETAILS FOUND: the lobby couldn't find the person and records
         the arrival as typed (unknown_arrival: an event, card key
         "u:<its clientId>", never a mark or a ticket); the pass desk
@@ -456,6 +459,9 @@ async function doMark(a, ctx, actor, view) {
     }
     const ent = entitlement(g, mealStation, state.eventDay);
     item = ent.item;
+    if (item && !ent.included && g?.noPass) {
+      return fail(409, `No pass on file: ${item.label} needs a pass. ${ctx.staff ? "Give them a pass first." : "Send them to a staff member."}`, { code: "not_included", item, noPass: true });
+    }
     if (item && !ent.included) {
       return fail(409, `Not on their pass: ${item.label}. ${ctx.staff ? "Switch it on for this pass first." : "Send them to a staff member."}`, { code: "not_included", item });
     }
@@ -479,7 +485,8 @@ async function doMark(a, ctx, actor, view) {
     const arr = await setMark({ subject, day, point: "arrived", ...common });
     if (arr.changed || arr.mine) changed.push(arr.doc);
     await pause("tap:between-marks", { clientId: a.clientId, point });
-    if (!practice) {
+    // ISSUE PASS (contract C7): checked in = a pass issued at the desk; there's no ticket to collect.
+    if (!practice && !guest?.noPass) {
       const ids = guest ? [guest.ticketIds[guest.norms.indexOf(subject)] || subject, subject] : [subject];
       let p = await collectPass(ids, at);
       if (p.set) {
