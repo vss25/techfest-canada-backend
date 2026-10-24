@@ -1,6 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import QRCode from "qrcode";
+import { doorQrText } from "../services/doorQr.js";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { buildPass, isConfigured, walletTagFor } from "../services/walletPass.js";
@@ -155,7 +156,8 @@ router.get("/qr/:ticketId", async (req, res) => {
     const ticketId = String(req.params.ticketId);
     const sig = typeof req.query.sig === "string" ? req.query.sig : "";
     if (!verifyTicketSig(ticketId, sig)) return res.status(404).json({ error: "Not found" });
-    const png = await QRCode.toBuffer(ticketId, {
+    // The one door QR text (services/doorQr.js), as in the pass emails, Wallet, the PDF and the apps.
+    const png = await QRCode.toBuffer(doorQrText(ticketId), {
       errorCorrectionLevel: "H", margin: 1, width: 360,
       color: { dark: "#140a26", light: "#ffffff" },
     });

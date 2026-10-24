@@ -215,3 +215,27 @@ test("check-in: the card stays behind the checkIn right (no token, an attendee) 
   assert.equal(vol.status, 200);
   assert.deepEqual(band(vol.body), ["vip", "VIP"]);
 });
+
+test("check-in: one ticket, every QR form (TECHFEST: or bare, any case, stray spaces) finds the same pass", { skip }, async () => {
+  // Oct 24 2026, the organiser: "I need one QR code everywhere". Older PDF tickets and purchase emails hold the bare ID;
+  // everything else (and now those too) "TECHFEST:<ticketId>" (services/doorQr.js). All of them check in the same pass.
+  await M.Attendee.create({ name: "Quinn Qr", email: "quinn.qr@example.com", ticketId: "a1b2c3d4e5f6", ticketType: "connect" });
+  await M.User.create({ name: "Rae Qr", email: "rae.qr@example.com", tickets: [ticket("0f9e8d7c6b5a", "power")] });
+  const first = await scan("A1B2C3D4E5F6");
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, "success");
+  assert.equal(first.body.ticketId, "a1b2c3d4e5f6");
+  for (const form of ["TECHFEST:a1b2c3d4e5f6", "techfest:A1B2C3D4E5F6", " a1b2 c3d4 e5f6 ", "TECHFEST:A1B2C3D4E5F6\n"]) {
+    const r = await scan(form);
+    assert.equal(r.status, 200, form);
+    assert.equal(r.body.status, "already_checked_in", form);
+    assert.equal(r.body.ticketId, "a1b2c3d4e5f6", form);
+    assert.equal(r.body.name, "Quinn Qr", form);
+  }
+  const acc = await scan("TECHFEST:0F9E8D7C6B5A");
+  assert.equal(acc.body.status, "success");
+  assert.equal(acc.body.ticketId, "0f9e8d7c6b5a");
+  assert.equal((await scan("0f9e8d7c6b5a")).body.status, "already_checked_in");
+  const stored = await M.User.findOne({ email: "rae.qr@example.com" }).lean();
+  assert.equal(stored.tickets[0].checkedIn, true);
+});
