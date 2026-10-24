@@ -252,8 +252,11 @@ export async function mediaOfPasses(ids = [], { waitMs = 2500 } = {}) {
  * staff just made on any server instance counts at once. `p`: their directory record (which records are theirs):
  * the passes it lists, and any pass since on their account, claimed by it, sent to one of their email addresses or
  * made for their speaker profile (a pass given a moment ago with Give a pass; buildPeople's name rule still decides
- * whether it's theirs). Refunds aren't read (the caller leaves out what the directory knew as refunded). → the
- * person record, or null.
+ * whether it's theirs). Refunds aren't read (the caller leaves out what the directory knew as refunded). The person
+ * is found only by their own records (their main pass, account, passes, pass records, speaker profile), never as
+ * whoever else the email search found (a colleague's pass on a shared address); when none of them is theirs any more
+ * (their only pass hidden or deleted a moment ago), a person with no pass: nothing included. → the person record,
+ * or null (no `p`).
  */
 export async function personNow(p) {
   if (!p) return null;
@@ -272,7 +275,15 @@ export async function personNow(p) {
   const extra = more.length ? (await Attendee.find({ ticketId: { $in: more } }).select(ATTENDEE_SELECT).lean()).filter((a) => !have.has(String(a._id))) : [];
   const built = buildPeople({ users, attendees: [...first, ...extra], speakers: p.speaker ? [p.speaker] : [] });
   const main = normalizeTicketId(p.primary?.ticketId || passIds[0] || "");
-  return (main && built.byId.get(`t-${main}`)) || (p.user && built.byId.get(`u-${p.user._id}`)) || built.people[0] || null;
+  const own = [
+    main && `t-${main}`, p.user?._id && `u-${p.user._id}`, ...passIds.map((id) => `t-${normalizeTicketId(id)}`),
+    ...(p.attendees || []).map((a) => a?._id && `a-${a._id}`), p.speaker?._id && `s-${p.speaker._id}`,
+  ].filter(Boolean);
+  for (const id of own) {
+    const hit = built.byId.get(id);
+    if (hit) return hit;
+  }
+  return { id: p.id, kind: p.kind, name: p.name, types: [], passList: [], primary: null, attendees: [], user: null, speaker: null };
 }
 
 /** The directory's person for an id (t-<ticket ID>, u-…, a-…, s-…) as they are after a change made here: one fresh

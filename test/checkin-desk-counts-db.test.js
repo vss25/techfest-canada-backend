@@ -530,6 +530,27 @@ test("C7: once a pass is given, staff's reset of Arrived and the history on thei
   assert.ok((await snapshot()).marks.every((m) => !(m.key === old && m.at)), "not arrived any more");
 });
 
+test("R2: at the meal door, someone whose only pass was hidden a moment ago gets nothing included, never a colleague's pass on the same address", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T16:40:00Z"); // 12:40 PM, Day 1 lunch
+  const People = await import("../routes/people.js");
+  await M.Attendee.create([
+    { name: "Kim Colleague", email: "shared.c@corp.example", ticketId: "pow300000021", ticketType: "power", stripeSessionId: "cs_k", purchaseDate: new Date("2026-09-01") },
+    { name: "Jo Guest", email: "shared.c@corp.example", ticketId: "inf300000022", ticketType: "influence", stripeSessionId: "cs_j", purchaseDate: new Date("2026-09-05") },
+  ]);
+  People.forgetPeople();
+  const s = await snapshot();
+  const jo = byName(s, "Jo Guest");
+  assert.equal(jo.extras.lunch, true, "her Influence Pass includes the luncheons");
+  assert.notEqual(jo.personId, byName(s, "Kim Colleague").personId, "two people on one address");
+  // Staff hide Jo's only pass on another instance (this one isn't told): nothing is included for her any more.
+  await M.Attendee.updateOne({ ticketId: "inf300000022" }, { $set: { hiddenByStaff: true } });
+  const r = await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key: jo.key, station: "lunch" });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, "not_included");
+  await M.Attendee.updateOne({ ticketId: "inf300000022" }, { $set: { hiddenByStaff: false } });
+  assert.equal((await act({ clientId: cid("lun"), kind: "mark", point: "lunch", key: jo.key, station: "lunch" })).status, 200, "shown again: admitted");
+});
+
 test("nothing was emailed", { skip }, () => {
   assert.equal(resendCalls, 0);
 });
