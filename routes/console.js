@@ -24,6 +24,7 @@ import {
 } from "../services/appRights.js";
 import { rightsContext, matrixInfo, loadMatrix, saveMatrix, loadFlags } from "../services/rightsStore.js";
 import { loadExhibitors } from "../services/exhibitorCache.js";
+import { deskGuestChanged } from "../services/checkinDeskLog.js";
 import { isRetiredContentKey, killSwitchGone, KILL_SWITCH_REMOVED, KILL_SWITCH_REMOVED_CODE } from "../services/siteStatus.js";
 import bcrypt from "bcryptjs";
 import TicketInventory from "../models/TicketInventory.js";
@@ -1694,6 +1695,8 @@ router.post("/tickets/hide", async (req, res) => {
   if (!keys.length) return res.status(400).json({ error: "No tickets selected" });
   const changed = await setHidden(keys, hidden);
   await audit(req, hidden ? "tickets_hide" : "tickets_unhide", "ticket", "", `${changed} ticket(s): ${keys.slice(0, 20).join(", ")}`);
+  // A hidden pass no longer counts (nor what it includes): every open check-in desk reads its list again.
+  if (changed) await deskGuestChanged({ ticketIds: keys.map((k) => String(k).split(":").pop()), user: req.user });
   res.json({ changed });
 });
 
@@ -1708,6 +1711,7 @@ router.post("/tickets/hide-duplicates", async (req, res) => {
   }
   const changed = await setHidden(keys, true);
   await audit(req, "tickets_hide_duplicates", "ticket", "", `${changed} duplicate ticket(s)`);
+  if (changed) await deskGuestChanged({ ticketIds: keys.map((k) => String(k).split(":").pop()), user: req.user });
   res.json({ changed });
 });
 

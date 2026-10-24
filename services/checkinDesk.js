@@ -119,6 +119,10 @@ export const LATE_SYNC_MS = 60 * 1000;
 export const OVERRIDE_REASONS = Object.freeze({
   outside_window: "admitted outside its hours (Admit anyway)",
   late_sync: "late sync outside hours",
+  // Contract C11: staff admitted a guest whose passes don't include today's item (the pass unchanged).
+  not_included: "not on their pass: admitted by staff (override)",
+  "outside_window+not_included": "not on their pass and outside its hours: admitted by staff (override)",
+  "late_sync+not_included": "not on their pass, late sync outside hours: admitted by staff (override)",
 });
 export const NOTE_MAX = 140;
 export const AV_NOTE_MAX = 80;
@@ -759,7 +763,8 @@ const bad = (error, field) => ({ ok: false, error, field });
  *   clientAt  when it was tapped, on the device's server-corrected clock (ISO; contract C4: clamped and judged there)
  *   queuedBy  { id, name }: who made the tap, when it was made offline and is sent from someone else's sign-in (C3)
  *   mark:   key (a guest's pass, or a booth for point "booth"), point, override (true: "Admit anyway" after the
- *           outside-the-window warning), note (AV: "slides on USB", ≤ 80)
+ *           outside-the-window warning), notIncluded (true: staff's "Admit anyway (override)" at a meal door for a
+ *           guest whose passes don't include today's item, contract C11), note (AV: "slides on USB", ≤ 80)
  *   undo:   target (the clientId of the tap to undo; `ref`, the older name, works too): contract C2
  *   reset:  key, point (staff: clears it; clearing "arrived" also clears "checked_in")
  *   note:   key, note (staff: the desk note, ≤ 140; "" clears it)
@@ -862,6 +867,8 @@ export function cleanAction(raw) {
     value.key = key;
     if (kind === "mark") {
       value.override = a.override === true;
+      // Contract C11: staff admit a guest at a meal door though today's item isn't on their pass.
+      if (a.notIncluded === true) value.notIncluded = true;
       if (a.note !== undefined && a.note !== null) {
         if (typeof a.note !== "string") return bad("The note must be text.", "note");
         const note = line(a.note, AV_NOTE_MAX + 1);
@@ -952,6 +959,10 @@ export function auditLine({ guest = null, booth = null, kind, point = "", to = "
   if (kind === "reset") return `${whoTxt}: cleared ${what}${where}`;
   if (kind === "note") return `${whoTxt}: desk note ${note ? `“${note}”` : "cleared"}${where}`;
   if (kind === "undo") return `${whoTxt}: undid ${what}${where}`;
+  if (String(override).endsWith("not_included")) {
+    const hours = override === "not_included" ? "" : override.startsWith("late_sync") ? ", outside its hours (late sync from an offline device)" : ", outside its hours";
+    return `${whoTxt}: ${what} though it isn't on their pass${hours} (staff override)${where}`;
+  }
   if (override === "late_sync") return `${whoTxt}: ${what} outside its hours (late sync from an offline device)${where}`;
   if (override) return `${whoTxt}: ${what} outside its hours (override)${where}`;
   return `${whoTxt}: ${what}${to ? ` ${to}` : ""}${where}`;

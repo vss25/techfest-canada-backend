@@ -87,6 +87,13 @@ import { normalizeTicketId } from "./ticketAccess.js";
         evening keep hours ("Admit anyway", audited overrides, late-sync
         flags); Arrived, Checked in, the media desk, AV and the exhibitor
         desk are taken at any hour, never an override.
+     C11 "Not on the list" at a meal door (Oct 24 2026): staff may admit
+        a guest whose passes don't include today's item with
+        { notIncluded: true } ("Admit anyway (override)"): recorded with
+        override "not_included" (joined to a window override:
+        "outside_window+not_included"), audited checkin_desk_override,
+        the pass itself unchanged. Volunteers: 403 staff_only. No pass on
+        file (ISSUE PASS): still 409 not_included (a pass first).
 ========================================================= */
 
 /* Tests only: awaited at named points of a tap and of an undo, so they can be interleaved (production never sets it). */
@@ -513,7 +520,13 @@ async function doMark(a, ctx, actor, view) {
       return fail(409, `No pass on file: ${item.label} needs a pass. ${ctx.staff ? "Give them a pass first." : "Send them to a staff member."}`, { code: "not_included", item, noPass: true });
     }
     if (item && !ent.included) {
-      return fail(409, `Not on their pass: ${item.label}. ${ctx.staff ? "Switch it on for this pass first." : "Send them to a staff member."}`, { code: "not_included", item });
+      // Contract C11: staff's "Admit anyway (override)": admitted, recorded and audited as an override; the pass stays
+      // as it is. Volunteers send them to staff.
+      if (a.notIncluded && !ctx.staff) return fail(403, "Only staff can admit someone who isn't on the list. Send them to a staff member.", { code: "staff_only" });
+      if (!a.notIncluded) {
+        return fail(409, `Not on their pass: ${item.label}. ${ctx.staff ? "Admit anyway (override), or switch it on for this pass first." : "Send them to a staff member."}`, { code: "not_included", item });
+      }
+      override = override ? `${override}+not_included` : "not_included";
     }
   }
 
