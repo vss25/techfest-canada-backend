@@ -15,7 +15,7 @@ import {
    "Stay updated": the TTFC 2027 waitlist (Oct 23 2026).
 
    Public (no sign-in), mounted at /api/stay-updated:
-     POST /  { email, phone, interests: ["sponsorship"|"exhibitor"|"delegation"], source: website|webapp|ios|android,
+     POST /  { email, phone, interests: ["sponsorship"|"exhibitor"|"delegation"], source: website|webapp|ios|android|programme,
                consent: true, _hp }
              → 200 { ok: true, message }   message: the stay.thanks text ("Thank you for your interest. Someone from
                                             our team will reach out.")

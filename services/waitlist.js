@@ -38,8 +38,9 @@ export const INTERESTS = Object.freeze(["sponsorship", "exhibitor", "delegation"
 /** Staff's words (the team email's subject, the admin list, the CSV). */
 export const INTEREST_LABEL = Object.freeze({ sponsorship: "Sponsorship", exhibitor: "Exhibitor", delegation: "Delegation" });
 /** Where a sign-up came from. */
-export const SOURCES = Object.freeze(["website", "webapp", "ios", "android"]);
-export const SOURCE_LABEL = Object.freeze({ website: "Website", webapp: "Web app", ios: "iOS app", android: "Android app" });
+export const SOURCES = Object.freeze(["website", "webapp", "ios", "android", "programme"]);
+/* "programme": the sign-up form at the bottom of the website's /programme page (Oct 24 2026). */
+export const SOURCE_LABEL = Object.freeze({ website: "Website", webapp: "Web app", ios: "iOS app", android: "Android app", programme: "Website programme page" });
 
 /** The team's inbox (WAITLIST_INBOX overrides, comma-separate for several). */
 export const WAITLIST_INBOX = "enquire@thetechfestival.com";

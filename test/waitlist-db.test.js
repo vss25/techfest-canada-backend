@@ -229,7 +229,7 @@ test("Admin › 2027 waitlist: staff see the list, counts and filters; non-staff
   assert.equal((await call("GET", "/api/console/waitlist", { as: pat })).status, 403);
   const all = await call("GET", "/api/console/waitlist", { as: sam });
   assert.equal(all.status, 200);
-  assert.deepEqual(all.body.counts, { total: 3, attending: 1, sponsorship: 2, exhibitor: 2, delegation: 1, website: 1, webapp: 1, ios: 1, android: 1 });
+  assert.deepEqual(all.body.counts, { total: 3, attending: 1, sponsorship: 2, exhibitor: 2, delegation: 1, website: 1, webapp: 1, ios: 1, android: 1, programme: 0 });
   assert.equal(all.body.total, 3);
   assert.equal(all.body.canExport, false);
   assert.deepEqual(all.body.rows.map((r) => r.email), ["quinn@acme.example", "off@acme.example", "jane.doe@acme.example"]);

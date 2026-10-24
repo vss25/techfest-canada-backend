@@ -60,6 +60,7 @@ import emailLinkRouter from "./routes/emailLink.js";   // "email me a sign-in li
 import appApiRouter from "./routes/appApi.js";         // analytics, app texts, report/block, account deletion
 import { appOrganisationsRouter, consoleOrganisationsRouter } from "./routes/appOrganisations.js"; // the apps' organisations list + Admin › Attending organisations
 import appAwardsRouter from "./routes/appAwards.js";   // Catalyst Awards numbers + applications in the apps
+import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhibitor list (website /programme)
 import consoleRouter from "./routes/console.js";       // admin console API
 import cmsRouter, { siteFileBody, uploadSiteFile } from "./routes/cms.js"; // edit Sanity speakers/partners from the admin panel
 import { requireManagementAdmin } from "./middleware/adminAuth.js";
@@ -188,6 +189,7 @@ app.use("/api/app", linkedinAppRouter);       // GET /attending-link, POST /link
 app.use("/api/linkedin-share", linkedinSharePageRouter); // the website's /share/linkedin page (the link's token)
 app.use("/api/app", appOrganisationsRouter); // GET /organisations (no sign-in)
 app.use("/api/app", appAwardsRouter);        // GET /awards/summary (no sign-in), /awards/applications (pass holders)
+app.use("/api/app", appExhibitorsRouter);    // GET /exhibitors (no sign-in): companies, booths, zones, logos, websites
 app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
