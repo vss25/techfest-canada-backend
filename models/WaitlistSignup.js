@@ -3,12 +3,19 @@ import mongoose from "mongoose";
 /* The TTFC 2027 waitlist ("Stay updated", Oct 23 2026): one row per email address, from the website's /stay-updated,
    the web app's /app/stay-updated and the iOS / Android apps (routes/stayUpdated.js, services/waitlist.js).
    Signing up again with the same address updates the row (phone, this time's ticks, where from) and counts it in
-   `count`; `interests` keeps everything ever ticked so staff filters find them. Never deleted from the admin panel. */
+   `count`; `interests` keeps everything ever ticked so staff filters find them. Never deleted from the admin panel.
+   Name and company (Oct 24 2026): the latest ones given; a repeat that gives a new one keeps the one before in
+   `earlierNames` / `earlierCompanies` (at most 5 each). Only the email is required: a repeat that leaves the name,
+   company or phone empty keeps the saved one. */
 const waitlistSignupSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    phone: { type: String, default: "" },          // as typed, tidied
-    phoneDigits: { type: String, default: "" },    // digits only (7–20)
+    name: { type: String, default: "" },           // as typed, tidied ("" = not given: optional)
+    company: { type: String, default: "" },        // their company or organisation
+    earlierNames: { type: [String], default: [] }, // names this address gave before, when a repeat changed it (≤ 5)
+    earlierCompanies: { type: [String], default: [] },
+    phone: { type: String, default: "" },          // as typed, tidied ("" = not given: optional since Oct 24 2026)
+    phoneDigits: { type: String, default: "" },    // digits only (7–20), "" without a phone
     interests: { type: [String], default: [] },    // sponsorship | exhibitor | delegation: everything ticked so far
     lastInterests: { type: [String], default: [] },// what they ticked the last time
     source: { type: String, default: "website" },  // the last time: website | webapp | ios | android | programme (the website's /programme page)

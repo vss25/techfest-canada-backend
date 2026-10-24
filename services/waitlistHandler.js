@@ -43,7 +43,7 @@ const errText = (err) => String(err?.message || err).slice(0, 300);
  *                                           (sets confirmedAt = at, confirmStatus "sending" when it claims)
  *   setConfirm(id, set)                   the confirmation's outcome
  * @param {(msg) => Promise<{id}>} deps.sendAlert            { to, subject, html, text, replyTo }; throws on failure
- * @param {(msg) => Promise<{id}>} deps.sendConfirmation     { to, interests, copy }; throws on failure
+ * @param {(msg) => Promise<{id}>} deps.sendConfirmation     { to, interests, copy, name }; throws on failure
  * @param {(email) => Promise<boolean>} deps.isUnsubscribed  on the unsubscribe list?
  * @param {() => Promise<object>} [deps.loadCopy]            the stay.* wording (defaults when it fails)
  */
@@ -78,7 +78,7 @@ export function makeWaitlistHandler({
     const before = await store.claimConfirmation(row._id, new Date(at.getTime() - CONFIRM_EVERY_MS), at);
     if (!before) return "recent";
     try {
-      const r = await sendConfirmation({ to: row.email, interests: row.interests || [], copy });
+      const r = await sendConfirmation({ to: row.email, interests: row.interests || [], copy, name: row.name || "" });
       await store.setConfirm(row._id, { confirmStatus: "sent", confirmId: String(r?.id || ""), confirmError: "" });
       return "sent";
     } catch (err) {

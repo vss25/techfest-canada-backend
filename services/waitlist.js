@@ -10,6 +10,12 @@
    person should be told as thank you for your interest. someone
    will reach out." Then: "Send an email to who sign ups as well.
    It should go from enquire@thetechfestival.com too."
+   Oct 24 2026: "On the waitlist page form, also add name and company
+   name. For people who use this in the app, we should have the
+   details prefilled since those details are required to be on the
+   app"; then, the same day: "Please only keep email mandatory in
+   the stay updated form." So only the email is required; a name,
+   company or phone that is given must be right.
 
    Here: what the form may send (validateSignup), the page's and the
    confirmation email's wording (STAY_DEFAULTS: app content keys,
@@ -50,6 +56,13 @@ export const CONFIRM_EVERY_MS = 24 * 60 * 60 * 1000;
 export const PHONE_DIGITS = Object.freeze({ min: 7, max: 20 });
 export const MAX_EMAIL = 254;
 export const MAX_PHONE = 40;
+/** The person's name (Oct 24 2026): 2–80 characters, letters (any language, accents) with spaces, hyphens, apostrophes
+    and dots. */
+export const NAME_LENGTH = Object.freeze({ min: 2, max: 80 });
+/** Their company or organisation: up to 120 characters. */
+export const MAX_COMPANY = 120;
+/** Earlier names / companies kept on a row when a repeat sign-up gives a new one (newest last). */
+export const MAX_EARLIER = 5;
 
 /* ---------- the wording (app content keys) ----------
    Plain text. Empty = the default here. Mirrored in the website's src/lib/stayUpdated.js for when the API can't be
@@ -69,7 +82,9 @@ export const STAY_DEFAULTS = Object.freeze({
   "stay.journey_intro": "Five focused one-day briefings, each on one technology pillar and one sector, lead to two days in Toronto in November 2027. Dates to be announced for every event.",
   [JOURNEY_KEY]: DEFAULT_JOURNEY_JSON,
   "stay.form_title": "Join the TTFC 2027 waitlist",
-  "stay.form_intro": "Leave your email and phone number. Tick anything else you'd like to talk to us about.",
+  "stay.form_intro": "Only your email is needed; your name, company and phone number help our team reach out. Tick anything else you'd like to talk to us about.",
+  "stay.field_name": "Your name",
+  "stay.field_company": "Company or organisation",
   "stay.field_email": "Email",
   "stay.field_phone": "Phone",
   "stay.interests_label": "I'm also interested in (optional)",
@@ -125,25 +140,80 @@ export const cleanSource = (v) => {
 /** Only bots fill the hidden `_hp` field. */
 export const isHoneypotFilled = (body) => cleanText(body?._hp) !== "";
 
+/* The person's name: letters in any language (with their accents), spaces, hyphens, apostrophes (' and ’) and dots;
+   at least one letter. The website mirrors these rules and words in src/lib/stayUpdated.js. */
+const NAME_CHARS = /^[\p{L}\p{M} .'’‐-]+$/u;
+const HAS_LETTER = /\p{L}/u;
+
+/** The form's problems in plain words (the website shows the same ones before sending). Only the email is required:
+    these are for a name, company or phone that was given but isn't right. */
+export const ERRORS = Object.freeze({
+  nameLength: "Enter your name in 2 to 80 characters, or leave it empty.",
+  nameBad: "Use letters for your name, with spaces, hyphens, apostrophes or dots if you like.",
+  companyLong: "Keep your company or organisation to 120 characters.",
+  phoneBad: "That phone number doesn't look right. Use digits, with + ( ) - or spaces if you like.",
+});
+
+/** "  Priya   Raman " → "Priya Raman" (control characters out, spaces tidied). */
+export const cleanName = (v) => cleanText(v);
+
+/** null when the name is fine or empty (it's optional), else the problem in plain words. */
+export function nameProblem(name) {
+  const n = cleanName(name);
+  if (!n) return null;
+  if (n.length < NAME_LENGTH.min || n.length > NAME_LENGTH.max) return ERRORS.nameLength;
+  if (!NAME_CHARS.test(n) || !HAS_LETTER.test(n)) return ERRORS.nameBad;
+  return null;
+}
+
+/** null when the company is fine or empty (it's optional), else the problem in plain words. */
+export function companyProblem(company) {
+  return cleanText(company).length > MAX_COMPANY ? ERRORS.companyLong : null;
+}
+
+const TITLES = new Set(["mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "dame"]);
+
 /**
- * Checks what the form sent. Errors are in plain words, for the page to show next to the field.
- * @returns {{ ok: true, value: { email, phone, phoneDigits, interests, source, consent: true } } | { ok: false, field, error }}
+ * The first name to greet them by: "Priya Raman" → "Priya", "Dr. Maya Singh" → "Maya", "Dr. Singh" → "Dr. Singh",
+ * "J. Smith" → "J. Smith" (an initial alone isn't a name), "priya" → "Priya". "" when there's no name.
+ */
+export function firstNameOf(name) {
+  const n = cleanName(name);
+  if (!n) return "";
+  let words = n.split(" ");
+  if (words.length > 2 && TITLES.has(words[0].replace(/\.$/, "").toLowerCase())) words = words.slice(1);
+  else if (words.length === 2 && TITLES.has(words[0].replace(/\.$/, "").toLowerCase())) return n;
+  const first = words[0];
+  if ((first.match(/\p{L}/gu) || []).length < 2) return n;
+  return first === first.toLowerCase() ? first.charAt(0).toUpperCase() + first.slice(1) : first;
+}
+
+/**
+ * Checks what the form sent. Only the email is required (the organiser, Oct 24 2026: "Please only keep email mandatory
+ * in the stay updated form."), from every source; a name (2–80 characters: letters, spaces, - ' ’ .), company (≤ 120)
+ * or phone (7–20 digits once + spaces dashes parens are out) that is given must be right. Empty or missing = "".
+ * Errors are in plain words, for the page to show next to the field, in the form's order (name, company, email, phone).
+ * @returns {{ ok: true, value: { name, company, email, phone, phoneDigits, interests, source, consent: true } }
+ *   | { ok: false, field, error }}
  */
 export function validateSignup(body) {
   const b = body && typeof body === "object" ? body : {};
   const fail = (field, error) => ({ ok: false, field, error });
+  const name = cleanName(b.name);
+  const nameIssue = nameProblem(name);
+  if (nameIssue) return fail("name", nameIssue);
+  const company = cleanText(b.company);
+  const companyIssue = companyProblem(company);
+  if (companyIssue) return fail("company", companyIssue);
   const rawEmail = cleanText(b.email);
   if (!rawEmail) return fail("email", "Enter your email address.");
   const email = rawEmail.length <= MAX_EMAIL ? cleanEmail(rawEmail) : "";
   if (!email || !/\.[^.@]{2,}$/.test(email)) return fail("email", "That email address doesn't look right. Check it and try again.");
   const phone = cleanText(b.phone);
-  if (!phone) return fail("phone", "Enter your phone number.");
-  const digits = phoneDigits(phone);
-  if (digits === null || digits.length < PHONE_DIGITS.min || digits.length > PHONE_DIGITS.max) {
-    return fail("phone", "That phone number doesn't look right. Use digits, with + ( ) - or spaces if you like.");
-  }
+  const digits = phone ? phoneDigits(phone) : "";
+  if (phone && (digits === null || digits.length < PHONE_DIGITS.min || digits.length > PHONE_DIGITS.max)) return fail("phone", ERRORS.phoneBad);
   if (b.consent !== true && b.consent !== "true") return fail("consent", "Please agree that we can contact you about TTFC 2027.");
-  return { ok: true, value: { email, phone, phoneDigits: digits, interests: cleanInterests(b.interests), source: cleanSource(b.source), consent: true } };
+  return { ok: true, value: { name, company, email, phone, phoneDigits: digits, interests: cleanInterests(b.interests), source: cleanSource(b.source), consent: true } };
 }
 
 /** HMAC of the address with the tracking secret (the same address always gives the same value; it can't be read back). */
@@ -168,6 +238,20 @@ export function confirmDue(row, now = new Date()) {
   return !last || new Date(now).getTime() - last >= CONFIRM_EVERY_MS;
 }
 
+/** What a repeat sign-up keeps of the name / company it replaces: the one before, when it's a different one and the
+    row has room (MAX_EARLIER). → { earlierNames?, earlierCompanies? } for $addToSet. */
+export function earlierUpdate(before, v) {
+  const out = {};
+  for (const [field, list] of [["name", "earlierNames"], ["company", "earlierCompanies"]]) {
+    const was = String(before?.[field] || "").trim();
+    const now = String(v?.[field] || "").trim();
+    if (!was || !now || was.toLowerCase() === now.toLowerCase()) continue;
+    if ((before?.[list] || []).length >= MAX_EARLIER) continue;
+    out[list] = was;
+  }
+  return out;
+}
+
 /* ---------- the team's email (a staff alert) ---------- */
 
 const torontoTime = (d) => new Date(d || Date.now()).toLocaleString("en-CA", {
@@ -186,32 +270,56 @@ export function interestSummary(interests) {
   return list.length ? `${list.map((k) => INTEREST_LABEL[k]).join(" + ")} interest` : "Attending";
 }
 
+/** "Priya Raman (Acme Inc.)", "Priya Raman", "Acme Inc." or "" (neither given). */
+export function whoLine({ name, company } = {}) {
+  const n = cleanName(name);
+  const c = cleanText(company);
+  return n && c ? `${n} (${c})` : n || c;
+}
+
+/** Earlier values that aren't the current one (a repeat sign-up that changed it), newest last. */
+export const earlierOf = (list, current) => {
+  const now = cleanText(current).toLowerCase();
+  return [...new Set((Array.isArray(list) ? list : []).map((x) => cleanText(x)).filter((x) => x && x.toLowerCase() !== now))];
+};
+
 /**
- * "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – jane@acme.com", "TTFC 2027 waitlist: Attending – …";
- * a repeat sign-up ends "(updated)".
+ * "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.com",
+ * "TTFC 2027 waitlist: Attending – …" (no name or company given: just the email); a repeat sign-up ends "(updated)".
  */
-export function alertSubject({ email, interests, updated = false }) {
-  return `TTFC 2027 waitlist: ${interestSummary(interests)} – ${email}${updated ? " (updated)" : ""}`.slice(0, 200);
+export function alertSubject({ email, interests, updated = false, name = "", company = "" }) {
+  const who = whoLine({ name, company });
+  return `TTFC 2027 waitlist: ${interestSummary(interests)} – ${who ? `${who} – ` : ""}${email}${updated ? " (updated)" : ""}`.slice(0, 200);
 }
 
 /**
  * The email to the team for one sign-up (the saved row). `updated`: the address had signed up before.
- * Every value is escaped; the phone is a tel: link; times are Toronto's. Reply-to is the person.
+ * Name and company first ("Not given" when left empty: only the email is required; a repeat that changed them shows
+ * the earlier ones too); the phone the same. Every value is escaped; the phone is a tel: link; times are Toronto's. Reply-to is the person.
  * No "Get the TTFC app" block: it's a staff alert.
  * @returns {{ subject, html, text, replyTo }}
  */
 export function buildWaitlistAlert(row, { updated = false, now = new Date(), adminUrl = "" } = {}) {
   const email = cleanEmail(row?.email) || cleanText(row?.email);
+  const name = cleanName(row?.name);
+  const company = cleanText(row?.company);
   const interests = cleanInterests(row?.interests);
   const last = cleanInterests(row?.lastInterests);
-  const subject = alertSubject({ email, interests, updated });
+  const subject = alertSubject({ email, interests, updated, name, company });
   const tel = telHref(row?.phone);
   const interestText = interests.length ? interests.map((k) => INTEREST_LABEL[k]).join(", ") : "Attending (nothing ticked)";
   const sources = [...new Set([...(row?.sources || []), row?.source].filter((s) => SOURCES.includes(s)))];
   const source = SOURCE_LABEL[row?.source] || "Website";
+  const earlierNames = updated ? earlierOf(row?.earlierNames, name) : [];
+  const earlierCompanies = updated ? earlierOf(row?.earlierCompanies, company) : [];
+  const who = whoLine({ name, company });
   const rows = [
+    ["Name", name || "Not given"],
+    ...(earlierNames.length ? [["Earlier name", earlierNames.join(", ")]] : []),
+    ["Company or organisation", company || "Not given"],
+    ...(earlierCompanies.length ? [["Earlier company", earlierCompanies.join(", ")]] : []),
     ["Email", email, `<a href="mailto:${esc(email)}" style="color:#7a3fd1;">${esc(email)}</a>`],
-    ["Phone", cleanText(row?.phone), tel ? `<a href="${esc(tel)}" style="color:#7a3fd1;">${esc(cleanText(row?.phone))}</a>` : esc(cleanText(row?.phone))],
+    ["Phone", cleanText(row?.phone) || "Not given", tel ? `<a href="${esc(tel)}" style="color:#7a3fd1;">${esc(cleanText(row?.phone))}</a>` : undefined],
     ["Interested in", interestText],
     ...(updated && last.join() !== interests.join() ? [["Ticked this time", last.length ? last.map((k) => INTEREST_LABEL[k]).join(", ") : "Nothing"]] : []),
     ["Signed up from", sources.length > 1 ? `${source} (also: ${sources.filter((s) => s !== row?.source).map((s) => SOURCE_LABEL[s]).join(", ")})` : source],
@@ -233,7 +341,8 @@ export function buildWaitlistAlert(row, { updated = false, now = new Date(), adm
 <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;">
   <tr><td style="background:#0d0520;padding:20px 24px;">
     <div style="font:800 12px/1.2 Arial,Helvetica,sans-serif;letter-spacing:2px;color:#f5a623;text-transform:uppercase;">TTFC 2027 waitlist${updated ? " · updated" : " · new sign-up"}</div>
-    <div style="font:700 20px/1.3 Arial,Helvetica,sans-serif;color:#ffffff;margin-top:6px;">${esc(interestSummary(interests))}</div>
+    <div style="font:700 20px/1.3 Arial,Helvetica,sans-serif;color:#ffffff;margin-top:6px;">${esc(interestSummary(interests))}</div>${who ? `
+    <div style="font:15px/1.4 Arial,Helvetica,sans-serif;color:#d9ccf2;margin-top:4px;">${esc(who)}</div>` : ""}
   </td></tr>
   <tr><td style="padding:8px 10px 0;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -249,7 +358,7 @@ export function buildWaitlistAlert(row, { updated = false, now = new Date(), adm
 </body></html>`;
 
   const text = [
-    `TTFC 2027 waitlist${updated ? " (updated)" : ""}: ${interestSummary(interests)}`,
+    `TTFC 2027 waitlist${updated ? " (updated)" : ""}: ${interestSummary(interests)}${who ? ` – ${who}` : ""}`,
     "",
     ...rows.map(([label, value]) => `${label}: ${value}`),
     "",
@@ -264,14 +373,20 @@ export function buildWaitlistAlert(row, { updated = false, now = new Date(), adm
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Mongo filter for the admin list: ?q= part of the email or phone, ?interest= sponsorship | exhibitor | delegation |
-    attending (nothing ticked), ?source=. */
+/** Mongo filter for the admin list: ?q= part of the email, name, company or phone, ?interest= sponsorship | exhibitor |
+    delegation | attending (nothing ticked), ?source=. */
 export function waitlistFilter({ q, interest, source } = {}) {
   const f = {};
   const text = cleanText(q).slice(0, 100);
   if (text) {
     const digits = text.replace(/\D/g, "");
-    f.$or = [{ email: { $regex: escRe(text.toLowerCase()), $options: "i" } }, ...(digits.length >= 3 ? [{ phoneDigits: { $regex: escRe(digits) } }] : [])];
+    const re = escRe(text.toLowerCase());
+    f.$or = [
+      { email: { $regex: re, $options: "i" } },
+      { name: { $regex: re, $options: "i" } },
+      { company: { $regex: re, $options: "i" } },
+      ...(digits.length >= 3 ? [{ phoneDigits: { $regex: escRe(digits) } }] : []),
+    ];
   }
   const i = String(interest ?? "").trim().toLowerCase();
   if (INTERESTS.includes(i)) f.interests = i;
@@ -285,6 +400,10 @@ export function waitlistFilter({ q, interest, source } = {}) {
 export function waitlistRow(d) {
   return {
     id: String(d._id ?? ""),
+    name: d.name || "",
+    company: d.company || "",
+    earlierNames: earlierOf(d.earlierNames, d.name),
+    earlierCompanies: earlierOf(d.earlierCompanies, d.company),
     email: d.email || "",
     phone: d.phone || "",
     tel: telHref(d.phone),
@@ -310,7 +429,7 @@ export function waitlistCounts({ total = 0, byInterest = [], attending = 0, bySo
 }
 
 export const CSV_HEAD = [
-  "Signed up (Toronto)", "Last sign-up (Toronto)", "Email", "Phone", "Sponsorship", "Exhibitor", "Delegation", "Interested in",
+  "Signed up (Toronto)", "Last sign-up (Toronto)", "Name", "Company", "Email", "Phone", "Sponsorship", "Exhibitor", "Delegation", "Interested in",
   "Signed up from", "Sign-ups", "Team emailed", "Confirmation email",
 ];
 
@@ -320,7 +439,7 @@ export function waitlistCsv(rows) {
   const lines = rows.map((d) => {
     const r = waitlistRow(d);
     return [
-      csvTime(r.createdAt), csvTime(r.lastSubmittedAt), r.email, r.phone,
+      csvTime(r.createdAt), csvTime(r.lastSubmittedAt), r.name, r.company, r.email, r.phone,
       r.interests.includes("sponsorship"), r.interests.includes("exhibitor"), r.interests.includes("delegation"),
       r.interestLabels.join(", ") || "Attending",
       [...new Set([r.source, ...r.sources])].map((s) => SOURCE_LABEL[s] || s).join(", "),
