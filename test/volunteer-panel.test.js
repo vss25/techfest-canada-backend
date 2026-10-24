@@ -12,6 +12,7 @@ import {
   volunteerQuery, volunteerRow, volunteerSearch, speakingSessions,
 } from "../services/volunteerPanel.js";
 import { runSearch, groupsFor } from "../services/adminSearch.js";
+import { MASK, NO_NAME, safeName, safeSearchText, safeText, safeUrl } from "../services/volunteerSafe.js";
 import {
   KILL_SWITCH_KEY, KILL_SWITCH_REMOVED_CODE, SITE_STATUS, isRetiredContentKey, killSwitchGone, statusHandler,
 } from "../services/siteStatus.js";
@@ -226,4 +227,153 @@ test("site status: always live; the kill switch's key can't be written; its rout
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     assert.doesNotMatch(src, /killSwitch\.js|killSwitchMiddleware|getKillState|setKillState/, f);
   }
+});
+
+/* ---------- Free text: an email, phone number or ticket ID typed into a name, company, title or note ---------- */
+
+const LEAKS = {
+  yaraEmail: "yara.leak@example.com", yaraLocal: "yara.leak", yaraTicket: "acac56565656",
+  staffEmail: "noname.staffer@example.org", staffLocal: "noname.staffer",
+  leeEmail: "lee@leakmail.example.com", leeDomain: "leakmail.example.com", leePhone: "555-0188", leePhone2: "5550188",
+  dietPhone: "416 555 0177", dietPhone2: "5550177", label: "dd00ee000099",
+};
+function leakyWorld() {
+  const users = [
+    // A staff account added without a name: POST /api/console/staff names it after the email's local part.
+    { _id: "u10", name: LEAKS.staffLocal, email: LEAKS.staffEmail, role: "admin", staffRole: "staff", tickets: [] },
+    // Contact details typed into the company and the job title.
+    { _id: "u11", name: "Lee Leaky", email: "lee.account@example.com", role: "user", organization: `Contact ${LEAKS.leeEmail}`,
+      jobTitle: `CTO, +1 (647) ${LEAKS.leePhone}`, tickets: [{ ticketId: "ab12ab12ab12", type: "connect", purchaseDate: d("10-04") }] },
+    // A real name that happens to start like the email: kept.
+    { _id: "u12", name: "Yara Leak", email: "yara.leak2@example.com", role: "user", organization: "CEO @ Acme", jobTitle: "Founder", tickets: [] },
+  ];
+  const attendees = [
+    // A buyer who typed their email as their name.
+    { _id: "a10", name: LEAKS.yaraEmail, email: LEAKS.yaraEmail, ticketId: LEAKS.yaraTicket, ticketType: "connect", purchaseDate: d("10-05"),
+      issuedPass: { label: `Pass ${LEAKS.label}` }, details: {} },
+  ];
+  const rsvps = [
+    { _id: "r10", key: `t:${LEAKS.yaraTicket}`, nameKey: "", email: LEAKS.yaraEmail, ticketId: LEAKS.yaraTicket, ticketVerified: true, tier: "connect",
+      days: ["day1"], options: [], dietary: ["other"], dietaryOther: `Nut allergy, call ${LEAKS.dietPhone} or ${LEAKS.yaraEmail}`,
+      createdAt: d("10-12"), updatedAt: d("10-12") },
+  ];
+  return buildPeople({ users, attendees, rsvps });
+}
+function assertNoLeak(json, label) {
+  const text = JSON.stringify(json).toLowerCase();
+  for (const [name, secret] of Object.entries(LEAKS)) assert.ok(!text.includes(secret.toLowerCase()), `${label}: ${name} leaked`);
+}
+
+test("safe text: emails, phone numbers and ticket IDs in a person's free text are hidden; a name that is one shows No name", () => {
+  const p = { name: "x", email: "yara.leak@example.com", emails: new Set(["yara.alt@example.org"]), passList: [{ ticketId: "beefcafe0001" }] };
+  const name = (n, q = p) => safeName({ ...q, name: n });
+  // The whole name is an email (theirs or not), the part before one of their @, or a ticket ID of theirs.
+  for (const n of ["yara.leak@example.com", "YARA.LEAK@EXAMPLE.COM", " yara.leak@example.com ", "someone.else@example.net", "yara.leak", "Yara.Leak",
+    "yara.alt", "beefcafe0001", "TECHFEST:BEEFCAFE0001", "yara​.leak@example.com", "yara＠example.com", "<yara.leak@example.com>", "", "No name"]) {
+    assert.equal(name(n), NO_NAME, JSON.stringify(n));
+  }
+  // An email or a handle inside a name: what's left.
+  assert.equal(name("Yara (yara.leak@example.com)"), "Yara");
+  assert.equal(name("Yara - yara.leak"), "Yara");
+  assert.equal(name("Yara Leak, 4165550199"), "Yara Leak");
+  // Real names stay as they are.
+  for (const n of ["Yara Leak", "José Núñez", "O'Brien-Smith", "Dr. Ann Other, PhD", "Team 42"]) assert.equal(name(n), n);
+  // A one-word name equal to the part before their @ is hidden too (the staff-account default looks the same).
+  assert.equal(safeName({ name: "Priya", email: "priya@example.com" }), NO_NAME);
+  assert.equal(safeName({ name: "Priya Patel", email: "priya@example.com" }), "Priya Patel");
+
+  // Other fields: [hidden] where something was taken out, "" when nothing else is left.
+  assert.equal(safeText("Contact lee@leakmail.example.com", p), `Contact ${MASK}`);
+  assert.equal(safeText("yara.leak@example.com", p), "");
+  assert.equal(safeText("CTO, +1 (647) 555-0188", p), `CTO, ${MASK}`);
+  assert.equal(safeText("+1 (416) 555 0199", p), "");
+  assert.equal(safeText("Nut allergy, call 416.555.0177 or yara.leak@example.com", p), `Nut allergy, call ${MASK} or ${MASK}`);
+  assert.equal(safeText("Pass dd00ee000099", p), `Pass ${MASK}`);
+  assert.equal(safeText("Booth BOOTH-1a2b", p), `Booth ${MASK}`);
+  assert.equal(safeText("Ask for yara.leak at the desk", p), `Ask for ${MASK} at the desk`);
+  for (const t of ["CEO @ Acme", "Head of Digital", "Startup Pass", "B7", "No mushrooms", "Section 12, row 3", "Class of 2026"]) assert.equal(safeText(t, p), t);
+  assert.equal(safeText("x".repeat(300), p, 60).length, 60);
+  // A mask is never cut in half: "x x … x [hid" → "x x … x".
+  assert.equal(safeText(`${"x ".repeat(28)}4165550199`, p, 60), "x ".repeat(28).trim());
+  // Photo / logo addresses.
+  assert.equal(safeUrl("/api/files/avatar/64b000000000000000000001?v=3", p), "/api/files/avatar/64b000000000000000000001?v=3");
+  assert.equal(safeUrl("https://cdn.example.com/logo.png", p), "https://cdn.example.com/logo.png");
+  for (const u of ["https://cdn.example.com/yara.leak@example.com.png", "https://cdn.example.com/a%40b.png", "https://cdn.example.com/beefcafe0001.png"]) assert.equal(safeUrl(u, p), "", u);
+  // The search text is the safe text, without the masks.
+  assert.equal(safeSearchText({ name: "Yara (yara.leak@example.com)", email: "yara.leak@example.com", company: "Call 4165550199", jobTitle: "Founder" }), "Yara Call Founder");
+});
+
+test("a name that is an email, a staff account named after its email: hidden from the volunteer's rows, profile, search and sort", async () => {
+  const { people, byId } = leakyWorld();
+  const yara = byId.get(`t-${LEAKS.yaraTicket}`);
+  const staff = byId.get("u-u10");
+  const lee = byId.get("u-u11");
+  const real = byId.get("u-u12");
+  // Staff still see what was typed (unchanged).
+  assert.equal(personRow(yara).name, LEAKS.yaraEmail);
+  assert.equal(personRow(staff).name, LEAKS.staffLocal);
+
+  assert.equal(volunteerRow(yara).name, NO_NAME);
+  assert.equal(volunteerRow(staff).name, NO_NAME);
+  assert.deepEqual(volunteerRow(staff).types, ["staff"]);
+  assert.deepEqual([volunteerRow(lee).company, volunteerRow(lee).jobTitle], [`Contact ${MASK}`, `CTO, ${MASK}`]);
+  assert.deepEqual([volunteerRow(real).name, volunteerRow(real).company], ["Yara Leak", "CEO @ Acme"]);
+  const prof = volunteerProfile(yara);
+  assert.equal(prof.name, NO_NAME);
+  assert.equal(prof.pass.printedLabel, `Pass ${MASK}`);
+  assert.deepEqual(prof.rsvp.dietary, [{ key: "other", label: "Other" }]);
+  assert.equal(prof.rsvp.dietaryOther, `Nut allergy, call ${MASK} or ${MASK}`);
+  for (const p of people) { assertNoLeak(volunteerRow(p), `row ${p.id}`); assertNoLeak(volunteerProfile(p), `profile ${p.id}`); }
+
+  // Word search: the hidden text never matches.
+  const names = (q) => volunteerSearch(people, q).map((p) => p.id).sort();
+  for (const q of ["example.com", "@example.com", "example", "yara.leak", "noname", "staffer", "noname.staffer", "leakmail", "lee@leakmail", "647", "555-0188", "dd00ee"]) {
+    assert.deepEqual(names(q), [], q);
+  }
+  assert.deepEqual(names("yara"), ["u-u12"], "the real Yara Leak only");
+  assert.deepEqual(names("leak"), ["u-u11", "u-u12"].sort());
+  assert.deepEqual(names("contact"), ["u-u11"]);
+  // An exact email / ticket ID still finds them (the help desk).
+  assert.deepEqual(names(LEAKS.yaraEmail), [yara.id]);
+  assert.deepEqual(names(LEAKS.yaraTicket), [yara.id]);
+  assert.deepEqual(names(LEAKS.staffEmail), ["u-u10"]);
+
+  // The list's order: "No name" sorts with the blanks (last), never where the hidden name would be.
+  const order = volunteerList(people, { sort: "name" }).list.map((p) => volunteerRow(p).name);
+  assert.deepEqual(order, ["Lee Leaky", "Yara Leak", NO_NAME, NO_NAME]);
+  assert.deepEqual(volunteerList(people, { sort: "name", dir: "desc" }).list.map((p) => volunteerRow(p).name), ["Yara Leak", "Lee Leaky", NO_NAME, NO_NAME]);
+  assert.ok(volunteerList(people, { sort: "company" }).list.every((p) => people.includes(p)), "the people themselves come back");
+
+  // The search box (the testers' requests): the title is the safe name; an exact email is never echoed.
+  const sources = { directory: async () => ({ people, rsvps: [] }) };
+  for (const q of ["example.com", "@example.com", "noname", "staffer", "leakmail"]) {
+    const out = await runSearch({ q, viewer: { volunteer: true }, sources });
+    assert.deepEqual(out.groups, [], q);
+  }
+  for (const [q, id] of [[LEAKS.yaraEmail, yara.id], [LEAKS.staffEmail, "u-u10"], [LEAKS.yaraTicket, yara.id]]) {
+    const out = await runSearch({ q, viewer: { volunteer: true }, sources });
+    const item = out.groups[0].items[0];
+    assert.deepEqual([item.id, item.title, item.exact, out.query.text], [id, NO_NAME, true, ""], q);
+    assertNoLeak(out, `search ${q}`);
+  }
+  const leeHit = await runSearch({ q: "lee", viewer: { volunteer: true }, sources });
+  assert.equal(leeHit.groups[0].items[0].subtitle, `CTO, ${MASK}, Contact ${MASK} · Connect Pass`);
+  assertNoLeak(leeHit, "search lee");
+  // Staff see the stored text, as before.
+  const staffOut = await runSearch({ q: "noname", viewer: { management: true }, sources: { ...sources, cms: async () => [], ticketDocs: async () => [] } });
+  assert.equal(staffOut.groups.find((g) => g.key === "people").items[0].title, LEAKS.staffLocal);
+});
+
+test("the volunteer profile's shape (the website's People look-up reads exactly these names)", () => {
+  const { people } = world();
+  const mara = volunteerProfile(people.find((p) => p.name === "Mara Delegate"));
+  assert.deepEqual(Object.keys(mara.rsvp).sort(), ["accessibility", "dayLabels", "days", "dietary", "dietaryOther", "events", "label", "status"]);
+  assert.deepEqual(Object.keys(mara.rsvp.events[0]).sort(), ["day", "key", "label", "time"]);
+  assert.deepEqual(mara.rsvp.dietary[0], { key: "vegan", label: "Vegan" });
+  assert.equal(typeof mara.rsvp.dietaryOther, "string");
+  assert.equal(typeof mara.rsvp.accessibility, "boolean");
+  assert.ok(Array.isArray(mara.passes) && Array.isArray(mara.sessions));
+  const agenda = [{ day: 1, time: "10:00", endTime: "10:30", title: "Quantum Computing in Finance", format: "panel", speakers: [{ name: "Kai Speaker" }] }];
+  const kai = volunteerProfile(people.find((p) => p.name === "Kai Speaker"), { sessions: agenda });
+  assert.deepEqual(kai.sessions, [{ day: 1, start: "10:00", end: "10:30", title: "Quantum Computing in Finance", format: "Panel", role: "Panellist" }]);
 });

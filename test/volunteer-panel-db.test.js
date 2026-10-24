@@ -40,6 +40,12 @@ const SECRETS = {
   code: "SECRETCODE20", stripe: "cs_test_secretsession", phone: "4165550199", linkedin: "linkedin.com/in/mara-secret",
   manualNote: "Invoice SECRET-NOTE-77", hideReason: "SECRET-HIDE-REASON", accessibility: "Wheelchair SECRET-ACCESS",
   contactPhone: "6475550142", killMessage: "OFFLINE-SECRET-MESSAGE",
+  // Contact details typed into free text (the second round of testing): a buyer who typed their email as their name,
+  // a staff account added without a name (POST /staff names it after the email), an email and a phone number in the
+  // company, job title and dietary note.
+  yaraEmail: "yara.leak@example.com", yaraLocal: "yara.leak", yaraTicket: "acac56565656",
+  staffEmail: "noname.staffer@example.org", staffLocal: "noname.staffer",
+  leeEmail: "lee@leakmail.example.com", leeDomain: "leakmail.example.com", leePhone: "555-0188", dietPhone: "416 555 0177",
 };
 const AMOUNTS = ["1234.56"];
 
@@ -135,7 +141,12 @@ before(async () => {
       issuedPass: { booth: { booth: "B7" } }, details: { jobTitle: "Chief Scientist", organisation: "Quantum Example" } },
   ]);
   Object.assign(ID, { omar: omar._id, kai: kai._id });
+  await M.Attendee.create({ name: SECRETS.yaraEmail, email: SECRETS.yaraEmail, ticketId: SECRETS.yaraTicket, ticketType: "connect", purchaseDate: d("10-05"), details: {} });
+  await M.User.create({ name: "Lee Leaky", email: "lee.account@example.com", role: "user", organization: `Contact ${SECRETS.leeEmail}`,
+    jobTitle: `CTO, +1 (647) ${SECRETS.leePhone}`, password: pw });
   await M.Rsvp.create([
+    { key: `t:${SECRETS.yaraTicket}`, nameKey: "", email: SECRETS.yaraEmail, ticketId: SECRETS.yaraTicket, ticketVerified: true, tier: "connect",
+      days: ["day1"], options: [], dietary: ["other"], dietaryOther: `Nut allergy, call ${SECRETS.dietPhone} or ${SECRETS.yaraEmail}`, source: "attendee", spam: false },
     { key: `t:${SECRETS.ticket}`, nameKey: "mara delegate", firstName: "Mara", lastName: "Delegate", name: "Mara Delegate", email: SECRETS.email,
       ticketId: SECRETS.ticket, ticketVerified: true, tier: "power", days: ["day1", "day2"], options: ["sessions_d1", "lunch_d1", "gala", "awards"],
       dietary: ["vegan"], dietaryOther: "No mushrooms", accessibility: SECRETS.accessibility, source: "attendee", spam: false, attendeeSubmittedAt: d("10-10") },
@@ -158,6 +169,11 @@ before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}`;
+
+  // Management adds a staff account without a name, the real way (before anything reads the directory).
+  const added = await call("POST", "/api/console/staff", { token: T.mia, body: { email: SECRETS.staffEmail, password: "another long passphrase", role: "admin" } });
+  assert.equal(added.status, 201, added.text);
+  ID.noname = added.body.id;
 });
 
 after(async () => {
@@ -553,4 +569,70 @@ test("the kill switch is gone: the site is always live, whatever the old row say
   // Refusals are audited (who tried), never a switch.
   assert.ok(await M.AdminAudit.countDocuments({ action: "edit_app_text_refused", detail: "kill_switch_removed" }) >= 4);
   assert.equal(await M.AdminAudit.countDocuments({ action: /^kill_switch/ }), 0);
+});
+
+test("free text typed with contact details: a name that is an email, a staff account named after its email, an email or phone in the company / title / dietary note", { skip }, async () => {
+  // The stored name of the staff account is the email's local part (POST /staff's default): staff still see it.
+  assert.equal((await M.User.findById(ID.noname).lean()).name, SECRETS.staffLocal);
+  const staffList = await call("GET", "/api/console/people?q=noname", { token: T.sam });
+  assert.deepEqual(staffList.body.rows.map((r) => r.name), [SECRETS.staffLocal], "staff unchanged");
+  const staffYara = await call("GET", `/api/console/people/t-${SECRETS.yaraTicket}`, { token: T.sam });
+  assert.equal(staffYara.body.person.name, SECRETS.yaraEmail, "staff unchanged");
+
+  // The testers' requests, as a volunteer.
+  for (const q of ["example.com", "@example.com", "yara", "yara.leak", "noname", "staffer", "leakmail", "647", "555-0188"]) {
+    const r = await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.val });
+    assert.deepEqual([r.status, r.body.total], [200, 0], `list q=${q}`);
+    const s1 = await call("POST", "/api/console/search", { token: T.val, body: { q } });
+    assert.deepEqual(s1.body.groups, [], `search q=${q}`);
+    const s2 = await call("GET", `/api/console/search?q=${encodeURIComponent(q)}`, { token: T.val });
+    assert.deepEqual(s2.body.groups, [], `search GET q=${q}`);
+  }
+  const yara = await call("GET", `/api/console/people/t-${SECRETS.yaraTicket}`, { token: T.val });
+  assert.equal(yara.status, 200);
+  assert.equal(yara.body.person.name, "No name");
+  assert.equal(yara.body.person.pass.label, "Connect Pass");
+  assert.deepEqual(yara.body.person.rsvp.dietary, [{ key: "other", label: "Other" }]);
+  assert.equal(yara.body.person.rsvp.dietaryOther, "Nut allergy, call [hidden] or [hidden]");
+  assertSafe(yara.body, "profile t-yara");
+  const noname = await call("GET", `/api/console/people/u-${ID.noname}`, { token: T.val });
+  assert.deepEqual([noname.status, noname.body.person.name, noname.body.person.types], [200, "No name", ["staff"]]);
+  assertSafe(noname.body, "profile noname");
+  const lee = await call("GET", "/api/console/people?q=lee%20leaky", { token: T.val });
+  assert.deepEqual(lee.body.rows.map((r) => [r.name, r.company, r.jobTitle]), [["Lee Leaky", "Contact [hidden]", "CTO, [hidden]"]]);
+  assertSafe(lee.body, "list lee");
+
+  // An exact email still finds the person (the help desk), never echoed: not in query.text, not in the title.
+  for (const [q, id] of [[SECRETS.yaraEmail, yara.body.canonicalId], [SECRETS.staffEmail, `u-${ID.noname}`], [SECRETS.yaraTicket, yara.body.canonicalId]]) {
+    for (const r of [await call("POST", "/api/console/search", { token: T.val, body: { q } }), await call("GET", `/api/console/search?q=${encodeURIComponent(q)}`, { token: T.val })]) {
+      assert.equal(r.status, 200, q);
+      assert.equal(r.body.query.text, "", q);
+      const item = r.body.groups[0].items[0];
+      assert.deepEqual([item.id, item.title, item.exact], [id, "No name", true], q);
+      assertSafe(r.body, `search ${q}`);
+    }
+    const l = await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.val });
+    assert.deepEqual(l.body.rows.map((r) => [r.id, r.name]), [[id, "No name"]], q);
+    assertSafe(l.body, `list ${q}`);
+  }
+  const staffHit = await call("POST", "/api/console/search", { token: T.val, body: { q: SECRETS.staffEmail } });
+  assert.deepEqual([staffHit.body.groups[0].items[0].subtitle, staffHit.body.groups[0].items[0].badges], ["Account, no pass", ["Staff"]]);
+
+  // "No name" sorts with the blanks (last), whatever the hidden name was.
+  const all = await call("GET", "/api/console/people?sort=name", { token: T.val });
+  const names = all.body.rows.map((r) => r.name);
+  const firstNoName = names.indexOf("No name");
+  assert.ok(firstNoName > 0 && names.slice(firstNoName).every((n) => n === "No name"), names.join(" | "));
+  assertSafe(all.body, "list sorted");
+});
+
+test("the profile's shape, as the website reads it (person.rsvp.events / dietary / dietaryOther / accessibility, person.sessions)", { skip }, async () => {
+  const mara = (await call("GET", `/api/console/people/t-${SECRETS.ticket}`, { token: T.val })).body;
+  assert.deepEqual(Object.keys(mara).sort(), ["banner", "canonicalId", "extras", "filters", "person", "sorts", "volunteer"]);
+  assert.deepEqual(Object.keys(mara.person.rsvp).sort(), ["accessibility", "dayLabels", "days", "dietary", "dietaryOther", "events", "label", "status"]);
+  assert.deepEqual(mara.person.rsvp.events.map((e) => Object.keys(e).sort()), Array(3).fill(["day", "key", "label", "time"]));
+  assert.deepEqual(mara.person.rsvp.dietary, [{ key: "vegan", label: "Vegan" }]);
+  assert.deepEqual([mara.person.rsvp.dietaryOther, mara.person.rsvp.accessibility], ["No mushrooms", true]);
+  const kai = (await call("GET", `/api/console/people/a-${ID.kai}`, { token: T.val })).body;
+  assert.deepEqual(kai.person.sessions, [{ day: 1, start: "10:00", end: "10:30", title: "Quantum Computing in Finance", format: "Panel", role: "Panellist" }]);
 });

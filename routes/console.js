@@ -275,7 +275,7 @@ router.patch("/users/:id", async (req, res) => {
   if (!u) return res.status(404).json({ error: "Not found" });
   const changed = [];
   if (req.body?.role !== undefined && !isManagement(req.user)) return res.status(403).json({ error: "Only management can change staff access" });
-  // user (attendee) | admin (staff) | volunteer (app staff sign-in + door check-in only)
+  // user (attendee) | admin (staff) | volunteer (app staff sign-in + door check-in, and the People look-up panel)
   if (req.body?.role !== undefined && !cleanRole(req.body.role)) return res.status(400).json({ error: "Role must be user, admin or volunteer" });
   if (req.body?.role !== undefined && String(u._id) === String(req.user._id) && cleanRole(req.body.role) !== "admin") {
     return res.status(400).json({ error: "You can't remove your own staff access" });
@@ -619,13 +619,15 @@ router.get("/staff", requireManagement, async (req, res) => {
   const staff = await User.find({ role: { $in: ["admin", "volunteer"] } }).select("name email role provider lastActiveAt createdAt password staffRole").lean();
   res.json(staff.map((u) => ({ id: String(u._id), name: u.name, email: u.email, provider: u.provider || "local",
     role: u.role === "volunteer" ? "volunteer" : "admin",
-    // Volunteers have no access level (they can't open the admin panel).
+    // Volunteers have no access level (in this panel they only look people up: requirePanel, People only, read only).
     staffRole: u.role === "volunteer" ? "" : isManagement({ ...u, role: "admin" }) ? "management" : "staff",
     hasPassword: !!u.password, lastActiveAt: u.lastActiveAt || null, createdAt: u.createdAt, isMe: String(u._id) === String(req.user._id) })));
 });
 
 /* Add or promote staff ({ role: "admin" }, the default) or a volunteer ({ role: "volunteer" }:
-   the apps' staff sign-in for door check-in, never this panel; no staffRole). */
+   the apps' staff sign-in for door check-in, and in this panel People only, read only (the volunteer panel,
+   requirePanel); no staffRole). Without a name the account is named after the email's local part: volunteers never
+   see that name (services/volunteerSafe.js shows them "No name"). */
 router.post("/staff", requireManagement, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const name = trimBody(req.body?.name, 80);

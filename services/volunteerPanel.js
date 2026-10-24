@@ -33,9 +33,15 @@
    keys, ticket value, price, payment status, Stripe, coupon codes,
    manual values, email engagement, sends, RSVP-email flags, "I'm
    attending", staff notes, hide-from-app, audit, account settings.
+   The free text in it (name, company, job title, a pass's printed
+   name, the booth, the dietary "Other", the photo / logo addresses)
+   goes through services/volunteerSafe.js: an email, phone number or
+   ticket ID typed into it is [hidden], and a name that is one of their
+   emails (or the part before the @, like a staff account added without
+   a name) shows as "No name".
 
-   Search (?q= on the list, and the search box): words match the name,
-   company and job title only; an exact email or an exact ticket ID
+   Search (?q= on the list, and the search box): words match the safe
+   name, company and job title only; an exact email or an exact ticket ID
    finds the person, and nothing in the answer repeats it. Filters:
    person type, pass, RSVP status, exhibitor, VIP, Media; the
    financial and marketing ones (ticket value, pass status, RSVP email
@@ -54,6 +60,7 @@ import { PERSON_TYPES } from "./teamRoles.js";
 import { EXTRAS, EXTRA_KEYS } from "./passExtras.js";
 import { personBand } from "./checkinCard.js";
 import { agendaRunOfShow } from "./speakerWebsite.js";
+import { safeName, safeSearchText, safeText, safeUrl } from "./volunteerSafe.js";
 
 /** People list and profile reads per volunteer account. */
 export const VOLUNTEER_READS = Object.freeze({ max: 120, windowMs: 60 * 1000 });
@@ -116,35 +123,43 @@ export function volunteerSearch(people = [], q = "") {
   const words = fold(pq.text).split(/\s+/).filter(Boolean);
   return people.filter((p) => {
     if (pq.ticket && holdsTicket(p, pq.ticket)) return true;
-    const hay = fold([p.name === "No name" ? "" : p.name, p.company, p.jobTitle, p.speaker?.name].filter(Boolean).join(" "));
+    // The safe text only (services/volunteerSafe.js): an email typed as a name, or a part of one, never matches.
+    const hay = fold(safeSearchText(p));
     return words.every((w) => hay.includes(w));
   });
 }
 
+/* Sorting reads the safe name and company too (the list's order never hints at a hidden name): each person is
+   sorted as a view of itself with those two replaced, then given back. */
+const SELF = Symbol("person");
+const sortView = (p) => Object.assign(Object.create(p), { [SELF]: p, name: safeName(p), company: safeText(p.company, p) });
+
 /** The list as a volunteer gets it: their search, the allowed filters and sorts (services/people.js does the rest). */
 export function volunteerList(people = [], query = {}) {
   const v = volunteerQuery(query);
-  return { ...v, list: sortPeople(filterPeople(volunteerSearch(people, v.q), v.filters), v.sort, v.dir) };
+  const found = filterPeople(volunteerSearch(people, v.q), v.filters);
+  return { ...v, list: sortPeople(found.map(sortView), v.sort, v.dir).map((x) => x[SELF]) };
 }
 
 /** The passes a volunteer sees: not hidden by staff, not booth orders. */
 const visiblePasses = (p) => (p.passList || []).filter((t) => !t.hidden && !isBooth(t.ticketId));
 
-/** One pass, safe: its type, Pending or not, its inclusions, check-in and booth. No ticket ID, key, code or value. */
-export function volunteerPass(t) {
+/** One pass of person `p`, safe: its type, Pending or not, its inclusions, check-in and booth. No ticket ID, key, code
+    or value; the texts staff typed go through services/volunteerSafe.js. */
+export function volunteerPass(t, p = null) {
   if (!t) return null;
   return {
-    label: str(t.label, 60),
+    label: safeText(t.label, p, 60),
     tier: str(t.tier, 20),
     tierLabel: TIER_LABELS[t.tier] || "",
     // The name staff printed on an issued pass ("Startup Pass"), if any.
-    printedLabel: str(t.printedLabel, 60),
+    printedLabel: safeText(t.printedLabel, p, 60),
     pending: t.status === "pending",
     // Effective yes / no for each (staff's switch, else automatic): CxO Breakfasts, Networking Luncheons, Gala, Awards.
     extras: Object.fromEntries(EXTRA_KEYS.map((x) => [x, !!t.extras?.[x]])),
     checkedIn: !!t.checkedIn,
     checkedInAt: iso(t.checkedInAt),
-    booth: str(t.booth, 20),
+    booth: safeText(t.booth, p, 20),
     exhibitorPass: !!t.exhibitorPass,
   };
 }
@@ -162,7 +177,7 @@ const typesOf = (p) => (p.types || []).filter((t) => PERSON_TYPES.includes(t));
 const bandOf = (p) => (p.primary
   ? personBand({ vip: !!p.vip, types: typesOf(p), passes: visiblePasses(p).map((t) => ({ ticketId: t.ticketId, type: t.type, promoCode: t.promoCode })), passName: p.primary.label })
   : null);
-const safeBand = (b) => (b ? { key: str(b.key, 20), label: str(b.label, 60), bg: str(b.bg, 20), text: str(b.text, 20), passName: str(b.passName, 60) } : null);
+const safeBand = (b, p) => (b ? { key: str(b.key, 20), label: safeText(b.label, p, 60), bg: str(b.bg, 20), text: str(b.text, 20), passName: safeText(b.passName, p, 60) } : null);
 
 /** The RSVP, short (the list): { status, label, days, dayLabels }. */
 function rsvpShort(p) {
@@ -171,23 +186,24 @@ function rsvpShort(p) {
   return { status: r.status, label: r.label, days, dayLabels: days.map((d) => DAY_LABEL[d]) };
 }
 
-/** A row of the volunteer's list. */
+/** A row of the volunteer's list. Name, job title, company, booth and the photo / logo addresses: safe
+    (services/volunteerSafe.js: no email, phone number or ticket ID typed into them, "No name" for a name that is one). */
 export function volunteerRow(p) {
-  const booth = visiblePasses(p).map((t) => t.booth).find(Boolean) || "";
+  const booth = safeText(visiblePasses(p).map((t) => t.booth).find(Boolean) || "", p, 20);
   return {
     id: p.id,
-    name: str(p.name),
-    jobTitle: str(p.jobTitle),
-    company: str(p.company),
-    photoUrl: str(p.photoUrl, 500),
-    logoUrl: str(p.logoUrl, 500),
+    name: safeName(p),
+    jobTitle: safeText(p.jobTitle, p),
+    company: safeText(p.company, p),
+    photoUrl: safeUrl(p.photoUrl, p),
+    logoUrl: safeUrl(p.logoUrl, p),
     types: typesOf(p),
     vip: !!p.vip,
     media: typesOf(p).includes("media"),
     exhibitor: !!p.exhibitor,
     speaker: typesOf(p).includes("speaker"),
-    band: safeBand(bandOf(p)),
-    pass: volunteerPass(p.primary && !isBooth(p.primary.ticketId) ? p.primary : null),
+    band: safeBand(bandOf(p), p),
+    pass: volunteerPass(p.primary && !isBooth(p.primary.ticketId) ? p.primary : null, p),
     passCount: visiblePasses(p).length,
     rsvp: rsvpShort(p),
     ...checkInOf(p),
@@ -214,7 +230,7 @@ export function volunteerProfile(p, { sessions = null } = {}) {
     ...volunteerRow(p),
     passes: visiblePasses(p)
       .sort((a, b) => ms(b.purchaseDate) - ms(a.purchaseDate))
-      .map(volunteerPass),
+      .map((t) => volunteerPass(t, p)),
     rsvp: {
       status: s.status,
       label: s.label,
@@ -224,7 +240,7 @@ export function volunteerProfile(p, { sessions = null } = {}) {
       events: specialEvents(r).map((e) => ({ key: e.key, label: str(e.label, 80), day: str(e.day, 40), time: str(e.time, 20) })),
       // For catering.
       dietary: dietary.map((k) => ({ key: k, label: DIET_LABEL[k] })),
-      dietaryOther: str(r?.dietaryOther, 200),
+      dietaryOther: safeText(r?.dietaryOther, p, 200),
       // Whether they told us about accessibility needs (staff hold the details).
       accessibility: !!str(r?.accessibility),
     },
