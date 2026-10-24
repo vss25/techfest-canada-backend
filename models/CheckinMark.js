@@ -36,5 +36,6 @@ const checkinMarkSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 checkinMarkSchema.index({ subject: 1, day: 1, point: 1 }, { unique: true });
 checkinMarkSchema.index({ day: 1, point: 1 });
+checkinMarkSchema.index({ ref: 1 });   // what one tap set (an undo takes back every mark with its clientId)
 
 export default mongoose.models.CheckinMark || mongoose.model("CheckinMark", checkinMarkSchema);
