@@ -11,7 +11,7 @@ import EmailEngagement from "../models/EmailEngagement.js";
 import Subscription from "../models/Subscription.js";
 import { SessionRegistration } from "../models/Social.js";
 import { AdminAudit } from "../models/Admin.js";
-import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement, requirePanel, isManagement, isVolunteerPanel, refuseVolunteer } from "../middleware/adminAuth.js";
 import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
 import { stripeSessions } from "../services/stripeSales.js";
@@ -53,6 +53,10 @@ import { accessOf } from "../services/rightsStore.js";
 import {
   HIDE_SELECT, WHILE_HIDDEN, cleanReason, removeWhileHidden, setHidden, setHideReason, whileHiddenCounts,
 } from "../services/appHide.js";
+import { SESSION_URL as SPEAKING_URL } from "../services/speakerWebsite.js";
+import {
+  PERSON_ID, VOLUNTEER_RATE_LIMITED, VOLUNTEER_READS, couponCodes, volunteerCounts, volunteerList, volunteerMeta, volunteerProfile, volunteerRow,
+} from "../services/volunteerPanel.js";
 
 /* =========================================================
    Admin → People (staff only)
@@ -110,6 +114,11 @@ import {
    Passes (Oct 19 2026): Connect, Influence, Power, Apex and the internal
    Speaker Pass (holding one makes someone a speaker); an exhibitor pass is
    a Connect Pass, named so; "All Access" is the Power Pass.
+   Volunteers (the volunteer panel, Oct 23 2026, services/volunteerPanel.js):
+   a volunteer account signed in with its password gets GET / and GET /:id
+   only, answered by volunteerPeople below in the volunteer's safe form
+   (no contact details, ticket IDs, money, codes or marketing data), 120
+   reads a minute; every other request here answers 403 volunteer_forbidden.
 ========================================================= */
 
 const n = (r) => r?.modifiedCount ?? 0;
@@ -140,6 +149,8 @@ const agendaCache = makeAgendaCache({
   url: cdn('*[_type=="session" && !(_id in path("drafts.**"))]{_id,sessionId,day,time,endTime,title,type,format,stage}'),
   parse: rows, label: "PEOPLE AGENDA", ttlMs: 60 * 1000,
 });
+// Who speaks in which session (speakers and moderator by name): a speaker's sessions on the volunteer's profile.
+const speakingCache = makeAgendaCache({ url: SPEAKING_URL, parse: rows, label: "PEOPLE SPEAKING", ttlMs: 5 * 60 * 1000 });
 
 /* ---------- Refunds and ticket values (Stripe, when configured) ---------- */
 async function loadStripe() {
@@ -191,7 +202,8 @@ async function loadDirectory() {
   const built = buildPeople({
     users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending, engagement, promos,
   });
-  return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
+  // promoCodes: every coupon code, masked in the free text the volunteer panel shows (services/volunteerPanel.js couponCodes).
+  return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date(), promoCodes: couponCodes({ promos, people: built.people }) };
 }
 
 const DIR_TTL_MS = 20 * 1000;
@@ -256,9 +268,55 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => 
    /api/console/people
 ========================================================= */
 const router = express.Router();
-router.use(requireAdmin);
+router.use(requirePanel);
 
 const PAGE = 50;
+
+/* ---------- Volunteers: the list and one profile, look-up only (services/volunteerPanel.js) ----------
+   Answered here, so a volunteer never reaches the staff handlers below: GET / (their search, the allowed
+   filters, 50 a page, never a fresh rebuild) and GET /:id (a person id). Anything else → 403 volunteer_forbidden.
+   VOLUNTEER_READS per account. Nothing is audited: nothing changes. */
+const volunteerReads = makeLimiter(VOLUNTEER_READS);
+function volunteerTarget(req) {
+  if (req.method !== "GET") return null;
+  if (req.path === "/") return { list: true };
+  const m = /^\/([^/]+)\/?$/.exec(req.path);
+  if (!m) return null;
+  let id;
+  try { id = decodeURIComponent(m[1]); } catch { return null; }
+  return PERSON_ID.test(id) ? { id } : null;
+}
+async function volunteerPeople(req, res, next) {
+  if (!isVolunteerPanel(req)) return next();
+  const target = volunteerTarget(req);
+  if (!target) return refuseVolunteer(res);
+  if (!volunteerReads.hit(String(req.user._id))) return res.status(429).json({ error: VOLUNTEER_RATE_LIMITED, code: "rate_limited" });
+  res.set("Cache-Control", "no-store");
+  if (target.list) {
+    const d = await directory();
+    const codes = d.promoCodes;
+    const { list, page } = volunteerList(d.people, req.query, { codes });
+    return res.json({
+      volunteer: true, total: list.length, page, size: PAGE,
+      rows: list.slice(page * PAGE, (page + 1) * PAGE).map((p) => volunteerRow(p, { codes })),
+      counts: volunteerCounts(d.people), builtAt: d.builtAt, ...volunteerMeta(),
+    });
+  }
+  // The directory as it is (at most 20 s old): a volunteer's look-ups never make the server build it again
+  // (findPerson reads it again when someone isn't found). t-<ticket ID> finds whoever holds that ticket.
+  const key = target.id.startsWith("t-") ? `t-${normalizeTicketId(target.id.slice(2))}` : target.id;
+  const d = await directory();
+  const p = d.byId.get(key) || null;
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const sessions = (p.types || []).includes("speaker") ? await speakingCache.get() : null;
+  return res.json({ volunteer: true, canonicalId: p.id, person: volunteerProfile(p, { sessions, codes: d.promoCodes }), ...volunteerMeta() });
+}
+router.use((req, res, next) => Promise.resolve(volunteerPeople(req, res, next)).catch((err) => {
+  // The error's name and where it happened, not its message (a message can quote a person's data).
+  const at = String(err?.stack || "").split("\n").slice(1, 3).map((l) => l.trim()).join(" | ");
+  console.error("PEOPLE VOLUNTEER ERROR:", err?.name || "Error", err?.code || "", at);
+  if (!res.headersSent) res.status(500).json({ error: "Something went wrong. Try again." });
+}));
 
 router.get("/", wrap(async (req, res) => {
   const d = await directory({ fresh: req.query.refresh === "1" });
