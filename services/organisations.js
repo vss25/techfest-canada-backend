@@ -8,10 +8,13 @@
 
    GET /api/app/organisations (routes/appOrganisations.js) answers
    { updatedAt, featured: [Org], attending: [Org] } with
-     Org = { key, name, logo, logoSource, website, kind, topics,
-             description, scale, attendeeCount, speakerCount, aliases }
+     Org = { key, name, logo, logoOriginal, logoSource, website, kind,
+             topics, description, scale, attendeeCount, speakerCount, aliases }
    Formats: key = companyKey (lower case, words, no legal suffix); logo
-   an absolute https URL or ""; logoSource "website" | "company" |
+   an absolute https URL or "" that the native apps can draw (an SVG / ICO
+   on Cloudinary or Sanity is sent as a PNG of it, services/logoRaster.js;
+   Oct 24 2026), logoOriginal the stored URL (the website's crisp SVG; the
+   admin list keeps the stored URL in `logo`); logoSource "website" | "company" |
    "auto" | ""; website an http(s) URL or ""; kind = the partner record's
    CMS `category` key as the apps read it ("governmentPartners",
    "startupEcosystemPartners", … PARTNER_CATEGORIES) or "" (not a
@@ -71,6 +74,7 @@ import { safeWebsite } from "./awardApplications.js";
 import { CMS_FIELDS } from "./cmsSchema.js";
 import { findLogoCandidates, safeFetch } from "./logoFetch.js";
 import { prepareLogo, storeLogo } from "./logoStore.js";
+import { appLogoUrl } from "./logoRaster.js";
 
 /* ================= the rules (pure) ================= */
 
@@ -555,10 +559,30 @@ export async function organisations({ fresh = false } = {}) {
   return pending;
 }
 
+/** One organisation as the apps get it (Oct 24 2026, services/logoRaster.js): `logo` drawable by the native apps (an
+    SVG or ICO on Cloudinary / Sanity → a PNG of the same file; anything else as stored) and, right after it,
+    `logoOriginal`, the stored URL (the website can keep a crisp SVG). Nothing stored changes. */
+export function appOrg(o) {
+  const out = {};
+  for (const [k, val] of Object.entries(o)) {
+    if (k === "logoOriginal") continue;
+    if (k === "logo") { out.logo = appLogoUrl(val); out.logoOriginal = typeof val === "string" ? val : ""; continue; }
+    out[k] = val;
+  }
+  return out;
+}
+
+const payloadOf = new WeakMap();   // the built list → its payload (built once per list, not once per request)
+
 /** The public payload. */
 export async function organisationsPayload() {
   const v = await organisations();
-  return { updatedAt: v.updatedAt, featured: v.featured, attending: v.attending };
+  let body = payloadOf.get(v);
+  if (!body) {
+    body = { updatedAt: v.updatedAt, featured: v.featured.map(appOrg), attending: v.attending.map(appOrg) };
+    payloadOf.set(v, body);
+  }
+  return body;
 }
 
 /** A staff change here: the next read rebuilds (other servers within a minute). */

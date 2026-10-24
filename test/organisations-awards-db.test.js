@@ -310,6 +310,47 @@ test("admin: add a logo to any attending organisation (no Company record yet), b
   assert.equal(cleared.counts.missingLogo, before.counts.missingLogo);
 });
 
+test("organisations: an SVG / ICO logo reaches the apps as a PNG of it (logoOriginal = stored); the admin list and the database keep the stored URL", { skip }, async () => {
+  // Oct 24 2026 (services/logoRaster.js): the native apps can't draw SVG or ICO.
+  const svg = "https://res.cloudinary.com/demo/image/upload/v1/ttfc/logos/woodgrove-bank-1.svg";
+  const ico = "https://res.cloudinary.com/demo/image/upload/v1/ttfc/logos/litware-1.ico";
+  const prev = await M.Company.find({ nameKey: { $in: ["woodgrove bank", "litware"] } }).lean();
+  const ibmLogo = CMS.partners[1].logo;
+  try {
+    await M.Company.updateOne({ nameKey: "woodgrove bank" }, { $set: { name: "Woodgrove Bank", logoUrl: svg, logoSource: "upload", updatedBy: "Mia Manager" } }, { upsert: true });
+    await M.Company.updateOne({ nameKey: "litware" }, { $set: { logoUrl: ico, logoSource: "upload" } });
+    CMS.partners[1].logo = `${CDN}/ibm-246x44.svg`;                      // a partner's SVG on Sanity
+    ORG.forgetOrganisations({ cmsToo: true });
+    const r = await ok(call("GET", "/api/app/organisations"));
+    const list = r.body;
+    const wood = find(list, "woodgrove bank");
+    assert.deepEqual([wood.logo, wood.logoOriginal, wood.logoSource],
+      ["https://res.cloudinary.com/demo/image/upload/f_png,w_512,h_512,c_fit/v1/ttfc/logos/woodgrove-bank-1.png", svg, "company"]);
+    const lit = find(list, "litware");
+    assert.deepEqual([lit.logo, lit.logoOriginal], ["https://res.cloudinary.com/demo/image/upload/f_png,w_512,h_512,c_limit/v1/ttfc/logos/litware-1.png", ico]);
+    const ibm = find(list, "ibm");
+    assert.deepEqual([ibm.logo, ibm.logoOriginal, ibm.logoSource], [`${CDN}/ibm-246x44.svg?fm=png&w=512&h=512&fit=clip`, `${CDN}/ibm-246x44.svg`, "website"]);
+    const dell = find(list, "dell technologies");                        // a PNG: as stored
+    assert.deepEqual([dell.logo, dell.logoOriginal], [`${CDN}/dell.png`, `${CDN}/dell.png`]);
+    for (const o of [...list.featured, ...list.attending]) {
+      const u = new URL(o.logo || "https://x.test/");
+      assert.ok(!/\.(svg|ico)$/i.test(u.pathname) || u.searchParams.get("fm") === "png", o.key);   // never an SVG / ICO itself
+    }
+    // The same answer twice (built once per list) and the admin list / database untouched.
+    assert.equal((await ok(call("GET", "/api/app/organisations"))).text, r.text);
+    const admin = (await ok(call("GET", "/api/console/organisations", { as: U.mia }))).body;
+    assert.equal(admin.orgs.find((o) => o.key === "woodgrove bank").logo, svg);
+    assert.equal(admin.orgs.find((o) => o.key === "ibm").logo, `${CDN}/ibm-246x44.svg`);
+    assert.equal(admin.orgs.find((o) => o.key === "woodgrove bank").logoOriginal, undefined);
+    assert.equal((await M.Company.findOne({ nameKey: "woodgrove bank" }).lean()).logoUrl, svg);
+  } finally {
+    CMS.partners[1].logo = ibmLogo;
+    await M.Company.deleteMany({ nameKey: { $in: ["woodgrove bank", "litware"] } });
+    if (prev.length) await M.Company.insertMany(prev);
+    ORG.forgetOrganisations({ cmsToo: true });
+  }
+});
+
 test("admin: hide and show an organisation; merge X into Y and undo it; loops refused; all audited", { skip }, async () => {
   await ok(call("POST", "/api/console/organisations/hide", { as: U.mia, body: { key: "tailspin toys", hidden: true, name: "Tailspin Toys" } }));
   assert.equal(find(await orgs(), "tailspin toys"), undefined);                                     // at once on this server
