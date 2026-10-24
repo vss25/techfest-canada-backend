@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 process.env.RESEND_API_KEY ||= "re_test_stub"; // modules make a Resend client on import (never used here)
 
 import {
-  CONFIRM_EVERY_MS, DEFAULT_MESSAGE, INTERESTS, PAGE_URL, STAY_DEFAULTS, STAY_KEYS, alertSubject, buildWaitlistAlert, cleanInterests,
-  confirmDue, ipHash, phoneDigits, stayCopy, telHref, validateSignup, waitlistCounts, waitlistCsv, waitlistFilter, waitlistInbox, waitlistRow,
+  CONFIRM_EVERY_MS, DEFAULT_MESSAGE, ERRORS, INTERESTS, MAX_EARLIER, PAGE_URL, STAY_DEFAULTS, STAY_KEYS, alertSubject,
+  buildWaitlistAlert, cleanInterests, companyProblem, confirmDue, earlierOf, earlierUpdate, firstNameOf, ipHash, nameProblem, phoneDigits,
+  stayCopy, telHref, validateSignup, waitlistCounts, waitlistCsv, waitlistFilter, waitlistInbox, waitlistRow, whoLine,
 } from "../services/waitlist.js";
 import { ATTENDING, ENQUIRE_EMAIL, WAITLIST_CAMPAIGN, askedAbout, buildWaitlistEmail, sendWaitlistEmail, waitlistEmailFor } from "../services/waitlistEmail.js";
 import { FAILED, TOO_MANY, makeWaitlistHandler } from "../services/waitlistHandler.js";
@@ -59,21 +60,30 @@ test("stayCopy: saved values over the defaults; empty or unknown values are igno
 
 /* ---------- what the form sends ---------- */
 
-const GOOD = { email: " Jane@Acme.Example ", phone: "+1 (416) 555-0100", interests: ["exhibitor", "sponsorship", "sponsorship", "golf"], source: "ios", consent: true };
+const GOOD = {
+  name: "  Jane   Doe ", company: " Acme Inc. ", email: " Jane@Acme.Example ", phone: "+1 (416) 555-0100",
+  interests: ["exhibitor", "sponsorship", "sponsorship", "golf"], source: "ios", consent: true,
+};
 
-test("validateSignup: email and phone required, 7–20 digits after + spaces dashes parens, consent, known ticks only", () => {
+test("validateSignup: only the email is required; a phone that is given has 7–20 digits after + spaces dashes parens; consent; known ticks only", () => {
   const ok = validateSignup(GOOD);
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.value, { email: "jane@acme.example", phone: "+1 (416) 555-0100", phoneDigits: "14165550100", interests: ["sponsorship", "exhibitor"], source: "ios", consent: true });
+  assert.deepEqual(ok.value, { name: "Jane Doe", company: "Acme Inc.", email: "jane@acme.example", phone: "+1 (416) 555-0100", phoneDigits: "14165550100", interests: ["sponsorship", "exhibitor"], source: "ios", consent: true });
   const field = (b) => validateSignup({ ...GOOD, ...b });
   assert.deepEqual([field({ email: "" }).field, field({ email: "" }).error], ["email", "Enter your email address."]);
   for (const email of ["jane", "jane@acme", "jane@@acme.example", "jane acme@x.example", `${"a".repeat(250)}@x.example`]) {
     assert.equal(field({ email }).field, "email", email);
   }
-  assert.deepEqual([field({ phone: "" }).field, field({ phone: "" }).error], ["phone", "Enter your phone number."]);
-  for (const phone of ["555-010", "12345", "phone me", "416.555.0100", "+1 416 555 0100 ext 4", "1".repeat(21), "<b>4165550100</b>"]) {
-    assert.equal(field({ phone }).field, "phone", phone);
+  // The phone is optional since Oct 24 2026 (the organiser: "Please only keep email mandatory in the stay updated form.").
+  for (const phone of ["", "   ", undefined, null]) {
+    const r = field({ phone });
+    assert.equal(r.ok, true, String(phone));
+    assert.deepEqual([r.value.phone, r.value.phoneDigits], ["", ""]);
   }
+  for (const phone of ["555-010", "12345", "phone me", "416.555.0100", "+1 416 555 0100 ext 4", "1".repeat(21), "<b>4165550100</b>"]) {
+    assert.deepEqual([field({ phone }).field, field({ phone }).error], ["phone", ERRORS.phoneBad], phone);
+  }
+  assert.equal(ERRORS.phoneBad, "That phone number doesn't look right. Use digits, with + ( ) - or spaces if you like.");
   for (const phone of ["5550100", "416-555-0100", "+44 20 7946 0958", "(416) 555 0100", "1".repeat(20)]) assert.equal(field({ phone }).ok, true, phone);
   assert.equal(field({ consent: false }).field, "consent");
   assert.equal(field({ consent: undefined }).field, "consent");
@@ -84,10 +94,74 @@ test("validateSignup: email and phone required, 7–20 digits after + spaces das
   assert.deepEqual(field({ interests: "delegation,sponsorship" }).value.interests, ["sponsorship", "delegation"]);
   assert.deepEqual(field({ interests: undefined }).value.interests, []);
   assert.equal(validateSignup(null).field, "email");
+  assert.equal(validateSignup({ ...GOOD, name: "J", email: "" }).field, "name", "the form's order: name first");
   assert.deepEqual(cleanInterests(["DELEGATION", "exhibitor"]), ["exhibitor", "delegation"]);
   assert.equal(phoneDigits("+1 (416) 555-0100"), "14165550100");
   assert.equal(telHref("+1 (416) 555-0100"), "tel:+14165550100");
   assert.equal(telHref("416 555 0100"), "tel:4165550100");
+  assert.equal(telHref(""), "");
+});
+
+test("only the email, from every source: name, company and phone may be left out (stored empty)", () => {
+  for (const source of ["website", "webapp", "programme", "ios", "android", "", "fax"]) {
+    const r = validateSignup({ email: "jane@acme.example", consent: true, source });
+    assert.equal(r.ok, true, source || "(none)");
+    assert.deepEqual([r.value.name, r.value.company, r.value.phone, r.value.phoneDigits], ["", "", "", ""], source || "(none)");
+  }
+  assert.equal(validateSignup({ email: "jane@acme.example", consent: true, name: "Jane Doe" }).value.name, "Jane Doe", "one without the others");
+});
+
+test("the name (Oct 24 2026), when given: 2–80 characters, letters in any language with spaces - ' ’ and dots; the company up to 120", () => {
+  const field = (b) => validateSignup({ ...GOOD, source: "website", ...b });
+  for (const name of ["Priya Raman", "Zoë Saldaña-O'Neil", "Jean-Luc Picard", "Dr. Maya Singh", "D’Arcy", "Nguyễn Văn An", "李 小龍", "Ole Gunnar Solskjær", "Jo", "J. R. R. Tolkien", "अनन्या शर्मा"]) {
+    assert.equal(field({ name }).ok, true, name);
+  }
+  for (const name of ["", "   ", undefined]) assert.equal(field({ name }).value.name, "", "empty is fine");
+  assert.deepEqual([field({ name: "J" }).field, field({ name: "J" }).error], ["name", ERRORS.nameLength]);
+  assert.equal(ERRORS.nameLength, "Enter your name in 2 to 80 characters, or leave it empty.");
+  assert.equal(field({ name: "a".repeat(81) }).error, ERRORS.nameLength);
+  assert.equal(field({ name: "a".repeat(80) }).ok, true);
+  for (const name of ["Jane2", "<b>Jane</b>", "jane@acme.example", "Jane, Doe", "Jane & John", "..", "-- --", "Jane_Doe", "😀 Jane"]) {
+    assert.deepEqual([field({ name }).field, field({ name }).error], ["name", ERRORS.nameBad], name);
+  }
+  assert.equal(field({ name: 42 }).ok, false, "only letters");
+  assert.equal(nameProblem("Priya"), null);
+  assert.equal(nameProblem(""), null);
+  // The company: anything, up to 120 characters (empty is fine).
+  for (const company of ["Acme Inc.", "AT&T", "3M", "Ministry of Finance (Ontario)", "Self-employed", "École Polytechnique", "a".repeat(120), ""]) {
+    assert.equal(field({ company }).ok, true, company);
+  }
+  assert.deepEqual([field({ company: "a".repeat(121) }).field, field({ company: "a".repeat(121) }).error], ["company", ERRORS.companyLong]);
+  assert.equal(companyProblem("Acme"), null);
+  assert.equal(companyProblem(""), null);
+  assert.equal(field({ company: "Acme\u0000 Inc" }).value.company, "Acme Inc", "control characters out");
+});
+
+test("firstNameOf: the first name to greet them by", () => {
+  assert.equal(firstNameOf("Priya Raman"), "Priya");
+  assert.equal(firstNameOf("  priya   raman "), "Priya");
+  assert.equal(firstNameOf("Dr. Maya Singh"), "Maya");
+  assert.equal(firstNameOf("Prof Ada Lovelace"), "Ada");
+  assert.equal(firstNameOf("Dr. Singh"), "Dr. Singh", "a title and a surname stay together");
+  assert.equal(firstNameOf("J. Smith"), "J. Smith", "an initial alone isn't a name");
+  assert.equal(firstNameOf("Jean-Luc Picard"), "Jean-Luc");
+  assert.equal(firstNameOf("Zoë"), "Zoë");
+  assert.equal(firstNameOf("McKenzie Hall"), "McKenzie");
+  assert.equal(firstNameOf(""), "");
+  assert.equal(firstNameOf(undefined), "");
+});
+
+test("a repeat that changes the name or company keeps the one before (at most 5, never the same one twice)", () => {
+  assert.deepEqual(earlierUpdate({ name: "Jane Doe", company: "Acme Inc." }, { name: "Jane Smith", company: "Acme Inc." }), { earlierNames: "Jane Doe" });
+  assert.deepEqual(earlierUpdate({ name: "Jane Doe", company: "Acme Inc." }, { name: "jane doe", company: "Globex" }), { earlierCompanies: "Acme Inc." });
+  assert.deepEqual(earlierUpdate({ name: "", company: "" }, { name: "Jane", company: "Acme" }), {}, "nothing before");
+  assert.deepEqual(earlierUpdate({ name: "Jane Doe", company: "Acme" }, { name: "", company: "" }), {}, "an older app build sent none: nothing changes");
+  assert.deepEqual(earlierUpdate(null, { name: "Jane" }), {});
+  assert.deepEqual(earlierUpdate({ name: "F", earlierNames: Array(MAX_EARLIER).fill("x") }, { name: "G" }), {}, "full");
+  assert.deepEqual(earlierOf(["Jane Doe", "jane smith", "", "Jane Doe"], "Jane Smith"), ["Jane Doe"], "the current one isn't 'earlier'");
+  assert.equal(whoLine({ name: "Jane Doe", company: "Acme" }), "Jane Doe (Acme)");
+  assert.equal(whoLine({ name: "", company: "Acme" }), "Acme");
+  assert.equal(whoLine({}), "");
 });
 
 test("ipHash: the same address gives the same value; never the address itself", () => {
@@ -112,15 +186,23 @@ test("the team's subject: interests, or Attending; a repeat ends (updated)", () 
   assert.equal(alertSubject({ email: "jane@acme.example", interests: [] }), "TTFC 2027 waitlist: Attending – jane@acme.example");
   assert.equal(alertSubject({ email: "jane@acme.example", interests: ["delegation"], updated: true }), "TTFC 2027 waitlist: Delegation interest – jane@acme.example (updated)");
   assert.equal(alertSubject({ email: "a@b.example", interests: INTERESTS }), "TTFC 2027 waitlist: Sponsorship + Exhibitor + Delegation interest – a@b.example");
+  // With their name and company (Oct 24 2026).
+  assert.equal(alertSubject({ email: "jane@acme.example", interests: ["exhibitor"], name: "Jane Doe", company: "Acme Inc." }), "TTFC 2027 waitlist: Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.example");
+  assert.equal(alertSubject({ email: "jane@acme.example", interests: [], name: "Jane Doe", updated: true }), "TTFC 2027 waitlist: Attending – Jane Doe – jane@acme.example (updated)");
 });
 
-test("the team's email: email, phone as a tel: link, interests, source, Toronto time; escaped; reply-to the person; no app block", () => {
+test("the team's email: name, company, email, phone as a tel: link, interests, source, Toronto time; escaped; reply-to the person; no app block", () => {
   const row = {
+    name: "Jane Doe", company: "Acme Inc.",
     email: "jane@acme.example", phone: "+1 (416) 555-0100", interests: ["sponsorship"], lastInterests: ["sponsorship"], source: "android", sources: ["android"],
     count: 1, createdAt: new Date("2026-10-23T18:05:00Z"), lastSubmittedAt: new Date("2026-10-23T18:05:00Z"),
   };
   const e = buildWaitlistAlert(row, { adminUrl: "https://www.example.test/admin/waitlist-2027" });
-  assert.equal(e.subject, "TTFC 2027 waitlist: Sponsorship interest – jane@acme.example");
+  assert.equal(e.subject, "TTFC 2027 waitlist: Sponsorship interest – Jane Doe (Acme Inc.) – jane@acme.example");
+  assert.match(e.text, /^TTFC 2027 waitlist: Sponsorship interest – Jane Doe \(Acme Inc\.\)\n\nName: Jane Doe\nCompany or organisation: Acme Inc\.\nEmail: jane@acme\.example\n/);
+  assert.match(e.html, />Jane Doe \(Acme Inc\.\)</, "under the heading");
+  assert.match(e.html, />Company or organisation<\/td>/);
+  assert.ok(e.html.indexOf(">Name<") < e.html.indexOf(">Email<"), "name and company first");
   assert.equal(e.replyTo, "jane@acme.example");
   assert.match(e.html, /<a href="tel:\+14165550100"[^>]*>\+1 \(416\) 555-0100<\/a>/);
   assert.match(e.html, /<a href="mailto:jane@acme\.example"/);
@@ -133,7 +215,7 @@ test("the team's email: email, phone as a tel: link, interests, source, Toronto 
   assert.doesNotMatch(e.text, /First signed up/);
 
   const upd = buildWaitlistAlert({ ...row, interests: ["sponsorship", "delegation"], lastInterests: ["delegation"], source: "website", sources: ["android", "website"], count: 3 }, { updated: true });
-  assert.equal(upd.subject, "TTFC 2027 waitlist: Sponsorship + Delegation interest – jane@acme.example (updated)");
+  assert.equal(upd.subject, "TTFC 2027 waitlist: Sponsorship + Delegation interest – Jane Doe (Acme Inc.) – jane@acme.example (updated)");
   assert.match(upd.text, /Ticked this time: Delegation/);
   assert.match(upd.text, /Signed up from: Website \(also: Android app\)/);
   const prog = buildWaitlistAlert({ ...row, source: "programme", sources: ["programme"] });
@@ -143,6 +225,17 @@ test("the team's email: email, phone as a tel: link, interests, source, Toronto 
 
   const none = buildWaitlistAlert({ ...row, interests: [], lastInterests: [] });
   assert.match(none.text, /Interested in: Attending \(nothing ticked\)/);
+  // Only the email given: the rest "Not given", no tel: link.
+  const anon = buildWaitlistAlert({ ...row, name: "", company: "", phone: "" });
+  assert.equal(anon.subject, "TTFC 2027 waitlist: Sponsorship interest – jane@acme.example");
+  assert.match(anon.text, /Name: Not given\nCompany or organisation: Not given\nEmail: jane@acme\.example\nPhone: Not given\n/);
+  assert.doesNotMatch(anon.html, /tel:/);
+  // A repeat that changed them: the earlier ones too (not on a first sign-up).
+  const moved = buildWaitlistAlert({ ...row, company: "Globex", earlierCompanies: ["Acme Inc."], earlierNames: ["Jane Doe"], count: 2 }, { updated: true });
+  assert.match(moved.text, /Name: Jane Doe\nCompany or organisation: Globex\nEarlier company: Acme Inc\.\n/, "the current name isn't 'earlier'");
+  assert.doesNotMatch(buildWaitlistAlert({ ...row, earlierCompanies: ["Old Co"] }).text, /Earlier/);
+  const evil = buildWaitlistAlert({ ...row, name: "<img src=x>", company: "<b>Acme</b>" });
+  assert.doesNotMatch(evil.html, /<img src=x>|<b>Acme<\/b>/);
   // Whatever someone types is escaped (the phone can't carry HTML past validation, but the builder doesn't rely on it).
   const nasty = buildWaitlistAlert({ ...row, phone: "<script>x</script>" });
   assert.doesNotMatch(nasty.html, /<script>/);
@@ -163,18 +256,25 @@ test("admin list: filter by interest (or attending), source and search; rows; co
   assert.deepEqual(waitlistFilter({ interest: "attending" }), { interests: { $size: 0 } });
   assert.deepEqual(waitlistFilter({ interest: "golf", source: "fax" }), {});
   assert.deepEqual(waitlistFilter({ source: "ios" }), { sources: "ios" });
-  assert.deepEqual(waitlistFilter({ q: "Jane.D" }).$or, [{ email: { $regex: "jane\\.d", $options: "i" } }]);
-  assert.equal(waitlistFilter({ q: "416 555" }).$or[1].phoneDigits.$regex, "416555");
-  const d = { _id: "a1", email: "jane@acme.example", phone: "416-555-0100", interests: ["exhibitor"], source: "website", sources: ["website", "ios"], count: 2, createdAt: new Date("2026-10-23T18:00:00Z") };
+  assert.deepEqual(waitlistFilter({ q: "Jane.D" }).$or, [
+    { email: { $regex: "jane\\.d", $options: "i" } }, { name: { $regex: "jane\\.d", $options: "i" } }, { company: { $regex: "jane\\.d", $options: "i" } },
+  ], "the email, the name or the company");
+  assert.equal(waitlistFilter({ q: "416 555" }).$or[3].phoneDigits.$regex, "416555");
+  const d = {
+    _id: "a1", name: "Jane Doe", company: "Acme, Inc.", earlierCompanies: ["Old Co"], email: "jane@acme.example", phone: "416-555-0100", interests: ["exhibitor"],
+    source: "website", sources: ["website", "ios"], count: 2, createdAt: new Date("2026-10-23T18:00:00Z"),
+  };
   const r = waitlistRow(d);
   assert.deepEqual([r.interestLabels, r.tel, r.count, r.sources], [["Exhibitor"], "tel:4165550100", 2, ["website", "ios"]]);
+  assert.deepEqual([r.name, r.company, r.earlierNames, r.earlierCompanies], ["Jane Doe", "Acme, Inc.", [], ["Old Co"]]);
+  assert.deepEqual([waitlistRow({ _id: "x" }).name, waitlistRow({ _id: "x" }).company], ["", ""]);
   assert.deepEqual(waitlistCounts({ total: 5, attending: 2, byInterest: [{ _id: "sponsorship", n: 3 }, { _id: "golf", n: 9 }], bySource: [{ _id: "ios", n: 1 }] }),
     { total: 5, attending: 2, sponsorship: 3, exhibitor: 0, delegation: 0, website: 0, webapp: 0, ios: 1, android: 0, programme: 0 });
-  const csv = waitlistCsv([d, { ...d, _id: "a2", email: "=cmd@x.example", interests: [] }]);
+  const csv = waitlistCsv([d, { ...d, _id: "a2", name: "", company: "=HYPERLINK(1)", email: "=cmd@x.example", interests: [] }]);
   const lines = csv.replace(/^﻿/, "").split("\n");
-  assert.equal(lines[0], "Signed up (Toronto),Last sign-up (Toronto),Email,Phone,Sponsorship,Exhibitor,Delegation,Interested in,Signed up from,Sign-ups,Team emailed,Confirmation email");
-  assert.match(lines[1], /jane@acme\.example,416-555-0100,No,Yes,No,Exhibitor,"Website, iOS app",2,,$/);
-  assert.match(lines[2], /,'=cmd@x\.example,/);
+  assert.equal(lines[0], "Signed up (Toronto),Last sign-up (Toronto),Name,Company,Email,Phone,Sponsorship,Exhibitor,Delegation,Interested in,Signed up from,Sign-ups,Team emailed,Confirmation email");
+  assert.match(lines[1], /,Jane Doe,"Acme, Inc\.",jane@acme\.example,416-555-0100,No,Yes,No,Exhibitor,"Website, iOS app",2,,$/);
+  assert.match(lines[2], /,,'=HYPERLINK\(1\),'=cmd@x\.example,/, "no name; formulas neutralised");
   assert.match(lines[2], /,Attending,/);
 });
 
@@ -195,6 +295,15 @@ test("the confirmation: the subject, their ticks in the page's words (or Attendi
   assert.match(e.text, /See what's coming in 2027: https:\/\/www\.thetechfestival\.com\/stay-updated/);
   assert.match(e.text, /Unsubscribe: https:\/\/api\.example\.test\/api\/unsubscribe\?t=x/);
   assert.doesNotMatch(e.html + e.text, /2026|Westin/, "nothing about the 2026 event's dates or venue");
+  // No name (an older app build): "Hello,"; with one, their first name (Oct 24 2026), escaped.
+  assert.match(e.html, />Hello,</);
+  assert.match(e.text, /^Hello,\n/);
+  const named = buildWaitlistEmail({ interests: [], name: "Priya Raman" });
+  assert.match(named.html, />Hi Priya,</);
+  assert.match(named.text, /^Hi Priya,\n\nYou're on the TTFC 2027 waitlist\./);
+  assert.doesNotMatch(named.html, />Hello,</);
+  assert.match(buildWaitlistEmail({ name: "D’Arcy O'Neil" }).html, />Hi D’Arcy,</);
+  assert.match(buildWaitlistEmail({ name: "<b>x</b> y" }).html, />Hi &lt;b&gt;x&lt;\/b&gt;,</, "escaped");
   assert.deepEqual(askedAbout([]), [ATTENDING]);
   assert.match(buildWaitlistEmail({ interests: [] }).text, /WHAT YOU ASKED ABOUT\n  • Attending TTFC 2027/);
   // Staff's wording (escaped), and a renamed tick.
@@ -215,9 +324,10 @@ test("sending the confirmation: from and reply-to enquire@, the logo inline, one
   process.env.JWT_SECRET ||= "local-test-only";
   const sent = [];
   const client = { emails: { send: async (m) => { sent.push(m); return { data: { id: "em_1" } }; } } };
-  const r = await sendWaitlistEmail({ to: "jane@acme.example", interests: ["exhibitor"], client });
+  const r = await sendWaitlistEmail({ to: "jane@acme.example", interests: ["exhibitor"], name: "Jane Doe", client });
   assert.equal(r.id, "em_1");
   const m = sent[0];
+  assert.match(m.html, />Hi Jane,</);
   assert.equal(m.from, "The Tech Festival Canada <enquire@thetechfestival.com>");
   assert.equal(m.reply_to, ENQUIRE_EMAIL);
   assert.equal(m.to, "jane@acme.example");
@@ -255,7 +365,13 @@ function setup({ saveFails = false, alertFails = false, confirmFails = false, un
       if (saveFails) throw new Error("db down");
       const r = rows.get(v.email);
       if (r) {
-        Object.assign(r, { phone: v.phone, lastInterests: v.interests, source: v.source, lastSubmittedAt: meta.at, ipHash: meta.ipHash, userAgent: meta.userAgent });
+        Object.assign(r, { lastInterests: v.interests, source: v.source, lastSubmittedAt: meta.at, ipHash: meta.ipHash, userAgent: meta.userAgent });
+        if (v.phone) Object.assign(r, { phone: v.phone, phoneDigits: v.phoneDigits });
+        const earlier = earlierUpdate(r, v);
+        if (earlier.earlierNames) r.earlierNames = [...(r.earlierNames || []), earlier.earlierNames];
+        if (earlier.earlierCompanies) r.earlierCompanies = [...(r.earlierCompanies || []), earlier.earlierCompanies];
+        if (v.name) r.name = v.name;
+        if (v.company) r.company = v.company;
         r.interests = INTERESTS.filter((k) => r.interests.includes(k) || v.interests.includes(k));
         r.sources = [...new Set([...r.sources, v.source])];
         r.count += 1;
@@ -305,9 +421,9 @@ test("a first sign-up: 200 with the thank-you, then the team's email and the per
   await t.settle();
   assert.equal(t.alerts.length, 1);
   assert.deepEqual(t.alerts[0].to, ["team@example.com"]);
-  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – jane@acme.example");
+  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.example");
   assert.equal(t.alerts[0].replyTo, "jane@acme.example");
-  assert.deepEqual(t.confirmations, [{ to: "jane@acme.example", interests: ["sponsorship", "exhibitor"], copy: STAY_DEFAULTS }]);
+  assert.deepEqual(t.confirmations, [{ to: "jane@acme.example", interests: ["sponsorship", "exhibitor"], copy: STAY_DEFAULTS, name: "Jane Doe" }]);
   const row = t.rows.get("jane@acme.example");
   assert.deepEqual([row.alertStatus, row.confirmStatus, row.count], ["sent", "sent", 1]);
   assert.match(row.ipHash, /^[0-9a-f]{32}$/);
@@ -331,18 +447,45 @@ test("a repeat: the team gets (updated); the person isn't emailed again within a
   let now = new Date("2026-10-24T12:00:00Z");
   const t = setup({ clock: () => now });
   await t.call({ ...GOOD, interests: [] }); await t.settle();
-  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Attending – jane@acme.example");
+  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Attending – Jane Doe (Acme Inc.) – jane@acme.example");
   now = new Date(now.getTime() + 60 * 60 * 1000);
   const r = await t.call({ ...GOOD, interests: ["delegation"], source: "webapp" });
   assert.deepEqual(r.body, { ok: true, message: DEFAULT_MESSAGE }, "the same answer: nobody learns who is on the list");
   await t.settle();
-  assert.equal(t.alerts[1].subject, "TTFC 2027 waitlist: Delegation interest – jane@acme.example (updated)");
+  assert.equal(t.alerts[1].subject, "TTFC 2027 waitlist: Delegation interest – Jane Doe (Acme Inc.) – jane@acme.example (updated)");
   assert.equal(t.confirmations.length, 1, "not again within a day");
   now = new Date(now.getTime() + CONFIRM_EVERY_MS);
   await t.call({ ...GOOD, interests: ["sponsorship"] }); await t.settle();
   assert.equal(t.confirmations.length, 2, "again after a day");
   assert.deepEqual(t.confirmations[1].interests, ["sponsorship", "delegation"]);
   assert.equal(t.rows.get("jane@acme.example").count, 3);
+});
+
+test("only the email is required: name, company and phone left out are saved empty; one given wrong is a 400; a repeat updates them", async () => {
+  const t = setup();
+  const r = await t.call({ ...GOOD, name: "J4ne", source: "website" });
+  assert.deepEqual([r.statusCode, r.body], [400, { ok: false, field: "name", error: ERRORS.nameBad }]);
+  const r2 = await t.call({ ...GOOD, phone: "12", source: "programme" });
+  assert.deepEqual([r2.statusCode, r2.body], [400, { ok: false, field: "phone", error: ERRORS.phoneBad }]);
+  assert.equal(t.rows.size, 0);
+  // Just the email, from the website: saved with the rest empty, greeted "Hello," (no name to give the email).
+  const bare = await t.call({ email: "solo@acme.example", source: "website", consent: true });
+  assert.equal(bare.statusCode, 200);
+  await t.settle();
+  const first = t.rows.get("solo@acme.example");
+  assert.deepEqual([first.name, first.company, first.phone, first.phoneDigits], ["", "", "", ""]);
+  assert.equal(t.confirmations.at(-1).name, "");
+  assert.equal(t.alerts.at(-1).subject, "TTFC 2027 waitlist: Attending – solo@acme.example");
+  assert.match(t.alerts.at(-1).text, /Phone: Not given/);
+  // The web app later, with everything; then the email alone again: what was given stays.
+  await t.call({ ...GOOD, email: "solo@acme.example", name: "Olu Adé", company: "Acme", source: "webapp" }); await t.settle();
+  await t.call({ email: "solo@acme.example", source: "android", consent: true }); await t.settle();
+  const row = t.rows.get("solo@acme.example");
+  assert.deepEqual([row.name, row.company, row.phone, row.count], ["Olu Adé", "Acme", "+1 (416) 555-0100", 3]);
+  // A new company: the old one is kept as earlier; the team sees both.
+  await t.call({ ...GOOD, email: "solo@acme.example", name: "Olu Adé", company: "Globex", source: "website" }); await t.settle();
+  assert.deepEqual([t.rows.get("solo@acme.example").company, t.rows.get("solo@acme.example").earlierCompanies], ["Globex", ["Acme"]]);
+  assert.match(t.alerts.at(-1).text, /Company or organisation: Globex\nEarlier company: Acme\n/);
 });
 
 test("someone on the unsubscribe list: the team is told, the person isn't emailed", async () => {

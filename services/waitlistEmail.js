@@ -6,7 +6,8 @@
    The purple TTFC look of the attendee emails (services/
    attendingEmail.js): thank you for your interest in TTFC 2027
    (Toronto, dates to be announced), what they asked about (their
-   ticks in the page's own words, or "Attending TTFC 2027"),
+   ticks in the page's own words, or "Attending TTFC 2027"); "Hi
+   Priya," when they gave their name (Oct 24 2026), else "Hello,";
    "Someone from our team will reach out.", a button back to
    https://www.thetechfestival.com/stay-updated, then the shared
    "Get the TTFC app" block (services/appStoreBlock.js) before the
@@ -31,7 +32,7 @@ import { C, SANS, SERIF, LOGO_CID, button, eyebrow, logoPng, stripe } from "./at
 import { ENQUIRE_EMAIL, FROM } from "./appInviteEmail.js";
 import { appStoreBlockCss, appStoreBlockHtml, appStoreBlockLines } from "./appStoreBlock.js";
 import { unsubscribeFor } from "./unsubscribe.js";
-import { PAGE_URL, STAY_DEFAULTS, cleanInterests } from "./waitlist.js";
+import { PAGE_URL, STAY_DEFAULTS, cleanInterests, firstNameOf } from "./waitlist.js";
 
 export const WAITLIST_CAMPAIGN = "waitlist-2027";
 export { FROM, ENQUIRE_EMAIL };
@@ -49,6 +50,7 @@ export function askedAbout(interests, copy = STAY_DEFAULTS) {
  * @param {object} p
  * @param {object} [p.copy]           the stay.* wording (services/waitlist.js stayCopy)
  * @param {string[]} [p.interests]    sponsorship | exhibitor | delegation
+ * @param {string} [p.name]           their name: "Hi Priya," (services/waitlist.js firstNameOf); "" = "Hello,"
  * @param {string} [p.logoSrc]        "cid:…" or a data: URI ("" = the text wordmark)
  * @param {string} [p.unsubscribeUrl] the footer's link ("" = "reply with unsubscribe")
  * @param {string} [p.storeUrl]       the iPhone app's App Store link ("" = Google Play alone)
@@ -56,10 +58,12 @@ export function askedAbout(interests, copy = STAY_DEFAULTS) {
  *                                    footer's sender line; CASL / CAN-SPAM). "" = "Toronto"
  * @returns {{ subject, preheader, html, text, link }}
  */
-export function buildWaitlistEmail({ copy = STAY_DEFAULTS, interests = [], logoSrc = "", unsubscribeUrl = "", storeUrl = appStoreUrl(), postal = String(process.env.MAIL_POSTAL_ADDRESS || "").trim() } = {}) {
+export function buildWaitlistEmail({ copy = STAY_DEFAULTS, interests = [], name = "", logoSrc = "", unsubscribeUrl = "", storeUrl = appStoreUrl(), postal = String(process.env.MAIL_POSTAL_ADDRESS || "").trim() } = {}) {
   const c = { ...STAY_DEFAULTS, ...Object.fromEntries(Object.entries(copy || {}).filter(([, v]) => typeof v === "string" && v.trim())) };
   const subject = c["stay.email_subject"];
   const asked = askedAbout(interests, c);
+  const first = firstNameOf(name);
+  const hello = first ? `Hi ${first},` : "Hello,";
   const preheader = `${c["stay.email_intro"]} ${c["stay.email_next"]}`;
   const url = PAGE_URL;
   const para = (t, style) => String(t).split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
@@ -111,7 +115,7 @@ ${appStoreBlockCss()}
                 <td valign="middle" align="right">${eyebrow("TTFC 2027 · Toronto", C.orange)}</td>
               </tr>
             </table>
-            <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:30px 0 6px;">Hello,</div>
+            <div style="font-family:${SERIF};font-size:20px;line-height:28px;font-style:italic;color:${C.text};margin:30px 0 6px;">${esc(hello)}</div>
             <div class="hero" style="font-family:${SANS};font-size:36px;line-height:42px;font-weight:800;letter-spacing:-0.8px;color:${C.white};margin:0 0 16px;">${esc(c["stay.email_heading"])}</div>
             ${para(c["stay.email_intro"], body)}
           </td>
@@ -172,7 +176,7 @@ ${appStoreBlockCss()}
 </html>`;
 
   const text = [
-    "Hello,",
+    hello,
     "",
     c["stay.email_heading"],
     "",
@@ -206,9 +210,9 @@ ${appStoreBlockCss()}
  * `real`: a real send to `to` (their own unsubscribe link and one-click headers); previews and tests get the
  * preview link and the mailto.
  */
-export function waitlistEmailFor({ to = "", interests = [], copy = STAY_DEFAULTS } = {}, { inline = true, real = false, storeUrl = appStoreUrl() } = {}) {
+export function waitlistEmailFor({ to = "", interests = [], copy = STAY_DEFAULTS, name = "" } = {}, { inline = true, real = false, storeUrl = appStoreUrl() } = {}) {
   const unsub = unsubscribeFor(String(to || "").trim().toLowerCase(), { real: real && !inline && !!to, mailto: ENQUIRE_EMAIL });
-  const base = { copy, interests, unsubscribeUrl: unsub.url, storeUrl };
+  const base = { copy, interests, name, unsubscribeUrl: unsub.url, storeUrl };
   if (inline) return { ...buildWaitlistEmail({ ...base, logoSrc: `data:image/png;base64,${logoPng().toString("base64")}` }), attachments: [], headers: unsub.headers };
   return {
     ...buildWaitlistEmail({ ...base, logoSrc: `cid:${LOGO_CID}` }),
@@ -224,9 +228,9 @@ const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
  * Sends one confirmation through Resend, from and reply-to enquire@. Throws when Resend refuses it.
  * @returns {Promise<{ id: string }>}
  */
-export async function sendWaitlistEmail({ to, interests = [], copy = STAY_DEFAULTS, subjectPrefix = "", client = resend(), real = true }) {
+export async function sendWaitlistEmail({ to, interests = [], copy = STAY_DEFAULTS, name = "", subjectPrefix = "", client = resend(), real = true }) {
   if (!to) throw new Error("Missing email");
-  const { subject, html, text, attachments, headers } = waitlistEmailFor({ to, interests, copy }, { inline: false, real });
+  const { subject, html, text, attachments, headers } = waitlistEmailFor({ to, interests, copy, name }, { inline: false, real });
   const { data, error } = await client.emails.send({
     from: FROM,
     to,

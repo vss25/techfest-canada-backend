@@ -123,21 +123,24 @@ const teamMail = () => outbox.filter((m) => m.to.includes("waitlist-inbox@exampl
 const personMail = (email) => outbox.filter((m) => m.to.includes(email));
 const THANKS = "Thank you for your interest! Someone from our team will reach out.";
 
-const JANE = { email: "Jane.Doe@Acme.Example", phone: "+1 (416) 555-0100", interests: ["sponsorship", "exhibitor"], source: "website", consent: true, _hp: "" };
+const JANE = { name: " Jane  Doe ", company: "Acme Inc.", email: "Jane.Doe@Acme.Example", phone: "+1 (416) 555-0100", interests: ["sponsorship", "exhibitor"], source: "website", consent: true, _hp: "" };
 
 test("a first sign-up: saved, thanked (staff's words), the team and the person emailed from enquire@", { skip }, async () => {
   const r = await call("POST", "/api/stay-updated", { body: JANE });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual(r.body, { ok: true, message: THANKS });
   const team = await waitFor(() => teamMail()[0]);
-  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – jane.doe@acme.example");
+  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane.doe@acme.example");
   assert.equal(team.from, "TTFC Website <enquire@thetechfestival.com>");
+  assert.match(team.text, /Name: Jane Doe\nCompany or organisation: Acme Inc\.\nEmail: jane\.doe@acme\.example/);
   assert.equal(team.replyTo, "jane.doe@acme.example");
   assert.match(team.html, /href="tel:\+14165550100"/);
   assert.match(team.text, /Signed up from: Website/);
   assert.doesNotMatch(team.html + team.text, /Get the TTFC app|GET THE TTFC APP/, "a staff alert: no app block");
   const mine = await waitFor(() => personMail("jane.doe@acme.example")[0]);
   assert.equal(mine.subject, "You're on the TTFC 2027 waitlist");
+  assert.match(mine.html, />Hi Jane,</, "greeted by first name");
+  assert.match(mine.text, /^Hi Jane,\n/);
   assert.equal(mine.from, "The Tech Festival Canada <enquire@thetechfestival.com>");
   assert.equal(mine.replyTo, "enquire@thetechfestival.com");
   assert.match(mine.html, />Get the TTFC app</, "attendee-facing: the app block");
@@ -147,6 +150,7 @@ test("a first sign-up: saved, thanked (staff's words), the team and the person e
   await waitFor(async () => (await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean())?.confirmStatus === "sent");
   const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
   assert.deepEqual([row.phone, row.phoneDigits, row.interests, row.source, row.sources, row.count, row.consent], ["+1 (416) 555-0100", "14165550100", ["sponsorship", "exhibitor"], "website", ["website"], 1, true]);
+  assert.deepEqual([row.name, row.company, row.earlierNames, row.earlierCompanies], ["Jane Doe", "Acme Inc.", [], []]);
   assert.deepEqual([row.alertStatus, row.confirmStatus], ["sent", "sent"]);
   assert.ok(row.confirmedAt && row.consentAt && row.createdAt);
   assert.match(row.ipHash, /^[0-9a-f]{32}$/);
@@ -155,10 +159,11 @@ test("a first sign-up: saved, thanked (staff's words), the team and the person e
 
 test("the same email again: one row, merged ticks and sources, counted; the team gets (updated); no second confirmation today", { skip }, async () => {
   const before = outbox.length;
-  const r = await call("POST", "/api/stay-updated", { body: { ...JANE, phone: "416-555-0199", interests: ["delegation"], source: "ios" } });
+  const r = await call("POST", "/api/stay-updated", { body: { ...JANE, company: "Acme Robotics", phone: "416-555-0199", interests: ["delegation"], source: "ios" } });
   assert.deepEqual([r.status, r.body], [200, { ok: true, message: THANKS }], "the same answer as a first sign-up");
   const team = await waitFor(() => teamMail().find((m) => m.subject.endsWith("(updated)")));
-  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor + Delegation interest – jane.doe@acme.example (updated)");
+  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor + Delegation interest – Jane Doe (Acme Robotics) – jane.doe@acme.example (updated)");
+  assert.match(team.text, /Company or organisation: Acme Robotics\nEarlier company: Acme Inc\.\n/);
   assert.match(team.text, /Ticked this time: Delegation/);
   assert.match(team.text, /Sign-ups from this address: 2/);
   await pause(200);
@@ -166,15 +171,20 @@ test("the same email again: one row, merged ticks and sources, counted; the team
   assert.equal(await M.WaitlistSignup.countDocuments({ email: "jane.doe@acme.example" }), 1);
   const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
   assert.deepEqual([row.phone, row.interests, row.lastInterests, row.source, row.sources, row.count], ["416-555-0199", ["sponsorship", "exhibitor", "delegation"], ["delegation"], "ios", ["website", "ios"], 2]);
+  assert.deepEqual([row.name, row.company, row.earlierNames, row.earlierCompanies], ["Jane Doe", "Acme Robotics", [], ["Acme Inc."]]);
 });
 
 test("a day after the last confirmation, a sign-up confirms again (with every tick, in the page's words)", { skip }, async () => {
   await M.WaitlistSignup.updateOne({ email: "jane.doe@acme.example" }, { $set: { confirmedAt: new Date(Date.now() - 25 * 3600_000) } });
-  const r = await call("POST", "/api/stay-updated", { body: { ...JANE, interests: [] } });
-  assert.equal(r.status, 200);
+  // Just the email this time (only the email is required): accepted, and the name, company and phone Jane gave before stay.
+  const r = await call("POST", "/api/stay-updated", { body: { email: JANE.email, interests: [], source: "ios", consent: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
   const mails = await waitFor(() => personMail("jane.doe@acme.example").length === 2 && personMail("jane.doe@acme.example"));
   assert.ok(mails, "a second confirmation");
   assert.match(mails[1].text, /• Sponsorship\n  • Exhibiting\n  • Bringing a group/);
+  assert.match(mails[1].text, /^Hi Jane,/, "the saved name");
+  const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
+  assert.deepEqual([row.name, row.company, row.phone, row.phoneDigits, row.count], ["Jane Doe", "Acme Robotics", "416-555-0199", "4165550199", 3]);
 });
 
 test("an address on the unsubscribe list: saved and the team told, but never emailed", { skip }, async () => {
@@ -185,13 +195,17 @@ test("an address on the unsubscribe list: saved and the team told, but never ema
   await waitFor(async () => (await M.WaitlistSignup.findOne({ email: "off@acme.example" }).lean())?.confirmStatus === "unsubscribed");
   await pause(150);
   assert.equal(personMail("off@acme.example").length, 0);
+  // No name or company (only the email is required): stored empty, "Not given" for the team.
+  const row = await M.WaitlistSignup.findOne({ email: "off@acme.example" }).lean();
+  assert.deepEqual([row.name, row.company], ["", ""]);
+  assert.match(team.text, /Name: Not given\nCompany or organisation: Not given/);
 });
 
 test("the answer never waits for the emails", { skip }, async () => {
   let open;
   gate = new Promise((ok) => { open = ok; });
   const before = outbox.length;
-  const r = await call("POST", "/api/stay-updated", { body: { ...JANE, email: "quinn@acme.example", source: "webapp" } });
+  const r = await call("POST", "/api/stay-updated", { body: { ...JANE, name: "Quinn Ito", company: "Globex", email: "quinn@acme.example", source: "webapp" } });
   assert.equal(r.status, 200, "answered while Resend is still holding both emails");
   assert.equal(outbox.length, before);
   open();
@@ -206,10 +220,14 @@ test("bad input and the honeypot: nothing saved, nobody emailed", { skip }, asyn
   const bad = [
     [{ ...JANE, email: "" }, "email"],
     [{ ...JANE, email: "nope" }, "email"],
-    [{ ...JANE, phone: "" }, "phone"],
     [{ ...JANE, phone: "12345" }, "phone"],
     [{ ...JANE, phone: "+1 416 555 0100 ext 4" }, "phone"],
     [{ ...JANE, consent: false }, "consent"],
+    // Name and company (Oct 24 2026): optional, but checked when given.
+    [{ ...JANE, name: "J" }, "name"],
+    [{ ...JANE, name: "Jane 2" }, "name"],
+    [{ ...JANE, company: "x".repeat(121) }, "company"],
+    [{ ...JANE, source: "ios", name: "<script>" }, "name"],
   ];
   for (const [body, field] of bad) {
     const r = await call("POST", "/api/stay-updated", { body });
@@ -224,25 +242,52 @@ test("bad input and the honeypot: nothing saved, nobody emailed", { skip }, asyn
   assert.equal(outbox.length, before);
 });
 
+test("only the email is required (Oct 24 2026): the website with just an email is saved with the rest empty", { skip }, async () => {
+  const r = await call("POST", "/api/stay-updated", { body: { email: "Solo@Acme.Example", source: "website", consent: true, _hp: "" } });
+  assert.deepEqual([r.status, r.body], [200, { ok: true, message: THANKS }]);
+  const team = await waitFor(() => teamMail().find((m) => m.subject === "TTFC 2027 waitlist: Attending – solo@acme.example"));
+  assert.ok(team, "the team's subject is just the email");
+  assert.match(team.text, /Name: Not given\nCompany or organisation: Not given\nEmail: solo@acme\.example\nPhone: Not given\n/);
+  assert.doesNotMatch(team.html, /href="tel:/);
+  const mine = await waitFor(() => personMail("solo@acme.example")[0]);
+  assert.match(mine.html, />Hello,</, "no name: Hello,");
+  const row = await M.WaitlistSignup.findOne({ email: "solo@acme.example" }).lean();
+  assert.deepEqual([row.name, row.company, row.phone, row.phoneDigits, row.source], ["", "", "", "", "website"]);
+  await waitFor(async () => (await M.WaitlistSignup.findOne({ email: "solo@acme.example" }).lean())?.confirmStatus === "sent");
+});
+
 test("Admin › 2027 waitlist: staff see the list, counts and filters; non-staff can't", { skip }, async () => {
   assert.equal((await call("GET", "/api/console/waitlist")).status, 401);
   assert.equal((await call("GET", "/api/console/waitlist", { as: pat })).status, 403);
   const all = await call("GET", "/api/console/waitlist", { as: sam });
   assert.equal(all.status, 200);
-  assert.deepEqual(all.body.counts, { total: 3, attending: 1, sponsorship: 2, exhibitor: 2, delegation: 1, website: 1, webapp: 1, ios: 1, android: 1, programme: 0 });
-  assert.equal(all.body.total, 3);
+  assert.deepEqual(all.body.counts, { total: 4, attending: 2, sponsorship: 2, exhibitor: 2, delegation: 1, website: 2, webapp: 1, ios: 1, android: 1, programme: 0 });
+  assert.equal(all.body.total, 4);
   assert.equal(all.body.canExport, false);
-  assert.deepEqual(all.body.rows.map((r) => r.email), ["quinn@acme.example", "off@acme.example", "jane.doe@acme.example"]);
-  const jane = all.body.rows[2];
-  assert.deepEqual([jane.interestLabels, jane.tel, jane.count, jane.confirmStatus], [["Sponsorship", "Exhibitor", "Delegation"], "tel:+14165550100", 3, "sent"]);
+  assert.deepEqual(all.body.rows.map((r) => r.email), ["solo@acme.example", "quinn@acme.example", "off@acme.example", "jane.doe@acme.example"]);
+  const jane = all.body.rows[3];
+  assert.deepEqual([jane.interestLabels, jane.tel, jane.count, jane.confirmStatus], [["Sponsorship", "Exhibitor", "Delegation"], "tel:4165550199", 3, "sent"]);
   const spons = await call("GET", "/api/console/waitlist?interest=delegation", { as: sam });
   assert.deepEqual(spons.body.rows.map((r) => r.email), ["jane.doe@acme.example"]);
   const att = await call("GET", "/api/console/waitlist?interest=attending", { as: sam });
-  assert.deepEqual(att.body.rows.map((r) => r.email), ["off@acme.example"]);
+  assert.deepEqual(att.body.rows.map((r) => r.email), ["solo@acme.example", "off@acme.example"]);
   const ios = await call("GET", "/api/console/waitlist?source=ios", { as: sam });
   assert.deepEqual(ios.body.rows.map((r) => r.email), ["jane.doe@acme.example"]);
   const q = await call("GET", "/api/console/waitlist?q=555%200123", { as: sam });
   assert.deepEqual(q.body.rows.map((r) => r.email), ["off@acme.example"]);
+  // Name and company: in the rows, and the search finds them (any case).
+  assert.deepEqual([jane.name, jane.company, jane.earlierCompanies], ["Jane Doe", "Acme Robotics", ["Acme Inc."]]);
+  assert.deepEqual([all.body.rows[2].name, all.body.rows[2].company], ["", ""]);
+  // Just an email: every blank is empty.
+  const solo = all.body.rows[0];
+  assert.deepEqual([solo.name, solo.company, solo.phone, solo.tel], ["", "", "", ""]);
+  const byName = await call("GET", "/api/console/waitlist?q=quinn%20ito", { as: sam });
+  assert.deepEqual(byName.body.rows.map((r) => r.email), ["quinn@acme.example"]);
+  const byCompany = await call("GET", "/api/console/waitlist?q=ROBOTICS", { as: sam });
+  assert.deepEqual(byCompany.body.rows.map((r) => r.email), ["jane.doe@acme.example"]);
+  const regexy = await call("GET", "/api/console/waitlist?q=.*", { as: sam });
+  assert.equal(regexy.body.total, 0, "typed text, not a pattern");
+  assert.deepEqual((await call("GET", "/api/console/waitlist", { as: sam })).body.counts, all.body.counts, "counts unaffected by the search");
 });
 
 test("the CSV is for management (it holds phone numbers) and is audited", { skip }, async () => {
@@ -253,8 +298,12 @@ test("the CSV is for management (it holds phone numbers) and is audited", { skip
   assert.match(r.headers.get("content-disposition"), /ttfc-2027-waitlist-\d{4}-\d{2}-\d{2}\.csv/);
   const lines = r.body.replace(/^﻿/, "").split("\n");
   assert.equal(lines.length, 3, "the header and the two sponsorship sign-ups");
-  assert.match(lines[0], /^Signed up \(Toronto\),Last sign-up \(Toronto\),Email,Phone,Sponsorship,Exhibitor,Delegation/);
-  assert.ok(lines.some((l) => l.includes("jane.doe@acme.example,'+1 (416) 555-0100,Yes,Yes,Yes,\"Sponsorship, Exhibitor, Delegation\",\"Website, iOS app\",3,sent,sent")));
+  assert.match(lines[0], /^Signed up \(Toronto\),Last sign-up \(Toronto\),Name,Company,Email,Phone,Sponsorship,Exhibitor,Delegation/);
+  assert.ok(lines.some((l) => l.includes("Jane Doe,Acme Robotics,jane.doe@acme.example,416-555-0199,Yes,Yes,Yes,\"Sponsorship, Exhibitor, Delegation\",\"iOS app, Website\",3,sent,sent")), lines.join("\n"));
+  assert.ok(lines.some((l) => l.includes(",Quinn Ito,Globex,quinn@acme.example,")));
+  // Blanks are empty cells (just an email given).
+  const att = await call("GET", "/api/console/waitlist/export?interest=attending", { as: mia });
+  assert.ok(att.body.split("\n").some((l) => l.includes(",,,solo@acme.example,,No,No,No,Attending,Website,1,")), att.body);
   assert.ok(await M.AdminAudit.exists({ action: "waitlist_export", adminName: "Mia Manager" }));
 });
 
@@ -262,12 +311,17 @@ test("the confirmation's preview for staff, and the wording in GET /api/app/cont
   const p = await call("GET", "/api/console/waitlist/email-preview?interests=delegation", { as: sam });
   assert.equal(p.status, 200);
   assert.equal(p.body.subject, "You're on the TTFC 2027 waitlist");
+  assert.match(p.body.html, />Hello,</, "no name: Hello,");
+  const named = await call("GET", "/api/console/waitlist/email-preview?interests=&name=Priya%20Raman", { as: sam });
+  assert.match(named.body.html, />Hi Priya,</);
   assert.match(p.body.html, />Bringing a group</);
   assert.match(p.body.html, /\/api\/unsubscribe\/preview/);
   const c = await call("GET", "/api/app/content");
   assert.equal(c.status, 200);
   assert.equal(c.body["stay.hero_title"], "TTFC 2027 · Toronto · November 2027");
   assert.equal(c.body["stay.thanks"], THANKS);
+  assert.equal(c.body["stay.field_name"], "Your name");
+  assert.equal(c.body["stay.field_company"], "Company or organisation");
   assert.equal("stay.stat" in c.body, false, "no attendee line on the 2027 page");
   assert.equal("stay.expect" in c.body, false, "no “What to expect”");
   assert.equal(JSON.parse(c.body["stay.journey"]).length, 6, "the organiser's journey by default");
