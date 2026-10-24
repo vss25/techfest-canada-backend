@@ -80,6 +80,7 @@ test("validateSignup: email and phone required, 7–20 digits after + spaces das
   assert.equal(field({ consent: "true" }).ok, true);
   assert.equal(field({ source: "fax" }).value.source, "website");
   assert.equal(field({ source: "WebApp" }).value.source, "webapp");
+  assert.equal(field({ source: "programme" }).value.source, "programme");   // the website's /programme page (Oct 24 2026)
   assert.deepEqual(field({ interests: "delegation,sponsorship" }).value.interests, ["sponsorship", "delegation"]);
   assert.deepEqual(field({ interests: undefined }).value.interests, []);
   assert.equal(validateSignup(null).field, "email");
@@ -135,6 +136,8 @@ test("the team's email: email, phone as a tel: link, interests, source, Toronto 
   assert.equal(upd.subject, "TTFC 2027 waitlist: Sponsorship + Delegation interest – jane@acme.example (updated)");
   assert.match(upd.text, /Ticked this time: Delegation/);
   assert.match(upd.text, /Signed up from: Website \(also: Android app\)/);
+  const prog = buildWaitlistAlert({ ...row, source: "programme", sources: ["programme"] });
+  assert.match(prog.text, /Signed up from: Website programme page/);
   assert.match(upd.text, /Sign-ups from this address: 3/);
   assert.match(upd.text, /First signed up: Oct 23, 2026/);
 
@@ -166,7 +169,7 @@ test("admin list: filter by interest (or attending), source and search; rows; co
   const r = waitlistRow(d);
   assert.deepEqual([r.interestLabels, r.tel, r.count, r.sources], [["Exhibitor"], "tel:4165550100", 2, ["website", "ios"]]);
   assert.deepEqual(waitlistCounts({ total: 5, attending: 2, byInterest: [{ _id: "sponsorship", n: 3 }, { _id: "golf", n: 9 }], bySource: [{ _id: "ios", n: 1 }] }),
-    { total: 5, attending: 2, sponsorship: 3, exhibitor: 0, delegation: 0, website: 0, webapp: 0, ios: 1, android: 0 });
+    { total: 5, attending: 2, sponsorship: 3, exhibitor: 0, delegation: 0, website: 0, webapp: 0, ios: 1, android: 0, programme: 0 });
   const csv = waitlistCsv([d, { ...d, _id: "a2", email: "=cmd@x.example", interests: [] }]);
   const lines = csv.replace(/^﻿/, "").split("\n");
   assert.equal(lines[0], "Signed up (Toronto),Last sign-up (Toronto),Email,Phone,Sponsorship,Exhibitor,Delegation,Interested in,Signed up from,Sign-ups,Team emailed,Confirmation email");

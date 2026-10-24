@@ -11,7 +11,7 @@ const waitlistSignupSchema = new mongoose.Schema(
     phoneDigits: { type: String, default: "" },    // digits only (7–20)
     interests: { type: [String], default: [] },    // sponsorship | exhibitor | delegation: everything ticked so far
     lastInterests: { type: [String], default: [] },// what they ticked the last time
-    source: { type: String, default: "website" },  // the last time: website | webapp | ios | android
+    source: { type: String, default: "website" },  // the last time: website | webapp | ios | android | programme (the website's /programme page)
     sources: { type: [String], default: [] },      // every place they signed up from
     consent: { type: Boolean, default: false },
     consentAt: { type: Date, default: null },
