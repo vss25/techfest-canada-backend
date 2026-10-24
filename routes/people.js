@@ -55,7 +55,7 @@ import {
 } from "../services/appHide.js";
 import { SESSION_URL as SPEAKING_URL } from "../services/speakerWebsite.js";
 import {
-  PERSON_ID, VOLUNTEER_RATE_LIMITED, VOLUNTEER_READS, volunteerCounts, volunteerList, volunteerMeta, volunteerProfile, volunteerRow,
+  PERSON_ID, VOLUNTEER_RATE_LIMITED, VOLUNTEER_READS, couponCodes, volunteerCounts, volunteerList, volunteerMeta, volunteerProfile, volunteerRow,
 } from "../services/volunteerPanel.js";
 
 /* =========================================================
@@ -202,7 +202,8 @@ async function loadDirectory() {
   const built = buildPeople({
     users, attendees, rsvps, speakers: speakers || [], companies, refunds: stripe.refunds, stripe: stripe.values, reminders, attending, engagement, promos,
   });
-  return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date() };
+  // promoCodes: every coupon code, masked in the free text the volunteer panel shows (services/volunteerPanel.js couponCodes).
+  return { ...built, rsvps, stripe: stripe.stripe, speakersLoaded: !!speakers, builtAt: new Date(), promoCodes: couponCodes({ promos, people: built.people }) };
 }
 
 const DIR_TTL_MS = 20 * 1000;
@@ -293,23 +294,27 @@ async function volunteerPeople(req, res, next) {
   res.set("Cache-Control", "no-store");
   if (target.list) {
     const d = await directory();
-    const { list, page } = volunteerList(d.people, req.query);
+    const codes = d.promoCodes;
+    const { list, page } = volunteerList(d.people, req.query, { codes });
     return res.json({
       volunteer: true, total: list.length, page, size: PAGE,
-      rows: list.slice(page * PAGE, (page + 1) * PAGE).map(volunteerRow),
+      rows: list.slice(page * PAGE, (page + 1) * PAGE).map((p) => volunteerRow(p, { codes })),
       counts: volunteerCounts(d.people), builtAt: d.builtAt, ...volunteerMeta(),
     });
   }
   // The directory as it is (at most 20 s old): a volunteer's look-ups never make the server build it again
   // (findPerson reads it again when someone isn't found). t-<ticket ID> finds whoever holds that ticket.
   const key = target.id.startsWith("t-") ? `t-${normalizeTicketId(target.id.slice(2))}` : target.id;
-  const p = (await directory()).byId.get(key) || null;
+  const d = await directory();
+  const p = d.byId.get(key) || null;
   if (!p) return res.status(404).json({ error: "Person not found" });
   const sessions = (p.types || []).includes("speaker") ? await speakingCache.get() : null;
-  return res.json({ volunteer: true, canonicalId: p.id, person: volunteerProfile(p, { sessions }), ...volunteerMeta() });
+  return res.json({ volunteer: true, canonicalId: p.id, person: volunteerProfile(p, { sessions, codes: d.promoCodes }), ...volunteerMeta() });
 }
 router.use((req, res, next) => Promise.resolve(volunteerPeople(req, res, next)).catch((err) => {
-  console.error("PEOPLE VOLUNTEER ERROR:", err?.message || err);
+  // The error's name and where it happened, not its message (a message can quote a person's data).
+  const at = String(err?.stack || "").split("\n").slice(1, 3).map((l) => l.trim()).join(" | ");
+  console.error("PEOPLE VOLUNTEER ERROR:", err?.name || "Error", err?.code || "", at);
   if (!res.headersSent) res.status(500).json({ error: "Something went wrong. Try again." });
 }));
 

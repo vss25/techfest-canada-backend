@@ -79,7 +79,8 @@ export function makeSearchSources({
   return {
     directory: async () => {
       const d = await directory();
-      return { people: d?.people || [], rsvps: d?.rsvps || [] };
+      // promoCodes: the coupon codes the volunteer panel masks in people's free text (services/volunteerSafe.js).
+      return { people: d?.people || [], rsvps: d?.rsvps || [], promoCodes: d?.promoCodes || null };
     },
     ticketDocs: (pq) => (pq.ticket
       ? M.Attendee.find({ ticketId: { $in: ticketVariants(pq) } })

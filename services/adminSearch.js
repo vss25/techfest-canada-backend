@@ -23,10 +23,11 @@
    terms are never logged (see runSearch's `log`).
    Volunteers (the volunteer panel, Oct 23 2026, viewer { volunteer:
    true }): the People group only, without emails in the subtitle or
-   the staff-only "Hidden from app" badge; the title, the job title and
-   company and the words matched are the safe text of
-   services/volunteerSafe.js (an email typed as a name is never shown
-   or matched); an exact email or ticket ID still finds the person, but
+   the staff-only "Hidden from app" badge; the title, the job title,
+   company and pass name and the words matched are the safe text of
+   services/volunteerSafe.js, with the directory's coupon codes (an
+   email, link, Stripe ID or code typed into them is never shown or
+   matched); an exact email or ticket ID still finds the person, but
    the answer never repeats it (query.text is "" and there's no "See
    all" link with it in the address).
 ========================================================= */
@@ -40,7 +41,7 @@ import { FORMS, STATUS_LABEL as FORM_STATUS_LABEL } from "./formSubmissions.js";
 import { categoryShort } from "./nominations.js";
 import { BROCHURES, DEFAULT_BROCHURE } from "./brochureDownloads.js";
 import { STATUS_LABEL as PAVILION_STATUS_LABEL } from "./pavilionApplications.js";
-import { safeName, safeSearchFields, safeText } from "./volunteerSafe.js";
+import { volunteerText } from "./volunteerSafe.js";
 
 export const SEARCH_MIN_CHARS = 2;
 export const SEARCH_MAX_CHARS = 100;
@@ -193,21 +194,23 @@ const ticketHit = (pq, id) => !!pq.ticket && normalizeTicketId(id) === pq.ticket
 export const money = (v) => (typeof v === "number" && Number.isFinite(v) ? `CA$${v.toFixed(2)}` : "");
 
 /** People: accounts, pass holders, website speakers and RSVP-only people, by the directory's merged person ids.
-    `volunteer`: the volunteer panel: the safe name, job title and company (services/volunteerSafe.js), matched on those
-    only, no email in the subtitle and no "Hidden from app" badge. */
-export function peopleItems(people = [], pq, { volunteer = false } = {}) {
+    `volunteer`: the volunteer panel: the safe name, job title, company and pass name (services/volunteerSafe.js, with
+    the directory's coupon `codes`), matched on those only, no email in the subtitle and no "Hidden from app" badge. */
+export function peopleItems(people = [], pq, { volunteer = false, codes = null } = {}) {
   const out = [];
+  const safe = volunteer ? volunteerText({ codes }) : null;
   for (const p of people) {
     const exact = (pq.email && personEmails(p).has(pq.email))
       || (pq.ticket && ((p.passList || []).some((t) => t.norm === pq.ticket) || (p.boothOrders || []).some((b) => ticketHit(pq, b))));
-    const score = exact ? EXACT : textScore(pq, volunteer ? safeSearchFields(p) : personFields(p));
+    const score = exact ? EXACT : textScore(pq, safe ? safe.searchFields(p) : personFields(p));
     if (!score) continue;
-    const work = (volunteer ? [safeText(p.jobTitle, p), safeText(p.company, p)] : [p.jobTitle, p.company]).filter(Boolean).join(", ");
+    const work = (safe ? [safe.text(p.jobTitle, p), safe.text(p.company, p)] : [p.jobTitle, p.company]).filter(Boolean).join(", ");
+    const passName = p.primary ? (safe ? safe.text(p.primary.label, p, 60) : p.primary.label) : KIND_LABELS[p.kind] || "";
     // "Hidden from app" first, so staff searching for someone see it straight away (services/appHide.js).
     const badges = [...(p.appHidden && !volunteer ? ["Hidden from app"] : []), ...(p.types || []).filter((t) => t !== "attendee").map((t) => TYPE_LABELS[t] || t), ...(p.vip ? ["VIP"] : [])].slice(0, 3);
     out.push({
-      type: "person", id: p.id, title: volunteer ? safeName(p) : p.name, score, exact: !!exact,
-      subtitle: join(work, volunteer ? "" : p.email, p.primary ? p.primary.label : KIND_LABELS[p.kind] || ""),
+      type: "person", id: p.id, title: safe ? safe.name(p) : p.name, score, exact: !!exact,
+      subtitle: join(work, safe ? "" : p.email, passName),
       link: personLink(p), badges,
     });
   }
@@ -508,7 +511,7 @@ function cmsOnce(s, pq) {
 /** Group key → (sources' answers, query, viewer) → items. */
 const BUILDERS = {
   tickets: (s, pq, v) => ticketItems(s.directory.people, pq, { extra: s.ticketDocs || [], amounts: v.management === true }),
-  people: (s, pq, v) => peopleItems(s.directory.people, pq, { volunteer: v.volunteer === true }),
+  people: (s, pq, v) => peopleItems(s.directory.people, pq, { volunteer: v.volunteer === true, codes: s.directory.promoCodes }),
   passes: (s, pq) => passItems(s.directory.people, pq),
   rsvps: (s, pq) => rsvpItems(s.directory.rsvps, pq),
   sessions: (s, pq) => cmsOnce(s, pq).sessions,

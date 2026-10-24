@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { RIGHT_ERRORS } from "../services/appRights.js";
 import { accessOf } from "../services/rightsStore.js";
-import { signedInWithoutPassword, PASSWORD_REQUIRED, PASSWORD_REQUIRED_CODE } from "../services/signInMethod.js";
+import { passwordSignIn, signedInWithoutPassword, PASSWORD_REQUIRED, PASSWORD_REQUIRED_CODE } from "../services/signInMethod.js";
 
 /* The answer every staff-only API gives a volunteer account (the volunteer panel, Oct 23 2026: volunteers are
    students helping at the event; they may look people up and nothing else). `code` lets the panel tell it apart. */
@@ -14,8 +14,9 @@ export const refuseVolunteer = (res) => res.status(403).json({ error: VOLUNTEER_
    promos, admin, campaigns, leads, …). Password tokens only: staff who signed
    in to an app with an emailed code (or a pass ID) get 403 PASSWORD_REQUIRED,
    with `code` so the panel can send them to its sign-in page. Tokens without
-   a `via` claim (older tokens, password, Google) work as before. In-app staff
-   features don't use this guard (requireCheckIn, social/community rights).
+   a `via` claim (older tokens, password) and Google / LinkedIn tokens work as
+   before. In-app staff features don't use this guard (requireCheckIn,
+   social/community rights).
    A volunteer account (role "volunteer") gets 403 VOLUNTEER_FORBIDDEN here,
    however they signed in: the few routes of the volunteer panel use
    requirePanel instead (below). */
@@ -47,7 +48,9 @@ export async function requireAdmin(req, res, next) {
 /* The volunteer panel's routes only (Oct 23 2026): GET /api/console/me, the People list and one person's profile
    (routes/people.js, in the volunteer's safe form) and the search box (People only, routes/console.js). Staff
    (role "admin") pass exactly as with requireAdmin; so do volunteer accounts (role "volunteer", never the
-   volunteer person type on an attendee's account) signed in with their password, not suspended. Sets
+   volunteer person type on an attendee's account) signed in with their PASSWORD (services/signInMethod.js
+   passwordSignIn: a token with no `via` claim, for an account that has a password; Google, LinkedIn, the emailed
+   code and a pass ID → 403 password_required), not suspended. Sets
    req.panelRole: "staff" (management included: isManagement) or "volunteer". Every other staff-only route keeps
    requireAdmin, so a new route is closed to volunteers unless it's given this guard on purpose. */
 export async function requirePanel(req, res, next) {
@@ -62,7 +65,7 @@ export async function requirePanel(req, res, next) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   if (!user || (user.role !== "admin" && user.role !== "volunteer")) return res.status(403).json({ error: "Admin only" });
-  if (signedInWithoutPassword(decoded)) {
+  if (signedInWithoutPassword(decoded) || (user.role === "volunteer" && !passwordSignIn(decoded, user))) {
     return res.status(403).json({ error: PASSWORD_REQUIRED, code: PASSWORD_REQUIRED_CODE });
   }
   if (user.role === "volunteer" && user.banned) return res.status(403).json({ error: "This account is suspended.", code: "suspended" });

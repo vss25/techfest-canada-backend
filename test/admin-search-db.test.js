@@ -70,7 +70,8 @@ before(async () => {
   const [mia, sam, val, ann, rae] = await M.User.create([
     { name: "Mia Manager", email: "mia.manager@example.com", role: "admin", staffRole: "management" },
     { name: "Sam Staff", email: "sam.staff@example.com", role: "admin", staffRole: "staff" },
-    { name: "Val Volunteer", email: "val.volunteer@example.com", role: "volunteer" },
+    // A password on the account: the volunteer panel takes a volunteer's password sign-in only (services/signInMethod.js).
+    { name: "Val Volunteer", email: "val.volunteer@example.com", role: "volunteer", password: "stored-hash-test-only" },
     { name: "Ann Attendee", email: "ann.attendee@example.com", role: "user", organization: "Example Bank", jobTitle: "Head of Digital",
       tickets: [{ ticketId: "a1b2c3d4e5f6", type: "power", purchaseDate: d("10-01"), manualValue: 849, manualValueNote: "Invoice 12" }] },
     { name: "Rae Rate", email: "rae.rate@example.com", role: "admin", staffRole: "staff" },

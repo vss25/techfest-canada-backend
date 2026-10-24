@@ -15,6 +15,7 @@ import { ticketsWithExtras, EXTRA_FIELDS, EXTRA_SELECT } from "../services/passE
 import { profileTagOf } from "../services/profileTag.js";
 import { spotsOf } from "../services/availability.js";
 import { avatarFor } from "../services/socialHelpers.js";
+import { tokenClaims, VIA_GOOGLE, VIA_LINKEDIN } from "../services/signInMethod.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -218,8 +219,10 @@ router.post("/google", async (req, res) => {
 
     }
 
+    // Marked as a Google sign-in (services/signInMethod.js): never a password token, so the volunteer panel
+    // refuses it; staff open the admin panel with it as before.
     const token = jwt.sign(
-      { id: user._id, role: user.role },
+      tokenClaims(user, VIA_GOOGLE),
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -315,8 +318,9 @@ router.get("/linkedin/callback", async (req, res) => {
 
     /* ===== Create JWT ===== */
 
+    // Marked as a LinkedIn sign-in (services/signInMethod.js), like Google's.
     const token = jwt.sign(
-      { id: user._id, role: user.role },
+      tokenClaims(user, VIA_LINKEDIN),
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );

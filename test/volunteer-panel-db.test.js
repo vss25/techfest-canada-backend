@@ -13,7 +13,11 @@
    2. What a volunteer gets back: no forbidden key anywhere, none of the seeded emails, phone, ticket IDs, code,
       Stripe session, amounts or notes anywhere (deep scan of the list, the profiles, the search).
    3. No writes. 4. Staff and management unchanged. 5. A volunteer's emailed-code token is refused.
-   6. An attendee's account with the volunteer type is refused. 7. The read limit. 8. The kill switch is gone. */
+   6. An attendee's account with the volunteer type is refused. 7. The read limit. 8. The kill switch is gone.
+   9. (Third round) A hyphen in an email, a booth order or a hyphenated ticket ID never breaks the list, a profile or
+      the search; LinkedIn addresses, Stripe IDs, coupon codes and written-out emails in free text are hidden; a
+      volunteer's Google or LinkedIn sign-in (answered here by a stand-in for Google and LinkedIn, axios never reaches
+      the network) gets 403 password_required, staff's works as before. */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -32,6 +36,13 @@ process.env.RESEND_API_KEY ||= "re_dummy";
 process.env.APIFY_API_TOKEN ||= "apify_dummy_test";
 delete process.env.GEMINI_API_KEY;
 delete process.env.KILL_SWITCH_PASSWORD;
+process.env.INTEL_AUTOREFRESH = "false";
+// Google and LinkedIn sign-in, answered by the axios stand-in below (never the network).
+process.env.GOOGLE_CLIENT_IDS = "ttfc-test-google-client";
+process.env.LINKEDIN_CLIENT_ID = "ttfc-test-linkedin-client";
+process.env.LINKEDIN_CLIENT_SECRET = "ttfc-test-linkedin-secret";
+process.env.LINKEDIN_REDIRECT_URI = "https://api.example.test/api/auth/linkedin/callback";
+process.env.FRONTEND_URL = "https://site.example.test";
 
 const d = (s) => new Date(`2026-${s}T12:00:00Z`);
 const SECRETS = {
@@ -46,6 +57,11 @@ const SECRETS = {
   yaraEmail: "yara.leak@example.com", yaraLocal: "yara.leak", yaraTicket: "acac56565656",
   staffEmail: "noname.staffer@example.org", staffLocal: "noname.staffer",
   leeEmail: "lee@leakmail.example.com", leeDomain: "leakmail.example.com", leePhone: "555-0188", dietPhone: "416 555 0177",
+  // The third round: a hyphen in an email's local part, a booth order and a hyphenated ticket ID (they once crashed the
+  // list for every volunteer), a LinkedIn address, a Stripe session, a coupon code and a written-out email in free text.
+  maryEmail: "mary-jane@example.com", maryLocal: "mary-jane", maryTicket: "f00d00000123", booth: "BOOTH-GOLD",
+  annEmail: "ann-marie.d'arcy@example.com", annTicket: "dead-beef-0042",
+  olgaSlug: "olga-secret-li", priyaLocal: "priya.secret", priyaDomain: "priyamail.example.com", piaTicket: "abcd12340042",
 };
 const AMOUNTS = ["1234.56"];
 
@@ -105,6 +121,24 @@ before(async () => {
     for (let i = from; i < this.stack.length; i++) this.stack[i].__mount = mount;
     return out;
   };
+  // axios (Google's token check, LinkedIn's sign-in, anything else) never reaches the network: Google and LinkedIn are
+  // answered here for the sign-in tests, everything else is refused and recorded.
+  const { default: axios } = await import("axios");
+  axios.defaults.adapter = async (config) => {
+    const url = String(config.url || "");
+    const answer = (data) => ({ data, status: 200, statusText: "OK", headers: {}, config, request: {} });
+    if (url.startsWith("https://oauth2.googleapis.com/tokeninfo?id_token=")) {
+      const email = decodeURIComponent(url.split("id_token=")[1]).replace(/^google:/, "");
+      return answer({ email, name: "From Google", aud: process.env.GOOGLE_CLIENT_IDS, email_verified: "true" });
+    }
+    if (url === "https://www.linkedin.com/oauth/v2/accessToken") return answer({ access_token: `li:${new URLSearchParams(String(config.data)).get("code")}` });
+    if (url === "https://api.linkedin.com/v2/userinfo") {
+      const auth = String(config.headers?.Authorization || config.headers?.get?.("Authorization") || "");
+      return answer({ name: "From LinkedIn", email: auth.replace(/^Bearer li:/, "") });
+    }
+    outside.push(url);
+    throw new Error(`blocked in the test: ${url}`);
+  };
   // webhook.js makes its Stripe client when it loads: a dummy key for that, then none (nothing here calls Stripe).
   process.env.STRIPE_SECRET_KEY = "sk_test_dummy_volunteer_panel";
   ({ default: app } = await import("../server.js"));
@@ -118,6 +152,14 @@ before(async () => {
 
   const bcrypt = (await import("bcryptjs")).default;
   const pw = await bcrypt.hash("a long enough passphrase", 4);
+  // Third round: volunteers who sign in with Google or LinkedIn (one with a password on the account, one without), and
+  // one for the odd-data checks (its own read budget).
+  const [gina, nell, ivy] = await M.User.create([
+    { name: "Gina Volunteer", email: "gina.volunteer@example.com", role: "volunteer", password: pw },
+    { name: "Nell Nopass", email: "nell.nopass@example.com", role: "volunteer", provider: "google" },
+    { name: "Ivy Volunteer", email: "ivy.volunteer@example.com", role: "volunteer", password: pw },
+  ]);
+  Object.assign(ID, { gina: gina._id, nell: nell._id, ivy: ivy._id });
   const [mia, sam, val, vic, rae, ban, mara] = await M.User.create([
     { name: "Mia Manager", email: "mia.manager@example.com", role: "admin", staffRole: "management", password: pw },
     { name: "Sam Staff", email: "sam.staff@example.com", role: "admin", staffRole: "staff", password: pw },
@@ -144,6 +186,27 @@ before(async () => {
   await M.Attendee.create({ name: SECRETS.yaraEmail, email: SECRETS.yaraEmail, ticketId: SECRETS.yaraTicket, ticketType: "connect", purchaseDate: d("10-05"), details: {} });
   await M.User.create({ name: "Lee Leaky", email: "lee.account@example.com", role: "user", organization: `Contact ${SECRETS.leeEmail}`,
     jobTitle: `CTO, +1 (647) ${SECRETS.leePhone}`, password: pw });
+  // Third round: odd characters in emails and ticket IDs, a booth order, and free text with a LinkedIn address, a
+  // Stripe session, a coupon code (also in an issued pass's printed name) and a written-out email.
+  await M.User.create([
+    { name: "Mary Jane (mary-jane)", email: SECRETS.maryEmail, role: "user", organization: "Ask for mary-jane at the desk", password: pw,
+      tickets: [{ ticketId: SECRETS.maryTicket, type: "connect", purchaseDate: d("10-06") }, { ticketId: SECRETS.booth, type: "booth-single", purchaseDate: d("10-06") }] },
+    { name: "Olga Linked", email: "olga.linked@example.com", role: "user", organization: `linkedin.com/in/${SECRETS.olgaSlug}`,
+      jobTitle: `https://www.linkedin.com/in/${SECRETS.olgaSlug}/`, linkedinUrl: `https://www.linkedin.com/in/${SECRETS.olgaSlug}/`, password: pw },
+    { name: "Tia Tester", email: "tia.t@example.com", role: "user", jobTitle: `Order ${SECRETS.stripe}`, password: pw },
+    { name: `Priya ${SECRETS.priyaLocal} [at] ${SECRETS.priyaDomain}`, email: `${SECRETS.priyaLocal}@${SECRETS.priyaDomain}`, role: "user", password: pw },
+  ]);
+  await M.Attendee.create([
+    { name: "Ann-Marie D'Arcy", email: SECRETS.annEmail, ticketId: SECRETS.annTicket, ticketType: "connect", purchaseDate: d("10-06"),
+      issuedPass: { label: `Guest ${SECRETS.annTicket}` }, details: {} },
+    { name: "Pia Partner", email: "pia.partner@example.com", ticketId: SECRETS.piaTicket, ticketType: "connect", promoCode: "ISSUED", purchaseDate: d("10-06"),
+      issuedPass: { label: `Partner ${SECRETS.ticket} ${SECRETS.code}` }, details: { jobTitle: "Speaker, Exhibitor lead" } },
+  ]);
+  await M.Rsvp.create([
+    { key: `t:${SECRETS.piaTicket}`, nameKey: "pia partner", firstName: "Pia", lastName: "Partner", name: "Pia Partner", email: "pia.partner@example.com",
+      ticketId: SECRETS.piaTicket, ticketVerified: true, tier: "connect", days: ["day1"], options: [], dietary: ["other"],
+      dietaryOther: `No nuts. Code ${SECRETS.code.toLowerCase()} · lnkd.in/x9secret`, source: "attendee", spam: false },
+  ]);
   await M.Rsvp.create([
     { key: `t:${SECRETS.yaraTicket}`, nameKey: "", email: SECRETS.yaraEmail, ticketId: SECRETS.yaraTicket, ticketVerified: true, tier: "connect",
       days: ["day1"], options: [], dietary: ["other"], dietaryOther: `Nut allergy, call ${SECRETS.dietPhone} or ${SECRETS.yaraEmail}`, source: "attendee", spam: false },
@@ -164,6 +227,7 @@ before(async () => {
   Object.assign(T, {
     mia: tok(mia), sam: tok(sam), val: tok(val), vic: tok(vic), rae: tok(rae), ban: tok(ban), mara: tok(mara),
     valEmail: tok(val, "email"), valTicket: tok(val, "ticket"),
+    ivy: tok(ivy), nellOld: tok(nell), ginaOld: tok(gina),
   });
 
   server = app.listen(0, "127.0.0.1");
@@ -635,4 +699,127 @@ test("the profile's shape, as the website reads it (person.rsvp.events / dietary
   assert.deepEqual([mara.person.rsvp.dietaryOther, mara.person.rsvp.accessibility], ["No mushrooms", true]);
   const kai = (await call("GET", `/api/console/people/a-${ID.kai}`, { token: T.val })).body;
   assert.deepEqual(kai.person.sessions, [{ day: 1, start: "10:00", end: "10:30", title: "Quantum Computing in Finance", format: "Panel", role: "Panellist" }]);
+});
+
+/* ---------- The third round ---------- */
+
+test("a hyphen in an email, a booth order and a hyphenated ticket ID never break a volunteer's list, profiles or search", { skip }, async () => {
+  const list = await call("GET", "/api/console/people?sort=name", { token: T.ivy });
+  assert.equal(list.status, 200, list.text.slice(0, 120));
+  const mary = list.body.rows.find((r) => r.name === "Mary Jane");
+  assert.ok(mary, list.body.rows.map((r) => r.name).join(" | "));
+  assert.equal(mary.company, "Ask for [hidden] at the desk");
+  assert.ok(list.body.rows.some((r) => r.name === "Ann-Marie D'Arcy"));
+  assertSafe(list.body, "list with odd data");
+  for (const sort of ["company", "type", "pass"]) assert.equal((await call("GET", `/api/console/people?sort=${sort}&dir=desc`, { token: T.ivy })).status, 200, sort);
+  for (const id of [`t-${SECRETS.maryTicket}`, `t-${SECRETS.annTicket}`, mary.id]) {
+    const prof = await call("GET", `/api/console/people/${encodeURIComponent(id)}`, { token: T.ivy });
+    assert.equal(prof.status, 200, `${id} ${prof.text.slice(0, 120)}`);
+    assertSafe(prof.body, `profile ${id}`);
+  }
+  const ann = await call("GET", `/api/console/people/t-${SECRETS.annTicket}`, { token: T.ivy });
+  assert.equal(ann.body.person.pass.printedLabel, "Guest [hidden]");
+  // The list's search and the search box answer (the People group used to come back failed).
+  assert.deepEqual((await call("GET", "/api/console/people?q=mary", { token: T.ivy })).body.rows.map((r) => r.name), ["Mary Jane"]);
+  for (const r of [await call("POST", "/api/console/search", { token: T.ivy, body: { q: "mary" } }), await call("GET", "/api/console/search?q=jane", { token: T.ivy })]) {
+    assert.deepEqual([r.status, r.body.failed, r.body.groups.map((g) => g.key)], [200, [], ["people"]]);
+    assertSafe(r.body, "search mary");
+  }
+  // Exact look-ups still find them, never echoed.
+  for (const q of [SECRETS.maryEmail, SECRETS.maryTicket, SECRETS.booth, SECRETS.annTicket, SECRETS.annEmail]) {
+    const r = await call("POST", "/api/console/search", { token: T.ivy, body: { q } });
+    assert.deepEqual([r.status, r.body.failed, r.body.query.text, r.body.groups[0]?.items[0]?.exact], [200, [], "", true], q);
+    assertSafe(r.body, `search ${q}`);
+    const l = await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.ivy });
+    assert.deepEqual([l.status, l.body.total], [200, 1], q);
+  }
+});
+
+test("LinkedIn addresses, Stripe IDs, coupon codes and written-out emails typed into free text never reach a volunteer", { skip }, async () => {
+  const get = async (q) => (await call("GET", `/api/console/people?q=${encodeURIComponent(q)}`, { token: T.ivy })).body;
+  const olga = (await get("olga")).rows;
+  assert.deepEqual(olga.map((r) => [r.name, r.company, r.jobTitle]), [["Olga Linked", "", ""]]);
+  assert.deepEqual((await get("tia")).rows.map((r) => r.jobTitle), ["Order [hidden]"]);
+  assert.deepEqual((await get("priya")).rows.map((r) => r.name), ["Priya"]);
+  const pia = (await get("pia partner")).rows[0];
+  assert.equal(pia.pass.printedLabel, "Partner [hidden]");
+  assert.equal(pia.jobTitle, "Speaker, Exhibitor lead", "the internal markers never hide words");
+  const piaProf = await call("GET", `/api/console/people/t-${SECRETS.piaTicket}`, { token: T.ivy });
+  assert.equal(piaProf.body.person.passes[0].printedLabel, "Partner [hidden]");
+  assert.equal(piaProf.body.person.rsvp.dietaryOther, "No nuts. Code [hidden]");
+  assertSafe(piaProf.body, "profile pia");
+  // None of them finds anybody by the hidden text.
+  for (const q of ["linkedin", SECRETS.olgaSlug, "olga-secret", "cs_test_secretsession", "secretsession", SECRETS.code, "secretcode20", "priyamail", SECRETS.priyaLocal, "x9secret"]) {
+    assert.equal((await get(q)).total, 0, q);
+    const s = await call("POST", "/api/console/search", { token: T.ivy, body: { q } });
+    assert.deepEqual(s.body.groups, [], `search ${q}`);
+  }
+  for (const q of ["olga", "tia", "priya", "pia"]) {
+    const s = await call("POST", "/api/console/search", { token: T.ivy, body: { q } });
+    assert.equal(s.body.groups[0].items.length, 1, q);
+    assertSafe(s.body, `search ${q}`);
+  }
+  // Staff see what was typed, as before.
+  const staffOlga = await call("GET", "/api/console/people?q=olga", { token: T.sam });
+  assert.equal(staffOlga.body.rows[0].jobTitle, `https://www.linkedin.com/in/${SECRETS.olgaSlug}/`);
+});
+
+const decode = (t) => JSON.parse(Buffer.from(t.split(".")[1], "base64url").toString("utf8"));
+const PANEL = [["GET", "/api/console/me"], ["GET", "/api/console/people"], ["GET", "/api/console/people/u-"], ["POST", "/api/console/search", { q: "mara" }], ["GET", "/api/console/search?q=mara"]];
+async function linkedinSignIn(email) {
+  const r = await realFetch(`${base}/api/auth/linkedin/callback?code=${encodeURIComponent(email)}&state=0123456789abcdef`, { redirect: "manual" });
+  const to = r.headers.get("location") || "";
+  assert.equal(r.status, 302, to);
+  assert.match(to, /^https:\/\/site\.example\.test\/auth-success\?token=/);
+  return to.split("token=")[1];
+}
+
+test("a volunteer's Google or LinkedIn sign-in doesn't open the panel (403 password_required); their password does; staff's Google works as before", { skip }, async () => {
+  const google = await call("POST", "/api/auth/google", { body: { credential: "google:gina.volunteer@example.com" } });
+  assert.equal(google.status, 200, google.text);
+  assert.equal(decode(google.body.token).via, "google");
+  const linkedin = await linkedinSignIn("gina.volunteer@example.com");
+  assert.equal(decode(linkedin).via, "linkedin");
+  // A refreshed token keeps how they signed in.
+  const refreshed = await call("POST", "/api/auth/refresh", { token: google.body.token });
+  assert.equal(decode(refreshed.body.token).via, "google");
+  const refreshedLi = await call("POST", "/api/auth/refresh", { token: linkedin });
+  assert.equal(decode(refreshedLi.body.token).via, "linkedin");
+  for (const token of [google.body.token, linkedin, refreshed.body.token, refreshedLi.body.token]) {
+    for (const [m, u, b] of PANEL) {
+      const r = await call(m, u === "/api/console/people/u-" ? `${u}${ID.mara}` : u, { token, body: b });
+      assert.deepEqual([r.status, r.body.code], [403, "password_required"], `${decode(token).via} ${m} ${u}`);
+    }
+    assert.ok(isForbidden(await call("GET", "/api/console/stats", { token })), "everything else: the volunteer's own refusal");
+  }
+  // An account without a password: even a token from before the claim existed can't be a password sign-in.
+  for (const [m, u, b] of PANEL) {
+    const r = await call(m, u === "/api/console/people/u-" ? `${u}${ID.mara}` : u, { token: T.nellOld, body: b });
+    assert.deepEqual([r.status, r.body.code], [403, "password_required"], `no password ${m} ${u}`);
+  }
+  // Their password sign-in, the real way: the panel opens.
+  const login = await call("POST", "/api/auth/login", { body: { email: "gina.volunteer@example.com", password: "a long enough passphrase" } });
+  assert.equal(login.status, 200, login.text);
+  assert.equal(decode(login.body.token).via, undefined);
+  for (const [m, u, b] of PANEL) {
+    const r = await call(m, u === "/api/console/people/u-" ? `${u}${ID.mara}` : u, { token: login.body.token, body: b });
+    assert.equal(r.status, 200, `password ${m} ${u}`);
+  }
+  assert.equal((await call("GET", "/api/console/people", { token: T.ginaOld })).status, 200, "an older password token");
+
+  // Staff: Google and LinkedIn open the panel and the staff-only pages exactly as before.
+  const samGoogle = await call("POST", "/api/auth/google", { body: { credential: "google:sam.staff@example.com" } });
+  assert.equal(decode(samGoogle.body.token).via, "google");
+  const samLinkedin = await linkedinSignIn("sam.staff@example.com");
+  for (const token of [samGoogle.body.token, samLinkedin]) {
+    const list = await call("GET", "/api/console/people", { token });
+    assert.deepEqual([list.status, list.body.volunteer], [200, undefined]);
+    assert.equal((await call("GET", "/api/console/stats", { token })).status, 200);
+    assert.equal((await call("GET", "/api/console/me", { token })).body.staffRole, "staff");
+  }
+  // The emailed code is still refused for staff.
+  const { default: jwt } = await import("jsonwebtoken");
+  const samEmail = jwt.sign({ id: String(ID.sam), role: "admin", via: "email" }, process.env.JWT_SECRET, { expiresIn: "1h" });
+  assert.equal((await call("GET", "/api/console/people", { token: samEmail })).body.code, "password_required");
+  assert.deepEqual(outside, [], "nothing left the machine");
 });
