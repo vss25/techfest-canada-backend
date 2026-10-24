@@ -1,5 +1,6 @@
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
+import { doorQrText } from "./doorQr.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -127,7 +128,8 @@ export async function generateTicketPDF(ticket = {}) {
     mono   : "Courier-Bold",
   };
 
-  const qrPng = await QRCode.toBuffer(ticketId, {
+  // The one door QR text (services/doorQr.js): "TECHFEST:<ticketId>", the same as the emails, Wallet and the apps.
+  const qrPng = await QRCode.toBuffer(doorQrText(ticketId), {
     errorCorrectionLevel: "H", margin: 0, width: 720,
     color: { dark: INK, light: "#ffffff" },
   });

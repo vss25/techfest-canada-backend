@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { PKPass } from "passkit-generator";
 import { typeInfo } from "./teamRoles.js";
 import { profileTagOf, profileTagOfPass } from "./profileTag.js";
+import { doorQrText } from "./doorQr.js";
 
 /* =========================================================
    Apple Wallet delegate pass (eventTicket)
@@ -125,7 +126,7 @@ export function passContent({ ticketId, tier, name, purchaseDate, tag = null }) 
       ...(purchaseDate ? [{ key: "purchased", label: "Purchased", value: new Date(purchaseDate).toDateString() }] : []),
       { key: "support", label: "Help", value: "enquire@thetechfestival.com · thetechfestival.com" },
     ],
-    barcode: { message: `TECHFEST:${ticketId}`, format: "PKBarcodeFormatQR", messageEncoding: "iso-8859-1", altText: String(ticketId) },
+    barcode: { message: doorQrText(ticketId), format: "PKBarcodeFormatQR", messageEncoding: "iso-8859-1", altText: String(ticketId) },
     relevantDate: "2026-10-26T08:00:00-04:00",
     location: { latitude: 43.6408, longitude: -79.3763, relevantText: "Welcome to TTFC 2026 — show this at registration." },
   };

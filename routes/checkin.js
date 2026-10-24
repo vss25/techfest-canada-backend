@@ -4,6 +4,7 @@ import Attendee from "../models/Attendee.js";
 import { requireCheckIn } from "../middleware/adminAuth.js";
 import { checkinCard, plainCard, holderIsAccount } from "../services/checkinCard.js";
 import { recordScan } from "../services/checkinDeskActions.js";
+import { cleanTicketId } from "../services/doorQr.js";
 
 /* What the scanner shows about the pass and its holder (services/checkinCard.js): `ticketType` (connect | influence |
    power | apex | speaker; the text "All Access" is Power), `passName` its name ("Speaker Pass" for the internal one),
@@ -57,24 +58,30 @@ const router = express.Router();
 // endpoint was open, so anyone who knew a ticketId could mark it used.
 router.post("/scan", requireCheckIn, async (req, res) => {
   try {
-    // Apple Wallet passes encode "TECHFEST:<ticketId>"; the website scanner sends the raw scan
-    const ticketId = String(req.body?.ticketId || "").trim().replace(/^TECHFEST:/i, "");
+    // Every form of the same ticket finds it (services/doorQr.js): "TECHFEST:<ticketId>" (pass emails, Wallet, the apps,
+    // and since Oct 24 2026 the PDF ticket and the purchase email too) or the bare ID (PDF tickets and purchase emails
+    // from before), any case, with stray spaces. Writes below use the ID as stored.
+    const raw = String(req.body?.ticketId || "").trim().replace(/^TECHFEST:/i, "");
+    const typed = cleanTicketId(raw);
+    let ticketId = typed;
 
     if (!ticketId) {
       return res.status(400).json({
         error: "Ticket ID required",
       });
     }
+    const variants = [...new Set([typed, typed.toUpperCase(), raw])].filter(Boolean);
 
     // First check in User collection
     const user = await User.findOne({
-      "tickets.ticketId": ticketId,
+      "tickets.ticketId": { $in: variants },
     });
 
     if (user) {
       const ticket = user.tickets.find(
-        (t) => t.ticketId === ticketId
+        (t) => cleanTicketId(t.ticketId) === typed
       );
+      ticketId = ticket.ticketId;
       // The guest record of a claimed ticket (its marks and staff's switches), when there is one.
       const attendee = await Attendee.findOne({ ticketId }).lean();
       const holder = typeof user.toObject === "function" ? user.toObject() : user;
@@ -114,7 +121,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     }
 
     // Check in Attendee collection (guests)
-    const attendee = await Attendee.findOne({ ticketId });
+    const attendee = await Attendee.findOne({ ticketId: { $in: variants } });
 
     if (!attendee) {
       return res.status(404).json({
@@ -123,6 +130,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
         error: "Ticket not found",
       });
     }
+    ticketId = attendee.ticketId;
 
     const card = await cardFor({ ticketId, attendee: attendee.toObject(), fallbackName: attendee.name });
 

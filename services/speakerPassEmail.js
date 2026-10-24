@@ -22,6 +22,7 @@ import QRCode from "qrcode";
 import { EVENT, escapeHtml as esc } from "./ticketInfo.js";
 import { speakerFirstName, rsvpNameParts, SPEAKER_PASS_LABEL } from "./speakerPasses.js";
 import { ARRIVE_EARLY_MIN, DAYS, LOUNGE, STAGE, arriveAt, dayPlans, fmtTime, minutesBetween, needsMicUp } from "./runOfShow.js";
+import { doorQrText } from "./doorQr.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_FILE = path.join(__dirname, "..", "assets", "email", "ttfc-logo.png");
@@ -66,7 +67,8 @@ export const SPEAKER_VARIANT = Object.freeze({
   label: "Speaker Pass", access: SPEAKER_ACCESS, includes: null, rsvp: true, rsvpReason: null,
 });
 
-export const qrPayload = (ticketId) => `TECHFEST:${String(ticketId || "").trim()}`;
+/** The one door QR text (services/doorQr.js): "TECHFEST:<ticketId>", the same as Wallet, the PDF and the apps. */
+export const qrPayload = (ticketId) => doorQrText(ticketId);
 /** Shown to people: upper case reads better and sign-in ignores case. */
 export const displayTicketId = (ticketId) => String(ticketId || "").trim().toUpperCase();
 
