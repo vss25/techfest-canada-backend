@@ -481,6 +481,8 @@ router.get("/stream", limit("stream"), wrap(async (req, res) => {
     try { res.end(); } catch { /* gone */ }
   };
   req.on("close", close);
+  // This instance is shutting down (services/checkinDeskLog.js endStreams): the device reconnects elsewhere.
+  client.end = () => { write("bye", { reason: "reconnect" }); close(); };
   const ping = setInterval(() => write("ping", { serverTime: deskNow().toISOString() }), PING_MS);
   const stop = setTimeout(() => { write("bye", { reason: "reconnect" }); close(); }, STREAM_MAX_MS);
   ping.unref?.(); stop.unref?.();

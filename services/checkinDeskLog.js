@@ -199,6 +199,11 @@ export function ready(client, cursor) {
 }
 
 export const streamCount = () => clients.size;
+/** This instance is shutting down (services/gracefulShutdown.js): every stream ends with "reconnect" (`client.end`),
+    so the devices reconnect, to another instance, at once. */
+export function endStreams() {
+  for (const c of [...clients]) { try { c.end?.(); } catch { /* gone */ } }
+}
 /** Tests: where this instance's tail is (and each stream's `covered`). */
 export const tailState = () => ({ running: !!tailTimer, cursor: tailCursor, gen: tailGen, busy: tailBusy, streams: clients.size, covered: [...clients].map((c) => c.covered) });
 

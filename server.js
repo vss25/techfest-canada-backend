@@ -75,6 +75,8 @@ import engagementRouter from "./routes/engagement.js";                          
 import unsubscribeRouter from "./routes/unsubscribe.js";                            // the unsubscribe link in every bulk email (no sign-in)
 import unsubscribesRouter from "./routes/unsubscribes.js";                          // Admin › Unsubscribed emails
 import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
+import { installGracefulShutdown } from "./services/gracefulShutdown.js";
+import { endStreams } from "./services/checkinDeskLog.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -248,6 +250,13 @@ mongoose
    SERVER START
 ========================================== */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+});
+// SIGTERM (every Render deploy / restart): no new connections, the check-in desk's live streams told to reconnect,
+// requests in flight (a desk tap half-written) finish for up to 10 s, then the database closes and the process exits
+// (a second first, for work the last answers started: the door scan records the desk's check-in after answering).
+installGracefulShutdown(server, {
+  timeoutMs: 10 * 1000, beforeClose: endStreams,
+  onClosed: async () => { await new Promise((r) => setTimeout(r, 1000)); await mongoose.disconnect(); },
 });
