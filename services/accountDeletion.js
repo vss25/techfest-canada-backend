@@ -74,7 +74,8 @@ function socialOps(id, refIds = [], postIds = [], discussionIds = []) {
     { key: "follows", label: "Discussions they follow (unfollowed)", model: Discussion, filter: { $or: [{ followers: id }, { unfollowed: id }] }, update: { $pull: { followers: id, unfollowed: id } } },
     { key: "blocks", label: "Blocks (by them or of them)", model: Block, filter: { $or: [{ userId: id }, { blockedId: id }] } },
     { key: "reports", label: "Reports they made or about them", model: Report, filter: { $or: [{ reporterId: id }, { targetType: "user", targetId: uid }] } },
-    { key: "notifications", label: "App notifications", model: AppNotification, filter: { userId: id } },
+    // Theirs, and "<name> connected with you" rows they caused in others' inboxes (connect by pass).
+    { key: "notifications", label: "App notifications", model: AppNotification, filter: { $or: [{ userId: id }, { kind: "conn", sentBy: id }] } },
     { key: "activity", label: "Activity (likes, comments, mentions, replies)", model: ActivityEvent, filter: { $or: [{ userId: id }, { actorId: id }, { refId: { $in: refIds } }] } },
   ];
 }

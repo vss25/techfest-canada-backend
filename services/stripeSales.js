@@ -79,6 +79,12 @@ export async function stripeSessions(stripe, { force = false } = {}) {
   return { rows, free };
 }
 
+/** What this instance last read from Stripe ({ rows, free }), however old, or null before the first read. Never calls
+    Stripe (connect by pass, services/passHolder.js, leaves out fully refunded passes with it; a refund is for good). */
+export function cachedStripeSessions() {
+  return cache.data ? { rows: cache.data, free: cache.free } : null;
+}
+
 /** Paid sessions, cached for 5 minutes. `force` refetches. */
 export async function stripeRows(stripe, { force = false } = {}) {
   return (await stripeSessions(stripe, { force })).rows;

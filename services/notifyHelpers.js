@@ -115,7 +115,8 @@ export function recipientDTO(u) {
 }
 
 /** What the app gets for each of its notifications. */
-export function notificationDTO(n) {
+export function notificationDTO(n, { avatars = null } = {}) {
+  const conn = n.kind === "conn";
   return {
     id: String(n._id || n.id),
     title: n.title || "",
@@ -125,6 +126,13 @@ export function notificationDTO(n) {
     sentByName: n.sentByName || "",
     createdAt: n.createdAt,
     readAt: n.readAt || null,
+    // "conn" (connect by pass, Oct 24 2026): who connected (their profile: GET /api/social/users/:fromUserId), their
+    // photo now ("" when none), and the connection (GET /api/social/connections rows' `id`).
+    ...(conn ? {
+      fromUserId: n.sentBy ? String(n.sentBy) : "",
+      avatarUrl: (n.sentBy && avatars?.get(String(n.sentBy))) || "",
+      connectionId: String(n.batchId || "").replace(/^conn:/, ""),
+    } : {}),
   };
 }
 

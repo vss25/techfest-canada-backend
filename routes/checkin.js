@@ -2,7 +2,8 @@ import express from "express";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { requireCheckIn } from "../middleware/adminAuth.js";
-import { checkinCard, plainCard, holderIsAccount } from "../services/checkinCard.js";
+import { checkinCard, plainCard } from "../services/checkinCard.js";
+import { accountForPass } from "../services/passHolder.js";
 import { recordScan } from "../services/checkinDeskActions.js";
 import { cleanTicketId } from "../services/doorQr.js";
 import { deskNow } from "../services/checkinDeskLog.js";
@@ -33,23 +34,6 @@ const practiceAnswer = ({ card, ticketId, rec }) => ({
   ...(rec.checkedIn ? { time: rec.checkedInAt || null } : {}),
   message: PRACTICE_MESSAGE,
 });
-
-// What the card reads from an account (types, VIP flag, passes, photo, job). The email only to find their speaker photo.
-const HOLDER_SELECT = "name email role types typesOff vip tickets jobTitle organization avatarVersion";
-const PLACEHOLDER_EMAIL = /@ticket\.thetechfestival\.com$/i;
-
-/** The account behind a guest / issued / speaker / exhibitor pass: the one that claimed it, else the one with its
-    email whose name agrees (a buyer's email on a colleague's pass isn't the colleague's account). null: none. */
-async function accountForPass(attendee) {
-  if (attendee.claimedBy) {
-    const claimer = await User.findById(attendee.claimedBy).select(HOLDER_SELECT).lean();
-    if (claimer) return claimer;
-  }
-  const email = String(attendee.email || "").trim().toLowerCase();
-  if (!email || PLACEHOLDER_EMAIL.test(email)) return null;
-  const owner = await User.findOne({ email }).select(HOLDER_SELECT).lean();
-  return owner && holderIsAccount({ account: owner, attendee }) ? owner : null;
-}
 
 /** The account's Attendee rows (claimed by them or with one of their ticket IDs): their VIP / Media / exhibitor marks. */
 function passRowsOf(account) {
