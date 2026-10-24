@@ -37,8 +37,8 @@ import { performAction } from "../services/checkinDeskActions.js";
    + last name, emailed code): 403 { code: "password_required" }. "Staff"
    here = a staff account (role admin); everyone else is a volunteer.
 
-     GET  /info           staff: { path } the desk app's unlisted address (contract C5: the admin card reads it here,
-                          so it isn't in any public website file)
+     GET  /info           staff: { path } the desk app's address, /checkin/ (contract C5: the admin card reads it
+                          here; the public website never links to it)
      GET  /me             who's signed in, staff or volunteer, the stations, today
      GET  /clock          the time, today and each station's window state (each device every 30 s)
      GET  /snapshot       everything a device needs: guests (staff see emails and ticket IDs; volunteers never),
@@ -276,9 +276,11 @@ async function freshGuest(hit, idx) {
 /** Tests: how many index builds this instance has made. */
 export const deskIndexStats = () => ({ builds: deskIdx.builds, freshBuilds: deskIdx.freshBuilds, gen: deskIdx.index?.gen ?? null, pending: !!deskIdx.pending });
 
-/* The desk app's unlisted address (contract C5): CHECKIN_DESK_PATH when set (a new token = a new link), else today's. */
-const DESK_PATH_RE = /^\/checkin-[a-z0-9]{8,40}\/$/;
-export const DEFAULT_DESK_PATH = "/checkin-j0s8e5p4akvh/";
+/* The desk app's address (contract C5): the plain /checkin/ since Oct 24 2026 (unlisted: no link on the public site,
+   not in a sitemap; the staff / volunteer sign-in is what protects it). CHECKIN_DESK_PATH overrides it when set to
+   /checkin/ or the older /checkin-<token>/ form; anything else is ignored. */
+const DESK_PATH_RE = /^\/checkin(-[a-z0-9]{8,40})?\/$/;
+export const DEFAULT_DESK_PATH = "/checkin/";
 export function deskAppPath(env = process.env) {
   const v = String(env.CHECKIN_DESK_PATH || "").trim();
   return DESK_PATH_RE.test(v) ? v : DEFAULT_DESK_PATH;

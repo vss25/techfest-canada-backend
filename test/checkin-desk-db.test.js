@@ -565,18 +565,33 @@ test("contract C1: passwordless sign-ins, and accounts that aren't staff or volu
   }
 });
 
-test("contract C5: staff read the desk app's address from the API (it's in no public website file)", { skip }, async () => {
+test("contract C5: staff read the desk app's address from the API: /checkin/ (unlisted, sign-in protected)", { skip }, async () => {
   const r = await call("GET", `${D}/info`, { as: U.sam });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { path: "/checkin-j0s8e5p4akvh/" });
+  assert.deepEqual(r.body, { path: "/checkin/" });
   assert.equal((await call("GET", `${D}/info`, { as: U.val })).status, 403, "volunteers don't hand out the link");
   assert.equal((await call("GET", `${D}/info`, { token: tokenFor(U.sam, { via: "email" }) })).status, 403);
   try {
+    // An explicit override: /checkin/ itself, or the older /checkin-<token>/ form.
+    process.env.CHECKIN_DESK_PATH = "/checkin/";
+    assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin/");
     process.env.CHECKIN_DESK_PATH = "/checkin-n3wt0ken9876/";
     assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin-n3wt0ken9876/");
-    process.env.CHECKIN_DESK_PATH = "https://evil.example.com/";
-    assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin-j0s8e5p4akvh/");
+    // Anything else falls back to /checkin/.
+    for (const bad of ["https://evil.example.com/", "/checkin", "/Checkin/", "/checkin-/", "/checkin-ABC123def456/", "/checkin//", "//evil.example.com/"]) {
+      process.env.CHECKIN_DESK_PATH = bad;
+      assert.equal((await call("GET", `${D}/info`, { as: U.sam })).body.path, "/checkin/", bad);
+    }
   } finally { delete process.env.CHECKIN_DESK_PATH; }
+});
+
+test("contract C5: deskAppPath() on its own", { skip }, async () => {
+  const { DEFAULT_DESK_PATH, deskAppPath } = await import("../routes/checkinDesk.js");
+  assert.equal(DEFAULT_DESK_PATH, "/checkin/");
+  assert.equal(deskAppPath({}), "/checkin/");
+  assert.equal(deskAppPath({ CHECKIN_DESK_PATH: "  /checkin/  " }), "/checkin/");
+  assert.equal(deskAppPath({ CHECKIN_DESK_PATH: "/checkin-j0s8e5p4akvh/" }), "/checkin-j0s8e5p4akvh/");
+  for (const bad of ["", "/checkin", "/check-in/", "/CHECKIN/", "javascript:alert(1)", "/checkin/x/"]) assert.equal(deskAppPath({ CHECKIN_DESK_PATH: bad }), "/checkin/", bad);
 });
 
 test("contract C2: undo by reference; an undo that reaches the server before its tap leaves a tombstone, and the tap is never recorded", { skip }, async () => {
