@@ -70,7 +70,8 @@ before(async () => {
   const [mia, sam, val, ann, rae] = await M.User.create([
     { name: "Mia Manager", email: "mia.manager@example.com", role: "admin", staffRole: "management" },
     { name: "Sam Staff", email: "sam.staff@example.com", role: "admin", staffRole: "staff" },
-    { name: "Val Volunteer", email: "val.volunteer@example.com", role: "volunteer" },
+    // A password on the account: the volunteer panel takes a volunteer's password sign-in only (services/signInMethod.js).
+    { name: "Val Volunteer", email: "val.volunteer@example.com", role: "volunteer", password: "stored-hash-test-only" },
     { name: "Ann Attendee", email: "ann.attendee@example.com", role: "user", organization: "Example Bank", jobTitle: "Head of Digital",
       tickets: [{ ticketId: "a1b2c3d4e5f6", type: "power", purchaseDate: d("10-01"), manualValue: 849, manualValueNote: "Invoice 12" }] },
     { name: "Rae Rate", email: "rae.rate@example.com", role: "admin", staffRole: "staff" },
@@ -128,10 +129,15 @@ const search = (token, q) => call("POST", "/api/console/search", { token, body: 
 const keys = (b) => b.groups.map((g) => g.key);
 const group = (b, k) => b.groups.find((g) => g.key === k);
 
-test("who may search: staff and management only, with their password sign-in", { skip }, async () => {
+test("who may search: staff and management, with their password sign-in; volunteers People only (the volunteer panel)", { skip }, async () => {
   assert.equal((await search(null, "kai")).status, 401);
   assert.equal((await search(T.ann, "kai")).status, 403, "an attendee");
-  assert.equal((await search(T.val, "kai")).status, 403, "a volunteer: the app's check-in only");
+  const vol = await search(T.val, "kai");
+  assert.equal(vol.status, 200, "a volunteer: the volunteer panel's People look-up");
+  assert.deepEqual(keys(vol.body), ["people"]);
+  const volEmail = await search(T.val, "eve.exhibitor@example.com");
+  assert.deepEqual(volEmail.body.groups[0].items.map((i) => i.title), ["Eve Exhibitor"]);
+  assert.ok(!JSON.stringify(volEmail.body).includes("eve.exhibitor@example.com"), "never echoed to a volunteer");
   const viaCode = await search(T.samEmailCode, "kai");
   assert.deepEqual([viaCode.status, viaCode.body.code], [403, "password_required"]);
   for (const t of [T.sam, T.mia]) assert.equal((await search(t, "kai")).status, 200);

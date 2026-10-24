@@ -7,8 +7,8 @@ import { maskEmail, recordUnsubscribe, verifyUnsubscribe } from "../services/uns
 /* =========================================================
    /api/unsubscribe: the link in every TTFC bulk email (Oct 22 2026)
    Public, no sign-in: the signed token says whose address it is
-   (services/unsubscribe.js). Mounted before the kill switch, so it
-   works while the site is offline.
+   (services/unsubscribe.js). Mounted in server.js before the other
+   public routes.
 
    GET  /?t=<token>   a page with one button (mail scanners open links, so a GET never changes anything)
    POST /?t=<token>   unsubscribes: the page's button (form field from=page → a "Done" page), or a mail app's own

@@ -648,7 +648,7 @@ export function summarizeRsvps(docs = []) {
 }
 
 /** GET /api/console/rsvps. `catalog` is the options payload, so the staff page has the
-    labels even while the kill switch has GET /api/rsvp/options (the public site) switched off. */
+    labels without a second call to GET /api/rsvp/options. */
 /** `codes`: Map(ticket ID → the coupon code its ticket was bought with, services/promoCodes.js codesForTickets). */
 export function rsvpListPayload({ total = 0, page = 0, size = 50, everyone = [], rows = [], codes = null } = {}) {
   return { total, page, size, summary: summarizeRsvps(everyone), rows: rows.map((d) => rsvpRow(d, codes)), catalog: rsvpOptionsPayload() };

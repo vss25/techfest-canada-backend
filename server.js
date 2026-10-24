@@ -1,6 +1,9 @@
 // server.js
 import dotenv from "dotenv";
-dotenv.config();
+// TTFC_IMPORT_ONLY=1: a test imports this file for the app alone (test/volunteer-panel-db.test.js walks every route):
+// no .env, no database, no jobs, no listening. Unset (production, npm start, npm run dev): everything as always.
+const IMPORT_ONLY = process.env.TTFC_IMPORT_ONLY === "1";
+if (!IMPORT_ONLY) dotenv.config();
 import express from "express";
 import mongoose from "mongoose";
 import { startPriceScheduler } from "./services/scheduledPrices.js";
@@ -74,7 +77,7 @@ import eventSummaryRouter from "./routes/eventSummary.js";                      
 import engagementRouter from "./routes/engagement.js";                              // GET /api/t/o/<token>.gif: email open pixel
 import unsubscribeRouter from "./routes/unsubscribe.js";                            // the unsubscribe link in every bulk email (no sign-in)
 import unsubscribesRouter from "./routes/unsubscribes.js";                          // Admin › Unsubscribed emails
-import { killSwitchMiddleware, statusHandler } from "./services/killSwitch.js";
+import { statusHandler } from "./services/siteStatus.js"; // GET /api/status: always live (the kill switch was removed Oct 23 2026)
 import { installGracefulShutdown } from "./services/gracefulShutdown.js";
 import { endStreams } from "./services/checkinDeskLog.js";
 import path from "path";
@@ -134,16 +137,20 @@ app.use("/api/console/companies", express.json({ limit: "4mb" }), companiesRoute
 // Feed photos and profile photos arrive as base64 JSON.
 app.use(express.json({ limit: "1mb" }));
 
-// The email open pixel: before the kill switch, so an email never shows a broken image.
+// The email open pixel.
 app.use("/api/t", engagementRouter);
-// The unsubscribe link in every bulk email: before the kill switch, so unsubscribing always works.
+// The unsubscribe link in every bulk email.
 app.use("/api/unsubscribe", unsubscribeRouter);
 
 /* ==========================================
-   KILL SWITCH — site + app offline (staff routes keep working)
+   SITE STATUS — always live
+   The kill switch (website + apps offline from the admin panel) was removed
+   on Oct 23 2026 (the organiser: "Its risky"). The website and the apps
+   already out there ask GET /api/status on launch, so it stays and always
+   answers { live: true, message: "" } (services/siteStatus.js). An emergency
+   take-down is done by the developers on the hosting (Vercel / Render).
 ========================================== */
 app.get("/api/status", statusHandler);
-app.use(killSwitchMiddleware);
 
 /* ==========================================
    ROUTES
@@ -225,7 +232,8 @@ app.get("/", (req, res) => {
 ========================================== */
 // Reads from the primary whatever MONGO_URI says (options here win over the URI's), so a post, comment or message
 // someone just wrote is always found by the next request (no read-after-write gap on a lagging secondary).
-mongoose
+// Not when a test imports this file for the app alone (IMPORT_ONLY, above).
+if (!IMPORT_ONLY) mongoose
   .connect(process.env.MONGO_URI, { readPreference: "primary" })
   .then(() => {
     console.log("✅ MongoDB connected"); repairStripeSyncOnce(); startPriceScheduler();
@@ -250,13 +258,18 @@ mongoose
    SERVER START
 ========================================== */
 const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
-// SIGTERM (every Render deploy / restart): no new connections, the check-in desk's live streams told to reconnect,
-// requests in flight (a desk tap half-written) finish for up to 10 s, then the database closes and the process exits
-// (a second first, for work the last answers started: the door scan records the desk's check-in after answering).
-installGracefulShutdown(server, {
-  timeoutMs: 10 * 1000, beforeClose: endStreams,
-  onClosed: async () => { await new Promise((r) => setTimeout(r, 1000)); await mongoose.disconnect(); },
-});
+if (!IMPORT_ONLY) {
+  const server = app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+  // SIGTERM (every Render deploy / restart): no new connections, the check-in desk's live streams told to reconnect,
+  // requests in flight (a desk tap half-written) finish for up to 10 s, then the database closes and the process exits
+  // (a second first, for work the last answers started: the door scan records the desk's check-in after answering).
+  installGracefulShutdown(server, {
+    timeoutMs: 10 * 1000, beforeClose: endStreams,
+    onClosed: async () => { await new Promise((r) => setTimeout(r, 1000)); await mongoose.disconnect(); },
+  });
+}
+
+// The app itself, for the tests' route sweep (IMPORT_ONLY).
+export default app;
