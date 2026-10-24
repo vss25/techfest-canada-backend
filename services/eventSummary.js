@@ -130,7 +130,11 @@ function addCheckin(line, c, rsvpd) {
   if (!rsvpd) line.notRsvpd += 1;
 }
 
-/** A person's facts for the summary, or null when they have no counting pass. */
+/** A person's facts for the summary, or null when they have no counting pass. Also the check-in desk's attendance
+    (services/checkinAttendance.js: entitled and RSVP'd per meal, by the same rule). */
+export function summaryFacts(p) {
+  return factsOf(p);
+}
 function factsOf(p) {
   const passes = countingPasses(p);
   if (!passes.length) return null;

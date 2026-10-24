@@ -17,6 +17,7 @@ import {
   queryView, sessionsIndex, unknownKeyOf, unknownRows,
 } from "../services/checkinDesk.js";
 import { countingPasses } from "../services/eventSummary.js";
+import { loadAttendance } from "../services/checkinAttendance.js";
 import {
   STATIONS, agendaTimes, cleanSettings, eventDayInfo, resolveWindows, stationEnabled, stationState, DEFAULT_BUFFERS, FALLBACK_AGENDA, DEFAULT_WINDOWS,
 } from "../services/checkinDeskTime.js";
@@ -50,6 +51,9 @@ import { performAction } from "../services/checkinDeskActions.js";
      POST /lookup         { ticketId } → { key } : a volunteer typed a ticket ID (they don't hold the list of them)
      GET  /team           staff: the team's names (media query assignees)
      GET  /history/:key   staff: one guest's events (latest 60)
+     GET  /counts         staff: attendance by day (contract C10, services/checkinAttendance.js): arrived, checked in,
+                          passes collected to date, each meal's admitted / entitled / RSVP'd / no-shows / overrides,
+                          by pass colour, ISSUE PASS and NO DETAILS FOUND; each person once per point and day
      GET  /settings       staff: the windows, where they come from, the buffers, the evening switch
      PUT  /settings       staff: { windows?, buffers?, stations? } (audited checkin_desk_settings)
    Nothing here sends email or pushes. Rules: services/checkinDesk.js, checkinDeskTime.js; writes:
@@ -550,6 +554,27 @@ router.post("/lookup", limit("lookup"), wrap(async (req, res) => {
 router.get("/team", staffOnly, wrap(async (req, res) => {
   const team = await User.find({ role: { $in: ["admin", "volunteer"] }, banned: { $ne: true } }).select("name email role").sort({ name: 1 }).limit(300).lean();
   res.json({ team: team.map((u) => ({ id: String(u._id), name: u.name || u.email, role: u.role === "admin" ? "staff" : "volunteer" })) });
+}));
+
+/* Attendance by day (contract C10): the desk app's staff-only Counts screen (refreshed on each relevant live event and
+   every 30 s). One computation at a time per instance, kept for a second (many iPads refresh on the same event). */
+const COUNTS_TTL_MS = 1000;
+let countsCache = { at: 0, dir: null, value: null, pending: null };
+async function countsNow(dir) {
+  if (countsCache.value && countsCache.dir === dir && Date.now() - countsCache.at < COUNTS_TTL_MS) return countsCache.value;
+  if (countsCache.pending && countsCache.dir === dir) return countsCache.pending;
+  const pending = loadAttendance(dir).then((value) => { countsCache = { at: Date.now(), dir, value, pending: null }; return value; })
+    .catch((err) => { if (countsCache.pending === pending) countsCache.pending = null; throw err; });
+  countsCache = { ...countsCache, dir, pending };
+  return pending;
+}
+limiters.counts = makeLimiter({ max: 120, windowMs: 60 * 1000 });
+router.get("/counts", staffOnly, limit("counts"), wrap(async (req, res) => {
+  let idx = await deskIndex();
+  if (peopleMoved(idx)) idx = await indexWithPeople();
+  const attendance = await countsNow(idx.dir);
+  // The attendance object, and the same under `attendance` (GET /api/console/summary's field name).
+  res.json({ ...attendance, attendance, serverTime: deskNow().toISOString() });
 }));
 
 router.get("/history/:key", staffOnly, wrap(async (req, res) => {
