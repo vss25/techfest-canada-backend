@@ -296,3 +296,184 @@ test("many interleavings, both orders: an accepted undo always ends with the tap
   // Every kind of interleaving happened.
   assert.ok(outcomes.tombstoneFirst > 0 && outcomes.undoneAfter > 0 && outcomes.takenBackMidway > 0, JSON.stringify(outcomes));
 });
+
+/* ---------- Round 4 (Oct 24 2026): a request that dies or throws after writing (the round-3 verifier's V1–V4) ---------- */
+
+/** What the devices show for the pass: the newest event (by seq) that carries its state. */
+async function devicesPassCollected() {
+  const e = await M.CheckinEvent.findOne({ "pass.ticketId": TICKET, seq: { $gt: sinceSeq } }).sort({ seq: -1 }).lean();
+  return e ? !!e.pass.collected : null;
+}
+const tapBody = (clientId, point = "checked_in") => ({ clientId, kind: "mark", point, key: guestKey(TICKET), station: point === "arrived" ? "lobby" : "desk", clientAt: at() });
+
+test("a request that dies after writing everything (a restart mid-tap), then the app's [tap, undo]: the undo takes it all back at once", { skip }, async () => {
+  await fresh();
+  A.setTapTiming({ leaseMs: 300, waitMs: 100 });
+  const X = cid("tap");
+  const g = gate();
+  A.setDeskActionHooks(async (name, info) => {
+    if (name === "tap:before-event" && info.clientId === X) { g.reach(); await g.opened; } // the process "dies" here
+  });
+  const req1 = tap(X);
+  await g.hit; // both marks set, the pass collected, no event, the tap "pending" for ever
+  assert.equal(!!(await M.Attendee.findOne({ ticketId: TICKET }).lean()).checkedIn, true);
+  const b = await call("POST", "/api/checkin/desk/actions", U.val, { actions: [tapBody(X), { clientId: cid("und"), kind: "undo", target: X, station: "desk", clientAt: at() }] });
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  const [rTap, rUndo] = b.body.results;
+  assert.equal(rTap.code, "in_flight");
+  assert.equal(rUndo.ok, true, JSON.stringify(rUndo));
+  assert.equal(rUndo.tombstone, true);
+  assert.match(rUndo.message, /still being recorded: it's taken back/);
+  assert.deepEqual(rUndo.events[0].marks.map((m) => [m.point, m.at]).sort(), [["arrived", null], ["checked_in", null]], "the answer carries the rows it took back");
+  assert.equal(rUndo.events[0].pass.collected, false, "and the pass given back");
+  // Taken back already, though the request that wrote it never finishes.
+  await assertNotMarked(X, "(dead, after the undo)");
+  assert.equal(await devicesPassCollected(), false);
+  await sleep(350);
+  const again = await tap(X); // after the lease: never recorded
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.undone, true);
+  await assertNotMarked(X, "(dead, re-sent after the lease)");
+  // If it wasn't dead after all (only very slow) and finishes now: still nothing stays, and the devices' newest pass
+  // state is "not collected" (its own event said "collected": the state after it follows it).
+  g.open();
+  const r1 = await req1;
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  assert.equal(r1.body.undone, true);
+  await assertNotMarked(X, "(the slow request finished)");
+  assert.equal(await devicesPassCollected(), false, "the devices show the pass not collected");
+});
+
+test("a request that throws after collecting the pass (a database error): what it wrote is taken back before it's released; undo, then the tap again: never recorded", { skip }, async () => {
+  await fresh();
+  const X = cid("tap");
+  let first = true;
+  A.setDeskActionHooks(async (name, info) => {
+    if (name === "tap:pass-collected" && info.clientId === X && first) { first = false; throw new Error("simulated MongoNetworkError"); }
+  });
+  const t = await tap(X);
+  assert.equal(t.status, 500);
+  // Nothing of it stays (no mark, the pass given back), and the devices are told (a void event with the rows).
+  await assertNotMarked(X, "(after the error)");
+  assert.equal((await M.CheckinTap.findById(X).lean()).state, "waiting", "released: it can be sent again");
+  const v = await M.CheckinEvent.findOne({ kind: "void", seq: { $gt: sinceSeq }, "marks.0": { $exists: true } }).lean();
+  assert.ok(v, "the rows it took back went out");
+  assert.equal(v.pass.collected, false);
+  A.setDeskActionHooks(null);
+  const u = await undo(X);
+  assert.equal(u.status, 200, JSON.stringify(u.body));
+  assert.equal(u.body.tombstone, true);
+  const again = await tap(X);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.undone, true);
+  await assertNotMarked(X, "(undone, re-sent)");
+});
+
+test("a request that throws between collecting the pass and its event, sent again (recorded): a staff reset gives the pass back", { skip }, async () => {
+  await fresh();
+  const X = cid("tap");
+  let first = true;
+  A.setDeskActionHooks(async (name, info) => {
+    if (name === "tap:pass-collected" && info.clientId === X && first) { first = false; throw new Error("simulated MongoNetworkError"); }
+  });
+  assert.equal((await tap(X)).status, 500);
+  A.setDeskActionHooks(null);
+  const again = await tap(X);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.events[0].pass.collected, true);
+  const row = await M.CheckinMark.findOne({ subject: TICKET, day: DAY, point: "checked_in" }).lean();
+  assert.equal(new Date(row.passSetAt).toISOString(), at(), "the check-in owns the collection");
+  const rs = await call("POST", "/api/checkin/desk/actions", U.sam, { clientId: cid("rst"), kind: "reset", point: "arrived", key: guestKey(TICKET), station: "desk", clientAt: at() });
+  assert.equal(rs.status, 200, JSON.stringify(rs.body));
+  assert.equal(await M.CheckinMark.countDocuments({ subject: TICKET, day: DAY, at: { $ne: null } }), 0);
+  assert.equal(!!(await M.Attendee.findOne({ ticketId: TICKET }).lean()).checkedIn, false, "the pass was given back");
+});
+
+test("a request that died after collecting the pass is taken over: the new request owns that collection, so an undo gives it back", { skip }, async () => {
+  await fresh();
+  A.setTapTiming({ leaseMs: 150, waitMs: 0 });
+  const X = cid("tap");
+  const g = gate();
+  let first = true;
+  A.setDeskActionHooks(async (name, info) => {
+    if (name === "tap:pass-collected" && info.clientId === X && first) { first = false; g.reach(); await g.opened; }
+  });
+  const req1 = tap(X); // collects the pass, then "dies"
+  await g.hit;
+  await sleep(200);
+  const req2 = await tap(X); // after the lease: taken over and recorded
+  assert.equal(req2.status, 200, JSON.stringify(req2.body));
+  const row = await M.CheckinMark.findOne({ subject: TICKET, day: DAY, point: "checked_in" }).lean();
+  assert.equal(new Date(row.passSetAt).toISOString(), at(), "the collection the dead request made is this check-in's");
+  const ur = await undo(X);
+  assert.equal(ur.status, 200, JSON.stringify(ur.body));
+  assert.equal(ur.body.events[0].pass.collected, false);
+  g.open(); // the first request wakes up: nothing it does brings the check-in or the collection back
+  await req1;
+  await assertNotMarked(X, "(takeover after a collection)");
+});
+
+test("someone else's undo of a tap still being recorded is refused (403 undo_refused); the tap is recorded; staff's takes it back", { skip }, async () => {
+  await fresh();
+  const vic = await M.User.create({ name: "Vic Volunteer", email: `vic.${cid("x")}@example.com`, role: "volunteer" });
+  const X = cid("tap");
+  const g = gate();
+  A.setDeskActionHooks(async (name, info) => { if (name === "tap:between-marks" && info.clientId === X) { g.reach(); await g.opened; } });
+  const t = tap(X);
+  await g.hit;
+  const u = await undo(X, vic);
+  assert.equal(u.status, 403, JSON.stringify(u.body));
+  assert.equal(u.body.code, "undo_refused");
+  assert.equal((await M.CheckinTap.findById(X).lean()).tombs.length, 0, "no tombstone of hers is left on it");
+  g.open();
+  const tr = await t;
+  assert.equal(tr.status, 200, JSON.stringify(tr.body));
+  assert.ok(!tr.body.undone, "recorded");
+  assert.ok((await M.CheckinMark.findOne({ subject: TICKET, day: DAY, point: "checked_in" }).lean()).at);
+  // Staff may undo anyone's tap, also while it's being recorded (and it's audited).
+  await fresh();
+  const Y = cid("tap");
+  const g2 = gate();
+  A.setDeskActionHooks(async (name, info) => { if (name === "tap:between-marks" && info.clientId === Y) { g2.reach(); await g2.opened; } });
+  const t2 = tap(Y);
+  await g2.hit;
+  const su = await undo(Y, U.sam);
+  assert.equal(su.status, 200, JSON.stringify(su.body));
+  assert.match(su.body.message, /still being recorded/);
+  g2.open();
+  assert.equal((await t2).status, 200);
+  await assertNotMarked(Y, "(staff's undo of an in-flight tap)");
+  const { AdminAudit } = await import("../models/Admin.js");
+  assert.ok(await AdminAudit.findOne({ action: "checkin_desk_undo", detail: /still being recorded/ }).lean(), "audited");
+});
+
+test("what a failed try of a tap left behind is taken back when an undo or the tap again finds it undone", { skip }, async () => {
+  // Rows as a try that failed AND couldn't clean up after itself leaves them: marks with its clientId, the pass
+  // collected at its time, the tap released ("waiting", its author known).
+  const leftovers = async (X) => {
+    await fresh();
+    const t = new Date(at());
+    await M.CheckinMark.create([
+      { subject: TICKET, day: DAY, point: "checked_in", at: t, byId: U.val._id, byName: "Val Volunteer", byRole: "volunteer", station: "desk", ref: X, passSetAt: t, rev: 1 },
+      { subject: TICKET, day: DAY, point: "arrived", at: t, byId: U.val._id, byName: "Val Volunteer", byRole: "volunteer", station: "desk", ref: X, rev: 1 },
+    ]);
+    await M.Attendee.updateOne({ ticketId: TICKET }, { $set: { checkedIn: true, checkedInAt: t } });
+    return { _id: X, state: "waiting", kind: "mark", byId: U.val._id, byRole: "volunteer", sentFromId: U.val._id, owner: null, claimedAt: null };
+  };
+  // (1) The volunteer's undo: the tap is undone and the leftovers go at once.
+  const X = cid("tap");
+  await M.CheckinTap.create(await leftovers(X));
+  const u = await undo(X);
+  assert.equal(u.status, 200, JSON.stringify(u.body));
+  assert.equal(u.body.tombstone, true);
+  assert.equal(u.body.events[0].marks.length, 2);
+  await assertNotMarked(X, "(leftovers, undo)");
+  // (2) An undo stored earlier (a tombstone), and the tap sent again: answered "undone", the leftovers taken back.
+  const Y = cid("tap");
+  await M.CheckinTap.create({ ...(await leftovers(Y)), tombs: [{ byId: U.val._id, byName: "Val Volunteer", byRole: "volunteer", clientId: cid("und"), at: new Date(at()) }] });
+  const again = await tap(Y);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.undone, true);
+  assert.deepEqual(again.body.events.map((e) => e.kind), ["undo"]);
+  await assertNotMarked(Y, "(leftovers, the tap again)");
+});

@@ -52,7 +52,13 @@ import { normalizeTicketId } from "./ticketAccess.js";
         was answered "undone" always ends with the tap not marked, in
         whichever order the requests run (the same tap sent twice at once
         is recorded by one request; the other is answered once it's done,
-        or 503 in_flight to be sent again).
+        or 503 in_flight to be sent again). That also holds when the
+        recording request never finishes (a restart mid-tap) or throws:
+        the undo clears what was written so far itself, a request that
+        fails takes back what it wrote before the tap is released, and a
+        check-in marks passSetAt before it collects the pass (a re-sent or
+        taken-over tap adopts a collection made at exactly its time).
+        Someone else's undo of a tap whose author is known: 403.
      C3 queuedBy { id, name }: tapped offline by that person, sent from
         someone else's sign-in: recorded and audited as theirs, with
         recordedBy = the sign-in and queuedOffline; staff powers only
@@ -228,9 +234,10 @@ const tombOf = (actor, ctx, clientId) => ({
 });
 
 /**
- * Before a tap writes anything: this request becomes the one recording it. → { own: token } | { undone } (an undo
- * that may take it back came first: never recorded) | { done } (recorded by another request) | { inFlight } (another
- * request is recording it right now and didn't finish within the wait: answered 503, the device sends it again).
+ * Before a tap writes anything: this request becomes the one recording it. → { own: token } | { undone, undo } (an
+ * undo that may take it back came first: never recorded; the caller takes back anything an earlier try of it left) |
+ * { done } (recorded by another request) | { inFlight } (another request is recording it right now and didn't finish
+ * within the wait: answered 503, the device sends it again).
  */
 async function claimTap(a, actor, ctx) {
   const id = a.clientId;
@@ -247,13 +254,14 @@ async function claimTap(a, actor, ctx) {
     } catch (err) { if (!isDup(err)) throw err; }
     const doc = await CheckinTap.findById(id).lean();
     if (!doc) continue;
-    if (doc.state === "undone") return { undone: true };
+    if (doc.state === "undone") return { undone: true, undo: doc.undo || {} };
     if (doc.state === "done") return { done: true };
     if (doc.state === "waiting") {
       const tombs = doc.tombs || [];
       const cover = tombs.find((t) => tombCovers(t, me));
       if (cover) {
-        // An undo that may take it back reached the server first: never recorded.
+        // An undo that may take it back reached the server first: never recorded (and whatever an earlier try of it
+        // wrote before it failed is taken back by the caller: the "undone" answer below).
         await CheckinTap.updateOne({ _id: id, state: "waiting" }, { $set: { state: "undone", undo: cover, ...me } });
         continue;
       }
@@ -323,7 +331,12 @@ export async function performAction(action, ctx) {
   if (UNDOABLE_KINDS.includes(action.kind)) {
     const claim = await claimTap(action, actor, c);
     await pause("tap:claimed", { clientId: action.clientId, claim });
-    if (claim.undone) return { ok: true, undone: true, events: [], message: "Undone on the device before it reached the server: not recorded." };
+    if (claim.undone) {
+      // Never recorded. An earlier try of this very tap that died or failed after writing (a restart mid-tap, a
+      // database error) may have left marks with its clientId, or a pass collection: taken back now, as that undo.
+      const back = await settleUndone(action.clientId, claim.undo || {});
+      return { ok: true, undone: true, events: back ? view([back]) : [], message: "Undone on the device before it reached the server: not recorded." };
+    }
     if (claim.done) {
       const ev = await eventForClientId(action.clientId);
       return { ok: true, duplicate: true, events: ev ? view([ev, ...await undosOf(action.clientId)]) : [] };
@@ -351,8 +364,9 @@ export async function performAction(action, ctx) {
       // An undo that turned it "undone" while this request was writing: take back everything it wrote.
       const undo = r.ok && !r.already ? await finishTap(action.clientId) : await releaseTap(action.clientId, token);
       if (undo) {
-        const back = await settleUndone(action.clientId, undo, r.event || null);
-        if (back && r.events) r.events = [...r.events, ...view([back])];
+        await settleUndone(action.clientId, undo, r.event || null);
+        // The answer carries what took it back: this request's own take-back, or the undo's (it clears what it finds).
+        if (r.events) r.events = [...r.events, ...view(await undosOf(action.clientId))];
         if (r.ok && !r.already) Object.assign(r, { undone: true, message: "Recorded, then taken back: it was undone on the device meanwhile." });
       }
     }
@@ -367,21 +381,36 @@ export async function performAction(action, ctx) {
       const ev = await eventForClientId(action.clientId);
       return { ok: true, duplicate: true, events: ev ? view([ev, ...await undosOf(action.clientId)]) : [] };
     }
-    // Failed half-way: the tap can be sent again (it's released); undone meanwhile → what it wrote is taken back.
     if (token) {
+      // Recorded after all (the error came once its event was stored): it's done, and answered like the same tap again.
+      const stored = await eventForClientId(action.clientId).catch(() => null);
+      if (stored) {
+        const undo = await finishTap(action.clientId).catch(() => null);
+        if (undo) await settleUndone(action.clientId, undo, stored).catch(logActionError("SETTLE"));
+        return { ok: true, duplicate: true, events: view([stored, ...await undosOf(action.clientId).catch(() => [])]) };
+      }
+      // Failed half-way (a database error): what it wrote is taken back before the tap is released (sent again, it's
+      // recorded from scratch; undone instead, nothing of it stays), so no mark or pass collection is left without
+      // an event or an owner. Undone meanwhile → that undo's take-back as well.
+      await takeBackFailed(action.clientId).catch(logActionError("FAILED TAP"));
       const undo = await releaseTap(action.clientId, token).catch(() => null);
-      if (undo) await settleUndone(action.clientId, undo).catch(() => {});
+      if (undo) await settleUndone(action.clientId, undo).catch(logActionError("SETTLE"));
     }
     throw err;
   }
 }
 
-/** The undo events of a tap (for the answer to the same tap sent again). */
-const undosOf = (clientId) => CheckinEvent.find({ kind: "undo", ref: clientId, tombstone: { $ne: true } }).sort({ seq: 1 }).limit(5).lean();
+const logActionError = (label) => (err) => console.error(`CHECKIN DESK ${label} ERROR:`, err?.message || err);
+
+/** The undo events of a tap, oldest first (for the answer to the same tap sent again): the ones that took something
+    back (a tombstone stored while a request was recording the tap clears what that request had written). */
+const undosOf = (clientId) => CheckinEvent.find({ kind: "undo", ref: clientId, $or: [{ tombstone: { $ne: true } }, { "marks.0": { $exists: true } }] })
+  .sort({ seq: 1 }).limit(5).lean();
 
 /**
- * The tap `clientId` was undone (`undo`: who) while it was being recorded: take back every mark it set (and a pass
- * collection it made), or the NO DETAILS FOUND card it opened, as that undo. → the undo event, or null (nothing left).
+ * The tap `clientId` was undone (`undo`: who) while it was being recorded (or an earlier try of it left something
+ * behind): take back every mark it set (and a pass collection it made), or the NO DETAILS FOUND card it opened, as
+ * that undo. `ev`: the tap's own event when it was just stored. → the undo event, or null (nothing left).
  */
 async function settleUndone(clientId, undo, ev = null) {
   const target = ev || await eventForClientId(clientId);
@@ -391,13 +420,33 @@ async function settleUndone(clientId, undo, ev = null) {
     return appendEvent({ kind: "undo", subject: unknownKeyOf(clientId), day: target.day, station: target.station, ...by, ref: clientId, refPoint: "unknown_arrival" });
   }
   const { changed, pass } = await clearByRef(clientId);
-  if (!changed.length) return null;
+  if (!changed.length) {
+    // The undo took it all back already, before this tap's own event was stored: that event's pass state (devices
+    // keep the newest event's) may say collected though it was given back, so the state now goes out after it.
+    if (!ev?.pass?.ticketId) return null;
+    const now = await collectedAt(variantsOf([ev.pass.ticketId]));
+    if (!!now.collected === !!ev.pass.collected && sameTime(now.at, ev.pass.collectedAt)) return null;
+    return appendEvent({
+      kind: "undo", point: ev.point, subject: ev.subject, day: ev.day, station: ev.station || "", ...by, ref: clientId, refPoint: ev.point,
+      pass: { ticketId: ev.pass.ticketId, collected: now.collected, collectedAt: now.at },
+    });
+  }
   const first = target?.kind === "mark" ? target : changed[0];
   return appendEvent({
     kind: "undo", point: first.point, subject: first.subject, day: first.day, station: target?.station || "", ...by, ref: clientId, refPoint: first.point,
     marks: changed, pass,
   });
 }
+
+/** A tap that failed half-way (a database error before its event): every mark it set and a pass collection one of
+    them made are taken back; the devices get the rows as they are now (a `void` event: nothing happened). */
+async function takeBackFailed(clientId) {
+  const { changed, pass } = await clearByRef(clientId);
+  if (!changed.length) return null;
+  return appendEvent({ kind: "void", marks: changed, pass });
+}
+
+const sameTime = (a, b) => (a ? new Date(a).getTime() : null) === (b ? new Date(b).getTime() : null);
 
 function whenText(at) {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" }).format(new Date(at));
@@ -469,7 +518,12 @@ async function doMark(a, ctx, actor, view) {
 
   const ref = a.clientId;
   const common = { at, actor, station: a.station, ref, override, practice, lateSync: clock.late, recordedBy: ctx.recordedBy };
-  const res = await setMark({ subject, day, point, ...common, note: point === "av" ? a.note || "" : "", item: item?.key || "" });
+  // A check-in that collects the pass (Day 1 / Day 2, a guest with a pass: ISSUE PASS has none, contract C7) says so
+  // BEFORE it collects it (passSetAt = the tap's time), so an undo or reset that takes it back at any moment, or this
+  // request failing or dying half-way, gives the collection back (uncollectPass only matches that exact time). Cleared
+  // below when the pass was already collected by something else.
+  const collects = point === "checked_in" && !practice && !guest?.noPass;
+  const res = await setMark({ subject, day, point, ...common, note: point === "av" ? a.note || "" : "", item: item?.key || "", passSetAt: collects ? at : null });
   await pause("tap:first-mark", { clientId: a.clientId, point });
   if (!res.changed && !res.mine) {
     const d = res.doc;
@@ -486,20 +540,30 @@ async function doMark(a, ctx, actor, view) {
     if (arr.changed || arr.mine) changed.push(arr.doc);
     await pause("tap:between-marks", { clientId: a.clientId, point });
     // ISSUE PASS (contract C7): checked in = a pass issued at the desk; there's no ticket to collect.
-    if (!practice && !guest?.noPass) {
+    if (collects) {
       const ids = guest ? [guest.ticketIds[guest.norms.indexOf(subject)] || subject, subject] : [subject];
       let p = await collectPass(ids, at);
-      if (p.set) {
-        await pause("tap:pass-collected", { clientId: a.clientId });
-        const upd = await CheckinMark.findOneAndUpdate({ _id: res.doc._id, ref, at: { $ne: null } }, { $set: { passSetAt: at }, $inc: { rev: 1 } }, { returnDocument: "after" }).lean();
-        if (upd) changed[0] = upd;
+      // Its own collection: made just now, or at exactly this tap's time by an earlier try of this very tap (one that
+      // died or failed after collecting it: taken over after the lease, or sent again), which this check-in adopts.
+      const own = p.set || sameTime(p.at, at);
+      if (own) {
+        if (p.set) await pause("tap:pass-collected", { clientId: a.clientId });
+        const held = sameTime(res.doc.passSetAt, at)
+          ? await CheckinMark.findOne({ _id: res.doc._id, ref, at: { $ne: null }, passSetAt: at }).lean()
+          : await CheckinMark.findOneAndUpdate({ _id: res.doc._id, ref, at: { $ne: null } }, { $set: { passSetAt: at }, $inc: { rev: 1 } }, { returnDocument: "after" }).lean();
+        if (held) changed[0] = held;
         else {
           // This check-in was taken back (an undo, a staff reset) while the pass was being marked collected: the
-          // collection goes to a check-in made since, else it's given back, so no collection is left without a mark.
-          const since = await CheckinMark.findOneAndUpdate({ subject, day, point, at: { $ne: null }, passSetAt: null }, { $set: { passSetAt: at }, $inc: { rev: 1 } }, { returnDocument: "after" }).lean();
+          // collection goes to a check-in made since (the same row, set again by another tap), else it's given back,
+          // so no collection is left without a mark.
+          const since = await CheckinMark.findOneAndUpdate({ _id: res.doc._id, at: { $ne: null } }, { $set: { passSetAt: at }, $inc: { rev: 1 } }, { returnDocument: "after" }).lean();
           if (since) changed.push(since);
           else p = await uncollectPass(ids, at);
         }
+      } else if (res.doc.passSetAt) {
+        // Collected before (Day 1, the door scan, another check-in): this check-in owns no collection.
+        await CheckinMark.updateOne({ _id: res.doc._id, ref, passSetAt: at }, { $set: { passSetAt: null } });
+        changed[0] = { ...changed[0], passSetAt: null };
       }
       pass = { ticketId: subject, collected: p.collected, collectedAt: p.at };
     }
@@ -548,20 +612,43 @@ async function doUndo(a, ctx, actor, view, again = false) {
     await pause("undo:after-tombstone", { clientId: a.clientId, ref: a.ref, state: tap?.state });
     // Recorded since this undo looked (it was being recorded): the usual undo, now that it's stored.
     if (tap?.state === "done" && !again) return doUndo(a, ctx, actor, view, true);
-    let message = "Undone. That tap hadn't reached the server, and it won't be recorded.";
-    if (tap?.state === "pending" && tombCovers(tomb, tap)) {
-      // Being recorded right now by another request: it's undone, and that request takes back what it writes.
-      const r = await CheckinTap.updateOne({ _id: a.ref, state: "pending" }, { $set: { state: "undone", undo: tomb } });
-      if (!r.modifiedCount && !again) {
-        const now = await CheckinTap.findById(a.ref).select("state").lean();
-        if (now?.state === "done") return doUndo(a, ctx, actor, view, true);
-      }
-      message = "Undone. That tap was still being recorded: it's taken back.";
+    // Whose tap it is is known once a request has claimed it (being recorded, or released after a try that failed):
+    // only its author's (or staff's) undo takes it back, the rule for a stored tap. Someone else's is refused, never
+    // answered "won't be recorded" while the tap is recorded.
+    const known = !!tap && tap.state !== "undone" && (tap.state === "pending" || !!tap.kind);
+    if (known && !tombCovers(tomb, tap)) {
+      await CheckinTap.updateOne({ _id: a.ref }, { $pull: { tombs: { clientId: a.clientId } } }).catch(() => {});
+      return fail(403, "You can only undo your own taps. Ask a staff member.", { code: "undo_refused" });
     }
+    let message = "Undone. That tap hadn't reached the server, and it won't be recorded.";
+    let cleared = { changed: [], pass: undefined };
+    if (known) {
+      // Being recorded by another request (or a try of it failed): undone from now on, and whatever it has written so
+      // far is taken back here and now, so nothing stays even if that request never finishes (a restart mid-tap). A
+      // request still writing takes back the rest itself when it finishes (finishTap).
+      for (let i = 0, cur = tap; i < 5 && cur && cur.state !== "undone"; i++) {
+        if (cur.state === "done") { if (!again) return doUndo(a, ctx, actor, view, true); break; }
+        const r = await CheckinTap.updateOne({ _id: a.ref, state: cur.state }, { $set: { state: "undone", undo: tomb } });
+        if (r.modifiedCount) {
+          await pause("undo:before-clear", { clientId: a.clientId, ref: a.ref });
+          cleared = await clearByRef(a.ref);
+          break;
+        }
+        cur = await CheckinTap.findById(a.ref).select("state").lean();
+      }
+      if (tap.state === "pending") message = "Undone. That tap was still being recorded: it's taken back.";
+    }
+    const first = cleared.changed[0];
     const ev = await appendEvent({
       kind: "undo", tombstone: true, ref: a.ref, clientAt: a.clientAt, station: a.station, byId: actor.id, byName: actor.name, byRole: actor.role,
       clientId: a.clientId, ...queuedFields(ctx.recordedBy),
+      // What it took back (the rows after, the pass given back), like any undo.
+      ...(first ? { point: first.point, subject: first.subject, day: first.day, refPoint: first.point, marks: cleared.changed, pass: cleared.pass } : {}),
     });
+    if (first && String(tap.byId || "") !== String(actor.id || "")) {
+      const hit = first.subject.startsWith("booth:") ? null : await ctx.resolveNorm?.(first.subject);
+      await audit(actor, "checkin_desk_undo", first.subject, `${auditLine({ guest: hit, kind: "undo", point: first.point, station: a.station })} (someone else's tap, ${tap.state === "pending" ? "still being recorded" : "not recorded: a try of it failed"})`, ctx.recordedBy);
+    }
     return { ok: true, tombstone: true, events: view([ev]), message };
   }
   if (!actor.id && !ctx.staff) return fail(403, "You can only undo your own taps. Ask a staff member.", { code: "undo_refused" });

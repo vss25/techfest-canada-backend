@@ -7,8 +7,10 @@ import mongoose from "mongoose";
    "booth:<booth>"); `marks`: the rows it changed, as they are after it (with their `rev`); `pass`: the ticket's
    pass-collected state after it; `clientId`: the device's id for the tap (unique: the same tap sent twice is done
    once). `clientAt`: when it was tapped on the device. Kept: it is the desk's log (who did what, where, when).
-   kind "void": a number a failed write spent (nothing happened; readers needn't wait for it). An undo whose tap
-   hasn't reached the server is a `tombstone` (ref = that tap's clientId): when the tap arrives it isn't applied.
+   kind "void": a number a failed write spent (nothing happened; readers needn't wait for it), or a tap that failed
+   half-way (no subject; `marks` / `pass`: what it had written, taken back). An undo whose tap hasn't reached the
+   server is a `tombstone` (ref = that tap's clientId): when the tap arrives it isn't applied; one stored while a
+   request was recording the tap carries what it took back (`marks`, `pass`, subject, point) like any undo.
    `practice`: on a day that isn't Day 1 / Day 2 (never the ticket's pass collection). `queuedOffline`: tapped
    offline by `byId` / `byName`, sent later from `recordedById`'s sign-in. `lateSync`: reached the server more than a
    minute after it was tapped. `guest`: on guest / inclusions events, the guest's desk row after the change.
