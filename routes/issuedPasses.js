@@ -28,6 +28,7 @@ import { PLACEHOLDERS, SECTIONS, changedFields, cleanFields, compact, fieldsFor,
 import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
 import { forgetPeople, mediaOfPasses } from "./people.js";
+import { deskGuestChanged } from "../services/checkinDeskLog.js";
 
 /* =========================================================
    Staff-issued passes, two kinds on the same routes:
@@ -358,6 +359,8 @@ export function issuedPassRouter(kindName = "issued") {
       + PASS_MARKS.filter((k) => check.value[k] === true).map((k) => `, ${k === "vip" ? "VIP" : "Media"} Yes`).join("");
     if (PASS_MARKS.some((k) => check.value[k] === true)) clearExhibitorCache(); // the apps see the mark within the minute
     forgetPeople(); // People (and the pass lists' Media marks) read it at once
+    // The check-in desk app has the new guest on every server instance (Give a pass at the pass desk: look them up next).
+    await deskGuestChanged({ ticketIds: [doc.ticketId], user: req.user });
     const wording = Object.keys(compact(check.value.copy || {}));
     await audit(req, "create", doc.ticketId, `${check.value.tier} pass for ${check.value.name} <${check.value.emails.join(", ")}>${extrasNote}${wording.length ? `; wording: ${wording.join(", ")}` : ""}${staffNote(isManagement(req.user))}`);
     res.status(201).json({ row: issuedPassRow(await tidyPassCopy(doc.toObject())) });
@@ -403,6 +406,8 @@ export function issuedPassRouter(kindName = "issued") {
     const rowAfter = issuedPassRow(a).extras;
     if (markChanges.length) clearExhibitorCache();
     forgetPeople();
+    // The check-in desk app: the pass's name, marks or inclusions as they are now, on every server instance.
+    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user });
     const fields = [...Object.keys(set).filter((k) => !EXTRAS.some((e) => e.field === k) && !PASS_MARKS.includes(k) && k !== "issuedPass.copy"),
       ...extraChanges.map((e) => `${e.key === "cxo" ? "CxO Breakfast" : e.label} ${extraLabel(rowBefore[e.key].override ?? undefined, rowBefore[e.key].included)} → ${extraLabel(rowAfter[e.key].override ?? undefined, rowAfter[e.key].included)}`),
       ...markChanges,
@@ -475,6 +480,7 @@ export function issuedPassRouter(kindName = "issued") {
     if (a.checkedIn || a.claimedBy) return res.status(409).json({ error: "This pass has been checked in or used in the app, so it can't be deleted." });
     await Attendee.deleteOne({ _id: a._id, ...SCOPE });
     forgetPeople();
+    await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user });
     await audit(req, "delete", a.ticketId, `${a.name} <${passRecipients(a).join(", ")}>`);
     res.json({ deleted: true });
   });

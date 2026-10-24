@@ -19,13 +19,17 @@ import { normalizeTicketId } from "./ticketAccess.js";
    The database is the only source of truth, so any number of Render
    instances work, and a device that missed anything catches up from
    its cursor. A stream is sent its catch-up first: until then it gets
-   new events without a cursor (so a device's cursor never moves past
-   events it hasn't been sent), and the tail starts from the first
-   stream's catch-up cursor (nothing written between the two is
-   missed). A missing number counts as a failed write only once a
-   reader has seen it missing for HOLE_MS (a write that commits late
-   is still delivered); a number spent by a failed write is filled
-   with a "void" event at once.
+   new events without a cursor. Each stream knows how far it has been
+   sent everything (`covered`: its catch-up, then each tail read that
+   starts within it), and a frame carries a cursor only up to there, so
+   a device's cursor never moves past an event it hasn't been sent.
+   The tail reads from the OLDEST catch-up of the streams it serves (a
+   stream whose catch-up read ran before another instance's write gets
+   that write; re-reading is harmless: each stream skips what it has).
+   A missing number counts as a failed write only once a reader has
+   seen it missing for HOLE_MS (a write that commits late is still
+   delivered); a number spent by a failed write is filled with a
+   "void" event at once.
 
    Guests: staff's changes in Admin › People send `guest` / `inclusions`
    events carrying the guest's row as it is after the change, and the
@@ -154,6 +158,8 @@ let tailGen = 0;
 export function subscribe(client) {
   client.sent = client.sent || new Set();
   if (client.ready === undefined) client.ready = false;
+  client.covered = null; // sent everything up to here (ready: the catch-up's cursor, then the tail reads joined to it)
+  client.spans = []; // tail reads it was sent that don't join `covered` yet: [{ from, to }]
   clients.add(client);
   if (!tailTimer) {
     tailCursor = null; // seeded by the first catch-up (ready)
@@ -166,21 +172,50 @@ export function subscribe(client) {
   };
 }
 
-/** A stream wrote its catch-up up to `cursor`: from now on its frames carry cursors, and an idle tail starts there. */
+/** Join the tail reads a stream was sent to what it has (`covered`). → whether `covered` moved. */
+function join(client) {
+  if (client.covered === null) return false;
+  const was = client.covered;
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const s of client.spans) if (s.from <= client.covered && s.to > client.covered) { client.covered = s.to; moved = true; }
+  }
+  client.spans = client.spans.filter((s) => s.to > client.covered).slice(-50);
+  return client.covered > was;
+}
+
+/**
+ * A stream wrote its catch-up up to `cursor`: from now on its frames carry cursors (never past what it was sent), and
+ * the tail reads from the oldest catch-up it serves: a catch-up read that ran before another instance's write, while
+ * a quicker stream's catch-up already included it, still gets that write.
+ */
 export function ready(client, cursor) {
   client.ready = true;
-  if (tailTimer && tailCursor === null && Number.isFinite(Number(cursor))) tailCursor = Number(cursor);
+  const c = Number(cursor);
+  if (!Number.isFinite(c)) return;
+  client.covered = c;
+  join(client);
+  if (tailTimer && clients.has(client)) tailCursor = tailCursor === null ? client.covered : Math.min(tailCursor, client.covered);
 }
 
 export const streamCount = () => clients.size;
-/** Tests: where this instance's tail is. */
-export const tailState = () => ({ running: !!tailTimer, cursor: tailCursor, gen: tailGen, busy: tailBusy, streams: clients.size });
+/** Tests: where this instance's tail is (and each stream's `covered`). */
+export const tailState = () => ({ running: !!tailTimer, cursor: tailCursor, gen: tailGen, busy: tailBusy, streams: clients.size, covered: [...clients].map((c) => c.covered) });
 
-/** Send events to every stream on this instance that hasn't had them (each remembers the last 5000 numbers). */
-export function publish(events, cursor = null) {
+/**
+ * Send events to every stream on this instance that hasn't had them (each remembers the last 5000 numbers). `span`
+ * { from, to }: a tail read (the events after `from`, cursor `to`): a stream gets the cursor only when that read joins
+ * what it has (`covered`).
+ */
+export function publish(events, span = null) {
   for (const c of clients) {
     const fresh = events.filter((e) => !c.sent.has(e.seq));
-    const cur = c.ready ? cursor : null;
+    let cur = null;
+    if (span) {
+      c.spans.push(span);
+      if (c.spans.length > 100) c.spans = c.spans.slice(-50); // (a gap this leaves is read again: tick)
+      if (c.ready && join(c)) cur = c.covered;
+    }
     if (!fresh.length && cur === null) continue;
     for (const e of fresh) c.sent.add(e.seq);
     if (c.sent.size > 5000) {
@@ -200,8 +235,12 @@ async function tick() {
   try {
     const { events, cursor } = await readSince(from, { limit: 500 });
     if (gen !== tailGen || tailCursor === null) return; // the tail stopped meanwhile
-    if (events.length || cursor !== from) publish(events, cursor);
-    tailCursor = cursor;
+    if (events.length || cursor !== from) publish(events, { from, to: cursor });
+    // The next read starts where the stream with the least has everything: normally `cursor`; earlier when a stream
+    // became ready meanwhile from a catch-up older than this read's start (the next read fills its gap).
+    let next = cursor;
+    for (const c of clients) if (c.ready && c.covered !== null && c.covered < next) next = c.covered;
+    tailCursor = next;
   } catch (err) {
     console.error("CHECKIN DESK TAIL ERROR:", err?.message || err);
   } finally {

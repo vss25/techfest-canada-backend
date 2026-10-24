@@ -11,7 +11,7 @@ import { canUseStaffSignIn } from "../services/teamRoles.js";
 import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
 import { SANITY_PROJECT } from "../services/rsvp.js";
-import { directory, personNow } from "./people.js";
+import { directory, peopleGeneration, personNow } from "./people.js";
 import {
   MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskGuestFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, markView, queryView, sessionsIndex,
 } from "../services/checkinDesk.js";
@@ -131,13 +131,19 @@ async function windowsNow() {
 
 /* ---------- The guest index: served at once, rebuilt in the background ----------
    Requests use the last built index (stale-while-revalidate): a tap never waits for the People directory (all users,
-   passes, RSVPs, engagement, Stripe) or Sanity. One rebuild at a time per instance, started when the index is older
-   than INDEX_TTL_MS, when the agenda changed, or when the guest generation (the newest guest / inclusions event, any
-   instance's: services/checkinDeskLog.js guestGeneration) is newer than the index: then with a fresh directory read,
-   so a change staff made on another instance is in it. An unknown key waits for one fresh rebuild only when the index
-   is older than MISS_GAP_MS (and once per request); otherwise it's a real miss (keys are a fixed HMAC of the ticket ID).
-   Entitlement at the meal doors is read from the database for that one person (personNow), never from the index. */
-const INDEX_TTL_MS = 30 * 1000;
+   passes, RSVPs, engagement, Stripe) or Sanity. One rebuild at a time per instance, started in the background when
+   the index is older than INDEX_TTL_MS (with a directory copy at most DIR_MAX_AGE_MS old), when the agenda changed,
+   when People changed on this instance (Give a pass, an RSVP edit, a delete…: routes/people.js peopleGeneration), or
+   when the guest generation (the newest guest / inclusions event, any instance's: services/checkinDeskLog.js
+   guestGeneration) is newer than the index: then with a fresh directory read, so a change staff made on another
+   instance is in it. Give a pass, pass edits and deletes send a guest event, so every instance has them at once.
+   A reload (snapshot) waits for the rebuild a People change on this instance needs; a key the index doesn't have
+   waits for the index a change needs (this instance's, or a guest event's), else for one fresh rebuild only when the
+   index is older than MISS_GAP_MS (and once per request); otherwise it's a real miss (keys are a fixed HMAC of the
+   ticket ID). Entitlement at the meal doors is read from the database for that one person (personNow), never from
+   the index. */
+const INDEX_TTL_MS = 20 * 1000;
+const DIR_MAX_AGE_MS = 5 * 1000;
 const MISS_GAP_MS = 10 * 1000;
 const deskIdx = { index: null, pending: null, pendingFresh: false, builds: 0, freshBuilds: 0, lastMissBuild: 0 };
 let sessionsOfNow = () => [];
@@ -153,16 +159,19 @@ function startBuild({ fresh = false } = {}) {
     const prev = deskIdx.index;
     const useFresh = fresh || !prev || gen > prev.gen;
     if (useFresh) { deskIdx.freshBuilds += 1; if (deskIdx.pending === pending) deskIdx.pendingFresh = true; }
-    const [d, sessions] = await Promise.all([directory(useFresh ? { fresh: true } : {}), agendaNow()]);
+    // This instance's People changes up to here are in the directory read below (one made during it moves it again).
+    const pgen = peopleGeneration();
+    const [d, sessions] = await Promise.all([directory(useFresh ? { fresh: true } : { maxAgeMs: DIR_MAX_AGE_MS }), agendaNow()]);
     const genOf = useFresh ? gen : prev.gen;
     if (prev && prev.dir === d && prev.sessions === sessions) {
       prev.checkedAt = checkedAt;
       prev.gen = Math.max(prev.gen, genOf);
+      prev.pgen = pgen;
       return prev;
     }
     const sessionsOf = sessionsIndex(sessions || []);
     const index = buildDeskIndex(d.people, { sessionsOf });
-    Object.assign(index, { builtAt: d.builtAt || new Date(), dir: d, sessions, gen: genOf, checkedAt, sessionsOf });
+    Object.assign(index, { builtAt: d.builtAt || new Date(), dir: d, sessions, gen: genOf, pgen, checkedAt, sessionsOf });
     deskIdx.index = index;
     deskIdx.builds += 1;
     sessionsOfNow = sessionsOf;
@@ -174,10 +183,13 @@ function startBuild({ fresh = false } = {}) {
   return pending;
 }
 
+/** People changed on this instance since the index was read (routes/people.js invalidated its directory). */
+const peopleMoved = (idx) => !!idx && idx.pgen !== peopleGeneration();
+
 /** Rebuild in the background when it's due. */
 function refreshSoon(idx) {
   if (deskIdx.pending) return;
-  if (Date.now() - idx.checkedAt > INDEX_TTL_MS || (lastAgenda !== undefined && lastAgenda !== idx.sessions)) {
+  if (Date.now() - idx.checkedAt > INDEX_TTL_MS || peopleMoved(idx) || (lastAgenda !== undefined && lastAgenda !== idx.sessions)) {
     startBuild().catch(logError("INDEX"));
     return;
   }
@@ -203,11 +215,26 @@ async function indexWithGen(minGen) {
   return deskIdx.index || startBuild({ fresh: true });
 }
 
-/** Wait for one fresh rebuild for something the index doesn't have (an unknown key): only when the index is older
-    than MISS_GAP_MS, at most one such rebuild per MISS_GAP_MS per instance (others join it), once per request. */
+/** An index with this instance's People changes in it (waits for the rebuild they started; a few tries at most). */
+async function indexWithPeople() {
+  for (let i = 0; i < 3; i++) {
+    const idx = deskIdx.index;
+    if (idx && !peopleMoved(idx)) return idx;
+    await (deskIdx.pending || startBuild()).catch(logError("INDEX"));
+  }
+  return deskIdx.index || startBuild();
+}
+
+/** For something the index doesn't have (an unknown key), once per request: the index a change made since needs (a
+    People change on this instance, or a guest event from any instance, e.g. the new pass a desk was just told about);
+    else one fresh rebuild, only when the index is older than MISS_GAP_MS and at most one such rebuild per MISS_GAP_MS
+    per instance (others join it). → an index to look in again, or null (a real miss). */
 async function rebuildForMiss(memo = {}) {
   if (memo.waited) return null;
   memo.waited = true;
+  if (peopleMoved(deskIdx.index)) return indexWithPeople().catch(() => deskIdx.index);
+  const gen = await guestGeneration({ fresh: true }).catch(() => 0);
+  if (deskIdx.index && gen > deskIdx.index.gen) return indexWithGen(gen).catch(() => deskIdx.index);
   const idx = deskIdx.index;
   const age = idx ? Date.now() - new Date(idx.builtAt).getTime() : Infinity;
   if (deskIdx.pending && deskIdx.pendingFresh) return deskIdx.pending.catch(() => deskIdx.index);
@@ -285,6 +312,8 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
   // when one has no row, a fresh rebuild is waited for. ?refresh=1 (the menu's "Reload the guest list"): a fresh
   // rebuild when the index is older than MISS_GAP_MS.
   let idx = await deskIndex();
+  // People changed on this instance (Give a pass, an RSVP edit…): the rebuild that change started.
+  if (peopleMoved(idx)) idx = await indexWithPeople();
   const gen = await guestGeneration({ fresh: true });
   let overlay = [];
   if (gen > idx.gen) {

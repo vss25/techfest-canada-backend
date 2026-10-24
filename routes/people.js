@@ -218,6 +218,9 @@ export async function directory({ fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
 const invalidate = () => { dir = { at: 0, startedAt: 0, data: null, pending: null, gen: dir.gen + 1 }; };
 /** After a change made elsewhere (Give a pass, Exhibitor passes): the next read builds the directory again. */
 export const forgetPeople = () => invalidate();
+/** How many times this instance's directory was invalidated (a People change made here): the check-in desk rebuilds
+    its guest index when this moves (routes/checkinDesk.js). */
+export const peopleGeneration = () => dir.gen;
 
 /**
  * Media = Yes for the people holding these passes (Attendee ids, the directory's `a-<id>` aliases), for the pass
@@ -1169,6 +1172,9 @@ router.delete("/:id", requireManagement, wrap(async (req, res) => {
   if (!result.total) return res.status(409).json({ error: "There's nothing about them in our database to delete.", code: "nothing" });
   invalidate();
   clearExhibitorCache();
+  // The check-in desk app drops them on every server instance (the event has no row: the desks read the list again).
+  const passIds = (ctx.p.passList || []).map((t) => t.ticketId).filter(Boolean);
+  if (passIds.length) await deskGuestChanged({ ticketIds: passIds, user: req.user });
   // Counts only, the main records first (the detail is capped at 500 characters), and an email hash: never the name or address.
   const first = ["account", "accountTickets", "passes", "rsvps"];
   const counts = [...first.map((k) => result.items.find((x) => x.key === k)).filter(Boolean), ...result.items.filter((x) => !first.includes(x.key))]

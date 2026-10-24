@@ -44,14 +44,15 @@ import { normalizeTicketId } from "./ticketAccess.js";
      C3 queuedBy { id, name }: tapped offline by that person, sent from
         someone else's sign-in: recorded and audited as theirs, with
         recordedBy = the sign-in and queuedOffline; staff powers only
-        when both are staff.
+        when both are staff. From a volunteer sign-in, such an undo only
+        takes back a tap sent from that same sign-in.
      C4 clientAt is the device's server-corrected clock, clamped to
         [now − 12 h, now + 2 min] and judged at that time; a late sync
         (> 1 min old) outside the station's hours without "Admit anyway"
         is still recorded, as override "late_sync", and audited.
      C6 a day that isn't Day 1 / Day 2 (Toronto): marks are practice
         marks, never the ticket's checkedIn / checkedInAt; undo and reset
-        clear them.
+        clear them (a volunteer's own practice tap: undo at any time).
 ========================================================= */
 
 const fail = (status, error, extra = {}) => ({ ok: false, status, error, ...extra });
@@ -167,10 +168,17 @@ async function uncollectPass(ids, at) {
 
 /* ---------- Actions ---------- */
 
-/** An undo (or tombstone) that names this tap, if one is stored. */
-const undoOf = (clientId) => (clientId ? CheckinEvent.findOne({ kind: "undo", ref: clientId }).sort({ seq: 1 }).lean() : null);
 /** May this undo (by its stored event) take back a tap by `actor`? Its own author, or staff. */
 const undoCovers = (undo, actor) => !!undo && (undo.byRole === "staff" || (!!undo.byId && !!actor.id && String(undo.byId) === String(actor.id)));
+/** An undo (or tombstone) of this tap that may take it back (undoCovers: staff's, or the tap's own author's), if one is
+    stored: any of them, not just the first one stored (someone else's tombstone, which can't take the tap back, never
+    hides the author's own). */
+async function undoOf(clientId, actor) {
+  if (!clientId) return null;
+  const who = [{ byRole: "staff" }, ...(actor?.id ? [{ byId: actor.id }] : [])];
+  const undo = await CheckinEvent.findOne({ kind: "undo", ref: clientId, $or: who }).sort({ seq: 1 }).lean();
+  return undoCovers(undo, actor) ? undo : null;
+}
 
 /**
  * One action (cleanAction's value) by `user`.
@@ -181,7 +189,7 @@ const undoCovers = (undo, actor) => !!undo && (undo.byRole === "staff" || (!!und
 export async function performAction(action, ctx) {
   const who = await whoTapped(action, ctx);
   const { actor, staff, recordedBy } = who;
-  const c = { ...ctx, staff, recordedBy };
+  const c = { ...ctx, staff, recordedBy, signedInStaff: !!ctx.staff };
   const view = (evs) => evs.map((e) => eventView(e, { staff }));
   if (STAFF_KINDS.includes(action.kind) && !staff) return fail(403, "Only staff can do that.", { code: "staff_only" });
 
@@ -191,8 +199,8 @@ export async function performAction(action, ctx) {
 
   // Undone on the device before it reached the server (a tombstone, contract C2): not recorded.
   if (action.kind === "mark") {
-    const undo = await undoOf(action.clientId);
-    if (undoCovers(undo, actor)) return { ok: true, undone: true, events: [], message: "Undone on the device before it reached the server: not recorded." };
+    const undo = await undoOf(action.clientId, actor);
+    if (undo) return { ok: true, undone: true, events: [], message: "Undone on the device before it reached the server: not recorded." };
   }
 
   try {
@@ -222,8 +230,8 @@ export async function performAction(action, ctx) {
 
 /** If an undo of this tap is stored, make sure its marks are cleared (an undo that raced the tap). */
 async function settleUndone(clientId, actor) {
-  const undo = await undoOf(clientId);
-  if (!undoCovers(undo, actor)) return;
+  const undo = await undoOf(clientId, actor);
+  if (!undo) return;
   const target = await eventForClientId(clientId);
   if (!target || target.kind !== "mark") return;
   const { changed, pass } = await clearTap(target);
@@ -369,7 +377,9 @@ async function doUndo(a, ctx, actor, view) {
     return { ok: true, tombstone: true, events: view([ev]), message: "Undone. That tap hadn't reached the server, and it won't be recorded." };
   }
   if (!actor.id && !ctx.staff) return fail(403, "You can only undo your own taps. Ask a staff member.", { code: "undo_refused" });
-  const allowed = canUndo({ target, actorId: String(actor.id), staff: ctx.staff, undoClientAt: a.clientAt, now: deskNow() });
+  // Queued offline by someone else (contract C3): a volunteer sign-in only sends undos of taps sent from it (canUndo).
+  const signedInId = ctx.recordedBy && !ctx.signedInStaff ? String(ctx.recordedBy.id) : "";
+  const allowed = canUndo({ target, actorId: String(actor.id), staff: ctx.staff, undoClientAt: a.clientAt, now: deskNow(), signedInId });
   if (!allowed.ok) return fail(allowed.status, allowed.error, { code: "undo_refused" });
   const { subject, day, point } = target;
   if (point === "arrived") {

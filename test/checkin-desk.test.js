@@ -176,6 +176,30 @@ test("undo: volunteers their own taps within the window (device clock), staff an
   assert.ok(!canUndo({ target, actorId: "v1", undoClientAt: new Date("2026-10-26T13:00:05Z"), now: new Date("2026-10-26T15:00:00Z") }).ok);
 });
 
+test("undo: a volunteer's own practice mark (not an event day, contract C6) at any time; someone else's never", () => {
+  const target = { kind: "mark", byId: "v1", practice: true, at: new Date("2026-10-25T13:00:00Z"), clientAt: new Date("2026-10-25T13:00:00Z") };
+  const later = new Date("2026-10-25T19:00:00Z");
+  assert.ok(canUndo({ target, actorId: "v1", undoClientAt: later, now: later }).ok, "6 hours later");
+  assert.equal(canUndo({ target, actorId: "v2", undoClientAt: later, now: later }).status, 403);
+  assert.ok(!canUndo({ target: { ...target, practice: false }, actorId: "v1", undoClientAt: later, now: later }).ok, "a real mark: the window");
+});
+
+test("undo queued offline by someone else (contract C3): only a tap sent from the same sign-in", () => {
+  const now = new Date("2026-10-26T13:00:20Z");
+  const at = new Date("2026-10-26T13:00:00Z");
+  const sentByVal = { kind: "mark", byId: "val", at, clientAt: at };
+  const queuedOnVics = { kind: "mark", byId: "val", recordedById: "vic", queuedOffline: true, at, clientAt: at };
+  const undoAt = new Date("2026-10-26T13:00:10Z");
+  // Vic's sign-in sends an undo naming Val: never of a tap Val sent from her own sign-in…
+  assert.equal(canUndo({ target: sentByVal, actorId: "val", undoClientAt: undoAt, now, signedInId: "vic" }).status, 403);
+  assert.equal(canUndo({ target: { ...sentByVal, practice: true }, actorId: "val", undoClientAt: undoAt, now, signedInId: "vic" }).status, 403);
+  // …only of Val's tap that went out from Vic's sign-in too (the same offline queue).
+  assert.ok(canUndo({ target: queuedOnVics, actorId: "val", undoClientAt: undoAt, now, signedInId: "vic" }).ok);
+  assert.equal(canUndo({ target: queuedOnVics, actorId: "val", undoClientAt: undoAt, now, signedInId: "ann" }).status, 403);
+  // Val's own sign-in: as before.
+  assert.ok(canUndo({ target: sentByVal, actorId: "val", undoClientAt: undoAt, now }).ok);
+});
+
 test("entitlement per day: the pass's extra for today's item, and whether they RSVP'd for it", () => {
   const g = { extras: { cxo: false, lunch: true, gala: false, awards: true }, rsvp: { options: ["lunch_d1", "awards"] } };
   assert.deepEqual(pickE(entitlement(g, "lunch", "day1")), ["lunch_d1", true, true]);

@@ -689,14 +689,21 @@ export function tapClock(clientAt, now = new Date()) {
 
 /**
  * May this person undo `target` (an event)? Staff: any mark. Volunteers: their own, within the undo window on their
- * device's clock (both taps carry clientAt; else the server's), and never long after the server stored it.
+ * device's clock (both taps carry clientAt; else the server's), and never long after the server stored it; their own
+ * practice mark (a day that isn't Day 1 / Day 2, contract C6) at any time.
+ *   signedInId: the sign-in that sent the undo, when it was queued offline by someone else (`actorId`, contract C3):
+ *   then (not staff) only a tap that was itself sent from that sign-in (the same offline queue), so naming someone in
+ *   queuedBy never undoes their taps from another sign-in.
  * → { ok: true } | { ok: false, error, status }
  */
-export function canUndo({ target, actorId = "", staff = false, undoClientAt = null, now = new Date() } = {}) {
+export function canUndo({ target, actorId = "", staff = false, undoClientAt = null, now = new Date(), signedInId = "" } = {}) {
   if (!target) return { ok: false, status: 404, error: "Nothing to undo: that tap never reached the server." };
   if (target.kind !== "mark") return { ok: false, status: 400, error: "Only check-in taps can be undone." };
   if (staff) return { ok: true };
-  if (String(target.byId || "") !== String(actorId || "")) return { ok: false, status: 403, error: "You can only undo your own taps. Ask a staff member." };
+  const own = { ok: false, status: 403, error: "You can only undo your own taps. Ask a staff member." };
+  if (String(target.byId || "") !== String(actorId || "")) return own;
+  if (signedInId && String(target.recordedById || target.byId || "") !== String(signedInId)) return own;
+  if (target.practice) return { ok: true };
   const served = ms(now) - ms(target.at);
   if (!(served <= UNDO_SERVER_MAX_MS)) return { ok: false, status: 409, error: "Too late to undo. Ask a staff member." };
   const a = ms(target.clientAt);
