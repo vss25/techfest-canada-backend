@@ -10,7 +10,7 @@ import {
   POINTS, POINT_LABELS, STAFF_KINDS, UNDOABLE_KINDS, UNKNOWN_OUTCOME_TEXT, auditLine, boothSubject, canUndo, entitlement, eventView, isUnknownKey, markView,
   mealStationOf, queryView, tapClock, unknownKeyOf,
 } from "./checkinDesk.js";
-import { stationState, fmtClock, STATION_LABELS } from "./checkinDeskTime.js";
+import { stationState, fmtClock, isWindowed, STATION_LABELS } from "./checkinDeskTime.js";
 import { appendEvent, deskNow, DuplicateTap, eventForClientId } from "./checkinDeskLog.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
@@ -64,13 +64,19 @@ import { normalizeTicketId } from "./ticketAccess.js";
         is still recorded, as override "late_sync", and audited.
      C6 a day that isn't Day 1 / Day 2 (Toronto): marks are practice
         marks, never the ticket's checkedIn / checkedInAt; undo and reset
-        clear them (a volunteer's own practice tap: undo at any time).
+        clear them (a volunteer's own practice tap: undo at any time). The
+        door's QR scan too: its desk marks are practice marks then (the
+        scanner's own ticket write is unchanged).
      C8 NO DETAILS FOUND: the lobby couldn't find the person and records
         the arrival as typed (unknown_arrival: an event, card key
         "u:<its clientId>", never a mark or a ticket); the pass desk
         closes it (unknown_done: sent to help / pass issued / left), or
         staff find them on the list (unknown_link: that guest is marked
         arrived at the arrival's time, audited); undo like a lobby tap.
+     C9 on Day 1 / Day 2 only the CxO Breakfast, the Lunch and the
+        evening keep hours ("Admit anyway", audited overrides, late-sync
+        flags); Arrived, Checked in, the media desk, AV and the exhibitor
+        desk are taken at any hour, never an override.
 ========================================================= */
 
 /* Tests only: awaited at named points of a tap and of an undo, so they can be interleaved (production never sets it). */
@@ -423,8 +429,10 @@ async function doMark(a, ctx, actor, view) {
   const day = state.date;
   // Not Day 1 or Day 2 (contract C6): a practice mark, whatever the hours; it never touches the ticket.
   const practice = !state.eventDay;
+  // Contract C9: only the CxO Breakfast, the Lunch and the evening keep hours; every other station takes taps all day.
+  const windowed = isWindowed(pointStation);
   let override = "";
-  if (!practice && !state.open) {
+  if (!practice && windowed && !state.open) {
     if (a.override) override = "outside_window";
     // Tapped offline while it was outside the hours, and the device didn't ask: recorded, flagged and audited.
     else if (clock.late) override = "late_sync";
@@ -432,7 +440,7 @@ async function doMark(a, ctx, actor, view) {
   }
   // A late sync judged in the hours though the server's own clock says otherwise: recorded as tapped, and audited.
   let lateNote = "";
-  if (clock.late && !practice && state.open) {
+  if (clock.late && !practice && windowed && state.open) {
     const nowState = stationState({ station: pointStation, at: now, windows: ctx.windows });
     if (!nowState.open || nowState.date !== state.date) lateNote = `tapped ${whenText(at)} (device), reached the server ${whenText(now)}`;
   }
@@ -789,21 +797,25 @@ export async function recordScan({ ticketId, user, outcome, collectedAt = null }
     if (!subject || !user) return null;
     const actor = actorOf(user, user.role === "admin");
     const at = deskNow();
-    const day = stationState({ station: "desk", at }).date;
+    const state = stationState({ station: "desk", at });
+    const day = state.date;
+    // Not Day 1 or Day 2 (contract C6): a rehearsal scan's desk marks are practice marks, in no attendance, and they
+    // never own the ticket's collection (the scanner's own ticket write, routes/checkin.js, is unchanged).
+    const practice = !state.eventDay;
     const ref = `scan-${crypto.randomBytes(8).toString("hex")}`;
-    const passSetAt = outcome === "success" && collectedAt ? new Date(collectedAt) : null;
-    const res = await setMark({ subject, day, point: "checked_in", at, actor, station: "scanner", ref, passSetAt });
+    const passSetAt = !practice && outcome === "success" && collectedAt ? new Date(collectedAt) : null;
+    const res = await setMark({ subject, day, point: "checked_in", at, actor, station: "scanner", ref, passSetAt, practice });
     if (!res.changed) return null;
     const changed = [res.doc];
     const [arr, now] = await Promise.all([
-      setMark({ subject, day, point: "arrived", at, actor, station: "scanner", ref }),
+      setMark({ subject, day, point: "arrived", at, actor, station: "scanner", ref, practice }),
       // The scan just collected it: that's the time; otherwise when it was collected before.
       passSetAt ? { collected: true, at: passSetAt } : collectedAt_(subject),
     ]);
     if (arr.changed) changed.push(arr.doc);
     return await appendEvent({
       kind: "mark", point: "checked_in", subject, day, station: "scanner", byId: actor.id, byName: actor.name, byRole: actor.role, clientId: ref,
-      marks: changed, pass: { ticketId: subject, collected: now.collected, collectedAt: now.at },
+      marks: changed, pass: { ticketId: subject, collected: now.collected, collectedAt: now.at }, ...(practice ? { practice: true } : {}),
     });
   } catch (err) {
     console.error("CHECKIN DESK SCAN ERROR:", err?.message || err);

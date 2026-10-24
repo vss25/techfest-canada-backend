@@ -88,9 +88,11 @@ test("windows: session ± 30 min from the agenda, the Awards Evening 3 h after, 
   assert.deepEqual([w.lunch.day2.open, w.lunch.day2.close], ["11:30", "13:15"]);
   assert.deepEqual([w.evening.day1.open, w.evening.day1.close], ["17:00", "21:30"]);
   assert.deepEqual([w.evening.day2.open, w.evening.day2.close], ["17:00", "20:00"]);
-  assert.deepEqual(w.lobby.day1, { open: "07:00", close: "23:00", source: "default" });
-  assert.deepEqual(w.desk.day2, { open: "07:00", close: "23:00", source: "default" });
-  for (const s of ["media", "av", "exhibitor"]) for (const d of ["day1", "day2"]) assert.equal(w[s][d].source, "default", `${s} ${d}`);
+  // Contract C9: the lobby, pass desk, media desk, AV and exhibitor desk are open all day (their hours are sent, marked).
+  assert.deepEqual(w.lobby.day1, { open: "07:00", close: "23:00", source: "default", allDay: true });
+  assert.deepEqual(w.desk.day2, { open: "07:00", close: "23:00", source: "default", allDay: true });
+  for (const s of ["media", "av", "exhibitor"]) for (const d of ["day1", "day2"]) assert.deepEqual([w[s][d].source, w[s][d].allDay], ["default", true], `${s} ${d}`);
+  for (const s of ["breakfast", "lunch", "evening"]) assert.equal(w[s].day1.allDay, undefined, s);
   assert.equal(DEFAULT_BUFFERS.evening.day1.after, 180);
 });
 
@@ -140,8 +142,13 @@ test("boundaries: open at the opening minute, closed at the closing minute", () 
   assert.equal(at(D1, "07:25").code, "open");
   assert.equal(at(D1, "09:24").code, "open");
   assert.equal(at(D1, "09:25").code, "closed");
-  const lobby = (hhmm) => stationState({ station: "lobby", at: T(D2, hhmm), windows: w }).code;
-  assert.deepEqual([lobby("06:59"), lobby("07:00"), lobby("22:59"), lobby("23:00")], ["later", "open", "open", "closed"]);
+  // Contract C9: the all-day stations have no boundaries on an event day (a 6:15 AM arrival, a 23:30 check-in).
+  for (const station of ["lobby", "desk", "media", "av", "exhibitor"]) {
+    const st = (hhmm) => stationState({ station, at: T(D2, hhmm), windows: w });
+    assert.deepEqual(["00:00", "06:15", "06:59", "07:00", "22:59", "23:00", "23:59"].map((x) => st(x).code), Array(7).fill("open"), station);
+    assert.equal(st("06:15").open, true);
+    assert.equal(st("06:15").allDay, true);
+  }
   // Seconds inside the closing minute are already closed.
   assert.equal(stationState({ station: "breakfast", at: new Date(T(D1, "09:24").getTime() + 59 * 1000), windows: w }).code, "open");
 });
@@ -157,18 +164,26 @@ test("each station's header: what's on now, when it opens, what's next, where th
   assert.equal(s("evening", D1, "19:00").text, "Day 1 · Catalyst Awards Night · open until 9:30 PM");
   assert.equal(s("evening", D2, "18:00").text, "Day 2 · Gala Dinner · open until 8:00 PM");
   assert.equal(s("breakfast", D2, "10:00").text, "Day 2 · CxO Breakfast · closed");
-  assert.equal(s("lobby", D1, "09:00").detail, "Open 7:00–11:00 PM (default hours)".replace("7:00–", "7:00 AM–"));
+  assert.equal(s("lobby", D1, "06:15").text, "Day 1 · Arrivals open all day");
+  assert.equal(s("lobby", D1, "06:15").detail, "");
+  assert.equal(s("desk", D2, "23:30").text, "Day 2 · Pass desk open all day");
+  assert.equal(s("media", D1, "19:00").text, "Day 1 · Media desk open all day");
+  assert.equal(s("av", D1, "06:00").text, "Day 1 · AV station open all day");
+  assert.equal(s("exhibitor", D2, "06:00").text, "Day 2 · Exhibitor desk open all day");
   // Before and after the event: said in words, never a silent Day 1.
   const early = s("breakfast", "2026-10-23", "17:00");
   assert.equal(early.code, "before");
   assert.equal(early.eventDay, null);
   assert.equal(early.text, "Before the event · Day 1 is Mon Oct 26 · breakfast opens 7:25 AM");
-  assert.equal(s("lobby", "2026-10-25", "09:00").text, "Before the event · Day 1 is Mon Oct 26 · lobby opens 7:00 AM");
+  assert.equal(s("lobby", "2026-10-25", "09:00").text, "Before the event · Day 1 is Mon Oct 26 · lobby open all day");
+  assert.equal(s("lobby", "2026-10-25", "09:00").open, false, "not an event day: practice marks (C6), not open");
   assert.equal(s("lunch", "2026-10-28", "12:30").text, "TTFC 2026 is over: no event today");
   assert.equal(s("lunch", "2026-10-28", "12:30").code, "after");
   // A station staff closed for the day.
-  const closed = resolveWindows({ settings: cleanSettings({ windows: { exhibitor: { day2: null } } }).value });
-  assert.equal(stationState({ station: "exhibitor", at: T(D2, "09:00"), windows: closed }).text, "Day 2 · Exhibitor desk · closed today");
+  const closed = resolveWindows({ settings: cleanSettings({ windows: { lunch: { day2: null }, exhibitor: { day2: null } } }).value });
+  assert.equal(stationState({ station: "lunch", at: T(D2, "09:00"), windows: closed }).text, "Day 2 · Networking Luncheon · closed today");
+  // …but an all-day station stays open (contract C9: never refused for the time).
+  assert.equal(stationState({ station: "exhibitor", at: T(D2, "09:00"), windows: closed }).text, "Day 2 · Exhibitor desk open all day");
   assert.equal(windowDetail({ open: "11:45", close: "14:30", source: "staff" }), "Open 11:45 AM–2:30 PM (set by staff)");
   assert.equal(windowDetail(resolveWindows({ agenda: null }).breakfast.day1), "CxO Breakfast 7:55–8:55 AM (agenda as of Oct 23) · doors 7:25–9:25 AM");
 });

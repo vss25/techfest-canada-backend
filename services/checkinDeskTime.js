@@ -29,17 +29,24 @@ import { AGENDA_MATCH, DAYS } from "./rsvp.js";
        moves a session, the station follows. When the agenda can't be
        read or a session isn't on it, the agenda's times on Oct 23 2026
        are used (FALLBACK_AGENDA).
-     - The Lobby and the Pass desk open at 7:00 (the earliest agenda item
-       is the 7:55 breakfast); the media, AV and exhibitor desks have
-       day-long defaults (DEFAULT_WINDOWS).
+     - The Lobby, the Pass desk, the Media desk, the AV station and the
+       Exhibitor desk are open ALL DAY on an event day (contract C9, Oct 23
+       2026: "all the people whether media or exhibitor can be marked as
+       arrived in lobby itself"; an exhibitor arriving at 6:00 AM for booth
+       setup is one tap): a tap there is never refused for the time, never
+       an override, never audited for it. Their DEFAULT_WINDOWS (and any
+       hours staff set for them) are still sent, marked `allDay`, but not
+       enforced.
      - Staff can change the buffers, or set any station's window by hand
        (or close it for a day), in Admin › Event day › Check-in › Desk
        settings (AppContent `checkin.windows`, PUT
        /api/checkin-desk/settings). A window set by hand wins.
    Every station's header says where its times come from: "CxO Breakfast
-   7:55–8:55 AM (agenda) · doors 7:25–9:25 AM". Outside the window a tap
-   needs a deliberate second tap ("Admit anyway"), stored as an override
-   and audited.
+   7:55–8:55 AM (agenda) · doors 7:25–9:25 AM" ("Day 1 · Arrivals open all
+   day" for the all-day ones). Outside the window a CxO Breakfast, Lunch or
+   evening tap needs a deliberate second tap ("Admit anyway"), stored as an
+   override and audited. On a day that isn't Day 1 / Day 2 every station
+   takes practice marks (contract C6).
 
    The evening entry station (Awards Night on Day 1, the Gala on Day 2)
    can be switched off by staff in the same settings
@@ -96,6 +103,16 @@ export const MEAL_POINTS = Object.freeze({ cxo: "breakfast", lunch: "lunch", eve
 /** The stations that follow the agenda, and the agenda's times as the website showed them on Oct 23 2026 (used when the
     agenda can't be read or a session isn't found). */
 export const AGENDA_STATIONS = Object.freeze(["breakfast", "lunch", "evening"]);
+/** Contract C9: the stations whose hours are enforced on an event day (outside them: "Admit anyway", an audited
+    override): the CxO Breakfast, the Lunch and the evening. Every other station is open all day on an event day. */
+export const WINDOWED_STATIONS = AGENDA_STATIONS;
+export const ALL_DAY_STATIONS = Object.freeze(["lobby", "desk", "media", "av", "exhibitor"]);
+export const isWindowed = (station) => WINDOWED_STATIONS.includes(station);
+/** The all-day stations' header line on an event day (the website's words for the lobby and the pass desk). */
+export const ALL_DAY_TEXT = Object.freeze({
+  lobby: "Arrivals open all day", desk: "Pass desk open all day", media: "Media desk open all day", av: "AV station open all day",
+  exhibitor: "Exhibitor desk open all day",
+});
 export const FALLBACK_AGENDA = Object.freeze({
   breakfast: { day1: { start: "07:55", end: "08:55", title: "CxO Breakfast" }, day2: { start: "07:55", end: "08:55", title: "CxO Breakfast" } },
   lunch: { day1: { start: "12:35", end: "13:20", title: "Networking Lunch" }, day2: { start: "12:00", end: "12:45", title: "Lunch" } },
@@ -271,7 +288,7 @@ export function resolveWindows({ settings = {}, agenda = null } = {}) {
     for (const day of EVENT_DAY_KEYS) {
       const manual = settings?.windows?.[station];
       if (manual && day in manual) {
-        out[station][day] = manual[day] ? { open: manual[day].open, close: manual[day].close, source: "staff" } : null;
+        out[station][day] = manual[day] ? { open: manual[day].open, close: manual[day].close, source: "staff", ...(ALL_DAY_STATIONS.includes(station) ? { allDay: true } : {}) } : null;
         continue;
       }
       if (AGENDA_STATIONS.includes(station)) {
@@ -288,7 +305,7 @@ export function resolveWindows({ settings = {}, agenda = null } = {}) {
         continue;
       }
       const def = DEFAULT_WINDOWS[station]?.[day] || null;
-      out[station][day] = def ? { ...def, source: "default" } : null;
+      out[station][day] = def ? { ...def, source: "default", ...(ALL_DAY_STATIONS.includes(station) ? { allDay: true } : {}) } : null;
     }
   }
   return out;
@@ -321,7 +338,8 @@ const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 
 /**
  * Where a station is at a moment: today's event day, whether it's open, and the line its header shows.
- * → { date, eventDay, phase, dayLabel, station, item, open, window, opensAt, closesAt, next, text, code }
+ * → { date, eventDay, phase, dayLabel, station, item, open, window, opensAt, closesAt, next, text, code, allDay? }
+ *   allDay: an all-day station on an event day (contract C9): always open.
  *   code: "open" | "later" (opens later today) | "closed" (closed for today; next is another day) | "before" | "after"
  */
 export function stationState({ station, at = new Date(), windows = resolveWindows() } = {}) {
@@ -341,11 +359,18 @@ export function stationState({ station, at = new Date(), windows = resolveWindow
   const nextText = (n) => (n ? `next is ${n.dayLabel} ${n.item ? n.item.short : lower(STATION_LABELS[station])}, ${fmtClock(n.open)}` : "");
 
   if (!info.eventDay) {
-    const next = nextAfter();
+    const allDay = ALL_DAY_STATIONS.includes(station);
+    const firstDay = EVENT_DAY_KEYS.find((d) => DATE_BY_DAY[d] > info.date);
+    const next = allDay ? (firstDay ? { eventDay: firstDay, dayLabel: DAY_LABELS[firstDay], dayShort: DAY_SHORT[firstDay], open: null, close: null, item: null, allDay: true } : null) : nextAfter();
+    const what = (n) => (n.allDay ? `${lower(STATION_LABELS[station])} open all day` : `${n.item ? n.item.short : lower(STATION_LABELS[station])} opens ${fmtClock(n.open)}`);
     const text = info.phase === "after"
       ? "TTFC 2026 is over: no event today"
-      : `${info.label} · ${next ? `${next.dayLabel} is ${next.dayShort} · ${next.item ? next.item.short : lower(STATION_LABELS[station])} opens ${fmtClock(next.open)}` : `Day 1 is ${DAY_SHORT.day1}`}`;
+      : `${info.label} · ${next ? `${next.dayLabel} is ${next.dayShort} · ${what(next)}` : `Day 1 is ${DAY_SHORT.day1}`}`;
     return { ...base, open: false, opensAt: null, closesAt: null, next, text, code: info.phase === "after" ? "after" : "before" };
+  }
+  // Contract C9: open all day on an event day (whatever hours are saved for it).
+  if (ALL_DAY_STATIONS.includes(station)) {
+    return { ...base, detail: "", open: true, allDay: true, opensAt: null, closesAt: null, next: null, text: `${info.label} · ${ALL_DAY_TEXT[station]}`, code: "open" };
   }
   const label = `${info.label} · ${whatOn(station, info.eventDay)}`;
   if (!w) {

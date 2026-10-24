@@ -631,32 +631,39 @@ test("contract C2: undo by reference; an undo that reaches the server before its
 });
 
 test("contract C3: a tap made offline by one person and sent from another's sign-in is theirs, recorded by the sign-in", { skip }, async () => {
-  fakeNow = new Date("2026-10-26T10:30:00Z"); // 6:30 AM: the lobby opens at 7
+  fakeNow = new Date("2026-10-27T10:30:00Z"); // Day 2, 6:30 AM: the CxO Breakfast opens at 7:25
   const key = K("qqq100000022");
   const q = { id: String(U.val._id), name: "Val Volunteer" };
-  // Val tapped "Admit anyway" offline; Sam signed in on that iPad afterwards and the queue went out with his sign-in.
-  const r = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby", override: true, queuedBy: q }, U.sam);
+  // Val tapped "Admit anyway" offline at the breakfast door; Sam signed in on that iPad afterwards and the queue went out
+  // with his sign-in.
+  const r = await act({ clientId: cid("brk"), kind: "mark", point: "cxo", key: K("pow100000004"), station: "breakfast", override: true, queuedBy: q }, U.sam);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const ev = r.body.events[0];
   assert.deepEqual([ev.by.id, ev.by.name, ev.by.role], [String(U.val._id), "Val Volunteer", "volunteer"]);
   assert.equal(ev.queuedOffline, true);
+  assert.equal(ev.override, "outside_window");
   assert.deepEqual(ev.recordedBy, { id: String(U.sam._id), name: "Sam Staff" });
-  const m = await markOf("qqq100000022", "arrived");
+  const m = await markOf("pow100000004", "cxo", "2026-10-27");
   assert.equal(String(m.byId), String(U.val._id));
   assert.equal(m.queuedOffline, true);
   assert.equal(String(m.recordedById), String(U.sam._id));
-  const au = await M.AdminAudit.findOne({ action: "checkin_desk_override", targetId: "qqq100000022" }).lean();
+  const au = await M.AdminAudit.findOne({ action: "checkin_desk_override", targetId: "pow100000004", detail: /tapped offline/ }).lean();
   assert.equal(String(au.adminId), String(U.val._id));
   assert.equal(au.adminName, "Val Volunteer");
   assert.match(au.detail, /\[tapped offline by Val Volunteer; sent from Sam Staff's sign-in\]$/);
   // Staff powers only when both are staff: Val's queued reset, sent from Sam's sign-in, is refused.
   assert.equal((await act({ clientId: cid("rst"), kind: "reset", point: "arrived", key, station: "lobby", queuedBy: q }, U.sam)).status, 403);
   // Val's undo of it, queued offline and sent from Sam's sign-in (the same queue): hers to undo, and recorded as hers.
-  const un = await act({ clientId: cid("und"), kind: "undo", target: ev.clientId, station: "lobby", queuedBy: q, clientAt: new Date(fakeNow.getTime() + 5000).toISOString() }, U.sam);
+  const un = await act({ clientId: cid("und"), kind: "undo", target: ev.clientId, station: "breakfast", queuedBy: q, clientAt: new Date(fakeNow.getTime() + 5000).toISOString() }, U.sam);
   assert.equal(un.status, 200, JSON.stringify(un.body));
   assert.equal(un.body.events[0].by.name, "Val Volunteer");
   assert.equal(un.body.events[0].recordedBy.name, "Sam Staff");
-  assert.equal((await markOf("qqq100000022", "arrived")).at, null);
+  assert.equal((await markOf("pow100000004", "cxo", "2026-10-27")).at, null);
+  // Contract C9: the lobby is open all day on an event day: Arrived at 6:30 AM is just recorded (no override, no audit).
+  const early = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby", queuedBy: q }, U.sam);
+  assert.equal(early.status, 200, JSON.stringify(early.body));
+  assert.equal(early.body.events[0].override, undefined);
+  assert.equal(await M.AdminAudit.countDocuments({ action: { $in: ["checkin_desk_override", "checkin_desk_late_sync"] }, targetId: "qqq100000022" }), 0);
   // A volunteer's iPad: Val tapped offline, Vic signed in, both her tap and her undo went out with Vic's sign-in: fine.
   fakeNow = new Date("2026-10-26T14:00:00Z");
   const t2 = await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key, station: "lobby", queuedBy: q }, U.vic);
