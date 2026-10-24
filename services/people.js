@@ -387,12 +387,14 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
   const guests = attendees
     .filter((a) => a?.ticketId && !used.has(String(a._id)) && !isBooth(a.ticketId))
     .sort((x, y) => ms(x.purchaseDate || x.createdAt) - ms(y.purchaseDate || y.createdAt) || String(x._id).localeCompare(String(y._id)));
+  const hiddenOut = [];
   for (const a of guests) {
     if (used.has(String(a._id))) continue;
     const claimer = a.claimedBy ? accountOf.get(String(a.claimedBy)) : null;
     if (claimer) { attach(claimer, { a }); continue; }
-    // Test and duplicate passes staff hid stay out, unless an account holds them (above).
-    if (a.hiddenByStaff || a.syncDuplicate) continue;
+    // Test and duplicate passes staff hid stay out, unless an account holds them (above). Whose they were is
+    // remembered below (hiddenPasses).
+    if (a.hiddenByStaff || a.syncDuplicate) { hiddenOut.push(a); continue; }
     const names = passNames(a);
     const email = realEmail(a.email);
     const account = email
@@ -446,6 +448,23 @@ export function buildPeople({ users = [], attendees = [], rsvps = [], speakers =
     }
     (r.duplicateOf ? p.dupRsvps : p.rsvps).push(r);
     alias.set(`r-${r._id}`, p);
+  }
+
+  // 6. The hidden passes left out above: whose they were (the speaker profile a Speaker Pass was made for, the account
+  //    named as its holder, or the people on its email address the pass's name matches), as `hiddenPasses` (normalized
+  //    ticket IDs), so someone whose only pass staff hid isn't taken for someone with no pass at all (the check-in
+  //    desk's ISSUE PASS, contract C7: hidden-only people stay out, as on the Event summary).
+  for (const a of hiddenOut) {
+    const owners = new Set();
+    if (a.speakerId && alias.get(`s-${a.speakerId}`)) owners.add(alias.get(`s-${a.speakerId}`));
+    if (a.claimedBy && alias.get(`u-${a.claimedBy}`)) owners.add(alias.get(`u-${a.claimedBy}`));
+    const email = realEmail(a.email);
+    const names = passNames(a);
+    for (const p of email ? byEmail.get(email) || [] : []) {
+      const named = p.user?.name || p.speaker?.name || "";
+      if (!names.length || names.some((n) => (named && namesMatch(n, named)) || byName.get(nameKeyOf(n))?.has(p))) owners.add(p);
+    }
+    for (const p of owners) (p.hiddenPasses ||= []).push(normalizeTicketId(a.ticketId));
   }
 
   const companiesByKey = new Map((companies || []).filter((c) => c?.nameKey).map((c) => [c.nameKey, c]));

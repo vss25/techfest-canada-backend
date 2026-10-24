@@ -14,7 +14,7 @@ import { SANITY_PROJECT } from "../services/rsvp.js";
 import { directory, peopleGeneration, personNow } from "./people.js";
 import {
   MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskRowFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, isPersonSubject, keyOfSubject, markView,
-  queryView, sessionsIndex, unknownKeyOf, unknownRows,
+  personKey, queryView, sessionsIndex, unknownKeyOf, unknownRows,
 } from "../services/checkinDesk.js";
 import { countingPasses } from "../services/eventSummary.js";
 import { loadAttendance } from "../services/checkinAttendance.js";
@@ -352,22 +352,28 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
   for (const e of passEvents) if (e.pass?.ticketId) passNow.set(guestKey(e.pass.ticketId), e.pass);
   const guestOut = (g) => {
     const v = guestView(g, { staff });
-    const more = moreKeys.get(g.personId);
+    const more = moreKeys.get(g.key);
     if (more) v.keys = [...new Set([...(v.keys || [v.key]), ...more])];
     const p = passNow.get(g.key) || (g.keys.length === 1 ? passNow.get(g.keys[0]) : null);
     if (p) { v.passCollected = !!p.collected; v.passCollectedAt = p.collected && p.collectedAt ? new Date(p.collectedAt).toISOString() : null; }
     return v;
   };
-  // Guests changed since the index was built: their rows from the events (the newest wins), in place of the old ones.
+  // Guests changed since the index was built: their rows from the events (the newest wins), in place of the old ones,
+  // matched by any of their keys or by any id they go by (an event row's `aliasSubjects`; an index row's alias keys):
+  // someone given a pass on another instance replaces their ISSUE PASS row (contract C7), never shows twice.
   let guests = idx.guests;
   let booths = idx.booths;
+  const overlayByKey = new Map();
+  const overlayAliasKeys = new Map(overlay.map((row) => [row, (row.aliasSubjects || []).map((s) => personKey(s))]));
+  const replaced = new Map(); // index row → the event row in its place
+  for (const row of overlay) for (const k of [...(row.keys || [row.key]), ...overlayAliasKeys.get(row)]) overlayByKey.set(k, row);
   if (overlay.length) {
-    const byKey = new Map();
-    for (const row of overlay) for (const k of row.keys || [row.key]) byKey.set(k, row);
     const seen = new Set();
     const out = [];
     for (const g of [...idx.guests, ...overlay]) {
-      const row = g.keys.map((k) => byKey.get(k)).find(Boolean) || g;
+      const own = [...(g.keys || [g.key]), ...(overlayAliasKeys.get(g) || idx.aliasKeysOf?.get(g) || [])];
+      const row = own.map((k) => overlayByKey.get(k)).find(Boolean) || g;
+      if (row !== g) replaced.set(g, row);
       if (seen.has(row.key)) continue;
       seen.add(row.key);
       out.push(row);
@@ -375,6 +381,12 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
     guests = out;
     booths = boothsOf(guests);
   }
+  /** The row a key belongs to in this snapshot (an event row in place of the index's). */
+  const rowOfKey = (k) => {
+    if (overlayByKey.has(k)) return overlayByKey.get(k);
+    const g = idx.byKey.get(k)?.guest;
+    return g ? replaced.get(g) || g : null;
+  };
   const noteMap = {};
   for (const n of notes) {
     const text = String(n.last.note || "").trim();
@@ -386,14 +398,17 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
   for (const m of marks) {
     if (!m.at || !isPersonSubject(m.subject)) continue;
     const k = keyOfSubject(m.subject);
-    const g = idx.byKey.get(k)?.guest;
+    const g = rowOfKey(k);
     if (!g || g.keys.includes(k)) continue;
-    if (!moreKeys.has(g.personId)) moreKeys.set(g.personId, new Set());
-    moreKeys.get(g.personId).add(k);
+    if (!moreKeys.has(g.key)) moreKeys.set(g.key, new Set());
+    moreKeys.get(g.key).add(k);
   }
-  // Each person once: a pass's rows count for the guest whose pass it is (a pass that isn't a guest's doesn't count).
+  // Each person once: a pass's rows count for the guest whose pass it is (a pass that isn't a guest's doesn't count),
+  // and so do the rows of every id they go by (ISSUE PASS marks made before a pass was given).
   const byNorm = new Map();
-  for (const g of guests) for (const nm of g.norms || []) byNorm.set(nm, g.key);
+  for (const g of guests) {
+    for (const nm of [...(g.norms || []), ...(overlayAliasKeys.has(g) ? g.aliasSubjects || [] : idx.subjectsOf?.get(g) || [])]) if (!byNorm.has(nm)) byNorm.set(nm, g.key);
+  }
   const people = new Map();
   for (const r of attendance) {
     const k = `${r._id.day}|${r._id.point}`;
@@ -584,7 +599,8 @@ router.get("/history/:key", staffOnly, wrap(async (req, res) => {
   if (!isGuestKey(key)) return res.status(404).json({ error: "Guest not found." });
   const hit = await resolveKey(key);
   if (!hit) return res.status(404).json({ error: "Guest not found." });
-  const subjects = hit.guest.norms;
+  // Their passes and every id they go by (ISSUE PASS marks made before a pass was given, contract C7).
+  const subjects = hit.subjects?.length ? hit.subjects : hit.guest.norms;
   const events = await CheckinEvent.find({ subject: { $in: subjects } }).sort({ seq: -1 }).limit(60).lean();
   res.json({ events: events.map((e) => eventView(e, { staff: true })) });
 }));

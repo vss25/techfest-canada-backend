@@ -333,12 +333,14 @@ const NO_EXTRAS = Object.freeze(Object.fromEntries(EXTRA_KEYS.map((k) => [k, fal
  * Is this directory person on the list with no pass on file (the organiser, Oct 23: "If their pass isn't found but
  * name is there, mark it as issue pass")? A speaker (the speaker type: the website's speaker list, an account's type)
  * with no Speaker Pass row, or someone marked Media or Exhibitor, who holds no pass at all. Anyone with a pass row
- * that doesn't count (hidden by staff, refunded) stays out, as on the Event summary; so does everyone else without a
- * pass (staff, RSVPs). A booth order isn't a pass (an exhibitor with only a booth is in).
+ * that doesn't count (hidden by staff, refunded) stays out, as on the Event summary, also when the directory left that
+ * hidden pass out (an unclaimed one: services/people.js `hiddenPasses`); so does everyone else without a pass
+ * (staff, RSVPs). A booth order isn't a pass (an exhibitor with only a booth is in).
  */
 export function noPassPerson(p) {
   if (!p) return false;
   if ((p.passList || []).some((t) => !isBoothId(t.ticketId))) return false;
+  if ((p.hiddenPasses || []).some((id) => !isBoothId(id))) return false;
   const types = new Set(p.types || []);
   return types.has("speaker") || types.has("media") || types.has("exhibitor");
 }
@@ -392,35 +394,59 @@ export const deskRowFrom = (p, opts = {}) => deskGuestFrom(p, opts) || deskNoPas
 
 const PERSON_ALIAS = /^[uasr]-/;
 
-/** Every guest, by name, and the lookups the routes need: key → { guest, norm } (every counting pass), norm → guest,
-    and the booths (exhibitor desk): [{ key, booth, companies, guests: [key] }] by booth. ISSUE PASS people (contract
-    C7) are guests too. `aliases`: the directory's id → person map (routes/people.js byId): every person id a guest
-    goes by also resolves ("n" keys of their u- / a- / s- / r- ids), so marks made on an ISSUE PASS row still find
-    the person once a pass is given (a tap on such a key is recorded on their main pass when they hold one). */
+/** Every id a directory person goes by that can be an ISSUE PASS subject (services/people.js buildPeople's aliases:
+    their own id, u-<account>, a-<pass record>, s-<speaker>, r-<RSVP>; never t-<ticket>). */
+export function personAliasIds(p) {
+  if (!p) return [];
+  const ids = [p.id];
+  if (p.user?._id) ids.push(`u-${p.user._id}`);
+  for (const a of p.attendees || []) if (a?._id) ids.push(`a-${a._id}`);
+  if (p.speaker?._id) ids.push(`s-${p.speaker._id}`);
+  for (const r of [...(p.rsvps || []), ...(p.dupRsvps || [])]) if (r?._id) ids.push(`r-${r._id}`);
+  return [...new Set(ids.map((id) => String(id || "")).filter((id) => PERSON_ALIAS.test(id)))];
+}
+
+/** Every guest, by name, and the lookups the routes need: key → { guest, norm, subjects } (every counting pass), norm
+    → guest, and the booths (exhibitor desk): [{ key, booth, companies, guests: [key] }] by booth. ISSUE PASS people
+    (contract C7) are guests too. `aliases`: the directory's id → person map (routes/people.js byId): every person id
+    a guest goes by also resolves ("n" keys of their u- / a- / s- / r- ids), so marks made on an ISSUE PASS row still
+    find the person once a pass is given (a tap on such a key is recorded on their main pass when they hold one).
+    `subjects` (also `subjectsOf`: guest → the same list): every subject the guest's marks can be under, their passes
+    and those "person:<id>" ids, for staff's reset and history. `aliasKeysOf`: guest → the "n" keys of those ids. */
 export function buildDeskIndex(people = [], { keyOf = (id) => guestKey(id), sessionsOf = () => [], aliases = null } = {}) {
   const guests = [];
   const byKey = new Map();
   const byNorm = new Map();
   const byPerson = new Map();
+  const subjectsOf = new Map();
+  const aliasKeysOf = new Map();
   for (const p of people || []) {
     const g = deskRowFrom(p, { keyOf, sessionsOf });
     if (!g) continue;
     guests.push(g);
     byPerson.set(p, g);
-    g.keys.forEach((k, i) => { byKey.set(k, { guest: g, norm: g.norms[i] }); byNorm.set(g.norms[i], g); });
+    const subjects = [...g.norms];
+    subjectsOf.set(g, subjects);
+    g.keys.forEach((k, i) => { byKey.set(k, { guest: g, norm: g.norms[i], subjects }); byNorm.set(g.norms[i], g); });
   }
   for (const [id, p] of aliases instanceof Map ? aliases : []) {
     const g = byPerson.get(p);
     if (!g || !PERSON_ALIAS.test(id)) continue;
     const subject = personSubject(id);
     const k = personKey(subject);
-    if (byKey.has(k)) continue;
-    byKey.set(k, { guest: g, norm: g.noPass ? subject : g.norm, alias: subject });
+    const have = byKey.get(k);
+    if (have && have.guest !== g) continue;
+    const subjects = subjectsOf.get(g);
+    if (!subjects.includes(subject)) subjects.push(subject);
+    if (have) continue;
+    byKey.set(k, { guest: g, norm: g.noPass ? subject : g.norm, alias: subject, subjects });
     if (g.noPass) byNorm.set(subject, g);
+    if (!aliasKeysOf.has(g)) aliasKeysOf.set(g, []);
+    aliasKeysOf.get(g).push(k);
   }
   guests.sort((a, b) => fold(a.name).localeCompare(fold(b.name)));
   const boothList = boothsOf(guests);
-  return { guests, byKey, byNorm, booths: boothList, boothByKey: new Map(boothList.map((b) => [b.key, b])) };
+  return { guests, byKey, byNorm, subjectsOf, aliasKeysOf, booths: boothList, boothByKey: new Map(boothList.map((b) => [b.key, b])) };
 }
 
 /** The exhibitor desk's booths from guest rows: [{ key, booth, companies, guests: [key] }] by booth. */

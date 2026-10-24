@@ -694,7 +694,8 @@ async function doReset(a, ctx, actor, view) {
     const hit = await ctx.resolve(a.key);
     if (!hit) return fail(404, "This guest isn't on the list any more.", { code: "not_found" });
     guest = hit.guest;
-    subjects = guest.norms;
+    // Every pass of theirs, and every id they go by (ISSUE PASS marks made before a pass was given, contract C7).
+    subjects = hit.subjects?.length ? hit.subjects : guest.norms;
   }
   // Clearing "arrived" also clears today's check-in (they're back to not arrived); a check-in that collected the pass
   // today gives it back. Practice marks (not an event day) clear the same way, and never collected anything.

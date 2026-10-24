@@ -1,5 +1,5 @@
 import CheckinEvent, { CheckinCounter } from "../models/CheckinEvent.js";
-import { deskRowFrom, eventView, safeCursor } from "./checkinDesk.js";
+import { deskRowFrom, eventView, personAliasIds, personSubject, safeCursor } from "./checkinDesk.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
 /* =========================================================
@@ -259,9 +259,16 @@ async function tick() {
    that knows the agenda's sessions). */
 let rowOf = (p) => deskRowFrom(p);
 export function setGuestRowBuilder(fn) { rowOf = typeof fn === "function" ? fn : (p) => deskRowFrom(p); }
+/* The row, and (server only, never sent: guestView) `aliasSubjects`, every "person:<id>" the person goes by: a snapshot
+   on an instance whose index is older puts this row in place of their old one under any of those ids (the ISSUE PASS
+   row of someone just given a pass), so they never show twice. */
 const rowFor = (person) => {
   if (!person) return null;
-  try { return rowOf(person) || null; } catch (err) { console.error("CHECKIN DESK GUEST ROW ERROR:", err?.message || err); return null; }
+  try {
+    const row = rowOf(person) || null;
+    if (row) row.aliasSubjects = personAliasIds(person).map(personSubject);
+    return row;
+  } catch (err) { console.error("CHECKIN DESK GUEST ROW ERROR:", err?.message || err); return null; }
 };
 const byOf = (user) => ({ station: "admin", byId: user?._id || null, byName: user?.name || "", byRole: user?.role === "admin" ? "staff" : "" });
 

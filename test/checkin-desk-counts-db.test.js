@@ -37,7 +37,10 @@ globalThis.fetch = async (input, opts) => {
   if (url.startsWith("https://api.resend.com/")) { resendCalls += 1; return json({ id: "stub" }); }
   if (url.includes(".sanity.io/")) {
     // The website's speaker list has one speaker with no pass row at all (contract C7); the agenda is empty.
-    if (decodeURIComponent(url).includes('_type=="speaker"')) return json({ result: [{ _id: "spk-noel", name: "Noel Nopass", title: "Chief Scientist", company: "Quantumly" }] });
+    // Hana's only Speaker Pass is hidden (round 4: she stays out, not ISSUE PASS).
+    if (decodeURIComponent(url).includes('_type=="speaker"')) {
+      return json({ result: [{ _id: "spk-noel", name: "Noel Nopass", title: "Chief Scientist", company: "Quantumly" }, { _id: "spk-hana", name: "Hana Hiddenpass", title: "CTO", company: "Hideco" }] });
+    }
     return json({ result: [] });
   }
   throw new Error(`blocked in the test: ${url}`);
@@ -114,6 +117,8 @@ before(async () => {
     // Ava: a paid Connect Pass, and an issued Power Pass (the luncheons and the evenings come from that one).
     { name: "Ava Twopass", email: "ava.c@example.com", ticketId: "con300000010", ticketType: "connect", stripeSessionId: "cs_av", purchaseDate: new Date("2026-09-01") },
     { name: "Ava Twopass", email: "ava.c@example.com", ticketId: "pow300000011", ticketType: "power", promoCode: "ISSUED", passEmailSentAt: new Date("2026-10-10"), purchaseDate: new Date("2026-10-10") },
+    // A website speaker whose only pass (her Speaker Pass, never claimed) staff hid: not ISSUE PASS (contract C7).
+    { name: "Hana Hiddenpass", email: "hana.c@example.com", ticketId: "spk300000013", ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-hana", hiddenByStaff: true },
   ]);
   const at = new Date("2026-10-15T12:00:00Z");
   const r = (key, first, last, extra) => ({ key, firstName: first, lastName: last, name: `${first} ${last}`, nameKey: `${first} ${last}`.toLowerCase(),
@@ -148,6 +153,7 @@ const K = (id) => guestKey(id);
 const markOf = (subject, point, day = DAY1) => M.CheckinMark.findOne({ subject, day, point }).lean();
 const snapshot = async (as = U.sam) => { const s = await call("GET", `${D}/snapshot`, { as }); assert.equal(s.status, 200, JSON.stringify(s.body)); return s.body; };
 const byName = (s, name) => s.guests.find((g) => g.name === name);
+const mk2 = async (k, doc) => { U[k] = await M.User.create(doc); return U[k]; };
 
 test("C7 ISSUE PASS: on the list with no pass on file (speaker, Media, exhibitor, the website's speaker list); hidden-only people out", { skip }, async () => {
   const s = await snapshot();
@@ -176,6 +182,7 @@ test("C7 ISSUE PASS: on the list with no pass on file (speaker, Media, exhibitor
   assert.equal(byName(s, "Noel Nopass").marks.speaker, true);
   assert.equal(byName(s, "Noel Nopass").company, "Quantumly");
   assert.ok(!byName(s, "Hank Hidden"), "a speaker whose only pass is hidden stays out");
+  assert.ok(!byName(s, "Hana Hiddenpass"), "a website speaker whose only Speaker Pass is hidden (never claimed: the directory leaves it out) stays out too");
   assert.ok(!byName(s, "Val Volunteer") && !byName(s, "Sam Staff"), "staff and volunteers without a pass stay out");
   // Pass holders aren't ISSUE PASS.
   assert.equal(byName(s, "Priya Power").noPass, undefined);
@@ -465,6 +472,62 @@ test("C10: attendance by day for the desk (staff, password sign-in) and the Even
   assert.equal(sa.days[1].meals.dinner.rsvpd, row("gala").rsvpd);
   assert.equal(sa.days[0].meals.cxo.entitled, 3, "Sid (speaker), Mo (Media = Yes), Ana (Apex)");
   assert.equal((await call("GET", "/api/console/summary", { as: U.val })).status, 403, "volunteers never read the summary");
+});
+
+/* ---------- Round 4 (Oct 24 2026): the round-3 verifier's V5, V7, V8; the Counts limit ---------- */
+
+test("C7: a pass given on ANOTHER instance to an ISSUE PASS guest: one row here at once (the event's row in place of the ISSUE PASS one), counted once", { skip }, async () => {
+  fakeNow = new Date("2026-10-26T18:00:00Z"); // Day 1, 2 PM
+  const People = await import("../routes/people.js");
+  const Log = await import("../services/checkinDeskLog.js");
+  await mk2("nia", { name: "Nia Newsdesk", email: "nia.c@example.com", types: ["media"], organization: "Wire Daily" });
+  People.forgetPeople(); // (a person added since the last build: this instance's next reload has her)
+  const nia = byName(await snapshot(U.val), "Nia Newsdesk");
+  assert.equal(nia.noPass, true);
+  assert.equal((await act({ clientId: cid("arr"), kind: "mark", point: "arrived", key: nia.key, station: "lobby" })).status, 200);
+  const before = (await call("GET", `${D}/counts`)).body.days[0];
+  // Another instance gives her a pass: its directory, its guest event with her row; this instance isn't told otherwise.
+  const tid = "CON300000077";
+  await M.Attendee.create({ name: "Nia Newsdesk", email: "nia.c@example.com", ticketId: tid, ticketType: "connect", promoCode: "ISSUED", passEmailSentAt: new Date("2026-10-26T17:59:00Z") });
+  const there = await People.directory({ fresh: true });
+  const ev = await Log.deskGuestChanged({ ticketIds: [tid], user: U.sam, person: there.byId.get(`t-${tid.toLowerCase()}`) });
+  assert.equal(ev.guest.passName, "Connect Pass");
+  const seen = (await call("GET", `${D}/events?since=${ev.seq - 1}`, { as: U.val })).body.events.find((e) => e.seq === ev.seq);
+  assert.ok(!("aliasSubjects" in seen.guest), "the ids it goes by stay on the server");
+  // This instance's snapshot (its index still has the ISSUE PASS row): one row, the pass one, her arrival on it.
+  for (const as of [U.val, U.sam]) {
+    const s = await snapshot(as);
+    const rows = s.guests.filter((g) => g.name === "Nia Newsdesk");
+    assert.equal(rows.length, 1, `one row (${as.name}): ${JSON.stringify(rows.map((g) => g.key))}`);
+    assert.equal(rows[0].key, K(tid));
+    assert.equal(rows[0].noPass, undefined);
+    assert.ok(rows[0].keys.includes(nia.key), "her ISSUE PASS arrival shows on her row");
+    if (as === U.sam) assert.ok(s.attendance.some((x) => x.day === DAY1 && x.point === "arrived" && x.people >= 1));
+  }
+  // The Counts: still her once (arrived, never twice), the groups plus ISSUE PASS still add up.
+  const d1 = (await call("GET", `${D}/counts`)).body.days[0];
+  assert.equal(d1.arrived, before.arrived, "she isn't counted twice");
+  const groups = Object.values(d1.byPass).reduce((t, x) => t + x.arrived, 0);
+  assert.equal(groups + d1.issuePass.arrivedNoPass, d1.arrived);
+});
+
+test("C7: once a pass is given, staff's reset of Arrived and the history on their row include the marks made on their ISSUE PASS row", { skip }, async () => {
+  const People = await import("../routes/people.js");
+  People.forgetPeople(); // this instance's index has her pass now
+  const s = await snapshot();
+  const nia = s.guests.find((g) => g.name === "Nia Newsdesk");
+  assert.equal(nia.noPass, undefined);
+  const old = nia.keys.find((k) => k.startsWith("n"));
+  assert.ok(old, "her old key is still on her row (today has a mark on it)");
+  const h = await call("GET", `${D}/history/${nia.key}`);
+  assert.equal(h.status, 200, JSON.stringify(h.body));
+  assert.ok(h.body.events.some((e) => e.kind === "mark" && e.point === "arrived" && e.key === old), "her ISSUE PASS arrival is in her history");
+  const rs = await act({ clientId: cid("rst"), kind: "reset", point: "arrived", key: nia.key, station: "desk" }, U.sam);
+  assert.equal(rs.status, 200, JSON.stringify(rs.body));
+  assert.ok(!rs.body.noop, "something was reset");
+  assert.ok(rs.body.events[0].marks.some((m) => m.key === old && m.point === "arrived" && m.at === null), "the arrival on her old key");
+  assert.equal(await M.CheckinMark.countDocuments({ subject: `person:u-${U.nia._id}`, day: DAY1, at: { $ne: null } }), 0, "her ISSUE PASS arrival is cleared");
+  assert.ok((await snapshot()).marks.every((m) => !(m.key === old && m.at)), "not arrived any more");
 });
 
 test("nothing was emailed", { skip }, () => {

@@ -522,3 +522,42 @@ test("C8 events carry who closed a card (byName), and the undo of an arrival its
   const undo = eventView({ seq: 7, kind: "undo", subject: "u:t123456789", ref: "t123456789", at: new Date(), byName: "Val" });
   assert.deepEqual([undo.key, undo.target, undo.byName], ["u:t123456789", "t123456789", "Val"]);
 });
+
+/* ---------- Round 4 (Oct 24 2026): ISSUE PASS marks after a pass is given (V7), hidden-only speakers (V9) ---------- */
+
+test("C7: every id a guest goes by is in the index, so staff's reset and history reach the marks made on their ISSUE PASS row", async () => {
+  const { personKey, personAliasIds } = await import("../services/checkinDesk.js");
+  const built = buildPeople({
+    users: [{ _id: "u30", name: "Ines Issued", email: "ines@example.com", types: ["media"] }],
+    attendees: [{ _id: "a30", name: "Ines Issued", email: "ines@example.com", ticketId: "con000000040", ticketType: "connect", promoCode: "ISSUED", passEmailSentAt: new Date("2026-10-26") }],
+    rsvps: [{ _id: "r30", firstName: "Ines", lastName: "Issued", nameKey: "ines issued", email: "ines@example.com", kind: "general", source: "attendee", attendeeSubmittedAt: new Date("2026-10-20") }],
+    speakers: [],
+  });
+  const p = built.people.find((x) => x.name === "Ines Issued");
+  assert.deepEqual(personAliasIds(p).sort(), ["a-a30", "r-r30", "u-u30"], "her account, her pass record, her RSVP (never t-<ticket>)");
+  const idx = buildDeskIndex(built.people, { aliases: built.byId });
+  const g = idx.guests.find((x) => x.name === "Ines Issued");
+  const hit = idx.byKey.get(g.key);
+  assert.deepEqual(hit.subjects.sort(), ["con000000040", "person:a-a30", "person:r-r30", "person:u-u30"]);
+  assert.equal(idx.byKey.get(personKey("person:u-u30")).subjects, hit.subjects, "the same list from any of her keys");
+  assert.deepEqual(idx.subjectsOf.get(g), hit.subjects);
+  assert.deepEqual(idx.aliasKeysOf.get(g).sort(), ["person:a-a30", "person:r-r30", "person:u-u30"].map((s) => personKey(s)).sort());
+  assert.deepEqual(g.keys, [guestKey("con000000040")], "the row's own keys stay the pass's");
+  assert.equal(idx.byNorm.get("person:u-u30"), undefined, "a pass holder's ids aren't ticket IDs (lookup)");
+});
+
+test("C7: a website speaker whose only Speaker Pass was hidden (never claimed: the directory leaves it out) isn't ISSUE PASS", async () => {
+  const { noPassPerson } = await import("../services/checkinDesk.js");
+  const built = buildPeople({
+    users: [],
+    attendees: [{ _id: "a40", name: "Hana Hiddenpass", email: "hana@example.com", ticketId: "spk000000041", ticketType: "speaker", promoCode: "SPEAKER", speakerId: "spk-hid", hiddenByStaff: true }],
+    rsvps: [],
+    speakers: [{ _id: "spk-hid", name: "Hana Hiddenpass", title: "CTO", company: "X" }, { _id: "spk-free", name: "Noel Nopass", title: "CSO", company: "Y" }],
+  });
+  const hana = built.people.find((x) => x.speaker?._id === "spk-hid");
+  assert.deepEqual(hana.passList, [], "the hidden pass isn't on her record");
+  assert.deepEqual(hana.hiddenPasses, ["spk000000041"], "but it's known to be hers");
+  assert.equal(noPassPerson(hana), false);
+  assert.equal(noPassPerson(built.people.find((x) => x.speaker?._id === "spk-free")), true, "a speaker with no pass at all still is");
+  assert.deepEqual(buildDeskIndex(built.people, { aliases: built.byId }).guests.map((g) => g.name), ["Noel Nopass"]);
+});
