@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   RULES, LEVELS, scoreFromCounts, activityFromCounts, levelFor, nextLevelFor, emptyCounts, profileCounts, mergeCounts,
   onLeaderboard, leaderboardCard, rankRows, rankAmong, clampLimit, countPipelines,
-  parseSessionIds, makeAgendaCache,
+  parseSessionIds, makeAgendaCache, withSelf,
 } from "../services/points.js";
 
 const pts = (score, key) => score.breakdown.find((b) => b.key === key);
@@ -344,6 +344,42 @@ test("countPipelines read only that person's records when given an id", () => {
   assert.deepEqual(all.saved[0], { $match: {} });
   assert.deepEqual(all.questions[0], { $match: { status: "approved" } });
   assert.ok(!all.connections.some((s) => s.$match?.["side.u"]));
+});
+
+test("saved sessions count only while saved, and only agenda sessions (Oct 25 2026)", () => {
+  const agenda = new Set(["d1-01", "d1-02", "abc123"]);
+  // `s` is what's saved right now: unsaving removes the row, so the points go with it.
+  const now = mergeCounts({ saved: [{ _id: "u1", n: 4, s: ["d1-01", "d1-02", "abc123", "d1-2"] }] }, { sessions: agenda }).get("u1");
+  assert.equal(now.sessionsSaved, 3);                     // "d1-2" isn't on the agenda
+  assert.equal(scoreFromCounts(now).total, 15);
+  const after = mergeCounts({ saved: [{ _id: "u1", n: 1, s: ["d1-01"] }] }, { sessions: agenda }).get("u1");
+  assert.equal(scoreFromCounts(after).total, 5);
+  // Agenda unreadable: every saved session counts (the cap of 10 still holds).
+  assert.equal(mergeCounts({ saved: [{ _id: "u1", n: 4, s: ["a", "b", "c", "d"] }] }).get("u1").sessionsSaved, 4);
+  // Rows without `s` (older callers) still count `n`.
+  assert.equal(mergeCounts({ saved: [{ _id: "u2", n: 2 }] }, { sessions: agenda }).get("u2").sessionsSaved, 2);
+  // The aggregation collects the session ids.
+  assert.deepEqual(countPipelines().saved[1], { $group: { _id: "$userId", n: { $sum: 1 }, s: { $addToSet: "$sessionId" } } });
+});
+
+test("withSelf: the viewer's own row shows their points as they are now", () => {
+  const card = (id, name) => ({ id, name, organization: "", jobTitle: "", avatarUrl: "" });
+  const level = { key: "explorer", name: "Explorer", min: 0 };
+  const board = rankRows([
+    { user: card("a", "Ann"), points: 120, level }, { user: card("me", "Me"), points: 100, level }, { user: card("b", "Bob"), points: 80, level },
+  ]);
+  const me = { _id: "me", name: "Me" };
+  // Unsaved 5 sessions since the board was cached: 100 → 75, and they drop below Bob.
+  const fresh = withSelf(board, { user: me, points: 75, level });
+  assert.deepEqual(fresh.map((r) => [r.user.id, r.points, r.rank]), [["a", 120, 1], ["b", 80, 2], ["me", 75, 3]]);
+  // Same points: the same rows, untouched.
+  assert.equal(withSelf(board, { user: me, points: 100, level }), board);
+  // No points left, or off the leaderboard: not on it.
+  assert.deepEqual(withSelf(board, { user: me, points: 0, level }).map((r) => r.user.id), ["a", "b"]);
+  assert.deepEqual(withSelf(board, { user: { ...me, hideFromLeaderboard: true }, points: 100, level }).map((r) => r.user.id), ["a", "b"]);
+  // Not on the cached board yet: added where they'd be.
+  const added = withSelf(rankRows([{ user: card("a", "Ann"), points: 120, level }]), { user: me, points: 130, level });
+  assert.deepEqual(added.map((r) => [r.user.id, r.rank]), [["me", 1], ["a", 2]]);
 });
 
 /* ================= leaderboard ================= */

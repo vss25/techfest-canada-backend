@@ -24,7 +24,7 @@ import {
   threadKey, userCard, postDTO, tally, cleanImageData, trimBody, isOnApp,
   publicProfile, PROFILE_SELECT, CARD_SELECT, commentDTO, messageDTO, avatarFor, findPostsLight,
 } from "../services/socialHelpers.js";
-import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard } from "../services/points.js";
+import { RULES, LEVELS, standingFor, leaderboard, clampLimit, dropFromBoard, refreshOnBoard } from "../services/points.js";
 import { onRegistration } from "../services/sessionGroups.js";
 import { orgKeyResolver } from "../services/organisations.js";
 import { profileTagOf, publicProfileTag } from "../services/profileTag.js";
@@ -846,16 +846,33 @@ router.get("/sessions/registrations", async (req, res) => {
   res.json({ mine: mine.map((r) => r.sessionId), counts: countMap });
 });
 
-/* Toggle. The session's chat follows (services/sessionGroups.js): once it exists, registering before the session
-   ends adds them to it; un-registering before it starts takes them out. */
+/* Save / unsave. `{ saved: true|false }` sets that state (Oct 25 2026, "I unsave a session and keep its points"): the
+   apps send what the person now sees, so a tap can never do the opposite here when the device and the server
+   disagree (a save that never arrived, another device). Sending the same state again changes nothing. No `saved`
+   (app builds before 1.0.3 / 1.0.6): a toggle, as before. Unsaving takes the session's points away at once,
+   leaderboard included (services/points.js refreshOnBoard). The session's chat follows (services/sessionGroups.js):
+   once it exists, registering before the session ends adds them to it; un-registering before it starts takes them
+   out. */
 router.post("/sessions/:id/register", async (req, res) => {
   const sessionId = String(req.params.id);
-  const existing = await SessionRegistration.findOne({ userId: req.user._id, sessionId });
-  if (existing) await existing.deleteOne();
-  else await SessionRegistration.create({ userId: req.user._id, sessionId });
-  await onRegistration(req.user._id, sessionId, !existing);
+  const mine = { userId: req.user._id, sessionId };
+  const existing = !!(await SessionRegistration.exists(mine));
+  const saved = typeof req.body?.saved === "boolean" ? req.body.saved : !existing;
+  if (saved !== existing) {
+    if (saved) {
+      try {
+        await SessionRegistration.updateOne(mine, { $setOnInsert: mine }, { upsert: true });
+      } catch (err) {
+        if (err?.code !== 11000) throw err;   // two taps at once: already saved
+      }
+    } else {
+      await SessionRegistration.deleteMany(mine);
+    }
+    await onRegistration(req.user._id, sessionId, saved);
+    refreshOnBoard(req.user._id);   // in the background; never fails the save
+  }
   const count = await SessionRegistration.countDocuments({ sessionId, ...(req.shadow.size ? { userId: { $nin: oids(req.shadow) } } : {}) });
-  res.json({ registered: !existing, count });
+  res.json({ registered: saved, count });
 });
 
 /* ================= SESSIONS: LIVE (Q&A + POLLS) =================

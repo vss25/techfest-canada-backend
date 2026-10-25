@@ -6,10 +6,13 @@
    The app never reports points, so a modified client can't award
    itself anything, and nothing extra is stored: every read recomputes.
 
-   Session ids in the votes and questions collections come from the URL,
-   so live points (votes, questions, their upvotes, attendance) count only
-   for sessions on the agenda (Sanity session docs, the `sessionId` or
-   `_id` the apps use), and votes are capped per session and in total.
+   Session ids in the saved-session, votes and questions collections come
+   from the URL, so saved sessions and live points (votes, questions, their
+   upvotes, attendance) count only for sessions on the agenda (Sanity session
+   docs, the `sessionId` or `_id` the apps use), and votes are capped per
+   session and in total. Unsaving a session takes its points away: they're
+   counted from the sessions saved now, and the person's row on the cached
+   leaderboard follows at once (refreshOnBoard).
 
    Pure parts (RULES, LEVELS, scoreFromCounts, activityFromCounts, levelFor,
    mergeCounts, ranking) are exported for unit tests. The Mongo side only gathers
@@ -202,7 +205,8 @@ export function mergeCounts({ saved = [], votes = [], questions = [], connection
   const attend = (id, sessions) => { for (const s of list(sessions)) attended.get(String(id)).add(String(s)); };
   const rows = (a) => list(a).filter((r) => r && r._id != null);
 
-  for (const r of rows(saved)) get(r._id).sessionsSaved = whole(r.n);
+  // `s`: the session ids saved (countPipelines); rows without it (older callers) count `n`.
+  for (const r of rows(saved)) get(r._id).sessionsSaved = Array.isArray(r.s) ? r.s.filter((x) => known(x)).length : whole(r.n);
   for (const r of rows(votes)) {
     const per = list(r.perSession).filter((x) => x && known(x.s));
     get(r._id).votesPerSession = per.map((x) => whole(x.n));
@@ -297,7 +301,7 @@ export function countPipelines(oid = null, hidden = []) {
   return {
     saved: [
       match("userId"),
-      { $group: { _id: "$userId", n: { $sum: 1 } } },
+      { $group: { _id: "$userId", n: { $sum: 1 }, s: { $addToSet: "$sessionId" } } },
     ],
     votes: [
       match("userId"),
@@ -528,15 +532,38 @@ export async function rankedBoard() {
 export async function leaderboard(limit = 10, { exclude, self = null } = {}) {
   const skip = exclude instanceof Set ? exclude : new Set((exclude || []).map(String));
   let rows = await rankedBoard();
-  if (self?.user) {
-    const id = String(self.user._id);
-    const listed = rows.some((r) => r.user.id === id);
-    if (!onLeaderboard(self.user) && listed) rows = rankRows(rows.filter((r) => r.user.id !== id));
-    else if (self.points > 0 && onLeaderboard(self.user) && !listed) {
-      rows = rankRows([...rows, { user: leaderboardCard(self.user), points: self.points, level: self.level }]);
-    }
-  }
+  if (self?.user) rows = withSelf(rows, self);
   return rows.filter((r) => !skip.has(r.user.id)).slice(0, clampLimit(limit));
+}
+
+/** The board with the viewer's own row as it is now: their fresh points (a session just unsaved shows at once, not
+    on the next rebuild), off it when they're not on the leaderboard or have no points. Re-ranks only on a change. */
+export function withSelf(rows, { user, points, level }) {
+  const id = String(user._id);
+  const mine = rows.find((r) => r.user.id === id);
+  const others = () => rows.filter((r) => r.user.id !== id);
+  if (!onLeaderboard(user) || !(points > 0)) return mine ? rankRows(others()) : rows;
+  if (mine && mine.points === points) return rows;
+  return rankRows([...others(), { user: mine ? mine.user : leaderboardCard(user), points, level }]);
+}
+
+/** Someone's points just changed (a session saved or unsaved): their row on the cached board follows now rather
+    than on the next rebuild, for everyone looking. People not on it yet show up on the next rebuild (≤ 60 s).
+    A board invalidated meanwhile (someone hidden, someone opting out) is left alone. Never throws. */
+export async function refreshOnBoard(userId, { score } = {}) {
+  try {
+    const id = String(userId);
+    if (!cache.rows?.some((r) => r.user.id === id)) return;
+    const gen = generation;
+    const fresh = score || await pointsFor(id);
+    if (gen !== generation || !cache.rows) return;
+    const mine = cache.rows.find((r) => r.user.id === id);
+    if (!mine || mine.points === fresh.total) return;
+    const others = cache.rows.filter((r) => r.user.id !== id);
+    cache = { ...cache, rows: rankRows(fresh.total > 0 ? [...others, { ...mine, points: fresh.total, level: fresh.level }] : others) };
+  } catch (err) {
+    console.error("POINTS BOARD REFRESH ERROR:", err?.message || err);
+  }
 }
 
 /* Someone was hidden or shown again: the board is rebuilt on the next read. */
