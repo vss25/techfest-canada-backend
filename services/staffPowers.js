@@ -30,6 +30,8 @@
    (routes/console.js, routes/issuedPasses.js, routes/people.js).
 ========================================================= */
 
+import { APP_VERSION_KEYS } from "./appVersion.js";
+
 export const GUEST_OFFER_FLAG = "flag.guestOffer";
 /** The web app's guest offer: the switch and its four unlabelled settings (code, discount, end, passes). */
 export const GUEST_OFFER_KEYS = Object.freeze([GUEST_OFFER_FLAG, "offer.guest_code", "offer.guest_discount", "offer.guest_ends", "offer.guest_passes"]);
@@ -41,6 +43,8 @@ export const MANAGEMENT_CONTENT_KEYS = Object.freeze([
   "site.ticket_sales_open", "site.ticket_sales_message", "flag.upgrades", ...GUEST_OFFER_KEYS,
   // The swag kit contest's terms (services/swagRules.js): management sets them and turns it on.
   "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules",
+  // "Update the app" (services/appVersion.js): the store versions and minimums decide who is asked to update.
+  ...APP_VERSION_KEYS,
 ]);
 const MANAGEMENT_SET = new Set(MANAGEMENT_CONTENT_KEYS);
 

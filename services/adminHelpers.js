@@ -4,6 +4,7 @@ import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
 import { SWAG_DEFAULTS, cleanSwagContent } from "./swagRules.js";
 import { STAY_DEFAULTS } from "./waitlist.js";
 import { cleanJourneyContent, journeyContentError } from "./stayJourney.js";
+import { APP_VERSION_DEFAULTS, cleanAppVersionContent, appVersionContentError } from "./appVersion.js";
 
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
@@ -115,6 +116,9 @@ export const CONTENT_KEYS = {
      JSON list of stops checked by services/stayJourney.js (cleanContent refuses a journey it can't save;
      contentError says why). */
   ...STAY_DEFAULTS,
+  /* "Update the app" (Oct 24 2026, services/appVersion.js): the newest iOS / Android versions in the stores and the
+     optional minimums (empty = nobody blocked), plus optional banner words. Management only (services/staffPowers.js). */
+  ...APP_VERSION_DEFAULTS,
 };
 
 /** Validates a content update; returns [key, value] or null. */
@@ -130,12 +134,14 @@ export function cleanContent(key, value) {
   if (swag !== undefined) return swag;
   const journey = cleanJourneyContent(key, value);
   if (journey !== undefined) return journey;
+  const version = cleanAppVersionContent(key, value);
+  if (version !== undefined) return version;
   return [key, String(value ?? "").slice(0, 2000)];
 }
 
 /** Why cleanContent refused a value of a known key, in plain words for the panel ("" = no particular reason). */
 export function contentError(key, value) {
-  return journeyContentError(key, value);
+  return journeyContentError(key, value) || appVersionContentError(key, value);
 }
 
 /** "Most used" summary from a list of events. */
