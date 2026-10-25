@@ -12,7 +12,9 @@ import {
 
    /api/app/organisations (no sign-in)
      GET /organisations   { updatedAt, featured: [Org], attending: [Org] }
-                          Org = { key, name, logo (https URL | ""), logoSource: "website"|"company"|"auto"|"",
+                          Org = { key, name, logo (https URL | ""; an SVG / ICO on Cloudinary or Sanity is sent
+                                  as a PNG of it, services/logoRaster.js, Oct 24 2026), logoOriginal (the stored
+                                  URL, for the website's crisp SVG), logoSource: "website"|"company"|"auto"|"",
                                   website, kind (the CMS category key | ""), topics: [full names],
                                   description, scale (CMS logoScale %, 100 default),
                                   attendeeCount, speakerCount, aliases: [other keys merged in] }
