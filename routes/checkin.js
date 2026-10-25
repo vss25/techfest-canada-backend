@@ -8,6 +8,8 @@ import { recordScan } from "../services/checkinDeskActions.js";
 import { cleanTicketId } from "../services/doorQr.js";
 import { deskNow } from "../services/checkinDeskLog.js";
 import { eventDayInfo } from "../services/checkinDeskTime.js";
+import { connectPassNote, connectRefusal, isAppQr, parseConnectQr } from "../services/connectQr.js";
+import { checkinPassOf } from "./people.js";
 
 /* What the scanner shows about the pass and its holder (services/checkinCard.js): `ticketType` (connect | influence |
    power | apex | speaker; the text "All Access" is Power), `passName` its name ("Speaker Pass" for the internal one),
@@ -54,6 +56,26 @@ async function cardFor({ ticketId, account = null, ticket = null, attendee = nul
   }
 }
 
+/* The apps' networking QR (Oct 24 2026): staff scanned people's "My QR" (the Connect code in the apps' Network,
+   "TTFC2026|C|…|<userId>|<check>", services/connectQr.js) at the door and got "No TTFC ticket has this ID". Now the
+   code's check digit is verified (an edited code: 404 { status: "invalid", code: "bad_qr" }), its account found (by
+   userId; a code from before userIds by exactly its email; neither: 404 code "networking_qr" "That's their networking
+   QR. Ask for the entry pass QR…"), and its pass to check in picked (routes/people.js checkinPassOf: their passes
+   that count, and of several the one the desk counts them under: the Speaker Pass, else the one People shows first;
+   none: 404 code "no_pass"). Then the scan goes on EXACTLY as a scan of that pass's door QR (the same card, practice
+   on a day that isn't Day 1 / Day 2, already checked in, recordScan), every answer with `scanned: "networking_qr"`,
+   `passCount` and, for several passes, `note` (which pass was used). Errors never carry an email. Door QRs
+   ("TECHFEST:…", bare IDs) never come here: they're answered exactly as before. */
+async function connectScan(text) {
+  const qr = parseConnectQr(text);
+  if (!qr?.ok) return { ok: false, body: connectRefusal("bad_qr") };
+  if (!qr.userId && !qr.email) return { ok: false, body: connectRefusal("networking_qr") };
+  const r = await checkinPassOf({ userId: qr.userId, email: qr.userId ? "" : qr.email });
+  if (!r.found) return { ok: false, body: connectRefusal(r.account ? "no_pass" : "networking_qr") };
+  const note = connectPassNote({ count: r.count, passName: r.pass?.label });
+  return { ok: true, ticketId: r.ticketId, via: { scanned: "networking_qr", passCount: r.count, ...(note ? { note } : {}) } };
+}
+
 const router = express.Router();
 
 // ================= CHECK-IN =================
@@ -66,7 +88,17 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     // Every form of the same ticket finds it (services/doorQr.js): "TECHFEST:<ticketId>" (pass emails, Wallet, the apps,
     // and since Oct 24 2026 the PDF ticket and the purchase email too) or the bare ID (PDF tickets and purchase emails
     // from before), any case, with stray spaces. Writes below use the ID as stored.
-    const raw = String(req.body?.ticketId || "").trim().replace(/^TECHFEST:/i, "");
+    let input = String(req.body?.ticketId || "").trim();
+    // The apps' networking QR: the pass it stands for (see connectScan above); `via` goes with every answer.
+    let via = {};
+    if (isAppQr(input)) {
+      const c = await connectScan(input);
+      if (!c.ok) return res.status(404).json(c.body);
+      input = c.ticketId;
+      via = c.via;
+    }
+    const reply = (body) => res.json({ ...body, ...via });
+    const raw = input.replace(/^TECHFEST:/i, "");
     const typed = cleanTicketId(raw);
     let ticketId = typed;
 
@@ -99,14 +131,14 @@ router.post("/scan", requireCheckIn, async (req, res) => {
 
       // Not an event day: the card, nothing written (see practiceAnswer above).
       if (practice) {
-        res.json(practiceAnswer({ card, ticketId, rec: ticket }));
+        reply(practiceAnswer({ card, ticketId, rec: ticket }));
         void recordScan({ ticketId, user: req.user, outcome: "practice", at: now });
         return;
       }
 
       // already used (the desk app still records today's check-in once: Day 2, services/checkinDeskActions.js)
       if (ticket.checkedIn) {
-        res.json({
+        reply({
           ...card,
           status: "already_checked_in",
           ticketId,
@@ -123,7 +155,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
       await user.save();
       // Keep the admin attendee list in step when a guest ticket was linked to this account.
       await Attendee.updateOne({ ticketId }, { $set: { checkedIn: true, checkedInAt: ticket.checkedInAt } });
-      res.json({
+      reply({
         ...card,
         status: "success",
         ticketId,
@@ -150,13 +182,13 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     const card = await cardFor({ ticketId, attendee: attendee.toObject(), fallbackName: attendee.name });
 
     if (practice) {
-      res.json(practiceAnswer({ card, ticketId, rec: attendee }));
+      reply(practiceAnswer({ card, ticketId, rec: attendee }));
       void recordScan({ ticketId, user: req.user, outcome: "practice", at: now });
       return;
     }
 
     if (attendee.checkedIn) {
-      res.json({
+      reply({
         ...card,
         status: "already_checked_in",
         ticketId,
@@ -170,7 +202,7 @@ router.post("/scan", requireCheckIn, async (req, res) => {
     attendee.checkedInAt = new Date();
     await attendee.save();
 
-    res.json({
+    reply({
       ...card,
       status: "success",
       ticketId,
