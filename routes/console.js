@@ -78,6 +78,7 @@ import { runSearch } from "../services/adminSearch.js";
 import { makeSearchSources } from "../services/adminSearchSources.js";
 import { makeLimiter } from "../services/ticketAccess.js";
 import { directory as peopleDirectory, mediaOfPasses } from "./people.js";
+import { autoLinkEmail } from "../services/passAutoLink.js";
 import { HIDE_SELECT, hiddenState, oids, personHide } from "../services/appHide.js";
 
 /* =========================================================
@@ -1171,6 +1172,8 @@ router.post("/tickets/complimentary", requireManagement, async (req, res) => {
     ticketId: crypto.randomBytes(6).toString("hex"),
   });
   await audit(req, "ticket_complimentary", "ticket", attendee.ticketId, `${tier} pass for ${email}`);
+  // An account with that email (and their name) has it in the app at once (services/passAutoLink.js).
+  await autoLinkEmail(email, { by: req.user, trigger: "complimentary pass" });
   res.status(201).json({ ticketId: attendee.ticketId, name, email, tier, lastName: name.split(" ").slice(-1)[0] });
 });
 
@@ -1473,6 +1476,8 @@ router.patch("/speaker-passes/:id", async (req, res) => {
   if ("email" in set && passRecipients(before).join(", ") !== passRecipients(a).join(", ")) {
     await audit(req, "speaker_pass_email", "ticket", a.ticketId,
       `${a.name}: ${passRecipients(before).join(", ") || "no email"} → ${passRecipients(a).join(", ") || "no email"}`);
+    // The speaker's own account (that email, their name) has the pass in the app at once (services/passAutoLink.js).
+    await autoLinkEmail(a.email, { by: req.user, trigger: "Speaker Pass email set" });
   }
   if ("runOfShow" in set) {
     await audit(req, "speaker_pass_run_of_show", "ticket", a.ticketId, `${a.name}: ${set.runOfShow?.sessions?.length || 0} session(s)`);

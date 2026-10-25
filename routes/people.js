@@ -14,7 +14,10 @@ import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, requirePanel, isManagement, isVolunteerPanel, refuseVolunteer } from "../middleware/adminAuth.js";
 import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
-import { stripeSessions } from "../services/stripeSales.js";
+import { cachedStripeSessions, stripeSessions } from "../services/stripeSales.js";
+import { countingPasses, mainPass } from "../services/eventSummary.js";
+import { resetPassCollection } from "../services/checkinDeskActions.js";
+import { backfillPassLinks, setPassLinkHook } from "../services/passAutoLink.js";
 import { clearExhibitorCache } from "../services/exhibitorCache.js";
 import TicketInventory from "../models/TicketInventory.js";
 import { storedTypes, PERSON_TYPES, isSpeakerPass } from "../services/teamRoles.js";
@@ -91,6 +94,12 @@ import {
      PATCH  /:id/passes/:ticketId  { extras?: { cxo?, lunch?, gala?, awards? } (each true | false | null = automatic),
                               cxoBreakfast?: true | false | null (the CxO Breakfasts, as before), tier? (management: the four or speaker),
                               manualValue?: CAD | null, manualValueNote? (management; passes paid outside Stripe) }
+     POST   /:id/passes/:ticketId/checkin-reset  (management, Oct 24 2026) undo a door check-in: the pass isn't
+                            collected any more (User.tickets + Attendee), audited pass_checkin_reset, the desks told;
+                            409 { code: "not_checked_in" } when it isn't checked in
+     POST   /link-passes    { preview: true | false } (management, Oct 24 2026) passes sent to an account's email that
+                            name them, linked to the account (services/passAutoLink.js); preview lists them and
+                            what's left out and why
      GET    /eligible       who is eligible for each pass extra (Leads › RSVPs headcounts):
                             { byExtra: { cxo, lunch, gala, awards }, byOption: { cxo_d1, …, awards }, passes, extras: [meta] }
      GET    /:id/delete-plan  (management) exactly what Delete person removes, with counts, and what stays
@@ -268,9 +277,10 @@ export async function mediaOfPasses(ids = [], { waitMs = 2500 } = {}) {
  * is found only by their own records (their main pass, account, passes, pass records, speaker profile), never as
  * whoever else the email search found (a colleague's pass on a shared address); when none of them is theirs any more
  * (their only pass hidden or deleted a moment ago), a person with no pass: nothing included. → the person record,
- * or null (no `p`).
+ * or null (no `p`). `refunds` (Oct 24 2026, the door's networking QR): Stripe's refunds by session (services/people.js
+ * stripeMaps), so a fully refunded pass is "refunded" as in the directory; without it, refunds aren't known.
  */
-export async function personNow(p) {
+export async function personNow(p, { refunds = null } = {}) {
   if (!p) return null;
   const passIds = (p.passList || []).map((t) => t.ticketId).filter(Boolean);
   const variants = (ids) => [...new Set(ids.flatMap((id) => [String(id), normalizeTicketId(id), normalizeTicketId(id).toUpperCase()]))];
@@ -285,7 +295,7 @@ export async function personNow(p) {
   const have = new Set(first.map((a) => String(a._id)));
   const more = variants(users.flatMap((u) => (u.tickets || []).map((t) => t.ticketId)).filter(Boolean)).filter((id) => !first.some((a) => a.ticketId === id));
   const extra = more.length ? (await Attendee.find({ ticketId: { $in: more } }).select(ATTENDEE_SELECT).lean()).filter((a) => !have.has(String(a._id))) : [];
-  const built = buildPeople({ users, attendees: [...first, ...extra], speakers: p.speaker ? [p.speaker] : [] });
+  const built = buildPeople({ users, attendees: [...first, ...extra], speakers: p.speaker ? [p.speaker] : [], refunds });
   const main = normalizeTicketId(p.primary?.ticketId || passIds[0] || "");
   const own = [
     main && `t-${main}`, p.user?._id && `u-${p.user._id}`, ...passIds.map((id) => `t-${normalizeTicketId(id)}`),
@@ -314,6 +324,43 @@ export async function personAfterChange(id, { waitMs = 4000 } = {}) {
     clearTimeout(timer);
   }
 }
+
+/**
+ * The pass a scanned networking (Connect) QR checks in (Oct 24 2026: the door, routes/checkin.js, and the desk's
+ * look-up, routes/checkinDesk.js; services/connectQr.js reads the code). The account: by its id (`userId`), or for an
+ * older code without one by exactly its email. Its passes as the directory joins them, read from the database now
+ * (personNow: on the account, claimed by it, or sent to its email with their name on it), those that count
+ * (services/eventSummary.js countingPasses: not hidden by staff, not a Stripe-sync duplicate, not fully refunded as far
+ * as this instance's cached Stripe sessions know, not a booth), and of those the one the check-in desk and the Event
+ * summary count them under (mainPass: their Speaker Pass, else the pass the People list shows first: usable before
+ * pending, the biggest, the newest).
+ * → { found: false, account: false }  no such account
+ *   { found: false, account: true }   an account with no pass that counts
+ *   { found: true, ticketId (as stored), pass (its directory record), count (their counting passes) }
+ */
+export async function checkinPassOf({ userId = "", email = "" } = {}) {
+  const select = "name email";
+  let user = null;
+  if (/^[a-f0-9]{24}$/i.test(String(userId || ""))) user = await User.findById(String(userId)).select(select).lean();
+  else if (String(email || "").trim()) user = await User.findOne({ email: String(email).trim().toLowerCase() }).select(select).lean();
+  if (!user) return { found: false, account: false };
+  const rows = cachedStripeSessions()?.rows;
+  const person = await personNow(
+    { id: `u-${user._id}`, kind: "account", name: user.name || "", user, email: user.email, passList: [], attendees: [] },
+    { refunds: Array.isArray(rows) ? stripeMaps({ rows }).refunds : null },
+  );
+  const passes = countingPasses(person);
+  const pass = mainPass(passes);
+  if (!pass) return { found: false, account: true };
+  return { found: true, ticketId: pass.ticketId, pass, count: passes.length };
+}
+
+/* Passes linked to an account by email (services/passAutoLink.js: a sign-in, /api/auth/me, a pass given): the
+   directory reads them again, and the desks get the person's row (one person with that pass, never two). */
+setPassLinkHook(async ({ linked = [], by = null } = {}) => {
+  invalidate();
+  for (const l of linked) await deskGuestChanged({ ticketIds: [l.ticketId], user: by, person: await personAfterChange(`t-${l.ticketId}`) });
+});
 
 async function findPerson(id, { fresh = false, maxAgeMs = DIR_TTL_MS } = {}) {
   const raw = String(id || "").slice(0, 80);
@@ -573,6 +620,20 @@ router.post("/nudge", requireManagement, wrap(async (req, res) => {
 
 /* Who is eligible for each pass extra: every pass (not hidden, not a booth) whose extra is Yes, by staff's
    switch or automatically (services/people.js eligibleCounts). Leads › RSVPs shows it on the headcounts. */
+/* ---------- Link passes sent to account emails (management, Oct 24 2026; services/passAutoLink.js) ----------
+   POST /link-passes { preview: true | false } → { preview, accounts, toLink, link: [row], skipped: [row],
+   linked: [row] } with row = { ticketId, type, passName, accountId, accountName, email, why?, reason? }: every pass
+   record sent to an account's email whose name is theirs (not hidden, a sync duplicate, refunded, a booth, or linked
+   to / on another account); skipped: the same email but left out, and why. preview: nothing changes (the default);
+   false: links them (each audited pass_auto_link; the directory and the desks follow). Run once after deploying;
+   afterwards it happens on its own (sign-in, /api/auth/me, a pass given). */
+router.post("/link-passes", requireManagement, wrap(async (req, res) => {
+  const preview = req.body?.preview !== false;
+  const r = await backfillPassLinks({ apply: !preview, by: req.user });
+  if (!preview) await audit(req, "pass_auto_link_backfill", "ticket", "", `${r.linked.length} linked (${r.link.length} planned, ${r.skipped.length} left out)`);
+  res.json({ preview, accounts: r.accounts, toLink: r.link.length, link: r.link, skipped: r.skipped, linked: r.linked });
+}));
+
 router.get("/eligible", wrap(async (req, res) => {
   const d = await directory({ fresh: req.query.refresh === "1" });
   res.json({ ...eligibleCounts(d.people), extras: extrasMeta(), builtAt: d.builtAt });
@@ -1230,6 +1291,40 @@ router.patch("/:id/passes/:ticketId", wrap(async (req, res) => {
   if (deskGuest) deskEv = await deskGuestChanged({ ticketIds: [t.ticketId], user: req.user, person: fresh });
   else if (deskInclusions) deskEv = await deskInclusionsChanged({ ...deskInclusions, person: fresh });
   res.json({ ok: true, warnings, person: fresh ? personDetail(fresh, { management, staffId: req.user._id }) : null, ...deskReply(deskEv) });
+}));
+
+/* ---------- Undo a door check-in (management, Oct 24 2026) ----------
+   POST /:id/passes/:ticketId/checkin-reset → { ok: true, ticketId (as stored), wasCheckedInAt (the time it had, or
+   null), checkedIn: false, person (the profile now), deskGuest?, deskSeq? }
+   Test scans before the event collected some passes (checkedIn on User.tickets / the Attendee row): on the day their
+   scan would be amber "Already checked in" and the desk would show "Has pass". This takes the collection back on every
+   record of the ticket (services/checkinDeskActions.js resetPassCollection), audits `pass_checkin_reset` with the old
+   time, rebuilds the directory and tells the desks (a guest event with the row and the pass not collected), so open
+   iPads update. 404 person / pass; 409 { code: "not_checked_in" } when it isn't checked in. Staff: 403 (management
+   only); volunteers never get past the volunteer gate (403 volunteer_forbidden). */
+const torontoText = (d) => new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Toronto", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+}).format(new Date(d));
+router.post("/:id/passes/:ticketId/checkin-reset", requireManagement, wrap(async (req, res) => {
+  const p = await findPerson(req.params.id, { fresh: true });
+  if (!p) return res.status(404).json({ error: "Person not found" });
+  const norm = normalizeTicketId(req.params.ticketId);
+  const t = p.passList.find((x) => x.norm === norm);
+  if (!t) return res.status(404).json({ error: "Pass not found" });
+  const { before, after } = await resetPassCollection([t.ticketId, norm]);
+  if (!before.collected) return res.status(409).json({ error: "This pass isn't checked in.", code: "not_checked_in" });
+  const was = before.at ? `${new Date(before.at).toISOString()} (${torontoText(before.at)} Toronto)` : "no time recorded";
+  await audit(req, "pass_checkin_reset", "ticket", t.ticketId, `${p.name} · ${t.label} ${t.ticketId.toUpperCase()}: door check-in undone (was checked in ${was})`);
+  invalidate();
+  const fresh = await findPerson(p.id);
+  // The desks: the guest's row as it is now, and the pass given back (newer than the scan that collected it).
+  const deskEv = await deskGuestChanged({
+    ticketIds: [t.ticketId], user: req.user, person: fresh, pass: { ticketId: norm, collected: !!after.collected, collectedAt: after.at || null },
+  });
+  res.json({
+    ok: true, ticketId: t.ticketId, wasCheckedInAt: before.at || null, checkedIn: !!after.collected,
+    person: fresh ? personDetail(fresh, { management: true, staffId: req.user._id }) : null, ...deskReply(deskEv),
+  });
 }));
 
 /* ---------- Delete person (management) ----------

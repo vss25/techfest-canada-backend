@@ -11,7 +11,8 @@ import { canUseStaffSignIn } from "../services/teamRoles.js";
 import { makeLimiter, normalizeTicketId } from "../services/ticketAccess.js";
 import { makeAgendaCache } from "../services/points.js";
 import { SANITY_PROJECT } from "../services/rsvp.js";
-import { directory, peopleGeneration, personNow } from "./people.js";
+import { checkinPassOf, directory, peopleGeneration, personNow } from "./people.js";
+import { connectRefusal, isAppQr, parseConnectQr } from "../services/connectQr.js";
 import {
   MAX_BATCH, boothsOf, buildDeskIndex, cleanAction, deskRowFrom, eventView, guestExtras, guestKey, guestView, isGuestKey, isPersonSubject, keyOfSubject, markView,
   personKey, queryView, sessionsIndex, unknownKeyOf, unknownRows,
@@ -48,7 +49,9 @@ import { performAction } from "../services/checkinDeskActions.js";
      GET  /stream?since=  the same as Server-Sent Events (Authorization header: the app reads it with fetch, so no
                           token ever goes in a URL); a ping every 5 s; ends after 10 minutes (the app reconnects)
      POST /actions        one action, or { actions: [...] } (≤ 25, in order: the offline queue) → { results }
-     POST /lookup         { ticketId } → { key } : a volunteer typed a ticket ID (they don't hold the list of them)
+     POST /lookup         { ticketId } → { key } : a volunteer typed a ticket ID (they don't hold the list of them); since
+                          Oct 24 2026 also a networking QR's text (their pass: routes/people.js checkinPassOf; 404
+                          { code: bad_qr | networking_qr | no_pass } as at the door, never an email)
      GET  /team           staff: the team's names (media query assignees)
      GET  /history/:key   staff: one guest's events (latest 60)
      GET  /counts         staff: attendance by day (contract C10, services/checkinAttendance.js): arrived, checked in,
@@ -562,7 +565,18 @@ router.post("/actions", limit("actions"), wrap(async (req, res) => {
 }));
 
 router.post("/lookup", limit("lookup"), wrap(async (req, res) => {
-  const norm = normalizeTicketId(req.body?.ticketId);
+  let typed = String(req.body?.ticketId ?? "").trim();
+  // A networking (Connect) QR read into the search (Oct 24 2026): their pass, as at the door (routes/checkin.js).
+  if (isAppQr(typed)) {
+    const qr = parseConnectQr(typed);
+    const refuse = (k) => { const b = connectRefusal(k); return res.status(404).json({ error: b.message, code: b.code }); };
+    if (!qr?.ok) return refuse("bad_qr");
+    if (!qr.userId && !qr.email) return refuse("networking_qr");
+    const r = await checkinPassOf({ userId: qr.userId, email: qr.userId ? "" : qr.email });
+    if (!r.found) return refuse(r.account ? "no_pass" : "networking_qr");
+    typed = r.ticketId;
+  }
+  const norm = normalizeTicketId(typed);
   if (norm.length < 6) return res.status(400).json({ error: "Type the whole ticket ID." });
   let g = (await deskIndex()).byNorm.get(norm);
   if (!g) g = (await rebuildForMiss({}))?.byNorm.get(norm);

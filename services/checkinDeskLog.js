@@ -292,13 +292,14 @@ export async function deskInclusionsChanged({ ticketId, user = null, person = nu
 
 /** Staff changed something else about a guest (name, company, Media / VIP / Exhibitor, a pass given, edited or
     deleted): the event carries the guest's whole row after the change (`person`: the directory's person, rebuilt
-    where the change was made), or none when they're gone or couldn't be read (the desks reload). → the stored event,
-    or null. */
-export async function deskGuestChanged({ ticketIds = [], user = null, person = null } = {}) {
+    where the change was made), or none when they're gone or couldn't be read (the desks reload). `pass` (Oct 24 2026,
+    Undo check-in): { ticketId, collected, collectedAt }, the pass's collected state after the change, which devices
+    and snapshots apply like a scan's (the newest wins over an older scan's "collected"). → the stored event, or null. */
+export async function deskGuestChanged({ ticketIds = [], user = null, person = null, pass = null } = {}) {
   const guest = rowFor(person);
   const subject = guest?.norm || normalizeTicketId(ticketIds.find(Boolean) || "");
   try {
-    return await appendEvent({ kind: "guest", subject, ...(guest ? { guest } : {}), ...byOf(user) });
+    return await appendEvent({ kind: "guest", subject, ...(guest ? { guest } : {}), ...(pass?.ticketId ? { pass } : {}), ...byOf(user) });
   } catch (err) {
     console.error("CHECKIN DESK GUEST EVENT ERROR:", err?.message || err);
     return null;
