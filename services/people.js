@@ -1038,7 +1038,7 @@ export function personDetail(p, { management = false, cmsLogos = [], staffId = "
     // The RSVP editor's rules: `extras` per pass extra true / false (null = by the pass picked), `keep`: extras on their RSVP.
     rsvpRules: { cxo: rules.cxo ?? null, extras: Object.fromEntries(EXTRA_KEYS.map((x) => [x, typeof rules.extras?.[x] === "boolean" ? rules.extras[x] : null])), keep: rules.extra },
     passes: p.passList.map((t) => ({
-      ...passOut(t), hidden: t.hidden, checkedIn: t.checkedIn, purchaseDate: t.purchaseDate, promoCode: t.promoCode,
+      ...passOut(t), hidden: t.hidden, checkedIn: t.checkedIn, checkedInAt: t.checkedIn ? t.checkedInAt || null : null, purchaseDate: t.purchaseDate, promoCode: t.promoCode,
       claimed: t.claimed, booth: t.booth, exhibitorPass: t.exhibitorPass, printedLabel: t.printedLabel || "",
       hasStripe: !!t.stripeSessionId,
       ...(management ? {

@@ -29,6 +29,7 @@ import { loadTemplate, saveTemplate } from "../services/emailTemplates.js";
 import { noteTrackedSend, passEmailPixel } from "../services/engagementStore.js";
 import { forgetPeople, mediaOfPasses, personAfterChange } from "./people.js";
 import { deskGuestChanged } from "../services/checkinDeskLog.js";
+import { autoLinkEmail } from "../services/passAutoLink.js";
 
 /* =========================================================
    Staff-issued passes, two kinds on the same routes:
@@ -358,6 +359,9 @@ export function issuedPassRouter(kindName = "issued") {
       .map((e) => `, ${e.key === "cxo" ? "CxO Breakfast" : e.label} ${check.value[e.field] ? "Yes" : "No"}`).join("")
       + PASS_MARKS.filter((k) => check.value[k] === true).map((k) => `, ${k === "vip" ? "VIP" : "Media"} Yes`).join("");
     if (PASS_MARKS.some((k) => check.value[k] === true)) clearExhibitorCache(); // the apps see the mark within the minute
+    // Given to someone who already has an account with that email (staff included): on their account at once, so their
+    // app shows the pass (services/passAutoLink.js: only when the name on the pass is theirs).
+    await autoLinkEmail(doc.email, { by: req.user, trigger: "pass given" });
     forgetPeople(); // People (and the pass lists' Media marks) read it at once
     // The check-in desk app has the new guest on every server instance (Give a pass at the pass desk: look them up next),
     // with their row as the directory now has it.
@@ -406,6 +410,8 @@ export function issuedPassRouter(kindName = "issued") {
     const rowBefore = issuedPassRow(before).extras;
     const rowAfter = issuedPassRow(a).extras;
     if (markChanges.length) clearExhibitorCache();
+    // A new email (or name) on the pass: the account with that email gets it when the pass names them.
+    if ("email" in set || "name" in set) await autoLinkEmail(a.email, { by: req.user, trigger: "pass edited" });
     forgetPeople();
     // The check-in desk app: the pass's name, marks or inclusions as they are now, on every server instance (the row).
     await deskGuestChanged({ ticketIds: [a.ticketId], user: req.user, person: await personAfterChange(`t-${a.ticketId}`) });

@@ -216,6 +216,28 @@ async function uncollectPass(ids, at) {
   return { collected: now.collected, at: now.at };
 }
 
+/**
+ * Staff undid a door check-in (Admin › People "Undo check-in", POST /api/console/people/:id/passes/:ticketId/
+ * checkin-reset, Oct 24 2026: passes collected by test scans before the event): the pass isn't collected any more, on
+ * every record of it (every account holding the ticket, its pass records), whenever and however it was collected.
+ * The desk's marks stay as they are (a day's statuses; a check-in that had collected it, undone later, finds no
+ * collection at its time to give back). → { before: { collected, at }, after: { collected, at } }
+ */
+export async function resetPassCollection(ids) {
+  const variants = variantsOf(ids);
+  const before = await collectedAt(variants);
+  if (before.collected) {
+    await Promise.all([
+      User.updateMany({ "tickets.ticketId": { $in: variants } },
+        { $set: { "tickets.$[t].checkedIn": false }, $unset: { "tickets.$[t].checkedInAt": 1 } },
+        { arrayFilters: [{ "t.ticketId": { $in: variants } }] }),
+      Attendee.updateMany({ ticketId: { $in: variants }, $or: [{ checkedIn: true }, { checkedInAt: { $ne: null } }] },
+        { $set: { checkedIn: false }, $unset: { checkedInAt: 1 } }),
+    ]);
+  }
+  return { before, after: await collectedAt(variants) };
+}
+
 /* ---------- Undo vs tap: the CheckinTap state machine (contract C2) ---------- */
 
 /** A request still "recording" a tap after this long has died: the tap sent again takes it over. */

@@ -11,6 +11,7 @@ import {
 import { signAppToken, ticketFromAttendee, hasTicket } from "./ticketAuth.js";
 import { isStaff } from "../services/teamRoles.js";
 import { VIA_EMAIL } from "../services/signInMethod.js";
+import { autoLinkPasses } from "../services/passAutoLink.js";
 
 /* =========================================================
    "Email me a sign-in link" — mounted at /api/auth
@@ -58,7 +59,12 @@ async function accountFor(email) {
   // Staff accounts just sign in. Passes staff issue can carry a staff member's own email
   // (e.g. Speaker Passes), so guest tickets are never moved onto a staff account here; their
   // own ticket can still be linked with claim-ticket.
-  if (isStaff(user)) return { user, created };
+  // Since Oct 24 2026 a staff account gets the passes sent to its email that name it (services/passAutoLink.js: the
+  // name on the pass must be theirs, so a speaker's pass under a staff member's email stays the speaker's).
+  if (isStaff(user)) {
+    if ((await autoLinkPasses(user, { trigger: "emailed-code sign-in" })).length) user = await User.findById(user._id);
+    return { user, created };
+  }
   const claim = [];
   for (const a of guests) {
     // A ticket someone else has already linked to their own account stays with them.
@@ -68,6 +74,8 @@ async function accountFor(email) {
   }
   await user.save();
   if (claim.length) await Attendee.updateMany({ _id: { $in: claim } }, { $set: { claimedBy: user._id } });
+  // Anything the loop above leaves (it links every pass with this email, as before): audited links and the desks told.
+  await autoLinkPasses(user, { trigger: "emailed-code sign-in" });
   return { user, created };
 }
 

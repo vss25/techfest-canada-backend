@@ -16,6 +16,7 @@ import { profileTagOf } from "../services/profileTag.js";
 import { spotsOf } from "../services/availability.js";
 import { avatarFor } from "../services/socialHelpers.js";
 import { tokenClaims, VIA_GOOGLE, VIA_LINKEDIN } from "../services/signInMethod.js";
+import { autoLinkPasses } from "../services/passAutoLink.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -99,6 +100,9 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: BAD_LOGIN });
     }
     loginPerEmail.reset(`e:${email}`);
+    // Passes sent to their email (Give a pass, a Speaker Pass) go on their account (services/passAutoLink.js):
+    // staff sign in with a password, never with the emailed code that used to link them. Never fails the sign-in.
+    await autoLinkPasses(user, { trigger: "password sign-in" });
 
     // The apps' "Staff sign-in" sends staffOnly: attendees sign in there with a link or
     // their ticket ID, so a password only works for staff and volunteer accounts (role
@@ -141,10 +145,15 @@ router.get("/me", async (req, res) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
+    let user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
 
     if (!user) {
       return res.status(401).json({ error: "Invalid token" });
+    }
+    // Passes sent to their email since they last looked (services/passAutoLink.js, Oct 24 2026): on their account
+    // now, so the apps show the real pass, never "Link your pass". The apps read this on launch and every refresh.
+    if ((await autoLinkPasses(user, { trigger: "app refresh" })).length) {
+      user = await User.findById(decoded.id).select("-password -resetPasswordToken -resetPasswordExpires");
     }
 
     // Fill profile gaps from the website checkout answers (incl. guest tickets
