@@ -311,6 +311,13 @@ test("the apps' contract: /auth/me tickets keep cxoBreakfast and add inclusions 
   assert.deepEqual(out[3].inclusions, []);
   // Staff's switches and the manual value stay out of the app.
   for (const t of out) for (const f of ["galaDinner", "luncheons", "awardsNight", "manualValue"]) assert.equal(f in t, false, f);
+  // Oct 24 2026: the same four as booleans (the apps' per-day chips), staff's switches applied, all false for a booth.
+  assert.deepEqual(out.map((t) => t.extras), [
+    { cxo: false, lunch: false, gala: true, awards: false },
+    { cxo: false, lunch: false, gala: true, awards: false },
+    { cxo: true, lunch: true, gala: true, awards: true },
+    { cxo: false, lunch: false, gala: false, awards: false },
+  ]);
   assert.equal(timesWording("2x Luncheons"), "2× Luncheons");
   assert.equal(timesWording("Expo Floor Access"), "Expo Floor Access");
 });
@@ -383,6 +390,7 @@ test("Media = Yes: the apps' inclusions, the pass email's list and RSVP reason, 
   assert.equal(t.cxoBreakfast, true);
   for (const line of ["2× CxO Breakfasts", "2× Luncheons", "1× Gala Dinner & Networking Reception", "1× Awards Night"]) assert.ok(t.inclusions.includes(line), line);
   assert.deepEqual([booth.cxoBreakfast, booth.inclusions], [false, []]);
+  assert.deepEqual([t.extras, booth.extras], [ALL, { cxo: false, lunch: false, gala: false, awards: false }]);
   // Give a pass: a Connect Pass marked Media lists all four in its email and asks them to RSVP for them.
   const doc = { _id: "a1", ...issuedPassDoc({ name: "Mo Press", emails: ["mo.press@example.com"], tier: "connect", media: true }, { ticketId: "AAA000000001" }) };
   const v = issuedVariant(doc);

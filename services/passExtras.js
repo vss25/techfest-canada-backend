@@ -177,6 +177,11 @@ export const timesWording = (line) => String(line || "").replace(/^(\d+)x\s/, "$
  *   inclusions    everything it includes, the extras switched on or off for this pass, in the website's
  *                 wording ("2× Luncheons", "1× Gala Dinner & Networking Reception", "1× Awards Night",
  *                 "2× CxO Breakfasts", plus the rest of the pass's list); [] for a booth
+ *   extras        { cxo, lunch, gala, awards } true / false: the same four as effectiveExtras decides them
+ *                 (staff's switch, else the pass and person rules), so the apps can show them without
+ *                 reading the wording (Oct 24 2026: chips per day on the person's own Profile and pass;
+ *                 cxo and lunch are both days, awards Day 1's evening, gala Day 2's). All false for a booth.
+ *                 Older app builds ignore it.
  * `types`: their effective person types; `vip`: they're a VIP (services/teamRoles.js isVip); `attendees`: Attendee
  * rows for those ticket IDs (ticketId + the extra fields), whose switches apply where the account's ticket has
  * none. Staff's switches and the manual ticket value stay out. `type` is as stored: connect | influence | power |
@@ -194,6 +199,7 @@ export function ticketsWithExtras(tickets = [], { types = [], vip = false, atten
       ...rest,
       cxoBreakfast: !booth && extras.cxo,
       inclusions: booth ? [] : inclusionsFor(t?.type, { extras }).map(timesWording),
+      extras: Object.fromEntries(EXTRA_KEYS.map((x) => [x, !booth && !!extras[x]])),
     };
   });
 }
