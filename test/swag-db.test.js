@@ -25,6 +25,7 @@ delete process.env.STRIPE_SECRET_KEY;
 delete process.env.FCM_SERVICE_ACCOUNT;
 delete process.env.APNS_KEY;
 
+const SWAG_DEFAULT_CUTOFF = "2026-10-26T16:00:00-04:00";
 const sent = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, opts) => {
@@ -160,7 +161,10 @@ async function waitJob() {
 
 test("public settings: off by default, the rules filled in, the pitch; the app invite is the plain one while it's off", { skip }, async () => {
   const p = await ok(call("GET", "/api/app/swag"));
-  assert.deepEqual([p.enabled, p.kits, p.title, p.phase, p.announced, p.appOnly, p.pitch], [false, 3, "Win the TTFC swag kit", "open", false, true, "Only people using the TTFC app can win"]);
+  // The default cutoff is Day 1, 4 PM: open before it, closed after (the suite runs on any day).
+  const phase = new Date() < new Date(SWAG_DEFAULT_CUTOFF) ? "open" : "closed";
+  assert.deepEqual([p.enabled, p.kits, p.title, p.phase, p.announced, p.appOnly, p.pitch], [false, 3, "Win the TTFC swag kit", phase, false, true, "Only people using the TTFC app can win"]);
+  assert.equal("winners" in p, false);   // not before they're announced
   assert.match(p.rules, /^Only people using the TTFC app can win\./);
   assert.match(p.rules, /The top 3 people on the leaderboard at 4:00 PM on Monday, October 26 each win a TTFC swag kit\./);
   const t = await ok(call("GET", "/api/console/app-invite/template", { as: U.sam }));
@@ -181,7 +185,8 @@ test("settings are management only and checked; the contest goes on", { skip }, 
   await ok(setting(U.mia, "swag.enabled", true));
   const p = await ok(call("GET", "/api/app/swag"));
   assert.equal(p.enabled, true);
-  // Not past the cutoff yet: no announcing.
+  // Not past the cutoff yet (a cutoff still to come, whatever day the suite runs): no announcing.
+  await ok(setting(U.mia, "swag.cutoff", "2099-10-26T16:00:00-04:00"));
   const early = await call("POST", "/api/console/swag/announce", { as: U.mia, body: { confirm: "ANNOUNCE", userIds: [] } });
   assert.deepEqual([early.status, early.body.code], [409, "not_yet"]);
 });
