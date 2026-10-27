@@ -253,8 +253,8 @@ if (!IMPORT_ONLY) mongoose
     startDigests();
     // Every minute: at the swag kit cutoff, keep the leaderboard as it is then (services/swag.js).
     startSwagSnapshot();
-    // Every minute: the survey's app prompt at opensAt, only if management turned autoNotify on (off by default:
-    // nothing is sent on deploy or at opensAt until they have; services/survey.js).
+    // Every minute: the survey's app prompt in waves from opensAt + 15 min to 10 PM Toronto that day, while autoNotify
+    // is on (the default since Oct 26 2026, late; nothing outside that window, nothing on deploy; services/survey.js).
     startSurveyNotify();
     // Every minute, one server: management's scheduled broadcasts that are due (each sent once; over 2 h late = missed;
     // services/scheduledBroadcasts.js). Nothing is scheduled by itself: management creates each one.

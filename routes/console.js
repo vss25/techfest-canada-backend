@@ -10,6 +10,7 @@ import {
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
 import { CONTENT_KEYS, CONTENT_LABELS, cleanContent, contentError, summarize } from "../services/adminHelpers.js";
+import { SWAG_LABELS } from "../services/swagRules.js";
 import { contentAccess, contentEditRefusal } from "../services/staffPowers.js";
 import { forgetSwitches } from "../services/liveSwitches.js";
 import { pwaStats, clampDays } from "../services/pwaStats.js";
@@ -488,6 +489,7 @@ router.get("/app-content", async (req, res) => {
   res.json(Object.entries(CONTENT_KEYS).map(([key, def]) => ({
     key, default: def, value: byKey[key] ? byKey[key].value : def,
     updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null, ...contentAccess(key),
+    ...(SWAG_LABELS[key] ? { label: SWAG_LABELS[key] } : {}),
     ...(CONTENT_LABELS[key] || {}),   // { label, description } for the keys the backend labels (review.*)
   })));
 });
