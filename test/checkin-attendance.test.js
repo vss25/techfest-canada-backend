@@ -138,3 +138,31 @@ test("passes collected to date: one collected before Day 1 (a rehearsal door sca
   assert.equal(a.days[0].passesCollectedToDate, 1, "Ray (checked in on Day 1); not Nan (scanned at the rehearsal, never came), not yet Dee");
   assert.equal(a.days[1].passesCollectedToDate, 2, "Ray and Dee");
 });
+
+test("drink coupons (Oct 27 2026): people and coupons per day, by colour group and with no pass on file; practice and cleared rows never", () => {
+  const d = directory();
+  const marks = [
+    // Sid: coupons on both his passes (one person: 2 + 1 = 3), Vic (VIP) 2 issued again by staff, Sia (no pass) 2.
+    mark("spk000000001", "drinks", "2026-10-27", "14:00", { item: "2" }),
+    mark("pow000000002", "drinks", "2026-10-27", "14:05", { item: "1" }),
+    mark("con000000004", "drinks", "2026-10-27", "14:10", { item: "4", override: "issued_again" }),
+    mark("person:u-u3", "drinks", "2026-10-27", "14:20", { item: "2" }),
+    // An unreadable count is one coupon; a practice day and a cleared row never count.
+    mark("con000000005", "drinks", "2026-10-27", "14:30", { item: "" }),
+    mark("apx000000006", "drinks", "2026-10-25", "14:30", { item: "2", practice: true }),
+    { subject: "apx000000006", point: "drinks", day: "2026-10-27", at: null, item: "" },
+  ];
+  const a = attendanceFrom({ people: d.people, byId: d.byId, marks });
+  const [d1, d2] = a.days;
+  assert.equal(d1.drinks.people, 0);
+  assert.equal(d2.drinks.people, 4);
+  assert.equal(d2.drinks.coupons, 10);
+  assert.equal(d2.drinks.issuedAgain, 1);
+  assert.deepEqual(d2.drinks.byPass.speaker, { label: "Speaker", people: 1, coupons: 3 });
+  assert.deepEqual(d2.drinks.byPass.vip, { label: "VIP", people: 1, coupons: 4 });
+  assert.deepEqual(d2.drinks.byPass.media, { label: "Media", people: 1, coupons: 1 });
+  assert.deepEqual(d2.drinks.noPass, { people: 1, coupons: 2 });
+  assert.deepEqual(Object.keys(d2.drinks.byPass), ATTENDANCE_GROUPS);
+  // Coupons on their own don't make an arrival here (the tap marks arrived itself, services/checkinDeskActions.js).
+  assert.equal(d2.arrived, 0);
+});
