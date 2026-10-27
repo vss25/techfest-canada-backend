@@ -133,8 +133,8 @@ const announced = () => M.AppContent.findOne({ key: "swag.announced" }).lean();
 const notes = () => M.AppNotification.find({ batchId: "swag-winners-2026" }).lean();
 
 test("not before the announce time, and not while it's switched off; the admin page says when", { skip }, async () => {
-  await setting("swag.enabled", true);
-  await setting("swag.kits", "5");   // more kits than people who can win
+  await setting("swag.enabled", false);   // the old apps' prize banner: off, and it doesn't matter here
+  await setting("swag.kits", "5");   // more to celebrate than people who can be
   await setting("swag.cutoff", "2099-10-27T17:00:00-04:00");
   await setting("swag.announce", "2099-10-27T17:00:00-04:00");
   const w = await ok(call("GET", "/api/console/swag", { as: U.mia }));
@@ -167,9 +167,14 @@ test("at the announce time: once across three job runs at once; the leaderboard 
   assert.deepEqual(names(rec.value.winners), ["Ann Attendee", "Ben Attendee", "Cal Attendee"]);
   const n = await notes();
   assert.deepEqual(n.map((x) => String(x.userId)).sort(), [U.ann, U.ben, U.cal].map((u) => String(u._id)).sort());
-  assert.deepEqual([n[0].title, n[0].body], ["You won a TTFC swag kit!", "Collect it at the registration desk."]);
+  assert.deepEqual([n[0].title, n[0].body, n[0].link], ["You're one of TTFC's top networkers!", 'Thank you for starting conversations and meeting people at TTFC 2026. People like you make the TTFC experience great.', "ttfc://tab/profile"]);
   await pause(50);
-  assert.deepEqual(pushes.map((p) => [p.to.length, p.note.title]), [[3, "You won a TTFC swag kit!"]]);
+  assert.deepEqual(pushes.map((p) => [p.to.length, p.note.title]), [[3, "You're one of TTFC's top networkers!"]]);
+  // One feed post naming them (as the author of the last official post, else a management account), not pushed.
+  const posts = await M.SocialPost.find({ kind: "announcement" }).lean();
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body, /^Our top networkers at TTFC 2026: 1\. Ann Attendee, Acme · 2\. Ben Attendee, Beta · 3\. Cal Attendee\. Thank you/);
+  assert.equal(String(posts[0].authorId), String(U.mia._id));
   assert.deepEqual((await M.AdminAudit.find({ action: "swag_announce" }).lean()).map((a) => [a.adminName, /automatic/.test(a.detail)]), [[rec.value.by, true]]);
   // Later runs do nothing; the button says so; the apps have the podium.
   assert.equal(await S.runSwagAutoAnnounce(), null);
@@ -207,4 +212,21 @@ test("even without the job lock (three servers past it at once), the once-only r
   const runs = await Promise.all([1, 2, 3].map(() => S.runSwagAutoAnnounce({ held: true })));
   assert.equal(runs.filter(Boolean).length, 1);
   assert.equal((await notes()).length, 3);
+});
+
+test("celebrating switched off (swag.celebrate): no snapshot, no announcement, no winners in the apps", { skip }, async () => {
+  await setting("swag.celebrate", false);
+  await M.AppContent.deleteOne({ key: "swag.snapshot" });
+  await setting("swag.cutoff", ago(5));
+  assert.equal(await S.runSwagSnapshot({ held: true }), null);
+  assert.equal(await S.loadSnapshot(), null);
+  const pub = await ok(call("GET", "/api/app/swag"));
+  assert.deepEqual([pub.celebrate, pub.mode, "winners" in pub], [false, "appreciation", false]);   // announced, but not shown
+  const w = await ok(call("GET", "/api/console/swag", { as: U.mia }));
+  assert.deepEqual([w.celebrate, w.canAnnounce], [false, false]);
+  await M.AppContent.deleteOne({ key: "swag.announced" });
+  assert.equal(await S.runSwagAutoAnnounce(), null);
+  assert.equal(await announced(), null);
+  const click = await call("POST", "/api/console/swag/announce", { as: U.mia, body: { confirm: "ANNOUNCE", userIds: [] } });
+  assert.deepEqual([click.status, click.body.code], [409, "swag_off"]);
 });

@@ -20,25 +20,65 @@
    (services/swag.js runSwagAutoAnnounce), exactly as management's
    "Announce winners" would; the button still works before then, and
    whichever comes first wins.
+   Oct 27 2026, about 2:30 AM, the organiser: the leaderboard winners
+   do NOT get a swag kit (swag kits go to everyone who tags TTFC on
+   LinkedIn or Instagram). The leaderboard is now an appreciation for
+   starting conversations and meeting people: "you've been the best
+   networker; people like you make the TTFC experience great". So:
+     - swag.celebrate (on by default, management only) is what the
+       leaderboard snapshot, the 5 PM announcement (automatic or the
+       button) and the winners in GET /api/app/swag and
+       /api/console/swag depend on: "celebrate the top {kits}
+       networkers at swag.announce";
+     - swag.enabled now only means "show the old prize banner in the
+       app versions that still have it" (1.0.3 / 1.0.6, and the app
+       invite email's old block); it's off;
+     - no prize wording in the defaults: the title, the note (rules),
+       the pitch, the notification ("You're one of TTFC's top
+       networkers!"); nothing about collecting a kit, a skill-testing
+       question or Quebec residents (no contest, no contest rules);
+     - at the announcement one official feed post names them
+       (swag.feedPost, {list}), not pushed to everyone.
 ========================================================= */
 
 export const SWAG_DEFAULTS = Object.freeze({
-  "swag.enabled": false,                                   // management turns it on
-  "swag.kits": "3",
-  "swag.cutoff": "2026-10-26T16:00:00-04:00",              // Day 1, 4 PM Toronto (EDT)
-  "swag.announce": "2026-10-26T17:00:00-04:00",            // the end of Day 1, 5 PM
-  "swag.title": "Win the TTFC swag kit",
-  "swag.rules": "Only people using the TTFC app can win. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part. The top {kits} people on the leaderboard at {cutoff} each win a TTFC swag kit. Open to registered TTFC 2026 attendees with 'Show me on the leaderboard' on; Quebec residents, TTFC staff, volunteers and their families can't win. Winners are told in the app at the end of Day 1 ({announce}) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question. Free to enter for TTFC 2026 pass holders. Prizes have no cash value and can't be exchanged.",
-  "swag.autoAnnounce": true,                               // announce the winners by itself at swag.announce
+  "swag.enabled": false,                                   // old apps' prize banner (1.0.3 / 1.0.6): off since Oct 27 2026
+  "swag.kits": "3",                                        // how many top networkers to celebrate
+  "swag.cutoff": "2026-10-26T16:00:00-04:00",              // the leaderboard is kept then (production: Day 2, 5 PM)
+  "swag.announce": "2026-10-26T17:00:00-04:00",            // the top networkers are celebrated then
+  "swag.title": "Top networkers of TTFC 2026",
+  "swag.rules": "The leaderboard is our thank-you to the people who start conversations and meet people at TTFC 2026. You earn points in the TTFC app by connecting with people, saving sessions, posting and taking part. At {announce} we'll celebrate the top {kits} networkers in the app: people like them make the TTFC experience great. It's an appreciation, not a contest: there's no prize, nothing to buy and nothing to enter. Only attendees with 'Show me on the leaderboard' on are shown; TTFC staff and volunteers aren't included.",
+  "swag.autoAnnounce": true,                               // celebrate them by itself at swag.announce
+  "swag.celebrate": true,                                  // celebrate the top {kits} networkers at swag.announce
+  "swag.feedPost": "Our top networkers at TTFC 2026: {list}. Thank you for starting conversations and meeting people — people like you make TTFC great. Thank you to everyone who connected this week!",
+});
+/** The admin panel's labels for the keys (GET /api/console/app-content `label`). */
+export const SWAG_LABELS = Object.freeze({
+  "swag.enabled": "Old apps (1.0.3 / 1.0.6): show the swag kit prize banner",
+  "swag.kits": "How many top networkers to celebrate",
+  "swag.cutoff": "Leaderboard closes at",
+  "swag.announce": "Celebrate the top networkers at",
+  "swag.title": "Leaderboard title",
+  "swag.rules": "Leaderboard note ({kits}, {cutoff}, {announce})",
+  "swag.autoAnnounce": "Celebrate them automatically at that time",
+  "swag.celebrate": "Celebrate the top networkers (leaderboard snapshot, announcement, winners card)",
+  "swag.feedPost": "Feed post naming the top networkers ({list} = 1. Name, Organisation · 2. …)",
 });
 export const SWAG_KEYS = Object.freeze(Object.keys(SWAG_DEFAULTS));
 export const MAX_KITS = 50;
 export const SWAG_PAGE = "https://www.thetechfestival.com/swag";
 export const SWAG_PHOTO = "https://www.thetechfestival.com/swag/swag-kit-1200.jpg";
 export const INSTALL_URL = "https://www.thetechfestival.com/app/install";
-export const WINNER_NOTE = Object.freeze({ title: "You won a TTFC swag kit!", body: "Collect it at the registration desk." });
-/** The key point, for the apps and the website: only app users can win. */
-export const SWAG_PITCH = "Only people using the TTFC app can win";
+/** What each top networker gets in the app (a notification and a push), since Oct 27 2026: no prize. */
+export const WINNER_NOTE = Object.freeze({
+  title: "You're one of TTFC's top networkers!",
+  body: "Thank you for starting conversations and meeting people at TTFC 2026. People like you make the TTFC experience great.",
+});
+/** Where the notification opens: the Profile tab, where the apps keep Points and the leaderboard (web: /app/profile). */
+export const LEADERBOARD_LINK = "ttfc://tab/profile";
+export const LEADERBOARD_URL = "/app/profile";
+/** The line for the apps and the website (Oct 27 2026: an appreciation, not a prize). */
+export const SWAG_PITCH = "Start conversations and meet people in the TTFC app";
 
 const TZ = "America/Toronto";
 const str = (v) => String(v ?? "");
@@ -48,6 +88,10 @@ export function cleanSwagContent(key, value) {
   if (key === "swag.kits") {
     const n = Number(str(value).trim());
     return Number.isInteger(n) && n >= 1 && n <= MAX_KITS ? [key, String(n)] : null;
+  }
+  if (key === "swag.feedPost") {
+    const t = str(value).trim().slice(0, 2000);
+    return t.includes("{list}") ? [key, t] : null;   // it must name them
   }
   if (key === "swag.cutoff" || key === "swag.announce") {
     const s = str(value).trim();
@@ -81,12 +125,14 @@ export function swagSettings(stored = {}) {
   const v = (k) => (stored[k] === undefined || stored[k] === null || stored[k] === "" ? SWAG_DEFAULTS[k] : stored[k]);
   const enabled = v("swag.enabled") === true || v("swag.enabled") === "true";
   const autoAnnounce = !(v("swag.autoAnnounce") === false || v("swag.autoAnnounce") === "false");
+  const celebrate = !(v("swag.celebrate") === false || v("swag.celebrate") === "false");
   const kitsN = Number(v("swag.kits"));
   const kits = Number.isInteger(kitsN) && kitsN >= 1 && kitsN <= MAX_KITS ? kitsN : 3;
   const cutoff = when(v("swag.cutoff"), SWAG_DEFAULTS["swag.cutoff"]);
   const announce = when(v("swag.announce"), SWAG_DEFAULTS["swag.announce"]);
   return {
-    enabled, kits, cutoff, announce, autoAnnounce,
+    enabled, kits, cutoff, announce, autoAnnounce, celebrate,
+    feedPostText: str(v("swag.feedPost")).trim().includes("{list}") ? str(v("swag.feedPost")).trim() : SWAG_DEFAULTS["swag.feedPost"],
     title: str(v("swag.title")).trim() || SWAG_DEFAULTS["swag.title"],
     rulesText: str(v("swag.rules")).trim() || SWAG_DEFAULTS["swag.rules"],
   };
@@ -95,6 +141,18 @@ export function swagSettings(stored = {}) {
 /** "5 PM", "4:30 PM" (Toronto): who announced automatically ("Automatic (5 PM)"). */
 export function clockTime(d) {
   return new Date(d).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).replace(":00", "");
+}
+
+/** Why a swag key's value was refused, in plain words ("" = no particular reason). */
+export function swagContentError(key, value) {
+  if (key === "swag.feedPost" && !str(value).includes("{list}")) return "The feed post must contain {list}, where the top networkers are named.";
+  return "";
+}
+
+/** The feed post naming them: {list} = "1. Name, Organisation · 2. …" (and {kits} {cutoff} {announce}). */
+export function feedPostFor(s, winners = []) {
+  const list = winners.map((w, i) => `${i + 1}. ${str(w.name).trim()}${str(w.organization).trim() ? `, ${str(w.organization).trim()}` : ""}`).join(" · ");
+  return fillSwag(str(s.feedPostText || SWAG_DEFAULTS["swag.feedPost"]), s).replace(/\{list\}/g, list).slice(0, 4000);
 }
 
 /** {kits}, {cutoff}, {announce} in a text (the rules, the email). */
@@ -116,6 +174,7 @@ export function publicSwag(s, { now = new Date(), announced = false, winners = n
     cutoff: s.cutoff.toISOString(), announce: s.announce.toISOString(),
     cutoffLabel: longTime(s.cutoff), cutoffShort: shortTime(s.cutoff), announceLabel: longTime(s.announce),
     rules: fillSwag(s.rulesText, s),
+    celebrate: s.celebrate !== false, mode: "appreciation",
     phase: swagPhase(s, { now, announced }), announced,
     rulesUrl: SWAG_PAGE, photoUrl: SWAG_PHOTO, installUrl: INSTALL_URL,
     ...(announced && Array.isArray(winners) ? { winners } : {}),

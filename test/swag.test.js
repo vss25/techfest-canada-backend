@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   SWAG_DEFAULTS, swagSettings, cleanSwagContent, fillSwag, longTime, shortTime, publicSwag, swagPhase, swagEligible, pickWinners, WINNER_NOTE,
-  snapshotCounts, publicWinners, SNAPSHOT_TOLERANCE_MS, clockTime,
+  snapshotCounts, publicWinners, SNAPSHOT_TOLERANCE_MS, clockTime, feedPostFor, LEADERBOARD_LINK, SWAG_LABELS,
 } from "../services/swagRules.js";
-import { CONTENT_KEYS, cleanContent } from "../services/adminHelpers.js";
+import { CONTENT_KEYS, cleanContent, contentError } from "../services/adminHelpers.js";
 import { DEFAULT_COPY, FIELDS, PLACEHOLDERS, fillInvite } from "../services/appInviteCopy.js";
 import { buildAppInviteEmail, appInviteEmailFor, swagJpg, SWAG_CID } from "../services/appInviteEmail.js";
 import { CAMPAIGNS } from "../services/engagement.js";
@@ -14,10 +14,10 @@ import { APP_INVITE_CAMPAIGN, APP_INVITE_SWAG_KEY, inviteSendKey, planAppInvites
 
 const defaults = swagSettings({});
 
-test("settings: off until management turns it on; 3 kits; Day 1 4 PM and 5 PM (Toronto); stored as app content keys", () => {
-  assert.deepEqual(Object.keys(SWAG_DEFAULTS), ["swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce"]);
+test("settings: the old prize banner off, celebrating on; 3 top networkers; stored as app content keys", () => {
+  assert.deepEqual(Object.keys(SWAG_DEFAULTS), ["swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce", "swag.celebrate", "swag.feedPost"]);
   for (const k of Object.keys(SWAG_DEFAULTS)) assert.equal(CONTENT_KEYS[k], SWAG_DEFAULTS[k], k);   // GET /api/app/content carries them
-  assert.deepEqual([defaults.enabled, defaults.kits, defaults.title], [false, 3, "Win the TTFC swag kit"]);
+  assert.deepEqual([defaults.enabled, defaults.celebrate, defaults.kits, defaults.title], [false, true, 3, "Top networkers of TTFC 2026"]);
   assert.equal(defaults.cutoff.toISOString(), "2026-10-26T20:00:00.000Z");
   assert.equal(defaults.announce.toISOString(), "2026-10-26T21:00:00.000Z");
   assert.equal(longTime(defaults.cutoff), "4:00 PM on Monday, October 26");
@@ -37,19 +37,23 @@ test("saving: kits 1–50, times with their offset; the rest as usual", () => {
   assert.equal(cleanSwagContent("site.announcement", "x"), undefined);
 });
 
-test("the rules: only app users can win, first; {kits}, {cutoff}, {announce} filled in; phases; the pitch", () => {
+test("the note: an appreciation, not a contest; {kits} and {announce} filled in; phases; the pitch; no prize wording", () => {
   const rules = fillSwag(defaults.rulesText, defaults);
-  assert.match(rules, /^Only people using the TTFC app can win\. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part\. The top 3 people on the leaderboard at 4:00 PM on Monday, October 26 each win a TTFC swag kit\./);
-  assert.match(rules, /TTFC staff, volunteers and their families can't win\./);
-  assert.match(rules, /Winners are told in the app at the end of Day 1 \(5:00 PM on Monday, October 26\) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question\./);
-  assert.match(rules, /Quebec residents, TTFC staff, volunteers and their families can't win\./);
-  assert.match(rules, /Free to enter for TTFC 2026 pass holders\. Prizes have no cash value and can't be exchanged\.$/);
+  assert.equal(rules, "The leaderboard is our thank-you to the people who start conversations and meet people at TTFC 2026. You earn points in the TTFC app by connecting with people, saving sessions, posting and taking part. At 5:00 PM on Monday, October 26 we'll celebrate the top 3 networkers in the app: people like them make the TTFC experience great. It's an appreciation, not a contest: there's no prize, nothing to buy and nothing to enter. Only attendees with 'Show me on the leaderboard' on are shown; TTFC staff and volunteers aren't included.");
   const p = publicSwag(defaults, { now: new Date("2026-10-26T12:00:00Z") });
-  assert.deepEqual([p.enabled, p.kits, p.phase, p.cutoffShort, p.rulesUrl, p.installUrl], [false, 3, "open", "Oct 26, 4 PM", "https://www.thetechfestival.com/swag", "https://www.thetechfestival.com/app/install"]);
-  assert.deepEqual([p.appOnly, p.pitch], [true, "Only people using the TTFC app can win"]);
+  assert.deepEqual([p.enabled, p.celebrate, p.mode, p.kits, p.phase, p.cutoffShort, p.rulesUrl, p.installUrl], [false, true, "appreciation", 3, "open", "Oct 26, 4 PM", "https://www.thetechfestival.com/swag", "https://www.thetechfestival.com/app/install"]);
+  assert.deepEqual([p.appOnly, p.pitch], [true, "Start conversations and meet people in the TTFC app"]);
+  // No prize wording anywhere in the defaults, the pitch or what the top networkers get.
+  const all = JSON.stringify([SWAG_DEFAULTS, p.pitch, WINNER_NOTE]);
+  for (const word of [/can win/i, /swag kit/i, /skill-testing/i, /Quebec/i, /collect/i, /\bwon\b/i, /prize/i]) {
+    assert.equal(word.test(all.replace("there's no prize", "")), false, String(word));
+  }
   assert.equal(swagPhase(defaults, { now: new Date("2026-10-26T20:00:00Z") }), "closed");
   assert.equal(swagPhase(defaults, { announced: true }), "announced");
-  assert.deepEqual(WINNER_NOTE, { title: "You won a TTFC swag kit!", body: "Collect it at the registration desk." });
+  assert.deepEqual(WINNER_NOTE, {
+    title: "You're one of TTFC's top networkers!",
+    body: "Thank you for starting conversations and meeting people at TTFC 2026. People like you make the TTFC experience great.",
+  });
 });
 
 test("who can win: on the leaderboard with a pass of their own; never staff, volunteers, moderators or suspended", () => {
@@ -168,4 +172,22 @@ test("the announcement is automatic by default (Oct 26 2026): swag.autoAnnounce,
   assert.deepEqual(cleanContent("swag.autoAnnounce", true), ["swag.autoAnnounce", true]);
   assert.equal(clockTime("2026-10-27T17:00:00-04:00"), "5 PM");
   assert.equal(clockTime("2026-10-27T16:30:00-04:00"), "4:30 PM");
+});
+
+test("celebrating the top networkers (Oct 27 2026): swag.celebrate, the feed post naming them, the labels", () => {
+  assert.equal(SWAG_DEFAULTS["swag.celebrate"], true);
+  assert.equal(swagSettings({ "swag.celebrate": false }).celebrate, false);
+  assert.equal(swagSettings({ "swag.celebrate": "false" }).celebrate, false);
+  assert.equal(swagSettings({ "swag.enabled": false }).celebrate, true);   // the old banner off doesn't stop celebrating
+  assert.deepEqual(cleanContent("swag.celebrate", "false"), ["swag.celebrate", false]);
+  const winners = [{ name: "Ann Attendee", organization: "Acme" }, { name: "Ben", organization: "" }, { name: "Cal Attendee", organization: "Beta" }];
+  assert.equal(feedPostFor(defaults, winners), "Our top networkers at TTFC 2026: 1. Ann Attendee, Acme · 2. Ben · 3. Cal Attendee, Beta. Thank you for starting conversations and meeting people — people like you make TTFC great. Thank you to everyone who connected this week!");
+  assert.equal(feedPostFor(swagSettings({ "swag.feedPost": "Top {kits}: {list}!" }), winners.slice(0, 1)), "Top 3: 1. Ann Attendee, Acme!");
+  // The post must name them.
+  assert.deepEqual(cleanContent("swag.feedPost", " Thanks to {list} "), ["swag.feedPost", "Thanks to {list}"]);
+  assert.equal(cleanContent("swag.feedPost", "Thanks all"), null);
+  assert.match(contentError("swag.feedPost", "Thanks all"), /\{list\}/);
+  assert.equal(LEADERBOARD_LINK, "ttfc://tab/profile");
+  for (const k of Object.keys(SWAG_DEFAULTS)) assert.ok(SWAG_LABELS[k], k);
+  assert.equal(SWAG_LABELS["swag.kits"], "How many top networkers to celebrate");
 });

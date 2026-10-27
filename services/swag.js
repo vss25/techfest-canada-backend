@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import JobLock from "../models/JobLock.js";
 import AppNotification from "../models/AppNotification.js";
 import { AppContent, AdminAudit } from "../models/Admin.js";
+import { SocialPost } from "../models/Social.js";
 import { rankedBoard } from "./points.js";
 import { hiddenState } from "./appHide.js";
 import { personAccess } from "./appRights.js";
@@ -11,12 +12,15 @@ import { rightsContext, RIGHTS_SELECT } from "./rightsStore.js";
 import { pushToUsers } from "./push.js";
 import { avatarFor } from "./socialHelpers.js";
 import {
-  SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinners, snapshotCounts, publicWinners, clockTime,
+  SWAG_KEYS, WINNER_NOTE, LEADERBOARD_LINK, LEADERBOARD_URL, swagSettings, swagEligible, pickWinners, snapshotCounts,
+  publicWinners, clockTime, feedPostFor,
 } from "./swagRules.js";
 
 /* =========================================================
-   "Win the TTFC swag kit": the leaderboard at the cutoff and the
-   winners (Oct 22 2026). Rules: services/swagRules.js.
+   The leaderboard at the cutoff and the top networkers (Oct 22 2026
+   as "Win the TTFC swag kit"; since Oct 27 2026 an appreciation, no
+   prize: services/swagRules.js). Everything here depends on
+   swag.celebrate, not swag.enabled (now only the old apps' banner).
    ---------------------------------------------------------
    At the cutoff (swag.cutoff) one server (JobLock row
    "swag-snapshot", checked every minute while the contest is on)
@@ -160,26 +164,57 @@ export async function announcedWinners(announced) {
   return publicWinners(announced, (id) => avatarFor(byId.get(id)));
 }
 
+/** Who the official feed post is by: the staff member who clicked, else the author of the last official post, else a
+    management account (the feed shows "The Tech Festival Canada" either way). */
+async function postAuthor(byId) {
+  if (byId) return byId;
+  const last = await SocialPost.findOne({ kind: "announcement" }).sort({ createdAt: -1 }).select("authorId").lean();
+  if (last?.authorId) return last.authorId;
+  const staff = await User.findOne({ role: "admin", staffRole: { $ne: "staff" } }).sort({ createdAt: 1 }).select("_id").lean()
+    || await User.findOne({ role: "admin" }).sort({ createdAt: 1 }).select("_id").lean();
+  return staff?._id || null;
+}
+
 /**
- * Announces these winners (management confirmed exactly them): an in-app notification and a push each, once.
- * → { announced: { at, by, winners } }. Throws { code: "already_announced" } on a second time.
+ * Celebrates these top networkers (management confirmed exactly them, or the automatic announcement), once: each an
+ * in-app notification and a push ("You're one of TTFC's top networkers!", opening the Profile tab, where the
+ * leaderboard is), and ONE official feed post naming them (swag.feedPost, {list}; author "The Tech Festival Canada",
+ * kind "announcement", like Broadcast, but not pushed to everyone). → { announced: { at, by, winners, postId } }.
+ * Throws { code: "already_announced" } on a second time.
  */
-export async function announceWinners(winners, { by = "", byId = null, now = new Date() } = {}) {
+export async function announceWinners(winners, { by = "", byId = null, now = new Date(), settings = null } = {}) {
   const record = { at: now, by, winners };
   try {
     await AppContent.create({ key: ANNOUNCED_KEY, value: record, updatedBy: by });
   } catch (err) {
-    if (isDup(err)) throw Object.assign(new Error("The winners were already announced."), { code: "already_announced" });
+    if (isDup(err)) throw Object.assign(new Error("The top networkers were already celebrated."), { code: "already_announced" });
     throw err;
   }
   const ids = winners.map((w) => w.userId);
   if (ids.length) {
     await AppNotification.insertMany(ids.map((id) => ({
-      userId: id, title: WINNER_NOTE.title, body: WINNER_NOTE.body, link: SWAG_PAGE, kind: "personal", batchId: WINNERS_BATCH,
+      userId: id, title: WINNER_NOTE.title, body: WINNER_NOTE.body, link: LEADERBOARD_LINK, kind: "personal", batchId: WINNERS_BATCH,
       ...(byId ? { sentBy: byId } : {}), sentByName: by,
     })));
-    // Always (no notification switch): it's about their prize.
-    pushToUsers(ids, { title: WINNER_NOTE.title, body: WINNER_NOTE.body, link: SWAG_PAGE, kind: "personal", id: WINNERS_BATCH, url: "/app/notifications" });
+    // Always (no notification switch): it's about them.
+    pushToUsers(ids, { title: WINNER_NOTE.title, body: WINNER_NOTE.body, link: LEADERBOARD_LINK, kind: "personal", id: WINNERS_BATCH, url: LEADERBOARD_URL });
+    // The feed post every app version shows (not pushed to everyone: the top networkers get their own push, the 1.0.4
+    // apps show the winners card). Only people on the leaderboard (its opt-in) can be named: they're the only winners.
+    try {
+      const authorId = await postAuthor(byId);
+      if (authorId) {
+        const post = await SocialPost.create({
+          authorId, authorName: "The Tech Festival Canada", authorTitle: "Organizers", authorOrg: "AtlasLink Markets",
+          kind: "announcement", body: feedPostFor(settings || (await loadSwag()), winners), status: "approved",
+        });
+        record.postId = String(post._id);
+        await AppContent.updateOne({ key: ANNOUNCED_KEY }, { $set: { "value.postId": record.postId } });
+      } else {
+        console.error("SWAG FEED POST: no staff account to post it as; not posted.");
+      }
+    } catch (err) {
+      console.error("SWAG FEED POST ERROR:", err?.message || err);
+    }
   }
   return { announced: record };
 }
@@ -197,11 +232,12 @@ async function claimRun(now, id = JOB_ID) {
   }
 }
 
-/** One run: past the cutoff, with the contest on and nothing kept for this cutoff yet → keep the leaderboard. Never throws. */
+/** One run: past the cutoff, celebrating on (swag.celebrate) and nothing kept for this cutoff yet → keep the
+    leaderboard. Never throws. */
 export async function runSwagSnapshot({ now = new Date(), held = false } = {}) {
   try {
     const s = await loadSwag();
-    if (!s.enabled || now < s.cutoff) return null;
+    if (!s.celebrate || now < s.cutoff) return null;
     if (snapshotCounts(await loadSnapshot(), s.cutoff)) return null;   // kept for this cutoff already
     if (!held && !(await claimRun(now))) return null;
     return await takeSnapshot({ now, settings: s });
@@ -222,7 +258,7 @@ let loggedNobody = "";
 export async function runSwagAutoAnnounce({ now = new Date(), held = false } = {}) {
   try {
     const s = await loadSwag();
-    if (!s.enabled || !s.autoAnnounce || now < s.announce || now < s.cutoff) return null;
+    if (!s.celebrate || !s.autoAnnounce || now < s.announce || now < s.cutoff) return null;
     if ((await loadAnnounced())?.at) return null;
     if (!held && !(await claimRun(now, ANNOUNCE_JOB))) return null;
     // Checked again now that this server holds it: another may have announced (or management clicked) meanwhile.
@@ -231,21 +267,21 @@ export async function runSwagAutoAnnounce({ now = new Date(), held = false } = {
     const { winners } = await currentWinners({ now });
     if (!winners.length) {
       const key = s.announce.toISOString();
-      if (loggedNobody !== key) console.warn("SWAG AUTO-ANNOUNCE: nobody on the leaderboard can win; not announced (tried again each minute).");
+      if (loggedNobody !== key) console.warn("SWAG AUTO-ANNOUNCE: nobody on the leaderboard can be celebrated; not announced (tried again each minute).");
       loggedNobody = key;
       return null;
     }
     const by = `Automatic (${clockTime(s.announce)})`;
     let out;
     try {
-      out = await announceWinners(winners, { by, now });
+      out = await announceWinners(winners, { by, now, settings: s });
     } catch (err) {
       if (err?.code === "already_announced") return null;   // management's click (or another server) got there first
       throw err;
     }
-    console.log(`SWAG AUTO-ANNOUNCE: ${winners.length} winners announced (${winners.map((w) => w.name).join(", ")})`);
+    console.log(`SWAG AUTO-ANNOUNCE: ${winners.length} top networkers celebrated (${winners.map((w) => w.name).join(", ")})`);
     await AdminAudit.create({ adminName: by, action: "swag_announce", targetType: "campaign", targetId: "swag",
-      detail: `${winners.length} winners (automatic): ${winners.map((w) => w.name).join(", ")}`.slice(0, 500) }).catch(() => {});
+      detail: `${winners.length} top networkers celebrated (automatic): ${winners.map((w) => w.name).join(", ")}`.slice(0, 500) }).catch(() => {});
     return out;
   } catch (err) {
     console.error("SWAG AUTO-ANNOUNCE ERROR:", err?.message || err);
