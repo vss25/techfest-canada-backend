@@ -17,15 +17,24 @@ import { personAliasIds, personSubject } from "./checkinDesk.js";
    you attend again? what can be better?" Later the same evening: "I
    want to share the survey to all the people who were checked in
    today" (an email, services/surveyEmail.js), and "nothing may be sent
-   until they've reviewed the survey": autoNotify is off by default, so
-   no notification, push or email goes on deploy or at opensAt; staff
-   send them from the admin panel (routes/survey.js).
+   until they've reviewed the survey" (autoNotify was off by default).
+   Later still: "They should see this in feed and prompted/notified
+   some time after 4 pm. All of them don't need to be notified
+   immediately." So the app prompt is automatic again, paced: from
+   opensAt + notifyStartDelayMin (15), notifyBatchSize (30) people
+   every notifyIntervalMin (5) minutes, the most recently active first,
+   until 10 PM Toronto on the opening day (waveDue, services/survey.js
+   runSurveyNotify). Nothing goes on deploy; the email is only ever
+   sent from the admin panel (routes/survey.js).
 
    One config (AppContent "survey.config", services/survey.js), the
    defaults below until management saves it:
      { enabled, opensAt, closesAt (ISO with their offset), title, intro,
-       thankYou, notifyTitle, notifyBody, autoNotify, notifiedAt (set by
-       the prompt, never by a save), questions: [question], retired:
+       thankYou, notifyTitle, notifyBody, autoNotify (+ autoNotifyExplicit:
+       management changed it), notifyStartDelayMin (0–240),
+       notifyBatchSize (1–200), notifyIntervalMin (1–60), notifiedAt (the
+       first prompt), notifiedCount, notifyLastWaveAt (set by the prompt,
+       never by a save), questions: [question], retired:
        [question] (questions deleted since: their answers stay in the
        responses and the CSV marks them "(removed)") }
    question: { id (a slug, stable: answers are stored under it),
@@ -159,9 +168,16 @@ export const SURVEY_DEFAULTS = Object.freeze({
   enabled: true,
   opensAt: "2026-10-27T16:00:00-04:00",     // Day 2, 4 PM Toronto (EDT)
   closesAt: "2026-11-30T23:59:00-05:00",    // the end of November (EST)
-  // Oct 26 2026, the organiser: nothing is sent until they've reviewed the survey. On = the prompt goes to everyone
-  // on the app at opensAt (services/survey.js runSurveyNotify); off = only when staff click Send.
-  autoNotify: false,
+  // Oct 26 2026, late, the organiser: "They should see this in feed and prompted/notified some time after 4 pm. All of
+  // them don't need to be notified immediately." On = the prompt goes out in waves (services/survey.js
+  // runSurveyNotify): from opensAt + notifyStartDelayMin, notifyBatchSize people every notifyIntervalMin minutes,
+  // until 10 PM Toronto on the day it opens (NOTIFY_END_HOUR). Off = only when staff click Send. (It was off by
+  // default earlier that evening, "nothing until they've reviewed it"; a stored false counts only when management
+  // switched it off themselves: autoNotifyExplicit, see surveyConfig.)
+  autoNotify: true,
+  notifyStartDelayMin: 15,                  // the first wave at 4:15 PM
+  notifyBatchSize: 30,
+  notifyIntervalMin: 5,
   title: "How was TTFC 2026?",
   intro: "Two minutes, and it helps us make 2027 better. Your answers about the event, and anything you'd tell future delegates, exhibitors and sponsors.",
   thankYou: "Thank you! Your feedback helps shape TTFC 2027.",
@@ -169,6 +185,11 @@ export const SURVEY_DEFAULTS = Object.freeze({
   notifyBody: "Two minutes: check-in, meals, the people you met, and what we can do better.",
 });
 const TEXT_FIELDS = ["title", "intro", "thankYou", "notifyTitle", "notifyBody"];
+/** The paced prompt's numbers: [min, max] (whole numbers). */
+export const PACE_LIMITS = Object.freeze({ notifyStartDelayMin: [0, 240], notifyBatchSize: [1, 200], notifyIntervalMin: [1, 60] });
+/** The automatic waves stop at 10 PM Toronto on the day the survey opens (nobody is pushed late at night; people
+    who come to the app later still see its card, and management's Send reaches everyone left). */
+export const NOTIFY_END_HOUR = 22;
 const REQUIRED_TEXT = new Set(["title", "notifyTitle", "notifyBody"]);
 
 const parseWhen = (v) => { const d = new Date(str(v).trim()); return Number.isNaN(d.getTime()) ? null : d; };
@@ -201,6 +222,11 @@ export function surveyConfig(stored = null) {
   const pick = (k) => (typeof v[k] === typeof SURVEY_DEFAULTS[k] && (typeof v[k] !== "string" || v[k].trim()) ? v[k] : SURVEY_DEFAULTS[k]);
   const out = {};
   for (const k of Object.keys(SURVEY_DEFAULTS)) out[k] = pick(k);
+  // autoNotify was false by default until late on Oct 26 2026, and a save of the whole form stored that default. A
+  // stored value counts only when management changed it themselves (a save that changed it sets autoNotifyExplicit);
+  // otherwise the default (on) applies.
+  out.autoNotify = v.autoNotifyExplicit === true && typeof v.autoNotify === "boolean" ? v.autoNotify : SURVEY_DEFAULTS.autoNotify;
+  for (const [k, [lo, hi]] of Object.entries(PACE_LIMITS)) if (!(Number.isInteger(out[k]) && out[k] >= lo && out[k] <= hi)) out[k] = SURVEY_DEFAULTS[k];
   if (!cleanWhen(out.opensAt)) out.opensAt = SURVEY_DEFAULTS.opensAt;
   if (!cleanWhen(out.closesAt)) out.closesAt = SURVEY_DEFAULTS.closesAt;
   const questions = Array.isArray(v.questions) && v.questions.length ? v.questions : DEFAULT_QUESTIONS;
@@ -208,8 +234,44 @@ export function surveyConfig(stored = null) {
   out.retired = (Array.isArray(v.retired) ? v.retired : []).filter((x) => x && isSlug(x.id)).map(questionView);
   out.notifiedAt = v.notifiedAt ? new Date(v.notifiedAt).toISOString() : null;
   out.notifiedCount = Number(v.notifiedCount) || 0;
+  out.notifyLastWaveAt = v.notifyLastWaveAt ? new Date(v.notifyLastWaveAt).toISOString() : null;
   out.saved = !!stored;
   return out;
+}
+
+/** "YYYY-MM-DD" and "HH:MM" in Toronto → that moment (its offset worked out for that day). */
+export function torontoMoment(date, hhmm) {
+  const noon = new Date(`${date}T12:00:00Z`);
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", timeZoneName: "longOffset" }).formatToParts(noon)
+    .find((x) => x.type === "timeZoneName")?.value || "GMT-05:00";
+  const off = /GMT([+-]\d\d):?(\d\d)?/.exec(name);
+  return new Date(`${date}T${hhmm}:00${off ? `${off[1]}:${off[2] || "00"}` : "-05:00"}`);
+}
+
+/** The automatic prompt's window: from opensAt + the delay to 10 PM Toronto on the opening day (or closesAt). */
+export function notifyWindow(cfg) {
+  const opens = parseWhen(cfg?.opensAt);
+  const closes = parseWhen(cfg?.closesAt);
+  if (!opens || !closes) return null;
+  const startsAt = new Date(opens.getTime() + (Number(cfg.notifyStartDelayMin) || 0) * 60_000);
+  const day = opens.toLocaleDateString("en-CA", { timeZone: "America/Toronto" });   // YYYY-MM-DD
+  const tenPm = torontoMoment(day, `${String(NOTIFY_END_HOUR).padStart(2, "0")}:00`);
+  return { startsAt, endsAt: new Date(Math.min(tenPm.getTime(), closes.getTime())) };
+}
+
+/**
+ * Is a wave due now? enabled, autoNotify on, inside the window, and an interval since the last wave (30 s of slack for
+ * the minute job's drift). → { due, nextAt (Date | null), startsAt, endsAt }
+ */
+export function waveDue(cfg, { now = new Date(), lastWaveAt = cfg?.notifyLastWaveAt || null } = {}) {
+  const w = notifyWindow(cfg);
+  if (!w || !cfg.enabled || !cfg.autoNotify) return { due: false, nextAt: null, ...(w || {}) };
+  const t = new Date(now).getTime();
+  const every = (Number(cfg.notifyIntervalMin) || 5) * 60_000;
+  const after = lastWaveAt ? new Date(lastWaveAt).getTime() + every : 0;
+  const next = Math.max(w.startsAt.getTime(), after);
+  if (next >= w.endsAt.getTime()) return { due: false, nextAt: null, ...w };
+  return { due: t >= next - 30_000 && t < w.endsAt.getTime(), nextAt: new Date(next), ...w };
 }
 
 /** Open now? enabled, and opensAt <= now < closesAt. */
@@ -324,7 +386,18 @@ export function cleanSurveySave(body, current) {
   for (const k of ["enabled", "autoNotify"]) {
     if (b[k] === undefined) continue;
     if (typeof b[k] !== "boolean") return { error: `${k} must be true or false.`, field: k };
+    if (k === "autoNotify") {
+      // Stored only when it changes (a whole-form save repeats what it shows), and then it's management's choice.
+      if (b[k] !== cur.autoNotify) { next.autoNotify = b[k]; next.autoNotifyExplicit = true; }
+      continue;
+    }
     next[k] = b[k];
+  }
+  for (const [k, [lo, hi]] of Object.entries(PACE_LIMITS)) {
+    if (b[k] === undefined) continue;
+    const n = typeof b[k] === "number" ? b[k] : /^\s*\d+\s*$/.test(String(b[k])) ? Number(b[k]) : NaN;
+    if (!Number.isInteger(n) || n < lo || n > hi) return { error: `${k} must be a whole number from ${lo} to ${hi}.`, field: k };
+    next[k] = n;
   }
   for (const k of ["opensAt", "closesAt"]) {
     if (b[k] === undefined) continue;
@@ -698,4 +771,127 @@ export function checkedInAudience({ byId = new Map(), marks = [], days = AUDIENC
     });
   }
   return { rows, noEmail, unmatched };
+}
+
+/* ---------- who answered (the admin panel's tracking list) ---------- */
+
+/* Oct 26 2026, the organiser: "If they fill the survey, that should update the admin panel and I should see that so
+   that I don't end up resending the survey request to them." Everyone with a door check-in, each address once, with
+   when they were emailed (the survey email's CampaignSend rows), prompted in the app (the prompt's AppNotification
+   rows) and answered (SurveyResponse rows, matched by their account, any of their passes or any of their addresses). */
+
+const minDate = (a, b) => (!a ? b : !b ? a : (new Date(a) < new Date(b) ? a : b));
+const maxDate = (a, b) => (!a ? b : !b ? a : (new Date(a) > new Date(b) ? a : b));
+const isoOrNull = (d) => (d ? new Date(d).toISOString() : null);
+
+/**
+ * The sends and answers, indexed → statusOf({ userIds, attendeeIds, emails }) → { emailedAt, appNotifiedAt,
+ * answeredAt (first answer), updatedAt (last), source } (ISO strings or null).
+ *   sends: [{ email, sentAt }] (sent survey emails); notes: [{ userId, createdAt }]; responses: SurveyResponse rows.
+ */
+export function trackingIndex({ sends = [], notes = [], responses = [] } = {}) {
+  const sentAt = new Map();
+  for (const r of sends) { const e = cleanEmail(r?.email); if (e && r.sentAt) sentAt.set(e, minDate(sentAt.get(e), r.sentAt)); }
+  const notified = new Map();
+  for (const n of notes) { const id = str(n?.userId); if (id) notified.set(id, minDate(notified.get(id), n.createdAt)); }
+  const by = { u: new Map(), a: new Map(), e: new Map() };
+  const add = (m, k, r) => { if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(r); };
+  for (const r of responses) { add(by.u, r?.userId ? str(r.userId) : "", r); add(by.a, r?.attendeeId ? str(r.attendeeId) : "", r); add(by.e, cleanEmail(r?.email), r); }
+  return function statusOf({ userIds = [], attendeeIds = [], emails = [] } = {}) {
+    const found = new Set();
+    for (const id of userIds) for (const r of by.u.get(str(id)) || []) found.add(r);
+    for (const id of attendeeIds) for (const r of by.a.get(str(id)) || []) found.add(r);
+    for (const e of emails) for (const r of by.e.get(cleanEmail(e)) || []) found.add(r);
+    let answeredAt = null; let updatedAt = null; let source = "";
+    for (const r of found) {
+      answeredAt = minDate(answeredAt, r.createdAt || r.submittedAt);
+      const last = r.submittedAt || r.updatedAt || r.createdAt;
+      if (!updatedAt || new Date(last) > new Date(updatedAt)) { updatedAt = last; source = str(r.source); }
+    }
+    let emailedAt = null;
+    for (const e of emails) emailedAt = minDate(emailedAt, sentAt.get(cleanEmail(e)));
+    let appNotifiedAt = null;
+    for (const id of userIds) appNotifiedAt = minDate(appNotifiedAt, notified.get(str(id)));
+    return { emailedAt: isoOrNull(emailedAt), appNotifiedAt: isoOrNull(appNotifiedAt), answeredAt: isoOrNull(answeredAt), updatedAt: isoOrNull(updatedAt), source };
+  };
+}
+
+/** The ids and addresses a group of directory people go by (for statusOf). */
+export const personKeys = (persons = []) => ({
+  userIds: persons.map((p) => p?.user?._id).filter(Boolean).map(str),
+  attendeeIds: persons.flatMap((p) => (p?.attendees || []).map((a) => (a?._id ? str(a._id) : ""))).filter(Boolean),
+  emails: [...new Set(persons.flatMap(personEmails))],
+});
+
+/**
+ * The tracking list. `byDay`: { day1: [person], day2: [person] } (checkedInPersons for each day); `statusOf`:
+ * trackingIndex(). Each address once (people on the same address are one row). → [{ name, email, company, onApp,
+ * checkedInDays, emailedAt, appNotifiedAt, answeredAt, updatedAt, source, personId }]
+ */
+export function trackingRows({ byDay = {}, statusOf = () => ({}) } = {}) {
+  const groups = [];
+  const byEmail = new Map();
+  const seen = new Map();
+  for (const [day, persons] of Object.entries(byDay)) {
+    for (const p of persons || []) {
+      let g = seen.get(p);
+      if (!g) {
+        const email = cleanEmail(p.email) || personEmails(p)[0] || "";
+        g = email ? byEmail.get(email) : null;
+        if (!g) { g = { email, persons: [], days: new Set() }; groups.push(g); if (email) byEmail.set(email, g); }
+        g.persons.push(p);
+        seen.set(p, g);
+      }
+      g.days.add(day);
+    }
+  }
+  return groups.map((g) => {
+    const main = g.persons.find((p) => p.user?._id) || g.persons[0];
+    const name = str(main?.name) === "No name" ? "" : oneLine(main?.name);
+    const st = statusOf(personKeys(g.persons));
+    return {
+      name, email: g.email, company: oneLine(main?.company),
+      onApp: g.persons.some((p) => !!(p.user && (p.user.appOnboarded || p.user.lastActiveAt))),
+      checkedInDays: ["day1", "day2"].filter((d) => g.days.has(d)),
+      emailedAt: st.emailedAt || null, appNotifiedAt: st.appNotifiedAt || null, answeredAt: st.answeredAt || null,
+      updatedAt: st.updatedAt || null, source: st.source || "", personId: str(main?.id),
+    };
+  });
+}
+
+export const TRACKING_STATUSES = Object.freeze(["all", "answered", "not_answered", "emailed", "not_emailed"]);
+
+/** Filter (status, q: name / email / company) and sort (not answered first, then by name). */
+export function filterTracking(rows = [], { status = "all", q = "" } = {}) {
+  const want = TRACKING_STATUSES.includes(status) ? status : "all";
+  const needle = oneLine(q).toLowerCase();
+  const keep = rows.filter((r) => {
+    if (want === "answered" && !r.answeredAt) return false;
+    if (want === "not_answered" && r.answeredAt) return false;
+    if (want === "emailed" && !r.emailedAt) return false;
+    if (want === "not_emailed" && r.emailedAt) return false;
+    return !needle || [r.name, r.email, r.company].some((v) => str(v).toLowerCase().includes(needle));
+  });
+  return keep.sort((a, b) => (!!a.answeredAt - !!b.answeredAt) || (a.name || a.email).localeCompare(b.name || b.email, "en", { sensitivity: "base" }));
+}
+
+/** The list's totals: { checkedIn, answered, notAnswered, emailed, appNotified, onApp }. */
+export function trackingCounts(rows = []) {
+  const n = (f) => rows.filter(f).length;
+  return {
+    checkedIn: rows.length, answered: n((r) => r.answeredAt), notAnswered: n((r) => !r.answeredAt), emailed: n((r) => r.emailedAt),
+    appNotified: n((r) => r.appNotifiedAt), onApp: n((r) => r.onApp),
+  };
+}
+
+/** The tracking list as a spreadsheet (BOM, formula-escaped). */
+export function trackingCsv(rows = []) {
+  const when = (d) => (d ? new Date(d).toISOString().replace("T", " ").slice(0, 19) : "");
+  const head = ["Name", "Email", "Company", "On the app", "Checked in", "Emailed (UTC)", "Prompted in the app (UTC)", "Answered (UTC)", "Last updated (UTC)", "Source"];
+  const DAY = { day1: "Day 1", day2: "Day 2" };
+  const lines = rows.map((r) => [
+    r.name, r.email, r.company, r.onApp ? "Yes" : "No", r.checkedInDays.map((d) => DAY[d]).join(", "),
+    when(r.emailedAt), when(r.appNotifiedAt), when(r.answeredAt), when(r.updatedAt), r.source,
+  ].map(csvCell).join(","));
+  return "﻿" + [head.map(csvCell).join(","), ...lines].join("\n");
 }

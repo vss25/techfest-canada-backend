@@ -22,7 +22,8 @@ import {
   SURVEY_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, EVENT_DAYS, DOOR_POINTS, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
   surveyConfig, surveyOpen, cleanSurveySave, cleanAnswers, respondentFields, signSurveyToken, verifySurveyToken, surveyUrl,
   checkedInAudience, checkedInPersons, checkedInKeys, personsMatching, personSubjects, personEmails, linkTarget, scoreGroup,
-  averagesOf, naCountsOf, cleanEmail,
+  averagesOf, naCountsOf, cleanEmail, waveDue, notifyWindow, trackingRows, trackingIndex, personKeys, filterTracking,
+  trackingCounts,
 } from "./surveyRules.js";
 
 /* =========================================================
@@ -35,16 +36,19 @@ import {
    so it never undoes notifiedAt). Answers: models/SurveyResponse.js,
    one row per person ("u:<account>" or "e:<email>"), upserted.
 
-   Nothing is sent by itself with the defaults (the organiser: nothing
-   until they've reviewed the survey):
-     - the app prompt goes when management clicks Send (POST
-       /api/console/survey/notify), or, only once management turns
-       autoNotify on, by the minute job at opensAt (JobLock
-       "survey-notify", the swag snapshot's pattern; it also needs a
-       saved config). Either way: one AppNotification (kind "personal",
+   What goes out by itself (Oct 26 2026, late: "prompted/notified some
+   time after 4 pm. All of them don't need to be notified
+   immediately"; earlier that evening nothing went by itself):
+     - the app prompt, in waves (autoNotify, on by default): the minute
+       job (JobLock "survey-notify", the swag snapshot's pattern) from
+       opensAt + notifyStartDelayMin sends notifyBatchSize people every
+       notifyIntervalMin minutes, until 10 PM Toronto on the opening
+       day; management's Send (POST /api/console/survey/notify) sends
+       everyone left at once. Either way: one AppNotification (kind "personal",
        batchId "survey-2026", link = their personal survey link) to
-       everyone on the app (appOnboarded or lastActiveAt) who isn't
-       suspended, hidden from the app or already answered, never twice
+       everyone on the app (appOnboarded or lastActiveAt, the most
+       recently active first) who checked in and isn't suspended, hidden
+       from the app or already answered, never twice
        to anyone (the batch is checked), and one push (Settings ›
        Notifications › Announcements off = no push). The apps already
        out there show it in their inbox and open https links. A send
@@ -276,7 +280,9 @@ const releaseLock = (id) => JobLock.updateOne({ _id: id, owner: INSTANCE }, { $s
  * checkedInIndex()), not answered, not prompted.
  */
 export async function promptAudience({ checked = null } = {}) {
-  const users = await User.find({ $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }], banned: { $ne: true } }).select("_id email").lean();
+  // The most recently active first (the paced waves take them in this order).
+  const users = await User.find({ $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }], banned: { $ne: true } })
+    .select("_id email lastActiveAt").sort({ lastActiveAt: -1, _id: 1 }).lean();
   if (!users.length) return { ids: [], already: 0, answered: 0, hidden: 0, notCheckedIn: 0 };
   const [hidden, ci] = await Promise.all([hiddenState(), checked || checkedInIndex()]);
   const ids = users.map((u) => u._id);
@@ -300,15 +306,18 @@ export async function promptAudience({ checked = null } = {}) {
 }
 
 /**
- * Sends the prompt now (management's click, or the job at opensAt): each person in promptAudience() an in-app
- * notification with their own link, and a push. → { sent, already, answered, hidden, notCheckedIn } or
- * { busy: true } when another send is running.
+ * Sends the prompt now (management's click: everyone left; a wave of the job: the first `limit`): each person in
+ * promptAudience() an in-app notification with their own link, and a push, once ever (batchId "survey-2026"; its
+ * createdAt is when they were prompted: appNotifiedAt). → { sent, remaining, already, answered, hidden, notCheckedIn }
+ * or { busy: true } when another send is running.
  */
-export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date(), checked = null } = {}) {
+export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date(), checked = null, limit = Infinity } = {}) {
   const c = cfg || (await loadSurvey({ fresh: true }));
   if (!(await claimLock(SEND_LOCK, now, 5 * 60_000))) return { busy: true };
   try {
     const aud = await promptAudience({ checked });
+    const all = aud.ids;
+    aud.ids = all.slice(0, Math.max(0, limit));
     for (let i = 0; i < aud.ids.length; i += 500) {
       const chunk = aud.ids.slice(i, i + 500);
       await AppNotification.insertMany(chunk.map((id) => ({
@@ -321,33 +330,52 @@ export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = n
     if (aud.ids.length) {
       pushToUsers(aud.ids, { title: c.notifyTitle, body: c.notifyBody, link: "", kind: "personal", id: NOTIFY_BATCH, url: "/app/notifications" }, { pref: "announcements" });
     }
-    await AppContent.collection.updateOne({ key: SURVEY_KEY },
-      { $set: { "value.notifiedAt": now, updatedAt: now }, $inc: { "value.notifiedCount": aud.ids.length }, $setOnInsert: { createdAt: now, updatedBy: by } },
-      { upsert: true });
+    if (aud.ids.length) {
+      await AppContent.collection.updateOne({ key: SURVEY_KEY },
+        { $min: { "value.notifiedAt": now }, $set: { updatedAt: now }, $inc: { "value.notifiedCount": aud.ids.length }, $setOnInsert: { createdAt: now, updatedBy: by } },
+        { upsert: true });
+    }
     forgetSurvey();
-    return { sent: aud.ids.length, already: aud.already, answered: aud.answered, hidden: aud.hidden, notCheckedIn: aud.notCheckedIn };
+    return {
+      sent: aud.ids.length, remaining: all.length - aud.ids.length, already: aud.already, answered: aud.answered, hidden: aud.hidden,
+      notCheckedIn: aud.notCheckedIn,
+    };
   } finally {
     await releaseLock(SEND_LOCK);
   }
 }
 
 /**
- * One run of the minute job: with a saved config that's on, open, autoNotify on and not prompted yet → the prompt,
- * once (notifiedAt claimed first). With the defaults (autoNotify off) it never sends. Never throws.
+ * One run of the minute job (the paced prompt): when a wave is due (services/surveyRules.js waveDue: on, autoNotify
+ * on, from opensAt + the delay, an interval since the last wave, before 10 PM Toronto on the opening day), the next
+ * notifyBatchSize people in promptAudience() order. One server per wave: the JobLock, then the wave itself claimed in
+ * the config (notifyLastWaveAt moved from the value this server read, so a second server's claim misses). People who
+ * check in or come to the app later get theirs in a later wave. → sendPrompt's answer, or null. Never throws.
  */
 export async function runSurveyNotify({ now = new Date(), held = false } = {}) {
   try {
     const cfg = await loadSurvey({ fresh: true });
-    if (!cfg.saved || !cfg.enabled || !cfg.autoNotify || cfg.notifiedAt || !surveyOpen(cfg, now)) return null;
+    if (!surveyOpen(cfg, now)) return null;
+    const last = cfg.notifyLastWaveAt ? new Date(cfg.notifyLastWaveAt) : null;
+    if (!waveDue(cfg, { now, lastWaveAt: last }).due) return null;
     if (!held && !(await claimLock(JOB_ID, now, 50_000))) return null;
-    // Claimed in the database: whichever server gets here first sends, once.
-    const r = await AppContent.collection.updateOne({ key: SURVEY_KEY, "value.autoNotify": true, "value.notifiedAt": null }, { $set: { "value.notifiedAt": now } });
-    if (!r.modifiedCount) return null;
-    const out = await sendPrompt({ cfg, by: "TTFC", now });
+    // The wave, claimed in the database (an upsert when nothing is saved yet: the unique key turns a second insert away).
+    try {
+      const r = await AppContent.collection.updateOne({ key: SURVEY_KEY, "value.notifyLastWaveAt": last },
+        { $set: { "value.notifyLastWaveAt": now }, $setOnInsert: { createdAt: now, updatedBy: "TTFC" } }, { upsert: true });
+      if (!r.modifiedCount && !r.upsertedCount) return null;
+    } catch (err) {
+      if (isDup(err)) return null;
+      throw err;
+    }
+    forgetSurvey();
+    const out = await sendPrompt({ cfg, by: "TTFC", now, limit: cfg.notifyBatchSize });
     if (out.busy) {
-      await AppContent.collection.updateOne({ key: SURVEY_KEY, "value.notifiedAt": now }, { $set: { "value.notifiedAt": null } });   // try again next minute
+      // Management's Send is running: give this wave back (it's tried again next minute).
+      await AppContent.collection.updateOne({ key: SURVEY_KEY, "value.notifyLastWaveAt": now }, { $set: { "value.notifyLastWaveAt": last } });
       return null;
     }
+    if (out.sent) console.log(`SURVEY PROMPT WAVE: ${out.sent} sent, ${out.remaining} left`);
     return out;
   } catch (err) {
     console.error("SURVEY NOTIFY ERROR:", err?.message || err);
@@ -355,11 +383,61 @@ export async function runSurveyNotify({ now = new Date(), held = false } = {}) {
   }
 }
 
-/** server.js, once connected: a check every minute (it sends nothing unless management turned autoNotify on). */
+/** The admin page's view of the paced prompt: { sent, remaining, nextAt, done, auto, startsAt, endsAt, batchSize,
+    intervalMin, lastWaveAt }. done = nobody is waiting and a wave has gone, or the automatic window is over. */
+export async function notifyProgress(cfg, { now = new Date() } = {}) {
+  const [sent, aud] = await Promise.all([AppNotification.countDocuments({ batchId: NOTIFY_BATCH }), promptAudience()]);
+  const w = notifyWindow(cfg);
+  const due = waveDue(cfg, { now, lastWaveAt: cfg.notifyLastWaveAt });
+  const over = !!w && new Date(now) >= w.endsAt;
+  const remaining = aud.ids.length;
+  return {
+    sent, remaining, auto: !!(cfg.enabled && cfg.autoNotify),
+    nextAt: due.nextAt && !over ? new Date(Math.max(due.nextAt.getTime(), new Date(now).getTime())).toISOString() : null,
+    done: over || (sent > 0 && remaining === 0),
+    startsAt: w ? w.startsAt.toISOString() : null, endsAt: w ? w.endsAt.toISOString() : null,
+    batchSize: cfg.notifyBatchSize, intervalMin: cfg.notifyIntervalMin, lastWaveAt: cfg.notifyLastWaveAt,
+  };
+}
+
+/** server.js, once connected: a check every minute (the paced prompt's waves; nothing outside its window). */
 export function startSurveyNotify({ everyMs = 60_000 } = {}) {
   const t = setInterval(() => { runSurveyNotify(); }, everyMs);
   t.unref?.();
   return t;
+}
+
+/* ---------- who answered: the admin panel's tracking list ---------- */
+
+/** The sends and answers so far → statusOf (services/surveyRules.js trackingIndex). */
+export async function loadTracking() {
+  const [sends, notes, responses] = await Promise.all([
+    CampaignSend.find({ campaign: EMAIL_CAMPAIGN, status: "sent" }).select("email sentAt").lean(),
+    AppNotification.find({ batchId: NOTIFY_BATCH }).select("userId createdAt").lean(),
+    SurveyResponse.find({}).select("userId attendeeId email createdAt submittedAt updatedAt source").lean(),
+  ]);
+  return trackingIndex({ sends, notes, responses });
+}
+
+/** Everyone with a door check-in, with when they were emailed, prompted and answered (filterTracking order). */
+export async function trackingList({ directory = peopleDirectory } = {}) {
+  const [dir, marks, statusOf] = await Promise.all([
+    directory(), CheckinMark.find(doorFilter()).select("subject day point at practice").lean(), loadTracking(),
+  ]);
+  const byId = dir?.byId || new Map();
+  const byDay = {};
+  for (const [key, days] of [["day1", AUDIENCES.day1], ["day2", AUDIENCES.day2]]) byDay[key] = checkedInPersons({ byId, marks, days }).persons;
+  return trackingRows({ byDay, statusOf });
+}
+
+export const PEOPLE_PAGE = 50;
+
+/** GET /api/console/survey/people → { total, page, size, counts, rows }. */
+export async function surveyPeople({ status = "all", q = "", page = 0 } = {}, opts = {}) {
+  const all = await trackingList(opts);
+  const rows = filterTracking(all, { status, q });
+  const p = Math.max(0, Math.floor(Number(page)) || 0);
+  return { total: rows.length, page: p, size: PEOPLE_PAGE, counts: trackingCounts(all), rows: rows.slice(p * PEOPLE_PAGE, (p + 1) * PEOPLE_PAGE) };
 }
 
 /* ---------- the email ---------- */
@@ -379,7 +457,7 @@ export const MAX_LINKS = 500;
  * `queries`: [{ email } | { person }].
  */
 export async function personalLinks(queries = [], { directory = peopleDirectory } = {}) {
-  const ci = await checkedInIndex({ directory });
+  const [ci, statusOf] = await Promise.all([checkedInIndex({ directory }), loadTracking()]);
   const dir = ci.dir;
   return queries.map((q) => {
     const asked = q.person ? str(q.person) : cleanEmail(q.email);
@@ -394,9 +472,12 @@ export async function personalLinks(queries = [], { directory = peopleDirectory 
     const same = q.person ? [p, ...personsMatching(dir, { email })] : persons;
     const checkedIn = same.some((x) => ci.persons.has(x)) || personEmails(p).some((e) => ci.emails.has(e)) || (p.user?._id && ci.userIds.has(str(p.user._id)));
     const name = str(p.name) === "No name" ? "" : str(p.name).trim();
+    // Answered already, emailed, prompted: so nobody sends it again by hand to someone who has filled it in.
+    const st = statusOf(personKeys(same));
     return {
       email, name, url: surveyUrl(signSurveyToken(target.kind, target.id)), kind: target.kind === "u" ? "account" : "pass",
       checkedIn: !!checkedIn, ...(checkedIn ? {} : { warning: NOT_CHECKED_IN_WARNING }),
+      answeredAt: st.answeredAt, emailedAt: st.emailedAt, appNotifiedAt: st.appNotifiedAt,
     };
   });
 }
@@ -418,17 +499,21 @@ export async function emailPlan(audience, dir) {
   const [optedOut, sends, answered] = emails.length ? await Promise.all([
     Subscription.find({ subscribed: false, email: { $in: emails } }).select("email").lean(),
     CampaignSend.find({ campaign: EMAIL_CAMPAIGN, email: { $in: emails }, status: { $in: ["sent", "sending"] } }).select("email").lean(),
-    SurveyResponse.find({ $or: [{ email: { $in: emails } }, { userId: { $in: userIds } }] }).select("email userId").lean(),
+    SurveyResponse.find({ $or: [{ email: { $in: emails } }, { userId: { $in: userIds } }, { attendeeId: { $in: aud.rows.map((r) => r.attendeeId).filter(Boolean) } }] }).select("email userId attendeeId").lean(),
   ]) : [[], [], []];
   const off = new Set(optedOut.map((s) => s.email));
   const sent = new Set(sends.map((s) => s.email));
   const answeredEmails = new Set(answered.map((r) => r.email).filter(Boolean));
   const answeredIds = new Set(answered.map((r) => str(r.userId)).filter(Boolean));
+  const answeredAttendees = new Set(answered.map((r) => str(r.attendeeId)).filter(Boolean));
   // By invitation: someone with neither an account nor a pass (an ISSUE PASS person) can't be given a personal link.
+  // Answered comes before already sent: someone who answered after an earlier email is never sent it again, whatever
+  // its send record says (a failed row would otherwise be tried again).
   const rows = aud.rows.map((r) => ({
     ...r,
-    skip: !r.userId && !r.attendeeId ? "noLink" : off.has(r.email) ? "unsubscribed" : sent.has(r.email) ? "alreadySent"
-      : answeredEmails.has(r.email) || (r.userId && answeredIds.has(r.userId)) ? "responded" : "",
+    skip: !r.userId && !r.attendeeId ? "noLink" : off.has(r.email) ? "unsubscribed"
+      : answeredEmails.has(r.email) || (r.userId && answeredIds.has(r.userId)) || (r.attendeeId && answeredAttendees.has(r.attendeeId)) ? "responded"
+        : sent.has(r.email) ? "alreadySent" : "",
   }));
   const toSend = rows.filter((r) => !r.skip);
   const n = (why) => rows.filter((r) => r.skip === why).length;
