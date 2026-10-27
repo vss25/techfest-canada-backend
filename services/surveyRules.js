@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { csvCell } from "./brochureDownloads.js";
+import { personAliasIds, personSubject } from "./checkinDesk.js";
 
 /* =========================================================
    The post-event survey (Oct 26 2026): the questions, the window, the
@@ -47,8 +48,9 @@ import { csvCell } from "./brochureDownloads.js";
    and it's never required.
    Questions "name", "email", "title" and "company" are the person's
    details: prefilled for people the server knows, and copied to the
-   response's own fields. A respondent the server doesn't know (the
-   shared link) must give a valid email: one response per email.
+   response's own fields. (Until the evening of Oct 26 a respondent
+   the server didn't know could answer on the shared link with their
+   email; the survey is by invitation now, see below.)
 
    Personal links: https://www.thetechfestival.com/survey?t=<token>,
    token = base64url("<kind>:<id>") + "." + the first 16 bytes of
@@ -58,6 +60,18 @@ import { csvCell } from "./brochureDownloads.js";
    card and inbox, and the email to people with an account), "p" = a
    pass with no account (Attendee id, the email to pass-only people).
    Tokens don't expire: they only say who is answering.
+
+   Oct 26 2026, later that night, the organiser: "This isn't a public
+   survey. This would be sent out to attendees one on one." and "you
+   can't survey if you haven't attended or checked in." So the survey
+   is by invitation: only a personal link (?t=) or the app's sign-in
+   gets the questions or can answer (no answers by typed email any
+   more), and only people with a real door check-in on Day 1 or Day 2
+   (checkedInPersons: arrived in the lobby, checked in at the pass desk
+   or by the door scanner; practice scans never count; the person's
+   passes and their email addresses, through the People directory),
+   checked at each request, since people still check in on Day 2.
+   Staff get personal links for one-on-one sharing in the admin panel.
 ========================================================= */
 
 export const SURVEY_KEY = "survey.config";
@@ -80,6 +94,11 @@ export const LIMITS = Object.freeze({
   title: 120, intro: 600, thankYou: 300, notifyTitle: 80, notifyBody: 300,
   text: 200, longtext: 4000,
 });
+/** The answers to people the survey turns away. */
+export const INVITE_ONLY_MESSAGE = "This survey is by invitation. Please use the link we sent you.";
+export const NOT_ATTENDED_MESSAGE = "This survey is for people who attended TTFC 2026.";
+/** The event days whose door check-ins count. */
+export const EVENT_DAYS = Object.freeze(["2026-10-26", "2026-10-27"]);
 /** Email audiences: who had a door check-in (arrived in the lobby or checked in at the pass desk / door scanner). */
 export const AUDIENCES = Object.freeze({ day1: ["2026-10-26"], day2: ["2026-10-27"], both: ["2026-10-26", "2026-10-27"] });
 
@@ -472,22 +491,29 @@ export const surveyUrl = (token = "") => (token ? `${SURVEY_PAGE}?t=${encodeURIC
 
 /* ---------- what the routes answer ---------- */
 
-/** GET /api/survey. Questions only while open (or for staff's preview). */
-export function publicSurvey(cfg, { now = new Date(), preview = false, respondent = null, responded = false } = {}) {
+/**
+ * GET /api/survey. By invitation: without a personal link or the app's sign-in (`invited`), only the title and the
+ * window; invited but not checked in (`eligible` false), the same and a message; otherwise the survey, questions only
+ * while open. Staff's preview (`preview`) always shows the questions.
+ */
+export function publicSurvey(cfg, { now = new Date(), preview = false, invited = false, eligible = false, respondent = null, responded = false } = {}) {
   const open = surveyOpen(cfg, now);
+  const head = { open, opensAt: cfg.opensAt, closesAt: cfg.closesAt, title: cfg.title, invitationOnly: true };
+  if (!preview && !invited) return { ...head, questions: [] };
+  if (!preview && !eligible) return { ...head, eligible: false, message: NOT_ATTENDED_MESSAGE, questions: [] };
   return {
-    open, opensAt: cfg.opensAt, closesAt: cfg.closesAt, title: cfg.title, intro: cfg.intro, thankYou: cfg.thankYou,
+    ...head, eligible: !!eligible, intro: cfg.intro, thankYou: cfg.thankYou,
     questions: open || preview ? cfg.questions.map(questionView) : [],
     respondent: respondent || null, responded: !!responded,
     ...(preview ? { preview: true } : {}),
   };
 }
 
-/** GET /api/app/survey: the app's card. show = open and not answered yet. */
-export function appSurveyCard(cfg, { now = new Date(), responded = false, token = "" } = {}) {
+/** GET /api/app/survey: the app's card. show = open, checked in (`eligible`) and not answered yet. */
+export function appSurveyCard(cfg, { now = new Date(), responded = false, eligible = true, token = "" } = {}) {
   const open = surveyOpen(cfg, now);
   return {
-    show: open && !responded, open, responded: !!responded, opensAt: cfg.opensAt, closesAt: cfg.closesAt,
+    show: open && !!eligible && !responded, open, eligible: !!eligible, responded: !!responded, opensAt: cfg.opensAt, closesAt: cfg.closesAt,
     title: cfg.title, body: cfg.notifyBody, cta: CTA, url: surveyUrl(token),
   };
 }
@@ -563,24 +589,25 @@ export function responsesCsv(rows = [], { questions = [], retired = [] } = {}) {
   return "\uFEFF" + [head.map(csvCell).join(","), ...lines].join("\n");
 }
 
-/* ---------- the email's audience ---------- */
+/* ---------- who checked in, the email's audience ---------- */
 
-const DOOR_POINTS = new Set(["arrived", "checked_in"]);
+/** The marks that are a door check-in: arrived in the lobby, checked in at the pass desk or by the door scanner. */
+export const DOOR_POINTS = Object.freeze(["arrived", "checked_in"]);
+const DOOR = new Set(DOOR_POINTS);
 
 /**
- * Who had a door check-in on these days (the check-in desk's marks, services/checkinDesk.js: arrived in the lobby, or
- * checked in at the pass desk or by the door scanner; practice marks never count), each person once (the People
- * directory joins a person's passes: routes/people.js directory()), then each email address once.
- *   people, byId: the directory; marks: CheckinMark rows ({ subject, day, point, at, practice })
- * → { rows: [{ key, personId, userId, attendeeId, name, firstName, email, title, company }], noEmail, unmatched }
+ * The people with a door check-in on these days (the check-in desk's marks, services/checkinDesk.js; practice marks
+ * never count), each once (the People directory joins a person's passes: routes/people.js directory()).
+ *   byId: the directory's id → person ("t-<ticket>", "u-<account>", "a-<pass>" …); marks: CheckinMark rows
+ * → { persons: [person], unmatched (marks of a pass or person not in the directory) }
  */
-export function checkedInAudience({ byId = new Map(), marks = [], days = AUDIENCES.both } = {}) {
+export function checkedInPersons({ byId = new Map(), marks = [], days = EVENT_DAYS } = {}) {
   const want = new Set(days);
   const seen = new Set();
   const persons = [];
   let unmatched = 0;
   for (const m of marks || []) {
-    if (!m?.at || m.practice || !want.has(m.day) || !DOOR_POINTS.has(m.point)) continue;
+    if (!m?.at || m.practice || !want.has(m.day) || !DOOR.has(m.point)) continue;
     const s = str(m.subject);
     if (!s || s.startsWith("booth:") || s.startsWith("u:")) continue;
     const p = s.startsWith("person:") ? byId.get(s.slice("person:".length)) : byId.get(`t-${s}`);
@@ -589,6 +616,72 @@ export function checkedInAudience({ byId = new Map(), marks = [], days = AUDIENC
     seen.add(p);
     persons.push(p);
   }
+  return { persons, unmatched };
+}
+
+/** A person's email addresses (the directory's main one and every one their passes carry), cleaned. */
+export const personEmails = (p) => [...new Set([p?.email, ...(p?.emails || []), p?.user?.email].map(cleanEmail).filter(Boolean))];
+
+/** Accounts and addresses of the people who checked in: { userIds: Set, emails: Set }. */
+export function checkedInKeys(persons = []) {
+  const userIds = new Set();
+  const emails = new Set();
+  for (const p of persons) {
+    if (p?.user?._id) userIds.add(str(p.user._id));
+    for (const e of personEmails(p)) emails.add(e);
+  }
+  return { userIds, emails };
+}
+
+const emailIndexes = new WeakMap();
+/** The directory's people by each of their addresses (kept per directory copy). */
+function emailIndex(dir) {
+  const people = dir?.people || [];
+  if (emailIndexes.has(people)) return emailIndexes.get(people);
+  const idx = new Map();
+  for (const p of people) for (const e of personEmails(p)) { if (!idx.has(e)) idx.set(e, []); idx.get(e).push(p); }
+  emailIndexes.set(people, idx);
+  return idx;
+}
+
+/** The directory's people who are this account, this pass, or share this email address. */
+export function personsMatching(dir, { userId = "", attendeeId = "", email = "" } = {}) {
+  const out = new Set();
+  const byId = dir?.byId || new Map();
+  if (userId && byId.get(`u-${userId}`)) out.add(byId.get(`u-${userId}`));
+  if (attendeeId && byId.get(`a-${attendeeId}`)) out.add(byId.get(`a-${attendeeId}`));
+  const e = cleanEmail(email);
+  if (e) for (const p of emailIndex(dir).get(e) || []) out.add(p);
+  return [...out];
+}
+
+/** Every mark subject these people's check-ins are recorded under: their passes (normalized ticket IDs) and their
+    ISSUE PASS ids ("person:u-…", "person:a-…", …). */
+export function personSubjects(persons = []) {
+  const out = new Set();
+  for (const p of persons) {
+    for (const norm of p?.tickets instanceof Map ? p.tickets.keys() : []) out.add(str(norm));
+    for (const id of personAliasIds(p)) out.add(personSubject(id));
+  }
+  return [...out];
+}
+
+/** The best way to send a person a link: their account, else the pass on that address, else their first pass. */
+export function linkTarget(p, email = "") {
+  if (!p) return null;
+  if (p.user?._id) return { kind: "u", id: str(p.user._id) };
+  const e = cleanEmail(email);
+  const a = (p.attendees || []).find((x) => e && cleanEmail(x?.email) === e) || (p.attendees || [])[0];
+  return a?._id ? { kind: "p", id: str(a._id) } : null;
+}
+
+/**
+ * Who had a door check-in on these days, each person once, then each email address once (the survey email).
+ *   byId: the directory; marks: CheckinMark rows ({ subject, day, point, at, practice })
+ * → { rows: [{ key, personId, userId, attendeeId, name, firstName, email, title, company }], noEmail, unmatched }
+ */
+export function checkedInAudience({ byId = new Map(), marks = [], days = AUDIENCES.both } = {}) {
+  const { persons, unmatched } = checkedInPersons({ byId, marks, days });
   const emails = new Set();
   const rows = [];
   let noEmail = 0;

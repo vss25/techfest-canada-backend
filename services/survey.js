@@ -15,12 +15,14 @@ import { pushToUsers } from "./push.js";
 import { ipHash, shortUserAgent } from "./waitlist.js";
 import { unsubscribeFor } from "./unsubscribe.js";
 import { campaignSendStore } from "./rsvpReminder.js";
+import { normalizeTicketId } from "./ticketAccess.js";
 import { ENQUIRE_EMAIL } from "./appInviteEmail.js";
 import { surveyMessage, sendSurveyBatch, BATCH_SIZE } from "./surveyEmail.js";
 import {
-  SURVEY_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, surveyConfig, surveyOpen, cleanSurveySave, cleanAnswers,
-  respondentFields, signSurveyToken, verifySurveyToken, surveyUrl, checkedInAudience, scoreGroup, averagesOf, naCountsOf,
-  cleanEmail,
+  SURVEY_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, EVENT_DAYS, DOOR_POINTS, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
+  surveyConfig, surveyOpen, cleanSurveySave, cleanAnswers, respondentFields, signSurveyToken, verifySurveyToken, surveyUrl,
+  checkedInAudience, checkedInPersons, checkedInKeys, personsMatching, personSubjects, personEmails, linkTarget, scoreGroup,
+  averagesOf, naCountsOf, cleanEmail,
 } from "./surveyRules.js";
 
 /* =========================================================
@@ -53,6 +55,18 @@ import {
        "survey-2026", claimed before each batch), never to the
        unsubscribe list (checked again just before), not to people who
        already answered; Resend's batch API, 100 a call.
+
+   By invitation, for people who attended (Oct 26 2026, later that
+   night): no answers without a personal link or the app's sign-in (the
+   typed-email path is gone); nobody without a door check-in on Day 1 or
+   Day 2 sees the questions, answers, gets the app's card or the prompt
+   (isCheckedIn per request, checkedInIndex for the prompt: people still
+   check in on Day 2, so it's never cached beyond the request). The
+   People directory (routes/people.js directory(), its 20-second copy)
+   joins a person's passes and addresses; the marks are read fresh. The
+   email skips people it can't give a personal link (no account, no
+   pass: noLink). Staff get one person's link, or a list's, for
+   one-on-one sharing (personalLinks).
 ========================================================= */
 
 const INSTANCE = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
@@ -62,6 +76,8 @@ const FOREVER_MS = 100 * 365 * 864e5;   // a sent survey email is never sent aga
 const isDup = (err) => err?.code === 11000 || /E11000/.test(String(err?.message || ""));
 const str = (v) => (v === null || v === undefined ? "" : String(v));
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The People directory (routes/people.js, loaded when first needed so this file stays importable on its own). */
+const peopleDirectory = async () => (await import("../routes/people.js")).directory();
 
 /* ---------- the config ---------- */
 
@@ -93,13 +109,16 @@ export async function saveSurvey(body, { by = "", now = new Date() } = {}) {
 
 /* ---------- who's answering ---------- */
 
-const USER_FIELDS = "name email jobTitle organization role banned appOnboarded lastActiveAt";
+const USER_FIELDS = "name email jobTitle organization role banned appOnboarded lastActiveAt tickets.ticketId";
 const passTitle = (d = {}) => str(d.jobTitle || d.title).trim();
 const passCompany = (d = {}) => str(d.organization || d.organisation || d.company).trim();
 const passName = (a) => str(a?.name).trim() || [a?.details?.firstName, a?.details?.lastName].filter(Boolean).join(" ").trim();
 
+/** An account as identify() gives it (the app's card and the prompt check the same way). */
+export const asRespondent = (u, via = "auth") => fromUser(u, via);
 const fromUser = (u, via) => ({
   kind: "user", via, user: u, key: `u:${u._id}`, userId: String(u._id), attendeeId: null,
+  tickets: (u.tickets || []).map((t) => t?.ticketId).filter(Boolean),
   known: { name: str(u.name).trim(), email: cleanEmail(u.email), title: str(u.jobTitle).trim(), company: str(u.organization).trim() },
 });
 
@@ -118,7 +137,7 @@ export async function bearerUser(authorization) {
 
 /**
  * Who is answering: the app's sign-in first, else a personal link (?t=). → { kind: "user" | "pass", via, key, userId,
- * attendeeId, known: { name, email, title, company }, user? } or null (nobody we know: the shared link).
+ * attendeeId, tickets, known: { name, email, title, company }, user? } or null (nobody we know: refused, by invitation).
  */
 export async function identify({ authorization = "", token = "" } = {}) {
   const u = await bearerUser(authorization);
@@ -129,7 +148,7 @@ export async function identify({ authorization = "", token = "" } = {}) {
     const user = await User.findById(t.id).select(USER_FIELDS).lean();
     return user ? fromUser(user, "token") : null;
   }
-  const a = await Attendee.findById(t.id).select("name email details claimedBy").lean();
+  const a = await Attendee.findById(t.id).select("name email details claimedBy ticketId").lean();
   if (!a) return null;
   // A pass someone has claimed since: answered as that account.
   if (a.claimedBy) {
@@ -139,11 +158,42 @@ export async function identify({ authorization = "", token = "" } = {}) {
   const email = cleanEmail(a.email);
   return {
     kind: "pass", via: "pass", key: email ? `e:${email}` : `p:${a._id}`, userId: null, attendeeId: String(a._id),
+    tickets: a.ticketId ? [a.ticketId] : [],
     known: { name: passName(a), email, title: passTitle(a.details || {}), company: passCompany(a.details || {}) },
   };
 }
 
-/** Has this person answered? Their own row, or one with their email (the shared link). */
+/* ---------- who checked in ---------- */
+
+/** Door check-ins (CheckinMark: arrived, checked_in) on these days, practice left out. */
+const doorFilter = (days = EVENT_DAYS) => ({ day: { $in: days }, point: { $in: DOOR_POINTS }, at: { $ne: null }, practice: { $ne: true } });
+
+/**
+ * Did this person (identify()'s answer, or { userId, attendeeId, email, tickets }) have a door check-in on Day 1 or
+ * Day 2? Their account's or pass's person in the People directory, everyone on their email address, and (in case the
+ * directory's copy is older than a pass) the passes on the account or the link itself. Read now, every time.
+ */
+export async function isCheckedIn(who, { directory = peopleDirectory } = {}) {
+  if (!who) return false;
+  const dir = await directory().catch((err) => { console.error("SURVEY DIRECTORY ERROR:", err?.message || err); return null; });
+  const email = who.known?.email || who.email || "";
+  const subjects = new Set(personSubjects(personsMatching(dir, { userId: who.userId, attendeeId: who.attendeeId, email })));
+  for (const t of who.tickets || []) { const n = normalizeTicketId(t); if (n) subjects.add(n); }
+  if (who.userId) subjects.add(`person:u-${who.userId}`);
+  if (who.attendeeId) subjects.add(`person:a-${who.attendeeId}`);
+  if (!subjects.size) return false;
+  return !!(await CheckinMark.exists({ subject: { $in: [...subjects] }, ...doorFilter() }));
+}
+
+/** Everyone with a door check-in now, for the prompt and staff's links: { persons, userIds: Set, emails: Set }. */
+export async function checkedInIndex({ directory = peopleDirectory } = {}) {
+  const [dir, marks] = await Promise.all([directory(), CheckinMark.find(doorFilter()).select("subject day point at practice").lean()]);
+  const { persons } = checkedInPersons({ byId: dir?.byId || new Map(), marks, days: EVENT_DAYS });
+  return { dir, persons: new Set(persons), ...checkedInKeys(persons) };
+}
+
+/** Has this person answered? Their own row, or one with their email (a pass's link, or a row from before it was by
+    invitation). */
 export async function hasResponded(who) {
   if (!who) return false;
   const or = [{ key: who.key }];
@@ -153,11 +203,15 @@ export async function hasResponded(who) {
 
 /**
  * Saves a submission (POST /api/survey/responses). → { ok: true, first } or { ok: false, status, code?, field?, error }.
- * One row per person: answering again updates it (its current questions' answers replaced, a deleted question's kept).
+ * By invitation: `who` (a personal link or the app's sign-in) is required (403 link_required), and they must have
+ * checked in (`checkedIn()`, 403 not_checked_in). One row per person: answering again updates it (its current
+ * questions' answers replaced, a deleted question's kept).
  */
-export async function submitResponse({ who = null, body = {}, now = new Date(), ip = "", userAgent = "" } = {}) {
+export async function submitResponse({ who = null, body = {}, now = new Date(), ip = "", userAgent = "", checkedIn = () => isCheckedIn(who) } = {}) {
+  if (!who) return { ok: false, status: 403, code: "link_required", error: INVITE_ONLY_MESSAGE };
   const cfg = await loadSurvey();
   if (!surveyOpen(cfg, now)) return { ok: false, status: 403, code: "closed", error: "The survey isn't open." };
+  if (!(await checkedIn())) return { ok: false, status: 403, code: "not_checked_in", error: NOT_ATTENDED_MESSAGE };
   const b = body && typeof body === "object" ? body : {};
   const known = who?.known || {};
   const fill = {};
@@ -165,12 +219,11 @@ export async function submitResponse({ who = null, body = {}, now = new Date(), 
   const c = cleanAnswers(cfg.questions, b.answers, { fill });
   if (!c.ok) return { ok: false, status: 400, field: c.field, error: c.error };
   const fields = respondentFields(c.answers, b, known);
-  if (!who && !fields.email) return { ok: false, status: 400, field: "email", error: "Please enter your email address." };
-  const key = who?.key || `e:${fields.email}`;
+  const key = who.key;
   const set = {
-    source: who?.kind === "user" ? "app" : "link", via: who?.via || "anonymous",
-    userId: who?.userId ? new mongoose.Types.ObjectId(who.userId) : null,
-    attendeeId: who?.attendeeId ? new mongoose.Types.ObjectId(who.attendeeId) : null,
+    source: who.kind === "user" ? "app" : "link", via: who.via,
+    userId: who.userId ? new mongoose.Types.ObjectId(who.userId) : null,
+    attendeeId: who.attendeeId ? new mongoose.Types.ObjectId(who.attendeeId) : null,
     ...fields, submittedAt: now, updatedAt: now, userAgent: shortUserAgent(userAgent), ipHash: ipHash(ip),
   };
   for (const [id, v] of Object.entries(c.answers)) set[`answers.${id}`] = v;
@@ -218,11 +271,14 @@ async function claimLock(id, now, ms) {
 }
 const releaseLock = (id) => JobLock.updateOne({ _id: id, owner: INSTANCE }, { $set: { until: new Date(0) } }).catch(() => {});
 
-/** Everyone the prompt is for now: on the app, not suspended, not hidden from the app, not answered, not prompted. */
-export async function promptAudience() {
+/**
+ * Everyone the prompt is for now: on the app, not suspended, not hidden from the app, checked in (`checked`:
+ * checkedInIndex()), not answered, not prompted.
+ */
+export async function promptAudience({ checked = null } = {}) {
   const users = await User.find({ $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }], banned: { $ne: true } }).select("_id email").lean();
-  if (!users.length) return { ids: [], already: 0, answered: 0, hidden: 0 };
-  const hidden = await hiddenState();
+  if (!users.length) return { ids: [], already: 0, answered: 0, hidden: 0, notCheckedIn: 0 };
+  const [hidden, ci] = await Promise.all([hiddenState(), checked || checkedInIndex()]);
   const ids = users.map((u) => u._id);
   const [answeredRows, prompted] = await Promise.all([
     SurveyResponse.find({ $or: [{ userId: { $in: ids } }, { email: { $in: users.map((u) => cleanEmail(u.email)).filter(Boolean) } }] }).select("userId email").lean(),
@@ -231,10 +287,11 @@ export async function promptAudience() {
   const answeredIds = new Set(answeredRows.map((r) => str(r.userId)).filter(Boolean));
   const answeredEmails = new Set(answeredRows.map((r) => r.email).filter(Boolean));
   const promptedIds = new Set(prompted.map(str));
-  const out = { ids: [], already: 0, answered: 0, hidden: 0 };
+  const out = { ids: [], already: 0, answered: 0, hidden: 0, notCheckedIn: 0 };
   for (const u of users) {
     const id = str(u._id);
     if (hidden.ids.has(id)) { out.hidden += 1; continue; }
+    if (!ci.userIds.has(id) && !ci.emails.has(cleanEmail(u.email))) { out.notCheckedIn += 1; continue; }
     if (answeredIds.has(id) || answeredEmails.has(cleanEmail(u.email))) { out.answered += 1; continue; }
     if (promptedIds.has(id)) { out.already += 1; continue; }
     out.ids.push(id);
@@ -244,14 +301,14 @@ export async function promptAudience() {
 
 /**
  * Sends the prompt now (management's click, or the job at opensAt): each person in promptAudience() an in-app
- * notification with their own link, and a push. → { sent, already, answered, hidden } or { busy: true } when another
- * send is running.
+ * notification with their own link, and a push. → { sent, already, answered, hidden, notCheckedIn } or
+ * { busy: true } when another send is running.
  */
-export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date() } = {}) {
+export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date(), checked = null } = {}) {
   const c = cfg || (await loadSurvey({ fresh: true }));
   if (!(await claimLock(SEND_LOCK, now, 5 * 60_000))) return { busy: true };
   try {
-    const aud = await promptAudience();
+    const aud = await promptAudience({ checked });
     for (let i = 0; i < aud.ids.length; i += 500) {
       const chunk = aud.ids.slice(i, i + 500);
       await AppNotification.insertMany(chunk.map((id) => ({
@@ -268,7 +325,7 @@ export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = n
       { $set: { "value.notifiedAt": now, updatedAt: now }, $inc: { "value.notifiedCount": aud.ids.length }, $setOnInsert: { createdAt: now, updatedBy: by } },
       { upsert: true });
     forgetSurvey();
-    return { sent: aud.ids.length, already: aud.already, answered: aud.answered, hidden: aud.hidden };
+    return { sent: aud.ids.length, already: aud.already, answered: aud.answered, hidden: aud.hidden, notCheckedIn: aud.notCheckedIn };
   } finally {
     await releaseLock(SEND_LOCK);
   }
@@ -310,6 +367,40 @@ export function startSurveyNotify({ everyMs = 60_000 } = {}) {
 /** A person's link: their account's token, else their pass's, else the plain page. */
 export const linkFor = (row) => surveyUrl(row.userId ? signSurveyToken("u", row.userId) : row.attendeeId ? signSurveyToken("p", row.attendeeId) : "");
 
+/* ---------- staff's personal links ---------- */
+
+export const NOT_CHECKED_IN_WARNING = "Hasn't checked in — the survey will refuse them.";
+export const MAX_LINKS = 500;
+
+/**
+ * Personal survey links for one-on-one sharing (Admin, management): for each email (or People id), the person with an
+ * account or a pass → { email, name, url, checkedIn, warning? } (warning when they haven't checked in: the survey
+ * will refuse them, but staff still see the link), or { email, error } when nobody with a pass or an account has it.
+ * `queries`: [{ email } | { person }].
+ */
+export async function personalLinks(queries = [], { directory = peopleDirectory } = {}) {
+  const ci = await checkedInIndex({ directory });
+  const dir = ci.dir;
+  return queries.map((q) => {
+    const asked = q.person ? str(q.person) : cleanEmail(q.email);
+    const key = q.person ? "person" : "email";
+    if (!asked) return { [key]: str(q.email || q.person).slice(0, 254), error: "That isn't an email address." };
+    const persons = q.person ? [dir?.byId?.get(asked)].filter(Boolean) : personsMatching(dir, { email: asked });
+    // An account first, else a pass on that address.
+    const p = persons.find((x) => x.user?._id) || persons.find((x) => linkTarget(x, asked)) || null;
+    const target = linkTarget(p, q.person ? "" : asked);
+    if (!p || !target) return { [key]: asked, error: q.person ? "Nobody in People with a pass or an account has that id." : "Nobody with a TTFC pass or account has that email." };
+    const email = q.person ? (cleanEmail(p.email) || personEmails(p)[0] || "") : asked;
+    const same = q.person ? [p, ...personsMatching(dir, { email })] : persons;
+    const checkedIn = same.some((x) => ci.persons.has(x)) || personEmails(p).some((e) => ci.emails.has(e)) || (p.user?._id && ci.userIds.has(str(p.user._id)));
+    const name = str(p.name) === "No name" ? "" : str(p.name).trim();
+    return {
+      email, name, url: surveyUrl(signSurveyToken(target.kind, target.id)), kind: target.kind === "u" ? "account" : "pass",
+      checkedIn: !!checkedIn, ...(checkedIn ? {} : { warning: NOT_CHECKED_IN_WARNING }),
+    };
+  });
+}
+
 /**
  * Who the email would go to for this audience ("day1" | "day2" | "both"), from the People directory (`dir`:
  * routes/people.js directory()) and the check-in desk's marks. → { audience, days, rows (each with `skip`: "" |
@@ -333,16 +424,20 @@ export async function emailPlan(audience, dir) {
   const sent = new Set(sends.map((s) => s.email));
   const answeredEmails = new Set(answered.map((r) => r.email).filter(Boolean));
   const answeredIds = new Set(answered.map((r) => str(r.userId)).filter(Boolean));
+  // By invitation: someone with neither an account nor a pass (an ISSUE PASS person) can't be given a personal link.
   const rows = aud.rows.map((r) => ({
     ...r,
-    skip: off.has(r.email) ? "unsubscribed" : sent.has(r.email) ? "alreadySent"
+    skip: !r.userId && !r.attendeeId ? "noLink" : off.has(r.email) ? "unsubscribed" : sent.has(r.email) ? "alreadySent"
       : answeredEmails.has(r.email) || (r.userId && answeredIds.has(r.userId)) ? "responded" : "",
   }));
   const toSend = rows.filter((r) => !r.skip);
   const n = (why) => rows.filter((r) => r.skip === why).length;
   return {
     audience, days, rows, toSend,
-    counts: { checkedIn: rows.length + aud.noEmail, toSend: toSend.length, unsubscribed: n("unsubscribed"), alreadySent: n("alreadySent"), responded: n("responded"), noEmail: aud.noEmail },
+    counts: {
+      checkedIn: rows.length + aud.noEmail, toSend: toSend.length, unsubscribed: n("unsubscribed"), alreadySent: n("alreadySent"),
+      responded: n("responded"), noEmail: aud.noEmail, noLink: n("noLink"),
+    },
   };
 }
 

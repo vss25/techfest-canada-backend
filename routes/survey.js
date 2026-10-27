@@ -6,11 +6,11 @@ import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import { buildSurveyEmail, surveyLogoPng } from "../services/surveyEmail.js";
 import { previewUnsubscribeUrl } from "../services/unsubscribe.js";
 import {
-  SURVEY_PAGE, AUDIENCES, publicSurvey, appSurveyCard, responseRow, responsesCsv, signSurveyToken, surveyOpen,
+  SURVEY_PAGE, AUDIENCES, INVITE_ONLY_MESSAGE, publicSurvey, appSurveyCard, responseRow, responsesCsv, signSurveyToken, surveyOpen,
 } from "../services/surveyRules.js";
 import {
   loadSurvey, saveSurvey, identify, bearerUser, hasResponded, submitResponse, surveyStats, sendPrompt, emailPlan,
-  sendSurveyEmails,
+  sendSurveyEmails, isCheckedIn, asRespondent, personalLinks, MAX_LINKS,
 } from "../services/survey.js";
 import { directory as peopleDirectory } from "./people.js";
 
@@ -19,42 +19,53 @@ import { directory as peopleDirectory } from "./people.js";
    The website's /survey page and the native apps are built against these paths and fields.
 
    Who's answering: the app's sign-in (Authorization: Bearer <the app's user JWT>), else a personal link's
-   t=<token> (kind "u" = an account, "p" = a pass with no account; services/surveyRules.js), else nobody (the shared
-   link: they type their email, one response per email).
+   t=<token> (kind "u" = an account, "p" = a pass with no account; services/surveyRules.js). By invitation only (Oct 26
+   2026, the organiser: "This isn't a public survey. This would be sent out to attendees one on one."): nobody else
+   gets the questions or can answer. And only people who attended ("you can't survey if you haven't attended or
+   checked in"): a door check-in on Day 1 or Day 2 (lobby arrival, pass desk, door scan; practice scans don't count;
+   the person's passes and email addresses), checked at every request.
 
    Public (no sign-in needed), mounted at /api/survey:
      GET  /[?t=][&preview=1]   Cache-Control private, no-store
-          → { open, opensAt, closesAt (ISO with offset), title, intro, thankYou, questions,
-              respondent: { name, email, title, company } | null, responded, preview? }
+          No valid link or sign-in → { open, opensAt, closesAt, title, invitationOnly: true, questions: [] }
+          A valid link, not checked in → { open, opensAt, closesAt, title, invitationOnly: true, eligible: false,
+              message: "This survey is for people who attended TTFC 2026.", questions: [] }
+          A valid link, checked in → { open, opensAt, closesAt (ISO with offset), title, invitationOnly: true,
+              eligible: true, intro, thankYou, questions, respondent: { name, email, title, company }, responded, preview? }
             open = enabled && opensAt <= now < closesAt. questions only while open (else []); ?preview=1 with a staff
-            account's Authorization shows them before it opens (preview: true). respondent: what we know about the
-            person (to prefill About you); responded: they have answered already (answering again updates it).
+            account's Authorization always shows them (preview: true; eligible = the staff member's own). respondent:
+            what we know about the person (to prefill About you); responded: they have answered already (answering
+            again updates it).
             question: { id, section, type: "rating" | "nps" | "choice" | "multi" | "text" | "longtext" | "consent",
               label, required, help?, options? (choice / multi), minLabel? / maxLabel? (rating / nps),
               allowNA (rating / nps / choice: "na" is a valid answer, "Not applicable"),
               showIf? { question, includes } (show it only while that earlier choice / multi question's answer is, or
               includes, that option) }
-     POST /responses  { answers: { [questionId]: value }, name?, email?, title?, company?, t? }
+     POST /responses  { answers: { [questionId]: value }, name?, email?, title?, company?, t? }  (t, or Authorization)
           → 201 { ok: true, first }   (first: false when it updated their earlier answers)
+          → 403 { ok: false, code: "link_required", error: "This survey is by invitation. Please use the link we sent
+            you." } without a valid link or sign-in · 403 { ok: false, code: "not_checked_in", error: "This survey is
+            for people who attended TTFC 2026." }
           → 400 { ok: false, field, error }   rating an integer 1–5, nps 0–10, choice one of options, multi a list of
             options, text ≤ 200, longtext ≤ 4000, consent true / false, "na" where allowNA; required ones answered
             (by default only name and email); an email that's an email. Blank = skipped (not stored); a question that
             isn't shown (showIf) is ignored and never required.
           → 403 { ok: false, code: "closed", error } outside the window · 429 { ok: false, error } (per address, sized
             for the venue's shared Wi-Fi, and per person)
-          Stored: source "app" (an account: the app's sign-in or a "u" link) | "link" (a pass's link, the shared link),
-          userId when known, the user agent (first 160 characters), a hash of the address.
+          Stored: source "app" (an account: the app's sign-in or a "u" link) | "link" (a pass's "p" link), userId when
+          known, the user agent (first 160 characters), a hash of the address.
      GET  /email-logo.png   the TTFC logo for the survey email (Resend's batch API takes no inline images)
 
    The app (signed in), mounted at /api/app/survey:
-     GET  /   → { show, open, responded, opensAt, closesAt, title, body, cta: "Share feedback", url }
-              url = https://www.thetechfestival.com/survey?t=<their token>; show = open && !responded.
+     GET  /   → { show, open, eligible, responded, opensAt, closesAt, title, body, cta: "Share feedback", url }
+              url = https://www.thetechfestival.com/survey?t=<their token>; show = open && eligible (checked in)
+              && !responded.
               Cache-Control private, no-store. 401 without a sign-in.
 
    Admin (staff read, management changes and sends; audited), mounted at /api/console/survey:
      GET  /                 → { config, counts: { responses, app, link }, averages: { [ratingOrNpsId]: n | null },
-                                na: { [id]: n }, open, url: "https://www.thetechfestival.com/survey", canEdit,
-                                audiences: ["day1", "day2", "both"] }
+                                na: { [id]: n }, open, invitationOnly: true, canEdit, audiences: ["day1", "day2", "both"] }
+                              (no public link: the survey is by invitation; links come from /link and /links)
                               config: { enabled, opensAt, closesAt, title, intro, thankYou, notifyTitle, notifyBody,
                                 autoNotify, notifiedAt, notifiedCount, questions, retired (deleted questions, their
                                 answers kept), saved, updatedAt, updatedBy }. averages leave "na" out.
@@ -68,11 +79,19 @@ import { directory as peopleDirectory } from "./people.js";
                                 name, email, title, company, userId, answers }] }   newest first
      GET  /export           CSV: one column per question (and per deleted question anyone answered, "(removed)"),
                             BOM, formula-escaped. Audited survey_export.
-     POST /notify { confirm: "SEND" } (management) → { sent, already, answered, hidden }   the app prompt now: an
-              in-app notification (their own link) + a push to everyone on the app who hasn't answered or been
-              prompted. 403 { code: "closed" } while the survey isn't open; 409 { code: "busy" } while one is running.
+     POST /notify { confirm: "SEND" } (management) → { sent, already, answered, hidden, notCheckedIn }   the app
+              prompt now: an in-app notification (their own link) + a push to everyone on the app who checked in and
+              hasn't answered or been prompted. 403 { code: "closed" } while the survey isn't open; 409 { code: "busy" }
+              while one is running.
+     GET  /link?email=<email> | ?person=<People id> (management) → { email, name, url, kind: "account" | "pass",
+              checkedIn, warning? }   one person's personal link, for one-on-one sharing; 404 { error } when nobody
+              with a pass or an account matches. warning ("Hasn't checked in — the survey will refuse them.") when
+              they haven't checked in. Audited survey_link.
+     POST /links { emails: [...] } (management, at most 500) → [{ email, name, url, kind, checkedIn, warning? } |
+              { email, error }]   in the order asked. Audited survey_links.
      GET  /email?audience=day1|day2|both → { audience, count, sample: [up to 5 names], counts: { checkedIn, toSend,
-              unsubscribed, alreadySent, responded, noEmail }, subject, html, text }   nothing is sent
+              unsubscribed, alreadySent, responded, noEmail, noLink }, subject, html, text }   nothing is sent
+              (noLink: people with neither an account nor a pass, who can't be given a personal link)
      POST /email { audience, confirm: "SEND" } (management) → { sent, skipped, failed, counts }
               people with a door check-in that day (both = Day 1 or Day 2), each address once, never twice, never the
               unsubscribed, not people who've answered. 403 { code: "closed" } while the survey isn't open.
@@ -105,18 +124,22 @@ publicRouter.get("/email-logo.png", (req, res) => {
 publicRouter.get("/", wrap(async (req, res) => {
   const [cfg, who] = await Promise.all([loadSurvey(), identify({ authorization: req.headers.authorization, token: tokenOf(req) })]);
   const preview = String(req.query.preview || "") === "1" && who?.user?.role === "admin";
+  const eligible = who ? await isCheckedIn(who) : false;
   noStore(res);
-  res.json(publicSurvey(cfg, { preview, respondent: who ? { ...who.known } : null, responded: await hasResponded(who) }));
+  res.json(publicSurvey(cfg, {
+    preview, invited: !!who, eligible, respondent: who ? { ...who.known } : null, responded: who && (eligible || preview) ? await hasResponded(who) : false,
+  }));
 }));
 
 publicRouter.post("/responses", wrap(async (req, res) => {
   if (!ipLimiter.hit(String(req.ip || "unknown"))) return res.status(429).json({ ok: false, error: TOO_MANY });
   const who = await identify({ authorization: req.headers.authorization, token: tokenOf(req) });
-  const b = req.body && typeof req.body === "object" ? req.body : {};
-  const person = who?.key || `e:${String(b.email || b.answers?.email || "").trim().toLowerCase().slice(0, 254)}`;
-  if (!personLimiter.hit(person)) return res.status(429).json({ ok: false, error: TOO_MANY });
-  const r = await submitResponse({ who, body: b, ip: req.ip, userAgent: req.headers["user-agent"] });
   noStore(res);
+  // By invitation: a personal link or the app's sign-in, nothing else.
+  if (!who) return res.status(403).json({ ok: false, code: "link_required", error: INVITE_ONLY_MESSAGE });
+  if (!personLimiter.hit(who.key)) return res.status(429).json({ ok: false, error: TOO_MANY });
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  const r = await submitResponse({ who, body: b, ip: req.ip, userAgent: req.headers["user-agent"] });
   if (!r.ok) return res.status(r.status).json({ ok: false, ...(r.code ? { code: r.code } : {}), ...(r.field ? { field: r.field } : {}), error: r.error });
   res.status(201).json({ ok: true, first: r.first });
 }));
@@ -128,9 +151,9 @@ appRouter.get("/", wrap(async (req, res) => {
   const user = await bearerUser(req.headers.authorization);
   if (!user) return res.status(401).json({ error: "Unauthorized" });
   if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
-  const cfg = await loadSurvey();
-  const responded = await hasResponded({ key: `u:${user._id}`, known: { email: String(user.email || "").toLowerCase() } });
-  res.json(appSurveyCard(cfg, { responded, token: signSurveyToken("u", String(user._id)) }));
+  const who = asRespondent(user);
+  const [cfg, eligible, responded] = await Promise.all([loadSurvey(), isCheckedIn(who), hasResponded(who)]);
+  res.json(appSurveyCard(cfg, { responded, eligible, token: signSurveyToken("u", String(user._id)) }));
 }));
 
 /* ---------- admin ---------- */
@@ -147,7 +170,7 @@ adminRouter.get("/", wrap(async (req, res) => {
   const cfg = await loadSurvey({ fresh: true });
   const stats = await surveyStats(cfg);
   res.json({
-    config: cfg, ...stats, open: surveyOpen(cfg), url: SURVEY_PAGE, canEdit: isManagement(req.user), audiences: Object.keys(AUDIENCES),
+    config: cfg, ...stats, open: surveyOpen(cfg), invitationOnly: true, canEdit: isManagement(req.user), audiences: Object.keys(AUDIENCES),
   });
 }));
 
@@ -184,7 +207,26 @@ adminRouter.post("/notify", requireManagement, wrap(async (req, res) => {
   if (!surveyOpen(cfg)) return res.status(403).json({ code: "closed", error: "The survey isn't open, so nothing was sent." });
   const out = await sendPrompt({ cfg, by: String(req.user?.name || "TTFC"), byId: req.user._id });
   if (out.busy) return res.status(409).json({ code: "busy", error: "The prompt is being sent right now. Try again in a minute." });
-  await audit(req, "survey_notify", `${out.sent} sent (${out.already} already prompted, ${out.answered} answered, ${out.hidden} hidden)`);
+  await audit(req, "survey_notify", `${out.sent} sent (${out.already} already prompted, ${out.answered} answered, ${out.hidden} hidden, ${out.notCheckedIn} not checked in)`);
+  res.json(out);
+}));
+
+/* Personal links for one-on-one sharing (management: a link lets someone answer as that person). */
+adminRouter.get("/link", requireManagement, wrap(async (req, res) => {
+  const q = req.query.person ? { person: String(req.query.person).slice(0, 80) } : { email: String(req.query.email || "").slice(0, 254) };
+  const [one] = await personalLinks([q]);
+  await audit(req, "survey_link", one.error ? `${q.person || q.email}: ${one.error}` : `${one.name || one.email} (${one.kind}${one.checkedIn ? "" : ", not checked in"})`);
+  if (one.error) return res.status(one.error.startsWith("That isn't") ? 400 : 404).json({ error: one.error });
+  res.json(one);
+}));
+
+adminRouter.post("/links", requireManagement, wrap(async (req, res) => {
+  const emails = req.body?.emails;
+  if (!Array.isArray(emails) || !emails.length) return res.status(400).json({ error: "Send emails: a list of email addresses." });
+  if (emails.length > MAX_LINKS) return res.status(400).json({ error: `At most ${MAX_LINKS} emails at a time.` });
+  const out = await personalLinks(emails.map((e) => ({ email: String(e ?? "").slice(0, 254) })));
+  const found = out.filter((r) => r.url).length;
+  await audit(req, "survey_links", `${emails.length} asked, ${found} links, ${out.filter((r) => r.url && !r.checkedIn).length} not checked in`);
   res.json(out);
 }));
 
