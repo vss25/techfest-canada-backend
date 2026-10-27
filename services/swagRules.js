@@ -96,8 +96,8 @@ export function swagPhase(s, { now = new Date(), announced = false } = {}) {
   return new Date(now) < s.cutoff ? "open" : "closed";
 }
 
-/** GET /api/app/swag. */
-export function publicSwag(s, { now = new Date(), announced = false } = {}) {
+/** GET /api/app/swag. `winners` (publicWinners, an array) are added once the winners are announced, never before. */
+export function publicSwag(s, { now = new Date(), announced = false, winners = null } = {}) {
   return {
     enabled: s.enabled, title: s.title, kits: s.kits, appOnly: true, pitch: SWAG_PITCH,
     cutoff: s.cutoff.toISOString(), announce: s.announce.toISOString(),
@@ -105,7 +105,41 @@ export function publicSwag(s, { now = new Date(), announced = false } = {}) {
     rules: fillSwag(s.rulesText, s),
     phase: swagPhase(s, { now, announced }), announced,
     rulesUrl: SWAG_PAGE, photoUrl: SWAG_PHOTO, installUrl: INSTALL_URL,
+    ...(announced && Array.isArray(winners) ? { winners } : {}),
   };
+}
+
+/* Oct 26 2026: the cutoff moved after the leaderboard was kept. The organiser moved swag.cutoff and swag.announce
+   from Day 1 (4 PM / 5 PM) to Day 2, 5 PM, the evening of Day 1, after the minute job had already kept the
+   leaderboard at the old cutoff (AppContent "swag.snapshot", takenAt Oct 26 20:00:48Z). A kept leaderboard now
+   counts only for the cutoff it was kept at: taken at or after the current cutoff, or at most
+   SNAPSHOT_TOLERANCE_MS before it (server clocks, a cutoff nudged by a minute after the job ran). One kept at an
+   earlier cutoff is stale: the winners are worked out live until the new cutoff, and the job keeps a fresh one then
+   (services/swag.js takeSnapshot, which keeps the stale one under "swag.snapshot.previous"). */
+export const SNAPSHOT_TOLERANCE_MS = 5 * 60 * 1000;
+
+/** Does this kept leaderboard ({ takenAt, rows }) count for this cutoff? */
+export function snapshotCounts(snap, cutoff, toleranceMs = SNAPSHOT_TOLERANCE_MS) {
+  const taken = snap?.takenAt ? new Date(snap.takenAt).getTime() : NaN;
+  const cut = cutoff ? new Date(cutoff).getTime() : NaN;
+  return Number.isFinite(taken) && Number.isFinite(cut) && taken >= cut - toleranceMs;
+}
+
+/**
+ * The announced winners as the apps show them (GET /api/app/swag, the podium and the confetti): the announced
+ * record's winners in its order. `rank` is the podium place (1, 2, 3 …); `boardRank` their place on the leaderboard
+ * at the cutoff (people who can't win are passed over, so it can be 4 for the first winner). `avatarOf(userId)`: the
+ * photo now (services/socialHelpers.js avatarFor on their account; "" none). Never an email.
+ */
+export function publicWinners(announced, avatarOf = () => "") {
+  const list = Array.isArray(announced?.winners) ? announced.winners : [];
+  return list.map((w, i) => {
+    const userId = str(w?.userId);
+    return {
+      rank: i + 1, boardRank: Number(w?.rank) || 0, name: str(w?.name), organization: str(w?.organization),
+      avatarUrl: str(avatarOf(userId) || ""), points: Number(w?.points) || 0, userId,
+    };
+  });
 }
 
 const isBooth = (t) => /^BOOTH-/i.test(str(t?.ticketId)) || /^booth/i.test(str(t?.type));

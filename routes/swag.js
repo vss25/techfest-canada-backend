@@ -2,7 +2,7 @@ import express from "express";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
 import { publicSwag } from "../services/swagRules.js";
-import { loadSwag, loadAnnounced, loadSnapshot, currentWinners, announceWinners, takeSnapshot } from "../services/swag.js";
+import { loadSwag, loadAnnounced, validSnapshot, currentWinners, announceWinners, takeSnapshot, announcedWinners } from "../services/swag.js";
 
 /* =========================================================
    "Win the TTFC swag kit" (Oct 22 2026), services/swag.js and services/swagRules.js.
@@ -11,13 +11,20 @@ import { loadSwag, loadAnnounced, loadSnapshot, currentWinners, announceWinners,
      GET /  → { enabled, title, kits, cutoff, announce (ISO), cutoffLabel ("4:00 PM on Monday, October 26"),
                cutoffShort ("Oct 26, 4 PM"), announceLabel, rules (with {kits} {cutoff} {announce} filled in),
                phase: "open" | "closed" | "announced", announced, appOnly: true, pitch ("Only people using the TTFC app can win"),
-               rulesUrl, photoUrl, installUrl }   Cache-Control 60 s.
+               rulesUrl, photoUrl, installUrl,
+               winners (Oct 26 2026, only once announced; absent before):
+                 [{ rank, boardRank, name, organization, avatarUrl, points, userId }] }   Cache-Control 60 s.
+             winners: the announced record's, in its order, for the apps' podium and confetti. rank = the podium place
+             (1, 2, 3 …); boardRank = their place on the leaderboard at the cutoff (people who can't win are passed over);
+             avatarUrl = their photo now (services/socialHelpers.js avatarFor: "/api/files/avatar/<id>?v=<n>", a
+             speaker's website photo, or ""); never an email.
 
    Admin (staff read, management announces), mounted at /api/console/swag:
      GET  /           → { settings (as public), winners: [{ userId, name, organization, points, rank }], live, takenAt,
-                          cutoffPassed, announced: { at, by, winners } | null, canAnnounce }
+                          staleTakenAt, cutoffPassed, announced: { at, by, winners } | null, canAnnounce }
                         winners: the first `kits` who can win, from the leaderboard kept at the cutoff (live: true
-                        before it's kept).
+                        before it's kept). Oct 26 2026: a leaderboard kept at an earlier cutoff (the cutoff moved later
+                        since) doesn't count: live: true until the new cutoff, staleTakenAt = when that one was kept.
      POST /announce { confirm: "ANNOUNCE", userIds: [...] } (management) → { announced }
                         userIds must be exactly the list shown (409 { code: "changed", winners } when it changed);
                         409 { code: "not_yet" } before the cutoff, { code: "swag_off" } while off,
@@ -35,8 +42,9 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => 
 
 publicRouter.get("/", wrap(async (req, res) => {
   const [s, announced] = await Promise.all([loadSwag(), loadAnnounced()]);
+  const winners = announced?.at ? await announcedWinners(announced) : null;
   res.set("Cache-Control", "public, max-age=60");
-  res.json(publicSwag(s, { announced: !!announced?.at }));
+  res.json(publicSwag(s, { announced: !!announced?.at, winners }));
 }));
 
 adminRouter.use(requireAdmin);
@@ -45,7 +53,7 @@ adminRouter.get("/", wrap(async (req, res) => {
   const [w, announced] = await Promise.all([currentWinners(), loadAnnounced()]);
   res.json({
     settings: publicSwag(w.settings, { announced: !!announced?.at }), winners: w.winners, live: w.live, takenAt: w.takenAt,
-    cutoffPassed: w.cutoffPassed, announced: announced || null,
+    staleTakenAt: w.staleTakenAt, cutoffPassed: w.cutoffPassed, announced: announced || null,
     canAnnounce: isManagement(req.user) && w.settings.enabled && w.cutoffPassed && !announced?.at,
   });
 }));
@@ -56,8 +64,9 @@ adminRouter.post("/announce", requireManagement, wrap(async (req, res) => {
   const s = await loadSwag();
   if (!s.enabled) return res.status(409).json({ code: "swag_off", error: "The swag kit contest is switched off." });
   if (new Date() < s.cutoff) return res.status(409).json({ code: "not_yet", error: "The leaderboard hasn't closed yet." });
-  // Past the cutoff: keep the leaderboard now if the minute job hasn't yet, so the list can't move under the click.
-  if (!(await loadSnapshot())?.takenAt) await takeSnapshot();
+  // Past the cutoff: keep the leaderboard now if the minute job hasn't yet (or kept it at an earlier cutoff), so the
+  // list can't move under the click.
+  if (!(await validSnapshot(s))) await takeSnapshot({ settings: s });
   const { winners } = await currentWinners();
   const want = Array.isArray(b.userIds) ? b.userIds.map(String) : [];
   if (JSON.stringify(want) !== JSON.stringify(winners.map((w) => w.userId))) {

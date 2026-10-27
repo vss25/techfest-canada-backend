@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   SWAG_DEFAULTS, swagSettings, cleanSwagContent, fillSwag, longTime, shortTime, publicSwag, swagPhase, swagEligible, pickWinners, WINNER_NOTE,
+  snapshotCounts, publicWinners, SNAPSHOT_TOLERANCE_MS,
 } from "../services/swagRules.js";
 import { CONTENT_KEYS, cleanContent } from "../services/adminHelpers.js";
 import { DEFAULT_COPY, FIELDS, PLACEHOLDERS, fillInvite } from "../services/appInviteCopy.js";
@@ -121,4 +122,37 @@ test("this version's own claims: people who got the earlier invite and still are
   // Off: the earlier invite's own records, as before.
   const off = planAppInvites(people, { sends: earlier });
   assert.deepEqual(off.rows.map((r) => [r.reason, r.label, r.version, r.earlierSentAt]), [["alreadySent", "Already sent", "standard", null], ["alreadySent", "Already sent", "standard", null]]);
+});
+
+test("a kept leaderboard counts only for its cutoff: one kept before the cutoff moved later is stale (Oct 26 2026)", () => {
+  const moved = swagSettings({ "swag.enabled": true, "swag.cutoff": "2026-10-27T17:00:00-04:00", "swag.announce": "2026-10-27T17:00:00-04:00" });
+  const stale = { takenAt: new Date("2026-10-26T20:00:48Z"), rows: [] };   // the one production kept at the old cutoff
+  assert.equal(snapshotCounts(stale, defaults.cutoff), true);
+  assert.equal(snapshotCounts(stale, moved.cutoff), false);
+  assert.equal(snapshotCounts({ takenAt: new Date("2026-10-27T21:00:30Z") }, moved.cutoff), true);
+  // A few minutes' leeway (server clocks, a cutoff nudged after the job ran), no more.
+  assert.equal(SNAPSHOT_TOLERANCE_MS, 5 * 60 * 1000);
+  assert.equal(snapshotCounts({ takenAt: new Date("2026-10-27T20:56:00Z") }, moved.cutoff), true);
+  assert.equal(snapshotCounts({ takenAt: new Date("2026-10-27T20:54:59Z") }, moved.cutoff), false);
+  // A cutoff moved earlier than the kept one: it still counts (it was kept after the cutoff).
+  assert.equal(snapshotCounts({ takenAt: new Date("2026-10-27T21:00:30Z") }, new Date("2026-10-27T15:00:00-04:00")), true);
+  for (const bad of [null, {}, { takenAt: "soon" }]) assert.equal(snapshotCounts(bad, moved.cutoff), false);
+});
+
+test("GET /api/app/swag's winners: only once announced; the podium place, the photo now, never an email", () => {
+  const announced = { at: new Date(), winners: [
+    { userId: "u4", name: "Ann", organization: "Acme", points: 40, rank: 4, email: "ann@example.com" },
+    { userId: "u6", name: "Cal", organization: "", points: 20, rank: 6 },
+  ] };
+  const w = publicWinners(announced, (id) => (id === "u4" ? "/api/files/avatar/u4?v=2" : ""));
+  assert.deepEqual(w, [
+    { rank: 1, boardRank: 4, name: "Ann", organization: "Acme", avatarUrl: "/api/files/avatar/u4?v=2", points: 40, userId: "u4" },
+    { rank: 2, boardRank: 6, name: "Cal", organization: "", avatarUrl: "", points: 20, userId: "u6" },
+  ]);
+  assert.equal(JSON.stringify(w).includes("@"), false);
+  assert.deepEqual(publicWinners(null), []);
+  const before = publicSwag(on, { announced: false, winners: w });
+  assert.equal("winners" in before, false);
+  assert.deepEqual(publicSwag(on, { announced: true, winners: w }).winners, w);
+  assert.equal("winners" in publicSwag(on, { announced: true }), false);   // the admin panel's copy of the settings
 });

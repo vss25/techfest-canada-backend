@@ -9,7 +9,10 @@ import { hiddenState } from "./appHide.js";
 import { personAccess } from "./appRights.js";
 import { rightsContext, RIGHTS_SELECT } from "./rightsStore.js";
 import { pushToUsers } from "./push.js";
-import { SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinners } from "./swagRules.js";
+import { avatarFor } from "./socialHelpers.js";
+import {
+  SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinners, snapshotCounts, publicWinners,
+} from "./swagRules.js";
 
 /* =========================================================
    "Win the TTFC swag kit": the leaderboard at the cutoff and the
@@ -26,9 +29,22 @@ import { SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinn
    the list and clicks "Announce winners" (routes/swag.js), which
    sends each winner an in-app notification and a push, once
    (AppContent "swag.announced").
+   Oct 26 2026: the cutoff can move after the leaderboard was kept
+   (it moved from Day 1, 4 PM to Day 2, 5 PM that evening). A kept
+   leaderboard counts only for the cutoff it was kept at
+   (services/swagRules.js snapshotCounts); a stale one is ignored
+   (the winners are live until the new cutoff), and at the new cutoff
+   the job keeps a fresh one in its place. Nothing is deleted: the
+   stale one is first added to AppContent "swag.snapshot.previous"
+   ({ snapshots: [...] }, $addToSet, so two servers add it once), then
+   replaced only if it's still the row this server read (a filter on
+   its takenAt), so two servers (or the job and an "Announce" click)
+   racing each other replace it once and both answer the same fresh
+   leaderboard.
 ========================================================= */
 
 export const SNAPSHOT_KEY = "swag.snapshot";
+export const PREVIOUS_SNAPSHOT_KEY = "swag.snapshot.previous";
 export const ANNOUNCED_KEY = "swag.announced";
 export const WINNERS_BATCH = "swag-winners-2026";
 const SNAPSHOT_ROWS = 100;
@@ -53,11 +69,32 @@ async function boardRows() {
   return board.slice(0, SNAPSHOT_ROWS).map((r) => ({ userId: r.user.id, name: r.user.name, organization: r.user.organization || "", points: r.points, rank: r.rank }));
 }
 
-/** Keeps the leaderboard at the cutoff (once; a later run does nothing). → the snapshot. */
-export async function takeSnapshot({ now = new Date() } = {}) {
+/** The kept leaderboard if it counts for the current cutoff, else null (none yet, or kept at an earlier cutoff). */
+export async function validSnapshot(settings = null) {
+  const [s, snap] = await Promise.all([settings || loadSwag(), loadSnapshot()]);
+  return snapshotCounts(snap, s.cutoff) ? snap : null;
+}
+
+/**
+ * Keeps the leaderboard at the cutoff (once per cutoff; a later run does nothing). → the snapshot that counts.
+ * A snapshot kept at an earlier cutoff is kept under swag.snapshot.previous and replaced (see the header).
+ */
+export async function takeSnapshot({ now = new Date(), settings = null } = {}) {
+  const s = settings || (await loadSwag());
   const existing = await loadSnapshot();
-  if (existing?.takenAt) return existing;
-  const snap = { takenAt: now, rows: await boardRows() };
+  if (snapshotCounts(existing, s.cutoff)) return existing;
+  const snap = { takenAt: now, cutoff: s.cutoff, rows: await boardRows() };
+  if (existing?.takenAt) {
+    // Kept first (the raw driver: no casting, the stale row exactly as read, so $addToSet adds it once), then replaced.
+    await AppContent.collection.updateOne(
+      { key: PREVIOUS_SNAPSHOT_KEY },
+      { $addToSet: { "value.snapshots": existing }, $set: { updatedBy: "swag job", updatedAt: now }, $setOnInsert: { createdAt: now } },
+      { upsert: true },
+    );
+    const r = await AppContent.updateOne({ key: SNAPSHOT_KEY, "value.takenAt": existing.takenAt }, { $set: { value: snap, updatedBy: "swag job" } });
+    if (!r.modifiedCount) return loadSnapshot();   // another server replaced it first: theirs counts
+    return snap;
+  }
   try {
     await AppContent.create({ key: SNAPSHOT_KEY, value: snap, updatedBy: "swag job" });
   } catch (err) {
@@ -88,12 +125,24 @@ async function eligibleIds(ids) {
  */
 export async function currentWinners({ now = new Date() } = {}) {
   const settings = await loadSwag();
-  const snap = await loadSnapshot();
+  const kept = await loadSnapshot();
+  const snap = snapshotCounts(kept, settings.cutoff) ? kept : null;   // kept at an earlier cutoff: live instead
   const rows = snap?.rows || (await boardRows());
   const ok = await eligibleIds(rows.map((r) => String(r.userId)));
   const winners = pickWinners(rows.map((r) => ({ user: { id: String(r.userId), name: r.name, organization: r.organization }, points: r.points, rank: r.rank })),
     (id) => ok.has(id), settings.kits);
-  return { winners, live: !snap, takenAt: snap?.takenAt || null, settings, cutoffPassed: now >= settings.cutoff };
+  return {
+    winners, live: !snap, takenAt: snap?.takenAt || null, staleTakenAt: !snap && kept?.takenAt ? kept.takenAt : null,
+    settings, cutoffPassed: now >= settings.cutoff,
+  };
+}
+
+/** The announced winners for GET /api/app/swag (services/swagRules.js publicWinners), each with their photo now. */
+export async function announcedWinners(announced) {
+  const ids = (Array.isArray(announced?.winners) ? announced.winners : []).map((w) => String(w?.userId || "")).filter((id) => mongoose.isValidObjectId(id));
+  const users = ids.length ? await User.find({ _id: { $in: ids } }).select("name email avatarVersion tickets.ticketId").lean() : [];
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  return publicWinners(announced, (id) => avatarFor(byId.get(id)));
 }
 
 /**
@@ -133,14 +182,14 @@ async function claimRun(now) {
   }
 }
 
-/** One run: past the cutoff, with the contest on and nothing kept yet → keep the leaderboard. Never throws. */
+/** One run: past the cutoff, with the contest on and nothing kept for this cutoff yet → keep the leaderboard. Never throws. */
 export async function runSwagSnapshot({ now = new Date(), held = false } = {}) {
   try {
     const s = await loadSwag();
     if (!s.enabled || now < s.cutoff) return null;
-    if ((await loadSnapshot())?.takenAt) return null;
+    if (snapshotCounts(await loadSnapshot(), s.cutoff)) return null;   // kept for this cutoff already
     if (!held && !(await claimRun(now))) return null;
-    return await takeSnapshot({ now });
+    return await takeSnapshot({ now, settings: s });
   } catch (err) {
     console.error("SWAG SNAPSHOT ERROR:", err?.message || err);
     return null;
