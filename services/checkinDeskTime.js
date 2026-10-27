@@ -29,8 +29,8 @@ import { AGENDA_MATCH, DAYS } from "./rsvp.js";
        moves a session, the station follows. When the agenda can't be
        read or a session isn't on it, the agenda's times on Oct 23 2026
        are used (FALLBACK_AGENDA).
-     - The Lobby, the Pass desk, the Media desk, the AV station and the
-       Exhibitor desk are open ALL DAY on an event day (contract C9, Oct 23
+     - The Lobby, the Pass desk, the Media desk, the AV station, the
+       Exhibitor desk and Drinks (Oct 27 2026) are open ALL DAY on an event day (contract C9, Oct 23
        2026: "all the people whether media or exhibitor can be marked as
        arrived in lobby itself"; an exhibitor arriving at 6:00 AM for booth
        setup is one tap): a tap there is never refused for the time, never
@@ -73,6 +73,8 @@ export const STATIONS = Object.freeze([
   { key: "media", label: "Media desk", sub: "Media check-in and queries", point: "media" },
   { key: "av", label: "AV station", sub: "Speakers' slides and mics", point: "av" },
   { key: "exhibitor", label: "Exhibitor desk", sub: "Exhibitors and booths", point: "exhibitor" },
+  // Oct 27 2026 (Day 2): drink coupons, a soft check-in for people who collected their pass on Day 1 (services/checkinDesk.js).
+  { key: "drinks", label: "Drinks", sub: "Drink coupons", point: "drinks" },
 ].map((s) => Object.freeze(s)));
 export const STATION_KEYS = STATIONS.map((s) => s.key);
 export const STATION_BY_KEY = Object.freeze(Object.fromEntries(STATIONS.map((s) => [s.key, s])));
@@ -106,12 +108,12 @@ export const AGENDA_STATIONS = Object.freeze(["breakfast", "lunch", "evening"]);
 /** Contract C9: the stations whose hours are enforced on an event day (outside them: "Admit anyway", an audited
     override): the CxO Breakfast, the Lunch and the evening. Every other station is open all day on an event day. */
 export const WINDOWED_STATIONS = AGENDA_STATIONS;
-export const ALL_DAY_STATIONS = Object.freeze(["lobby", "desk", "media", "av", "exhibitor"]);
+export const ALL_DAY_STATIONS = Object.freeze(["lobby", "desk", "media", "av", "exhibitor", "drinks"]);
 export const isWindowed = (station) => WINDOWED_STATIONS.includes(station);
 /** The all-day stations' header line on an event day (the website's words for the lobby and the pass desk). */
 export const ALL_DAY_TEXT = Object.freeze({
   lobby: "Arrivals open all day", desk: "Pass desk open all day", media: "Media desk open all day", av: "AV station open all day",
-  exhibitor: "Exhibitor desk open all day",
+  exhibitor: "Exhibitor desk open all day", drinks: "Drink coupons all day",
 });
 export const FALLBACK_AGENDA = Object.freeze({
   breakfast: { day1: { start: "07:55", end: "08:55", title: "CxO Breakfast" }, day2: { start: "07:55", end: "08:55", title: "CxO Breakfast" } },
@@ -132,7 +134,18 @@ export const DEFAULT_WINDOWS = Object.freeze({
   media: { day1: { open: "07:00", close: "18:30" }, day2: { open: "07:00", close: "18:30" } },
   av: { day1: { open: "07:00", close: "18:30" }, day2: { open: "07:00", close: "18:30" } },
   exhibitor: { day1: { open: "06:30", close: "18:00" }, day2: { open: "07:00", close: "18:00" } },
+  drinks: { day1: { open: "07:00", close: "23:00" }, day2: { open: "07:00", close: "23:00" } },
 });
+/** Drink coupons handed out per person at a tap (the Drinks station's stepper starts there; staff change it in Admin ›
+    Event day › Check-in: settings `drinks.perPerson`). The organiser, Oct 27 2026: "default is 2 coupon per person". */
+export const DRINKS_DEFAULT = 2;
+export const DRINKS_MIN = 1;
+export const DRINKS_MAX = 5;
+/** The coupons per person staff set, else the default. */
+export const drinksPerPerson = (settings) => {
+  const n = Number(settings?.drinks?.perPerson);
+  return Number.isInteger(n) && n >= DRINKS_MIN && n <= DRINKS_MAX ? n : DRINKS_DEFAULT;
+};
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const isHHMM = (v) => HHMM.test(String(v || ""));
@@ -223,7 +236,17 @@ export function cleanSettings(raw) {
   }
   const stations = {};
   if (src.stations && typeof src.stations === "object" && typeof src.stations.evening === "boolean") stations.evening = src.stations.evening;
-  return { ok: true, value: { windows, buffers, stations } };
+  const value = { windows, buffers, stations };
+  // Drink coupons per person (1–5): only when sent (a save from a page that doesn't know it leaves it as it was).
+  if (src.drinks !== undefined && src.drinks !== null) {
+    if (typeof src.drinks !== "object") return { ok: false, error: "Drink coupons: send { perPerson }." };
+    if (src.drinks.perPerson !== undefined && src.drinks.perPerson !== null && src.drinks.perPerson !== "") {
+      const n = Number(src.drinks.perPerson);
+      if (!Number.isInteger(n) || n < DRINKS_MIN || n > DRINKS_MAX) return { ok: false, error: `Drink coupons per person must be a whole number from ${DRINKS_MIN} to ${DRINKS_MAX}.` };
+      value.drinks = { perPerson: n };
+    }
+  }
+  return { ok: true, value };
 }
 
 // The RSVP page's matchers (services/rsvp.js AGENDA_MATCH) where they exist, so the desk and the RSVP page pick the

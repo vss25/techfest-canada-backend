@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   STATIONS, STATION_KEYS, MEAL_ITEMS, FALLBACK_AGENDA, DEFAULT_BUFFERS, agendaTimes, cleanSettings, eventDayInfo, fmtClock, fmtRange, mealItem,
-  resolveWindows, stationEnabled, stationState, torontoParts, windowDetail,
+  resolveWindows, stationEnabled, stationState, torontoParts, windowDetail, drinksPerPerson, ALL_DAY_STATIONS, DRINKS_DEFAULT,
 } from "../services/checkinDeskTime.js";
 
 /** Toronto wall time on a date → Date (EDT, UTC−4, until Nov 1 2026). */
@@ -41,7 +41,8 @@ test("today in Toronto: Day 1, Day 2, before and after; midnight is Toronto's, n
 function pick(i) { return { date: i.date, eventDay: i.eventDay, phase: i.phase, label: i.label }; }
 
 test("the stations and what the meal ones admit to on each day", () => {
-  assert.deepEqual(STATION_KEYS, ["lobby", "desk", "breakfast", "lunch", "evening", "media", "av", "exhibitor"]);
+  // Drinks (Oct 27 2026): last, so the others keep their places.
+  assert.deepEqual(STATION_KEYS, ["lobby", "desk", "breakfast", "lunch", "evening", "media", "av", "exhibitor", "drinks"]);
   assert.equal(STATIONS.find((s) => s.key === "evening").removable, true);
   assert.deepEqual(MEAL_ITEMS.breakfast.day1, { key: "cxo_d1", extra: "cxo", label: "CxO Breakfast", short: "breakfast" });
   assert.equal(mealItem("breakfast", "day2").key, "cxo_d2");
@@ -209,4 +210,19 @@ test("the CxO Breakfast station follows the CxO Breakfast (the RSVP page's rule)
   assert.deepEqual([w.breakfast.day1.open, w.breakfast.day1.close], ["07:25", "09:25"]);
   // The evening on Day 1: "Catalyst …" as the RSVP page reads it.
   assert.deepEqual(agendaTimes([{ day: 1, time: "18:00", endTime: "21:00", title: "Catalyst Night", isBreak: true }]).evening.day1, { start: "18:00", end: "21:00", title: "Catalyst Night" });
+});
+
+test("drink coupons (Oct 27 2026): an all-day station; staff's coupons per person 1–5 (default 2), only when sent", () => {
+  assert.equal(DRINKS_DEFAULT, 2);
+  assert.ok(ALL_DAY_STATIONS.includes("drinks"));
+  assert.equal(stationState({ station: "drinks", at: T(D2, "06:00") }).open, true);
+  assert.equal(stationState({ station: "drinks", at: T(D2, "23:30") }).text, "Day 2 · Drink coupons all day");
+  assert.equal(stationState({ station: "drinks", at: T("2026-10-25", "12:00") }).code, "before");
+  assert.equal(stationEnabled("drinks", {}), true);
+  assert.deepEqual(cleanSettings({ drinks: { perPerson: 3 } }).value.drinks, { perPerson: 3 });
+  assert.equal("drinks" in cleanSettings({ windows: {} }).value, false, "not sent: not in the value (the saved one is kept)");
+  for (const bad of [0, 6, 2.5, "x"]) assert.equal(cleanSettings({ drinks: { perPerson: bad } }).ok, false, String(bad));
+  assert.equal(cleanSettings({ drinks: 5 }).ok, false);
+  assert.deepEqual([drinksPerPerson({}), drinksPerPerson({ drinks: { perPerson: 4 } }), drinksPerPerson({ drinks: { perPerson: 9 } }), drinksPerPerson(null)], [2, 4, 2, 2]);
+  assert.deepEqual(resolveWindows({}).drinks.day2, { open: "07:00", close: "23:00", source: "default", allDay: true });
 });

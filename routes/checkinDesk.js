@@ -20,7 +20,8 @@ import {
 import { countingPasses } from "../services/eventSummary.js";
 import { loadAttendance } from "../services/checkinAttendance.js";
 import {
-  STATIONS, agendaTimes, cleanSettings, eventDayInfo, resolveWindows, stationEnabled, stationState, DEFAULT_BUFFERS, FALLBACK_AGENDA, DEFAULT_WINDOWS,
+  STATIONS, agendaTimes, cleanSettings, drinksPerPerson, eventDayInfo, resolveWindows, stationEnabled, stationState, DEFAULT_BUFFERS, FALLBACK_AGENDA, DEFAULT_WINDOWS,
+  DRINKS_DEFAULT, DRINKS_MAX, DRINKS_MIN,
 } from "../services/checkinDeskTime.js";
 import {
   currentCursor, deskNow, guestGeneration, guestRowsSince, readSince, ready, setGuestRowBuilder, subscribe,
@@ -57,8 +58,12 @@ import { performAction } from "../services/checkinDeskActions.js";
      GET  /counts         staff: attendance by day (contract C10, services/checkinAttendance.js): arrived, checked in,
                           passes collected to date, each meal's admitted / entitled / RSVP'd / no-shows / overrides,
                           by pass colour, ISSUE PASS and NO DETAILS FOUND; each person once per point and day
-     GET  /settings       staff: the windows, where they come from, the buffers, the evening switch
-     PUT  /settings       staff: { windows?, buffers?, stations? } (audited checkin_desk_settings)
+     GET  /settings       staff: the windows, where they come from, the buffers, the evening switch, drink coupons
+                          per person (`drinks.perPerson`, 1–5, default 2)
+     PUT  /settings       staff: { windows?, buffers?, stations?, drinks? } (audited checkin_desk_settings; a save
+                          without `drinks` keeps the one saved)
+   Drink coupons (Oct 27 2026): the Drinks station and the pass desk send { kind: "mark", point: "drinks", count?,
+   again? } (services/checkinDesk.js); /snapshot and /clock say `drinks: { perPerson }` (the stepper's start).
    Nothing here sends email or pushes. Rules: services/checkinDesk.js, checkinDeskTime.js; writes:
    services/checkinDeskActions.js; the log and live fan-out: services/checkinDeskLog.js.
 ========================================================= */
@@ -290,6 +295,8 @@ export function deskAppPath(env = process.env) {
 }
 
 const stationList = (settings) => STATIONS.map((s) => ({ ...s, enabled: stationEnabled(s.key, settings) }));
+/** Drink coupons per person as devices get it (the Drinks station's stepper starts there; the pass desk issues that many). */
+const drinksOf = (settings) => ({ perPerson: drinksPerPerson(settings), min: DRINKS_MIN, max: DRINKS_MAX, default: DRINKS_DEFAULT });
 const meOf = (req) => ({ id: String(req.user._id), name: req.user.name || req.user.email, role: req.deskStaff ? "staff" : "volunteer" });
 
 /* ---------- Routes ---------- */
@@ -311,6 +318,7 @@ router.get("/clock", limit("events"), wrap(async (req, res) => {
   res.json({
     serverTime: now.toISOString(), today: eventDayInfo(now), stations: stationList(w.settings), windows: w.windows, agendaRead: !!w.sessions,
     stationStates: Object.fromEntries(STATIONS.map((s) => [s.key, stationState({ station: s.key, at: now, windows: w.windows })])),
+    drinks: drinksOf(w.settings),
   });
 }));
 
@@ -433,6 +441,7 @@ router.get("/snapshot", limit("snapshot"), wrap(async (req, res) => {
     windows: w.windows,
     stationStates: Object.fromEntries(STATIONS.map((s) => [s.key, stationState({ station: s.key, at: now, windows: w.windows })])),
     agendaRead: !!w.sessions,
+    drinks: drinksOf(w.settings),
     guests: guests.map(guestOut),
     booths: booths.map((b) => ({ key: b.key, booth: b.booth, companies: b.companies, guests: b.guests })),
     marks: marks.map((m) => markView(m)),
@@ -544,6 +553,7 @@ router.post("/actions", limit("actions"), wrap(async (req, res) => {
     staff: req.deskStaff,
     windows: w.windows,
     stationOn: (s) => stationEnabled(s, w.settings),
+    drinksPerPerson: drinksPerPerson(w.settings),
     resolve: (key) => resolveKey(key, memo),
     resolveNorm: async (norm) => (await deskIndex()).byNorm.get(norm) || null,
     booth: (key) => idx.boothByKey.get(key) || null,
@@ -630,7 +640,8 @@ async function settingsPayload() {
   const agenda = sessions ? agendaTimes(sessions) : null;
   return {
     settings, agendaRead: !!sessions, agenda, windows: resolveWindows({ settings, agenda }), stations: stationList(settings),
-    defaults: { buffers: DEFAULT_BUFFERS, fallbackAgenda: FALLBACK_AGENDA, windows: DEFAULT_WINDOWS },
+    drinks: drinksOf(settings),
+    defaults: { buffers: DEFAULT_BUFFERS, fallbackAgenda: FALLBACK_AGENDA, windows: DEFAULT_WINDOWS, drinks: { perPerson: DRINKS_DEFAULT } },
   };
 }
 
@@ -639,6 +650,12 @@ router.get("/settings", staffOnly, wrap(async (req, res) => res.json(await setti
 router.put("/settings", staffOnly, requireAdmin, wrap(async (req, res) => {
   const c = cleanSettings(req.body || {});
   if (!c.ok) return res.status(400).json({ error: c.error });
+  // A save without drink coupons (a page from before them) keeps the number saved.
+  if (!c.value.drinks) {
+    const saved = await AppContent.findOne({ key: SETTINGS_KEY }).lean();
+    const keep = cleanSettings({ drinks: saved?.value?.drinks });
+    if (keep.ok && keep.value.drinks) c.value.drinks = keep.value.drinks;
+  }
   await AppContent.updateOne({ key: SETTINGS_KEY }, { $set: { value: c.value, updatedBy: req.user.name || req.user.email || "" } }, { upsert: true });
   settingsCache = { at: 0, value: null };
   await AdminAudit.create({ adminId: req.user._id, adminName: req.user.name, action: "checkin_desk_settings", targetType: "checkin_desk", targetId: SETTINGS_KEY,

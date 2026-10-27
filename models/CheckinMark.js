@@ -12,7 +12,10 @@ import mongoose from "mongoose";
    can take that back. `practice`: set on a day that isn't Day 1 / Day 2 (contract C6: a rehearsal, never the
    ticket's pass collection). `queuedOffline`: tapped offline by `byId` / `byName`, sent later from `recordedById`'s
    sign-in (contract C3). `lateSync`: it reached the server more than a minute after the tap (contract C4); override
-   "late_sync" = judged at its own time it was outside the station's hours and the device didn't ask for it. */
+   "late_sync" = judged at its own time it was outside the station's hours and the device didn't ask for it.
+   Drink coupons (point "drinks", Oct 27 2026): `item` = how many ("2"). Staff's "Issue again" adds more on the same row
+   (override "issued_again", `ref` = that tap) and keeps what the row said before it on `prev` (newest last), so an
+   undo of that tap puts it back as it was (services/checkinDeskActions.js takeBack). */
 const checkinMarkSchema = new mongoose.Schema({
   subject: { type: String, required: true },
   day: { type: String, required: true },
@@ -33,6 +36,7 @@ const checkinMarkSchema = new mongoose.Schema({
   recordedById: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   recordedByName: { type: String, default: "" },
   rev: { type: Number, default: 0 },
+  prev: { type: [mongoose.Schema.Types.Mixed], default: undefined },
 }, { timestamps: true, versionKey: false });
 checkinMarkSchema.index({ subject: 1, day: 1, point: 1 }, { unique: true });
 checkinMarkSchema.index({ day: 1, point: 1 });

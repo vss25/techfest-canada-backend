@@ -5,7 +5,7 @@ import { rsvpStatusOf, splitName } from "./rsvpStaff.js";
 import { EXTRA_KEYS, extrasView } from "./passExtras.js";
 import { personBand } from "./checkinCard.js";
 import { normalizeTicketId } from "./ticketAccess.js";
-import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, mealItem, isHHMM, toMin } from "./checkinDeskTime.js";
+import { STATION_KEYS, STATION_LABELS, OTHER_STATIONS, MEAL_POINTS, DRINKS_MAX, DRINKS_MIN, mealItem, isHHMM, toMin } from "./checkinDeskTime.js";
 
 /* =========================================================
    TTFC Check-in: the guest check-in desk app (Oct 23 2026)
@@ -86,12 +86,15 @@ export const POINTS = Object.freeze({
   flag_cxo: "breakfast",
   flag_lunch: "lunch",
   flag_evening: "evening",
+  // Drink coupons (Oct 27 2026): once per person per day, the number in the mark's `item` ("2"); the tap also marks
+  // them arrived for the day (a soft check-in). Tapped at the Drinks station or, for a first-time check-in, the pass desk.
+  drinks: "drinks",
 });
 export const POINT_KEYS = Object.freeze(Object.keys(POINTS));
 export const POINT_LABELS = Object.freeze({
   arrived: "Arrived", checked_in: "Checked in", cxo: "Admitted", lunch: "Admitted", evening: "Admitted",
   media: "Checked in at the media desk", av: "AV checked", exhibitor: "Checked in at the exhibitor desk", booth: "Booth set up",
-  flag_cxo: "Sent to staff", flag_lunch: "Sent to staff", flag_evening: "Sent to staff",
+  flag_cxo: "Sent to staff", flag_lunch: "Sent to staff", flag_evening: "Sent to staff", drinks: "Drink coupons issued",
 });
 /** What can be sent. Staff only: reset (clear a mark), desk notes, linking a NO DETAILS FOUND arrival to a guest
     (contract C8); undo of someone else's tap. */
@@ -123,6 +126,8 @@ export const OVERRIDE_REASONS = Object.freeze({
   not_included: "not on their pass: admitted by staff (override)",
   "outside_window+not_included": "not on their pass and outside its hours: admitted by staff (override)",
   "late_sync+not_included": "not on their pass, late sync outside hours: admitted by staff (override)",
+  // Drink coupons: staff handed out more after the day's coupons were issued ("Issue again").
+  issued_again: "drink coupons issued again by staff (override)",
 });
 export const NOTE_MAX = 140;
 export const AV_NOTE_MAX = 80;
@@ -624,8 +629,13 @@ export function markView(doc, { keyOf = (id) => guestKey(id) } = {}) {
     // Tapped offline by `by`, sent later from someone else's sign-in (`recordedBy`, contract C3).
     ...(set && doc.queuedOffline ? { queuedOffline: true, recordedBy: who(doc.recordedById, doc.recordedByName) } : {}),
     ...(set && doc.lateSync ? { lateSync: true } : {}),
+    // Drink coupons: how many were handed out (the mark's item, "2").
+    ...(set && doc.point === "drinks" ? { count: drinkCount(doc.item) } : {}),
   };
 }
+
+/** The number of drink coupons a drinks mark says ("2" → 2; anything unreadable: 1). */
+export const drinkCount = (item) => { const n = Number.parseInt(String(item ?? ""), 10); return Number.isFinite(n) && n > 0 ? n : 1; };
 
 /** A media query as devices get it. */
 export function queryView(q) {
@@ -764,7 +774,9 @@ const bad = (error, field) => ({ ok: false, error, field });
  *   queuedBy  { id, name }: who made the tap, when it was made offline and is sent from someone else's sign-in (C3)
  *   mark:   key (a guest's pass, or a booth for point "booth"), point, override (true: "Admit anyway" after the
  *           outside-the-window warning), notIncluded (true: staff's "Admit anyway (override)" at a meal door for a
- *           guest whose passes don't include today's item, contract C11), note (AV: "slides on USB", ≤ 80)
+ *           guest whose passes don't include today's item, contract C11), note (AV: "slides on USB", ≤ 80);
+ *           point "drinks": count (coupons, 1–5; none = the desk setting drinks.perPerson), again (true: staff's
+ *           "Issue again" after today's coupons were issued: adds `count` more, an audited override)
  *   undo:   target (the clientId of the tap to undo; `ref`, the older name, works too): contract C2
  *   reset:  key, point (staff: clears it; clearing "arrived" also clears "checked_in")
  *   note:   key, note (staff: the desk note, ≤ 140; "" clears it)
@@ -869,6 +881,14 @@ export function cleanAction(raw) {
       value.override = a.override === true;
       // Contract C11: staff admit a guest at a meal door though today's item isn't on their pass.
       if (a.notIncluded === true) value.notIncluded = true;
+      if (point === "drinks") {
+        if (a.count !== undefined && a.count !== null) {
+          const n = Number(a.count);
+          if (!Number.isInteger(n) || n < DRINKS_MIN || n > DRINKS_MAX) return bad(`Drink coupons: ${DRINKS_MIN} to ${DRINKS_MAX}.`, "count");
+          value.count = n;
+        }
+        if (a.again === true) value.again = true;
+      }
       if (a.note !== undefined && a.note !== null) {
         if (typeof a.note !== "string") return bad("The note must be text.", "note");
         const note = line(a.note, AV_NOTE_MAX + 1);
@@ -963,6 +983,7 @@ export function auditLine({ guest = null, booth = null, kind, point = "", to = "
     const hours = override === "not_included" ? "" : override.startsWith("late_sync") ? ", outside its hours (late sync from an offline device)" : ", outside its hours";
     return `${whoTxt}: ${what} though it isn't on their pass${hours} (staff override)${where}`;
   }
+  if (override === "issued_again") return `${whoTxt}: ${to || "drink coupons issued again"} (staff override)${where}`;
   if (override === "late_sync") return `${whoTxt}: ${what} outside its hours (late sync from an offline device)${where}`;
   if (override) return `${whoTxt}: ${what} outside its hours (override)${where}`;
   return `${whoTxt}: ${what}${to ? ` ${to}` : ""}${where}`;

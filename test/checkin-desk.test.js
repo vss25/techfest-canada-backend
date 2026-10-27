@@ -11,7 +11,7 @@ import {
   DESK_TIERS, HOLE_MS, UNDO_GRACE_MS, buildDeskIndex, canUndo, cleanAction, deskTier, entitlement, eventView, guestKey, guestView, isGuestKey,
   boothKey, isBoothKey, markView, notifyStations, safeCursor, sessionsIndex, tapTime, auditLine,
   CLIENT_AT_MAX_AGE_MS, CLIENT_AT_MAX_AHEAD_MS, LATE_SYNC_MS, HOLE_ANCIENT_MS, tapClock, speakerNameMatches, guestExtras, boothsOf,
-  UNKNOWN_LIMITS, isUnknownKey, keyOfSubject, unknownKeyOf, unknownRows,
+  UNKNOWN_LIMITS, isUnknownKey, keyOfSubject, unknownKeyOf, unknownRows, drinkCount, POINTS, POINT_LABELS,
 } from "../services/checkinDesk.js";
 
 const t = (ticketId, type, extra = {}) => ({ ticketId, type, purchaseDate: new Date("2026-10-01"), ...extra });
@@ -560,4 +560,33 @@ test("C7: a website speaker whose only Speaker Pass was hidden (never claimed: t
   assert.equal(noPassPerson(hana), false);
   assert.equal(noPassPerson(built.people.find((x) => x.speaker?._id === "spk-free")), true, "a speaker with no pass at all still is");
   assert.deepEqual(buildDeskIndex(built.people, { aliases: built.byId }).guests.map((g) => g.name), ["Noel Nopass"]);
+});
+
+test("drink coupons (Oct 27 2026): the point, the action's count and again, the mark's count on the wire, the audit line", () => {
+  assert.equal(POINTS.drinks, "drinks");
+  assert.equal(POINT_LABELS.drinks, "Drink coupons issued");
+  const key = guestKey("con100000002");
+  const ok = cleanAction({ clientId: "abcdefgh12", kind: "mark", point: "drinks", station: "drinks", key, count: 3, again: true });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value.count, 3);
+  assert.equal(ok.value.again, true);
+  const plain = cleanAction({ clientId: "abcdefgh13", kind: "mark", point: "drinks", station: "desk", key });
+  assert.equal(plain.value.count, undefined, "no count: the server's setting");
+  assert.equal(plain.value.again, undefined);
+  for (const bad of [0, 6, 1.5, "x", -1]) assert.equal(cleanAction({ clientId: "abcdefgh14", kind: "mark", point: "drinks", station: "drinks", key, count: bad }).field, "count", String(bad));
+  // count / again mean nothing at other points.
+  const lunch = cleanAction({ clientId: "abcdefgh15", kind: "mark", point: "lunch", station: "lunch", key, count: 9, again: true });
+  assert.equal(lunch.ok, true);
+  assert.equal(lunch.value.count, undefined);
+  assert.equal(lunch.value.again, undefined);
+  assert.equal(cleanAction({ clientId: "abcdefgh16", kind: "reset", point: "drinks", station: "drinks", key }).ok, true);
+  const at = new Date("2026-10-27T14:42:00Z");
+  const m = markView({ subject: "con100000002", day: "2026-10-27", point: "drinks", at, item: "2", rev: 1, byName: "Val", station: "drinks", ref: "abcdefgh12" });
+  assert.equal(m.count, 2);
+  assert.equal(markView({ subject: "con100000002", day: "2026-10-27", point: "drinks", at, item: "3", override: "issued_again", rev: 2 }).overrideReason, "drink coupons issued again by staff (override)");
+  assert.equal(markView({ subject: "con100000002", day: "2026-10-27", point: "drinks", at: null, item: "", rev: 3 }).count, undefined, "cleared: no count");
+  assert.equal(markView({ subject: "con100000002", day: "2026-10-27", point: "lunch", at, item: "lunch_d2", rev: 1 }).count, undefined, "other points unchanged");
+  assert.deepEqual(["2", "5", "", "x", null, "0"].map(drinkCount), [2, 5, 1, 1, 1, 1]);
+  assert.equal(auditLine({ guest: { name: "Ari", passName: "Power Pass" }, kind: "mark", point: "drinks", station: "drinks", override: "issued_again", to: "1 coupon more issued (3 coupons today)" }),
+    "Ari · Power Pass: 1 coupon more issued (3 coupons today) (staff override) (Drinks)");
 });

@@ -4,7 +4,7 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import { DAYS } from "./rsvp.js";
 import { SUMMARY_MEALS, summaryFacts, torontoDate } from "./eventSummary.js";
-import { deskTier, isPersonSubject, noPassPerson, unknownKeyOf, unknownRows } from "./checkinDesk.js";
+import { deskTier, drinkCount, isPersonSubject, noPassPerson, unknownKeyOf, unknownRows } from "./checkinDesk.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 import { deskNow } from "./checkinDeskLog.js";
 
@@ -45,7 +45,12 @@ import { deskNow } from "./checkinDeskLog.js";
        arrivedNoPass is the day's arrived; someone given a pass since is
        in their pass's group, and still in issuePass.arrived);
      - noDetails: the lobby's NO DETAILS FOUND cards (contract C8, never
-       in any other count): recorded, and how the pass desk closed them.
+       in any other count): recorded, and how the pass desk closed them;
+     - drinks (Oct 27 2026): drink coupons handed out (the Drinks station,
+       the pass desk): people (each once) and coupons (the marks' item),
+       how many of them staff issued again, by colour group (as byPass)
+       and for people with no pass on file. A drinks tap also marks them
+       arrived, so they're in `arrived` as well.
    attendanceFrom() is pure (test/checkin-attendance.test.js);
    loadAttendance(directory) reads the marks, the collected tickets and
    the cards. Served by GET /api/console/summary (`attendance`) and the
@@ -58,7 +63,7 @@ export const ATTENDANCE_GROUP_LABELS = Object.freeze({
   vip: "VIP", media: "Media", speaker: "Speaker", connect: "Connect Pass", influence: "Influence Pass", power: "Power Pass", apex: "Apex Pass", other: "Other pass",
 });
 /** The points that count, and each day's meals: the marks' point, and the Event summary's meal (its RSVP option and pass extra). */
-export const ATTENDANCE_POINTS = Object.freeze(["arrived", "checked_in", "cxo", "lunch", "evening"]);
+export const ATTENDANCE_POINTS = Object.freeze(["arrived", "checked_in", "cxo", "lunch", "evening", "drinks"]);
 const MEALS_OF_DAY = Object.freeze({
   day1: { cxo: "cxo_d1", lunch: "lunch_d1", dinner: "awards" },
   day2: { cxo: "cxo_d2", lunch: "lunch_d2", dinner: "gala" },
@@ -112,7 +117,8 @@ function baseOf(people) {
  *   cards         NO DETAILS FOUND cards (services/checkinDesk.js unknownRows)
  * → { days: [{ day, date, label, long, arrived, checkedIn, passesCollectedToDate, meals: { cxo, lunch, dinner },
  *     byPass: { <group>: { label, people, arrived, checkedIn, cxo, lunch, dinner } }, issuePass: { people, arrived,
- *     issued, arrivedNoPass }, noDetails: { recorded, open, sentToHelp, passIssued, left, linked }, unmatched }], overall, groups,
+ *     issued, arrivedNoPass }, noDetails: { recorded, open, sentToHelp, passIssued, left, linked }, drinks: { people, coupons,
+ *     issuedAgain, byPass: { <group>: { label, people, coupons } }, noPass: { people, coupons } }, unmatched }], overall, groups,
  *     builtAt, peopleAt }
  */
 export function attendanceFrom({ people = [], byId = new Map(), marks = [], collected = [], cards = [], peopleAt = null, now = new Date() } = {}) {
@@ -196,6 +202,29 @@ export function attendanceFrom({ people = [], byId = new Map(), marks = [], coll
       passes.add(p);
     }
 
+    // Drink coupons: each person once, their coupons added up (one row per pass a day: normally just one).
+    const drinkCoupons = new Map();
+    let issuedAgain = 0;
+    for (const m of marks || []) {
+      if (m?.point !== "drinks" || m.day !== d.date || !m.at || m.practice) continue;
+      const who = personOf(m.subject);
+      if (!who) continue;
+      drinkCoupons.set(who, (drinkCoupons.get(who) || 0) + drinkCount(m.item));
+      if (m.override === "issued_again") issuedAgain += 1;
+    }
+    const drinks = {
+      people: drinkCoupons.size, coupons: 0, issuedAgain,
+      byPass: Object.fromEntries(ATTENDANCE_GROUPS.map((g) => [g, { label: ATTENDANCE_GROUP_LABELS[g], people: 0, coupons: 0 }])),
+      noPass: { people: 0, coupons: 0 },
+    };
+    for (const [who, n] of drinkCoupons) {
+      drinks.coupons += n;
+      const g = groupOf(who);
+      const line = g ? drinks.byPass[g] : drinks.noPass;
+      line.people += 1;
+      line.coupons += n;
+    }
+
     const dayCards = (cards || []).filter((u) => u?.day === d.date && !u.practice);
     const count = (st) => dayCards.filter((u) => u.status === st).length;
     return {
@@ -207,6 +236,7 @@ export function attendanceFrom({ people = [], byId = new Map(), marks = [], coll
         arrivedNoPass: [...arrived].filter((w) => groupOf(w) === null).length,
       },
       noDetails: { recorded: dayCards.length, open: count("open"), sentToHelp: count("sent_to_help"), passIssued: count("pass_issued"), left: count("left"), linked: count("linked") },
+      drinks,
       // Marks whose pass or person isn't in the directory any more (deleted since): counted, under "other".
       unmatched: unmatched.size,
     };
@@ -229,7 +259,7 @@ export function attendanceFrom({ people = [], byId = new Map(), marks = [], coll
 export async function loadAttendance(dir, { now = deskNow() } = {}) {
   const dates = DAYS.map((d) => d.date);
   const [marks, attendees, users, arrivals] = await Promise.all([
-    CheckinMark.find({ day: { $in: dates }, point: { $in: ATTENDANCE_POINTS }, at: { $ne: null }, practice: { $ne: true } }).select("subject day point at override practice").lean(),
+    CheckinMark.find({ day: { $in: dates }, point: { $in: ATTENDANCE_POINTS }, at: { $ne: null }, practice: { $ne: true } }).select("subject day point at override practice item").lean(),
     Attendee.find({ checkedIn: true }).select("ticketId checkedInAt").lean(),
     User.aggregate([
       { $match: { "tickets.checkedIn": true } }, { $unwind: "$tickets" }, { $match: { "tickets.checkedIn": true } },

@@ -7,10 +7,10 @@ import { AdminAudit } from "../models/Admin.js";
 import CheckinEvent from "../models/CheckinEvent.js";
 import CheckinTap from "../models/CheckinTap.js";
 import {
-  POINTS, POINT_LABELS, STAFF_KINDS, UNDOABLE_KINDS, UNKNOWN_OUTCOME_TEXT, auditLine, boothSubject, canUndo, entitlement, eventView, isUnknownKey, markView,
+  POINTS, POINT_LABELS, STAFF_KINDS, UNDOABLE_KINDS, UNKNOWN_OUTCOME_TEXT, auditLine, boothSubject, canUndo, drinkCount, entitlement, eventView, isUnknownKey, markView,
   mealStationOf, queryView, tapClock, unknownKeyOf,
 } from "./checkinDesk.js";
-import { stationState, fmtClock, isWindowed, STATION_LABELS } from "./checkinDeskTime.js";
+import { stationState, fmtClock, isWindowed, DRINKS_DEFAULT, STATION_LABELS } from "./checkinDeskTime.js";
 import { appendEvent, deskNow, DuplicateTap, eventForClientId } from "./checkinDeskLog.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 
@@ -87,6 +87,13 @@ import { normalizeTicketId } from "./ticketAccess.js";
         evening keep hours ("Admit anyway", audited overrides, late-sync
         flags); Arrived, Checked in, the media desk, AV and the exhibitor
         desk are taken at any hour, never an override.
+     Drink coupons (Oct 27 2026): point "drinks", once per person per day
+        (any of their passes), the number in the mark's item; the tap also
+        marks them arrived when they aren't yet (same ref: an undo takes
+        back exactly what it set). No pass on file: only at the pass desk
+        or once checked in there today. Staff's "Issue again" adds more on
+        the same row (override "issued_again", audited); its undo puts the
+        row back as it was (the row's `prev`).
      C11 "Not on the list" at a meal door (Oct 24 2026): staff may admit
         a guest whose passes don't include today's item with
         { notIncluded: true } ("Admit anyway (override)"): recorded with
@@ -146,6 +153,11 @@ const CLEARED = {
   at: null, byId: null, byName: "", byRole: "", station: "", ref: "", override: "", note: "", item: "", passSetAt: null,
   practice: false, lateSync: false, queuedOffline: false, recordedById: null, recordedByName: "",
 };
+/** A drink coupons row cleared: its "Issue again" history goes too. */
+const clearedFor = (point) => (point === "drinks" ? { ...CLEARED, prev: [] } : CLEARED);
+/** What a drinks row said before an "Issue again" (kept on its `prev`, put back by that tap's undo). */
+const DRINK_STATE = ["at", "byId", "byName", "byRole", "station", "ref", "override", "item", "practice", "lateSync", "queuedOffline", "recordedById", "recordedByName"];
+const drinkStateOf = (doc) => Object.fromEntries(DRINK_STATE.map((k) => [k, doc[k] ?? CLEARED[k] ?? null]));
 
 /** Set a mark if it isn't set. → { doc, changed, mine } (mine: it was already set by this very tap). */
 async function setMark(m) {
@@ -168,11 +180,31 @@ async function setMark(m) {
 }
 
 /** Clear a mark (only if `ref` set it, when given), in one write. → { after, before } (the row after and as it was:
-    its passSetAt says whether it had collected the pass), or null when nothing changed. */
+    its passSetAt says whether it had collected the pass), or null when nothing changed. A drink coupons row that staff's
+    "Issue again" (`ref`) changed goes back to what it said before that tap instead (restoreDrinks). */
 async function takeBack({ subject, day, point, ref = "" }) {
-  const before = await CheckinMark.findOneAndUpdate({ subject, day, point, at: { $ne: null }, ...(ref ? { ref } : {}) }, { $set: CLEARED, $inc: { rev: 1 } }, { returnDocument: "before" }).lean();
+  if (ref && point === "drinks") {
+    const r = await restoreDrinks({ subject, day, ref });
+    if (r !== undefined) return r;
+  }
+  const cleared = clearedFor(point);
+  const before = await CheckinMark.findOneAndUpdate({ subject, day, point, at: { $ne: null }, ...(ref ? { ref } : {}) }, { $set: cleared, $inc: { rev: 1 } }, { returnDocument: "before" }).lean();
   if (!before) return null;
-  return { before, after: { ...before, ...CLEARED, rev: (Number(before.rev) || 0) + 1 } };
+  return { before, after: { ...before, ...cleared, rev: (Number(before.rev) || 0) + 1 } };
+}
+
+/** The drinks row `ref` last changed with "Issue again": back to what it said before (one conditional write on its rev).
+    → { before, after } | null (not set by that tap) | undefined (that tap issued them first: a plain clear). */
+async function restoreDrinks({ subject, day, ref }) {
+  for (let i = 0; i < 5; i++) {
+    const cur = await CheckinMark.findOne({ subject, day, point: "drinks", ref, at: { $ne: null } }).lean();
+    if (!cur) return null;
+    if (!cur.prev?.length) return undefined;
+    const top = cur.prev[cur.prev.length - 1];
+    const after = await CheckinMark.findOneAndUpdate({ _id: cur._id, rev: cur.rev, ref }, { $set: drinkStateOf(top), $pop: { prev: 1 }, $inc: { rev: 1 } }, { returnDocument: "after" }).lean();
+    if (after) return { before: cur, after };
+  }
+  return null;
 }
 
 /* ---------- Pass collected: the ticket's checkedIn / checkedInAt (the QR scanner's fields) ---------- */
@@ -482,6 +514,44 @@ function whenText(at) {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" }).format(new Date(at));
 }
 
+const coupons = (n) => `${n} coupon${n === 1 ? "" : "s"}`;
+/** "Drink coupons already issued today at 10:42 AM by Sam · 2 coupons". */
+const drinksAlready = (d) => `Drink coupons already issued today at ${whenText(d.at)}${d.byName ? ` by ${d.byName}` : ""} · ${coupons(drinkCount(d.item))}`;
+
+/**
+ * Staff's "Issue again": today's coupons were issued (`had`); `count` more go on the same row (override "issued_again",
+ * ref = this tap, what it said before kept on `prev` for this tap's undo), audited. One conditional write on the row's
+ * rev (another change in between: read again).
+ */
+async function issueDrinksAgain({ a, ctx, actor, view, guest, had, count, at, lateSync }) {
+  let cur = had;
+  for (let i = 0; i < 5 && cur?.at; i++) {
+    const total = drinkCount(cur.item) + count;
+    const doc = await CheckinMark.findOneAndUpdate({ _id: cur._id, rev: cur.rev, at: { $ne: null } }, {
+      $set: {
+        item: String(total), ref: a.clientId, override: "issued_again", at, byId: actor.id, byName: actor.name, byRole: actor.role, station: a.station,
+        lateSync: !!lateSync, queuedOffline: !!ctx.recordedBy, recordedById: ctx.recordedBy?.id || null, recordedByName: ctx.recordedBy?.name || "",
+      },
+      $push: { prev: drinkStateOf(cur) },
+      $inc: { rev: 1 },
+    }, { returnDocument: "after" }).lean();
+    if (doc) {
+      await pause("tap:first-mark", { clientId: a.clientId, point: "drinks" });
+      await pause("tap:before-event", { clientId: a.clientId, point: "drinks" });
+      const ev = await appendEvent({
+        kind: "mark", point: "drinks", subject: doc.subject, day: doc.day, clientAt: a.clientAt, station: a.station, byId: actor.id, byName: actor.name,
+        byRole: actor.role, clientId: a.clientId, override: "issued_again", marks: [doc],
+        ...(doc.practice ? { practice: true } : {}), ...(lateSync ? { lateSync: true } : {}), ...queuedFields(ctx.recordedBy),
+      });
+      await audit(actor, "checkin_desk_override", doc.subject,
+        auditLine({ guest, kind: "mark", point: "drinks", station: a.station, override: "issued_again", to: `${coupons(count)} more issued (${coupons(total)} today)` }), ctx.recordedBy);
+      return { ok: true, events: view([ev]), mark: markView(doc), event: ev };
+    }
+    cur = await CheckinMark.findOne({ _id: cur._id }).lean();
+  }
+  return fail(409, "Their drink coupons changed just now. Look again and try once more.", { code: "changed" });
+}
+
 async function doMark(a, ctx, actor, view) {
   const point = a.point;
   const pointStation = POINTS[point];
@@ -552,6 +622,26 @@ async function doMark(a, ctx, actor, view) {
     }
   }
 
+  // Drink coupons: once per person per day, on any of their passes; staff's "Issue again" adds more.
+  let drinkItem = "";
+  if (point === "drinks") {
+    const subjects = hit.subjects?.length ? hit.subjects : guest.norms;
+    // No pass on file (ISSUE PASS, contract C7): the pass desk issues the pass and the coupons; anywhere else only once
+    // they're checked in there today.
+    if (guest?.noPass && a.station !== "desk") {
+      const issued = await CheckinMark.findOne({ subject: { $in: subjects }, day, point: "checked_in", at: { $ne: null } }).select("_id").lean();
+      if (!issued) return fail(409, "No pass on file: send them to the pass desk first.", { code: "no_pass", noPass: true });
+    }
+    const count = a.count || ctx.drinksPerPerson || DRINKS_DEFAULT;
+    const had = await CheckinMark.findOne({ subject: { $in: subjects }, day, point: "drinks", at: { $ne: null } }).lean();
+    if (a.again && !ctx.staff) return fail(403, "Only staff can issue drink coupons again.", { code: "staff_only" });
+    if (had && had.ref !== a.clientId) {
+      if (a.again) return issueDrinksAgain({ a, ctx, actor, view, guest, had, count, at, lateSync: clock.late });
+      if (had.subject !== subject) return { ok: true, already: true, events: [], mark: markView(had), message: drinksAlready(had) };
+    }
+    drinkItem = String(count);
+  }
+
   const ref = a.clientId;
   const common = { at, actor, station: a.station, ref, override, practice, lateSync: clock.late, recordedBy: ctx.recordedBy };
   // A check-in that collects the pass (Day 1 / Day 2, a guest with a pass: ISSUE PASS has none, contract C7) says so
@@ -559,19 +649,21 @@ async function doMark(a, ctx, actor, view) {
   // request failing or dying half-way, gives the collection back (uncollectPass only matches that exact time). Cleared
   // below when the pass was already collected by something else.
   const collects = point === "checked_in" && !practice && !guest?.noPass;
-  const res = await setMark({ subject, day, point, ...common, note: point === "av" ? a.note || "" : "", item: item?.key || "", passSetAt: collects ? at : null });
+  const res = await setMark({ subject, day, point, ...common, note: point === "av" ? a.note || "" : "", item: point === "drinks" ? drinkItem : item?.key || "", passSetAt: collects ? at : null });
   await pause("tap:first-mark", { clientId: a.clientId, point });
   if (!res.changed && !res.mine) {
     const d = res.doc;
+    if (point === "drinks") return { ok: true, already: true, events: [], mark: markView(d), message: drinksAlready(d) };
     const what = { checked_in: "Already checked in", arrived: "Already marked arrived", booth: "Booth already set up", av: "AV already checked" }[point]
       || (mealStation ? "Already admitted" : point.startsWith("flag_") ? "Already sent to staff" : "Already checked in");
     return { ok: true, already: true, events: [], mark: markView(d), message: `${what} at ${whenText(d.at)}${d.byName ? ` by ${d.byName}` : ""}` };
   }
   const changed = [res.doc];
   let pass;
-  if (point === "checked_in") {
+  if (point === "checked_in" || point === "drinks") {
     // Checked in at the desk means they arrived too (attendance for the day), and their pass is now collected (on Day 1
-    // and Day 2 only: a practice check-in never collects the real pass).
+    // and Day 2 only: a practice check-in never collects the real pass). Drink coupons mark them arrived too (a soft
+    // check-in: the day's attendance and the survey's door check-in), nothing else.
     const arr = await setMark({ subject, day, point: "arrived", ...common });
     if (arr.changed || arr.mine) changed.push(arr.doc);
     await pause("tap:between-marks", { clientId: a.clientId, point });
