@@ -1,7 +1,7 @@
 /* Pure helpers for analytics and the admin console (unit-tested). */
 
 import { SITE_FILE_KEYS, cleanSiteFileUrl } from "./siteFiles.js";
-import { SWAG_DEFAULTS, cleanSwagContent } from "./swagRules.js";
+import { SWAG_DEFAULTS, cleanSwagContent, swagContentError } from "./swagRules.js";
 import { STAY_DEFAULTS } from "./waitlist.js";
 import { cleanJourneyContent, journeyContentError } from "./stayJourney.js";
 import { APP_VERSION_DEFAULTS, cleanAppVersionContent, appVersionContentError } from "./appVersion.js";
@@ -108,7 +108,10 @@ export const CONTENT_KEYS = {
   "site.brochure_url": "",
   /* "Win the TTFC swag kit" (Oct 22 2026, services/swagRules.js): swag.enabled (off until management turns it on),
      swag.kits (1–50), swag.cutoff and swag.announce (ISO times with their offset, Toronto), swag.title, swag.rules
-     ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag). Management only (services/staffPowers.js). */
+     ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag), swag.autoAnnounce (on: the top networkers are
+     celebrated by themselves at swag.announce, Oct 26 2026), swag.celebrate (what the snapshot, the announcement and the
+     winners depend on; swag.enabled is only the old apps' prize banner since Oct 27 2026), swag.feedPost (the feed post
+     naming them, {list}). Management only (services/staffPowers.js). */
   ...SWAG_DEFAULTS,
   /* "Stay updated": the TTFC 2027 waitlist page (website /stay-updated, the web app's /app/stay-updated) and the
      person's "You're on the TTFC 2027 waitlist" email (Oct 23 2026, services/waitlist.js). Plain text, any staff;
@@ -141,7 +144,7 @@ export function cleanContent(key, value) {
 
 /** Why cleanContent refused a value of a known key, in plain words for the panel ("" = no particular reason). */
 export function contentError(key, value) {
-  return journeyContentError(key, value) || appVersionContentError(key, value);
+  return journeyContentError(key, value) || appVersionContentError(key, value) || swagContentError(key, value);
 }
 
 /** "Most used" summary from a list of events. */
