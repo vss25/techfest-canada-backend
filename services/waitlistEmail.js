@@ -39,7 +39,8 @@ export { FROM, ENQUIRE_EMAIL };
 /** With nothing ticked. */
 export const ATTENDING = "Attending TTFC 2027";
 
-/** Their ticks in the page's words (stay.interest_*), or "Attending TTFC 2027". */
+/** Their ticks in the page's words (stay.interest_*: "Attending as a delegate", "Exhibiting", "Sponsorship", "Bringing a
+    delegation", in that order), or "Attending TTFC 2027". */
 export function askedAbout(interests, copy = STAY_DEFAULTS) {
   const list = cleanInterests(interests);
   if (!list.length) return [ATTENDING];
@@ -49,7 +50,7 @@ export function askedAbout(interests, copy = STAY_DEFAULTS) {
 /**
  * @param {object} p
  * @param {object} [p.copy]           the stay.* wording (services/waitlist.js stayCopy)
- * @param {string[]} [p.interests]    sponsorship | exhibitor | delegation
+ * @param {string[]} [p.interests]    delegate | exhibitor | sponsorship | delegation (services/waitlist.js INTERESTS)
  * @param {string} [p.name]           their name: "Hi Priya," (services/waitlist.js firstNameOf); "" = "Hello,"
  * @param {string} [p.logoSrc]        "cid:…" or a data: URI ("" = the text wordmark)
  * @param {string} [p.unsubscribeUrl] the footer's link ("" = "reply with unsubscribe")

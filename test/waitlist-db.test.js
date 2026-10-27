@@ -130,7 +130,7 @@ test("a first sign-up: saved, thanked (staff's words), the team and the person e
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual(r.body, { ok: true, message: THANKS });
   const team = await waitFor(() => teamMail()[0]);
-  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane.doe@acme.example");
+  assert.equal(team.subject, "TTFC 2027 waitlist: Exhibitor + Sponsorship interest – Jane Doe (Acme Inc.) – jane.doe@acme.example");
   assert.equal(team.from, "TTFC Website <enquire@thetechfestival.com>");
   assert.match(team.text, /Name: Jane Doe\nCompany or organisation: Acme Inc\.\nEmail: jane\.doe@acme\.example/);
   assert.equal(team.replyTo, "jane.doe@acme.example");
@@ -146,10 +146,10 @@ test("a first sign-up: saved, thanked (staff's words), the team and the person e
   assert.match(mine.html, />Get the TTFC app</, "attendee-facing: the app block");
   assert.match(mine.html, /href="https:\/\/api\.example\.test\/api\/unsubscribe\?t=[^"]+"/);
   assert.match(mine.headers["List-Unsubscribe"], /^<https:\/\/api\.example\.test\/api\/unsubscribe\?t=/);
-  assert.match(mine.text, /• Sponsorship\n  • Exhibiting/);
+  assert.match(mine.text, /• Exhibiting\n  • Sponsorship/);
   await waitFor(async () => (await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean())?.confirmStatus === "sent");
   const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
-  assert.deepEqual([row.phone, row.phoneDigits, row.interests, row.source, row.sources, row.count, row.consent], ["+1 (416) 555-0100", "14165550100", ["sponsorship", "exhibitor"], "website", ["website"], 1, true]);
+  assert.deepEqual([row.phone, row.phoneDigits, row.interests, row.source, row.sources, row.count, row.consent], ["+1 (416) 555-0100", "14165550100", ["exhibitor", "sponsorship"], "website", ["website"], 1, true]);
   assert.deepEqual([row.name, row.company, row.earlierNames, row.earlierCompanies], ["Jane Doe", "Acme Inc.", [], []]);
   assert.deepEqual([row.alertStatus, row.confirmStatus], ["sent", "sent"]);
   assert.ok(row.confirmedAt && row.consentAt && row.createdAt);
@@ -162,7 +162,7 @@ test("the same email again: one row, merged ticks and sources, counted; the team
   const r = await call("POST", "/api/stay-updated", { body: { ...JANE, company: "Acme Robotics", phone: "416-555-0199", interests: ["delegation"], source: "ios" } });
   assert.deepEqual([r.status, r.body], [200, { ok: true, message: THANKS }], "the same answer as a first sign-up");
   const team = await waitFor(() => teamMail().find((m) => m.subject.endsWith("(updated)")));
-  assert.equal(team.subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor + Delegation interest – Jane Doe (Acme Robotics) – jane.doe@acme.example (updated)");
+  assert.equal(team.subject, "TTFC 2027 waitlist: Exhibitor + Sponsorship + Delegation interest – Jane Doe (Acme Robotics) – jane.doe@acme.example (updated)");
   assert.match(team.text, /Company or organisation: Acme Robotics\nEarlier company: Acme Inc\.\n/);
   assert.match(team.text, /Ticked this time: Delegation/);
   assert.match(team.text, /Sign-ups from this address: 2/);
@@ -170,7 +170,7 @@ test("the same email again: one row, merged ticks and sources, counted; the team
   assert.equal(outbox.length, before + 1, "only the team's email");
   assert.equal(await M.WaitlistSignup.countDocuments({ email: "jane.doe@acme.example" }), 1);
   const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
-  assert.deepEqual([row.phone, row.interests, row.lastInterests, row.source, row.sources, row.count], ["416-555-0199", ["sponsorship", "exhibitor", "delegation"], ["delegation"], "ios", ["website", "ios"], 2]);
+  assert.deepEqual([row.phone, row.interests, row.lastInterests, row.source, row.sources, row.count], ["416-555-0199", ["exhibitor", "sponsorship", "delegation"], ["delegation"], "ios", ["website", "ios"], 2]);
   assert.deepEqual([row.name, row.company, row.earlierNames, row.earlierCompanies], ["Jane Doe", "Acme Robotics", [], ["Acme Inc."]]);
 });
 
@@ -181,7 +181,7 @@ test("a day after the last confirmation, a sign-up confirms again (with every ti
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const mails = await waitFor(() => personMail("jane.doe@acme.example").length === 2 && personMail("jane.doe@acme.example"));
   assert.ok(mails, "a second confirmation");
-  assert.match(mails[1].text, /• Sponsorship\n  • Exhibiting\n  • Bringing a group/);
+  assert.match(mails[1].text, /• Exhibiting\n  • Sponsorship\n  • Bringing a group/);
   assert.match(mails[1].text, /^Hi Jane,/, "the saved name");
   const row = await M.WaitlistSignup.findOne({ email: "jane.doe@acme.example" }).lean();
   assert.deepEqual([row.name, row.company, row.phone, row.phoneDigits, row.count], ["Jane Doe", "Acme Robotics", "416-555-0199", "4165550199", 3]);
@@ -261,12 +261,12 @@ test("Admin › 2027 waitlist: staff see the list, counts and filters; non-staff
   assert.equal((await call("GET", "/api/console/waitlist", { as: pat })).status, 403);
   const all = await call("GET", "/api/console/waitlist", { as: sam });
   assert.equal(all.status, 200);
-  assert.deepEqual(all.body.counts, { total: 4, attending: 2, sponsorship: 2, exhibitor: 2, delegation: 1, website: 2, webapp: 1, ios: 1, android: 1, programme: 0 });
+  assert.deepEqual(all.body.counts, { total: 4, attending: 2, delegate: 0, exhibitor: 2, sponsorship: 2, delegation: 1, website: 2, webapp: 1, ios: 1, android: 1, programme: 0 });
   assert.equal(all.body.total, 4);
   assert.equal(all.body.canExport, false);
   assert.deepEqual(all.body.rows.map((r) => r.email), ["solo@acme.example", "quinn@acme.example", "off@acme.example", "jane.doe@acme.example"]);
   const jane = all.body.rows[3];
-  assert.deepEqual([jane.interestLabels, jane.tel, jane.count, jane.confirmStatus], [["Sponsorship", "Exhibitor", "Delegation"], "tel:4165550199", 3, "sent"]);
+  assert.deepEqual([jane.interestLabels, jane.tel, jane.count, jane.confirmStatus], [["Exhibitor", "Sponsorship", "Delegation"], "tel:4165550199", 3, "sent"]);
   const spons = await call("GET", "/api/console/waitlist?interest=delegation", { as: sam });
   assert.deepEqual(spons.body.rows.map((r) => r.email), ["jane.doe@acme.example"]);
   const att = await call("GET", "/api/console/waitlist?interest=attending", { as: sam });
@@ -298,12 +298,12 @@ test("the CSV is for management (it holds phone numbers) and is audited", { skip
   assert.match(r.headers.get("content-disposition"), /ttfc-2027-waitlist-\d{4}-\d{2}-\d{2}\.csv/);
   const lines = r.body.replace(/^﻿/, "").split("\n");
   assert.equal(lines.length, 3, "the header and the two sponsorship sign-ups");
-  assert.match(lines[0], /^Signed up \(Toronto\),Last sign-up \(Toronto\),Name,Company,Email,Phone,Sponsorship,Exhibitor,Delegation/);
-  assert.ok(lines.some((l) => l.includes("Jane Doe,Acme Robotics,jane.doe@acme.example,416-555-0199,Yes,Yes,Yes,\"Sponsorship, Exhibitor, Delegation\",\"iOS app, Website\",3,sent,sent")), lines.join("\n"));
+  assert.match(lines[0], /^Signed up \(Toronto\),Last sign-up \(Toronto\),Name,Company,Email,Phone,Delegate,Exhibitor,Sponsorship,Delegation/);
+  assert.ok(lines.some((l) => l.includes("Jane Doe,Acme Robotics,jane.doe@acme.example,416-555-0199,No,Yes,Yes,Yes,\"Exhibitor, Sponsorship, Delegation\",\"iOS app, Website\",3,sent,sent")), lines.join("\n"));
   assert.ok(lines.some((l) => l.includes(",Quinn Ito,Globex,quinn@acme.example,")));
   // Blanks are empty cells (just an email given).
   const att = await call("GET", "/api/console/waitlist/export?interest=attending", { as: mia });
-  assert.ok(att.body.split("\n").some((l) => l.includes(",,,solo@acme.example,,No,No,No,Attending,Website,1,")), att.body);
+  assert.ok(att.body.split("\n").some((l) => l.includes(",,,solo@acme.example,,No,No,No,No,Attending,Website,1,")), att.body);
   assert.ok(await M.AdminAudit.exists({ action: "waitlist_export", adminName: "Mia Manager" }));
 });
 
@@ -363,4 +363,30 @@ test("the 2027 journey: any staff saves it through app content (checked and tidi
   const j = list.body.find((r) => r.key === "stay.journey");
   assert.deepEqual([j.value, j.default, j.managementOnly], ["", DEFAULT_JOURNEY_JSON, false]);
   assert.equal(list.body.some((r) => r.key === "stay.pillars" || r.key === "stay.expect" || r.key === "stay.stat"), false, "the removed keys aren't listed");
+});
+
+test("delegate (Oct 27 2026): accepted from the form, in the team's and the person's emails, filtered and counted; its words editable", { skip }, async () => {
+  const r = await call("POST", "/api/stay-updated", { body: { email: "dee.lee@acme.example", name: "Dee Lee", interests: ["sponsorship", "delegate", "golf"], source: "ios", consent: true, _hp: "" } });
+  assert.deepEqual([r.status, r.body.ok], [200, true], JSON.stringify(r.body));
+  const team = await waitFor(() => teamMail().find((m) => m.subject.includes("dee.lee@acme.example")));
+  assert.equal(team.subject, "TTFC 2027 waitlist: Delegate + Sponsorship interest – Dee Lee – dee.lee@acme.example");
+  assert.match(team.text, /Interested in: Delegate, Sponsorship/);
+  const mine = await waitFor(() => personMail("dee.lee@acme.example")[0]);
+  assert.match(mine.text, /WHAT YOU ASKED ABOUT\n  • Attending as a delegate\n  • Sponsorship\n/);
+  const row = await M.WaitlistSignup.findOne({ email: "dee.lee@acme.example" }).lean();
+  assert.deepEqual(row.interests, ["delegate", "sponsorship"], "unknown ticks dropped, in order");
+  // Admin: the filter, the counts.
+  const list = await call("GET", "/api/console/waitlist?interest=delegate", { as: sam });
+  assert.deepEqual(list.body.rows.map((x) => [x.email, x.interestLabels]), [["dee.lee@acme.example", ["Delegate", "Sponsorship"]]]);
+  assert.equal(list.body.counts.delegate, 1);
+  assert.deepEqual(Object.keys(list.body.counts).slice(0, 6), ["total", "attending", "delegate", "exhibitor", "sponsorship", "delegation"]);
+  // The words: served to the website and the apps, edited by any staff like the other ticks; unknown keys refused.
+  const c = await call("GET", "/api/app/content");
+  assert.equal(c.body["stay.interest_delegate"], "Attending as a delegate");
+  assert.equal(c.body["stay.interests_label"], "I'm interested in (optional)");
+  assert.equal((await call("PUT", "/api/console/app-content/stay.interest_delegate", { as: sam, body: { value: "Coming as a delegate" } })).status, 200);
+  assert.equal((await call("GET", "/api/app/content")).body["stay.interest_delegate"], "Coming as a delegate");
+  assert.deepEqual((await call("PUT", "/api/console/app-content/stay.interest_golf", { as: sam, body: { value: "x" } })).body, { error: "Unknown key" });
+  const preview = await call("GET", "/api/console/waitlist/email-preview?interests=delegate,exhibitor", { as: sam });
+  assert.ok(preview.body.html.indexOf(">Coming as a delegate<") > 0 && preview.body.html.indexOf(">Coming as a delegate<") < preview.body.html.indexOf(">Exhibiting<"), "staff's words, first");
 });

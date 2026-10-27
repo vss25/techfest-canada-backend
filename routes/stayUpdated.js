@@ -16,7 +16,7 @@ import {
    "Stay updated": the TTFC 2027 waitlist (Oct 23 2026).
 
    Public (no sign-in), mounted at /api/stay-updated:
-     POST /  { name, company, email, phone, interests: ["sponsorship"|"exhibitor"|"delegation"],
+     POST /  { name, company, email, phone, interests: ["delegate"|"exhibitor"|"sponsorship"|"delegation"],
                source: website|webapp|ios|android|programme, consent: true, _hp }
              Only the email is required (Oct 24 2026); a name (2–80: letters, spaces, - ' ’ .), company (≤ 120) or
              phone (7–20 digits) that is given must be right; empty = "" (a repeat keeps what was saved)
@@ -31,11 +31,11 @@ import {
              services/waitlistEmail.js.
 
    Admin (staff), mounted at /api/console/waitlist (Admin › Sales & emails › 2027 waitlist):
-     GET /?q=&interest=sponsorship|exhibitor|delegation|attending&source=&page=   (q: email, name, company or phone)
-             → { total, page, size, counts: { total, attending, sponsorship, exhibitor, delegation, website, webapp,
-                 ios, android }, rows, canExport }   newest first, 50 a page; counts are for the whole list
+     GET /?q=&interest=delegate|exhibitor|sponsorship|delegation|attending&source=&page=   (q: email, name, company or phone)
+             → { total, page, size, counts: { total, attending, delegate, exhibitor, sponsorship, delegation, website,
+                 webapp, ios, android, programme }, rows, canExport }   newest first, 50 a page; counts are for the whole list
      GET /export?(same filters)   CSV (management: it holds phone numbers), audited "waitlist_export"
-     GET /email-preview?interests=sponsorship,exhibitor&name=Priya%20Raman   (name: optional, "Hi Priya,")
+     GET /email-preview?interests=delegate,exhibitor&name=Priya%20Raman   (name: optional, "Hi Priya,")
              → { subject, html, text }   the person's confirmation with the saved wording (nothing is sent)
    Read only: no edits or deletes here.
 ========================================================= */
