@@ -24,9 +24,12 @@ test("staff can't change the selling switches or the guest offer; they keep the 
     "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce", "swag.celebrate", "swag.feedPost",
     // "Update the app" (Oct 24 2026, services/appVersion.js).
     "app.ios_latest", "app.ios_minimum", "app.android_latest", "app.android_minimum", "app.update_message",
+    // "Rate the app" (Oct 27 2026, services/appReview.js).
+    "review.enabled", "review.ask_from", "review.ask_until",
   ]);
   const VALID = { "swag.feedPost": "Our top networkers: {list}.", "swag.kits": "5", "swag.cutoff": "2026-10-27T15:00:00-04:00", "swag.announce": "2026-10-27T16:00:00-04:00",
-    "app.ios_latest": "1.0.4", "app.ios_minimum": "1.0.2", "app.android_latest": "1.0.7", "app.android_minimum": "1.0.5" };
+    "app.ios_latest": "1.0.4", "app.ios_minimum": "1.0.2", "app.android_latest": "1.0.7", "app.android_minimum": "1.0.5",
+    "review.enabled": "false", "review.ask_from": "2026-10-27T13:00:00-04:00", "review.ask_until": "2026-10-27T21:00:00-04:00" };
   for (const key of MANAGEMENT_CONTENT_KEYS) {
     const v = typeof CONTENT_KEYS[key] === "boolean" ? false : VALID[key] || "x";
     assert.deepEqual(edit(key, v, false), { status: 403, code: "management_only", error: "Only management can change this." }, key);

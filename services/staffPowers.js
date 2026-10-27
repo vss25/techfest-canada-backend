@@ -31,6 +31,7 @@
 ========================================================= */
 
 import { APP_VERSION_KEYS } from "./appVersion.js";
+import { REVIEW_KEYS } from "./appReview.js";
 
 export const GUEST_OFFER_FLAG = "flag.guestOffer";
 /** The web app's guest offer: the switch and its four unlabelled settings (code, discount, end, passes). */
@@ -45,6 +46,8 @@ export const MANAGEMENT_CONTENT_KEYS = Object.freeze([
   "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce", "swag.celebrate", "swag.feedPost",
   // "Update the app" (services/appVersion.js): the store versions and minimums decide who is asked to update.
   ...APP_VERSION_KEYS,
+  // "Rate the app" (services/appReview.js): whether and when the apps ask for a store rating.
+  ...REVIEW_KEYS,
 ]);
 const MANAGEMENT_SET = new Set(MANAGEMENT_CONTENT_KEYS);
 

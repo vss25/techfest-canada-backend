@@ -5,6 +5,7 @@ import { SWAG_DEFAULTS, cleanSwagContent, swagContentError } from "./swagRules.j
 import { STAY_DEFAULTS } from "./waitlist.js";
 import { cleanJourneyContent, journeyContentError } from "./stayJourney.js";
 import { APP_VERSION_DEFAULTS, cleanAppVersionContent, appVersionContentError } from "./appVersion.js";
+import { REVIEW_DEFAULTS, REVIEW_LABELS, cleanReviewContent, reviewContentError } from "./appReview.js";
 
 const NAME_RX = /^[a-z][a-z0-9_]{1,40}$/;
 
@@ -122,7 +123,14 @@ export const CONTENT_KEYS = {
   /* "Update the app" (Oct 24 2026, services/appVersion.js): the newest iOS / Android versions in the stores and the
      optional minimums (empty = nobody blocked), plus optional banner words. Management only (services/staffPowers.js). */
   ...APP_VERSION_DEFAULTS,
+  /* "Rate the app" (Oct 27 2026, services/appReview.js): review.enabled ("true" | "false") and the window
+     review.ask_from / review.ask_until (ISO times with their offset) in which the apps show the stores' own rating
+     prompt once. Management only (services/staffPowers.js). */
+  ...REVIEW_DEFAULTS,
 };
+
+/** Admin words for keys the backend labels itself (GET /api/console/app-content adds them to the row). */
+export const CONTENT_LABELS = Object.freeze({ ...REVIEW_LABELS });
 
 /** Validates a content update; returns [key, value] or null. */
 export function cleanContent(key, value) {
@@ -139,12 +147,14 @@ export function cleanContent(key, value) {
   if (journey !== undefined) return journey;
   const version = cleanAppVersionContent(key, value);
   if (version !== undefined) return version;
+  const review = cleanReviewContent(key, value);
+  if (review !== undefined) return review;
   return [key, String(value ?? "").slice(0, 2000)];
 }
 
 /** Why cleanContent refused a value of a known key, in plain words for the panel ("" = no particular reason). */
 export function contentError(key, value) {
-  return journeyContentError(key, value) || appVersionContentError(key, value) || swagContentError(key, value);
+  return journeyContentError(key, value) || appVersionContentError(key, value) || swagContentError(key, value) || reviewContentError(key, value);
 }
 
 /** "Most used" summary from a list of events. */

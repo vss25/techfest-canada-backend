@@ -9,7 +9,7 @@ import {
 } from "../models/Social.js";
 import { Discussion, DiscussionReply, CommunityGroup, GroupMessage } from "../models/Community.js";
 import { AppEvent, AppContent, AdminAudit, Report } from "../models/Admin.js";
-import { CONTENT_KEYS, cleanContent, contentError, summarize } from "../services/adminHelpers.js";
+import { CONTENT_KEYS, CONTENT_LABELS, cleanContent, contentError, summarize } from "../services/adminHelpers.js";
 import { SWAG_LABELS } from "../services/swagRules.js";
 import { contentAccess, contentEditRefusal } from "../services/staffPowers.js";
 import { forgetSwitches } from "../services/liveSwitches.js";
@@ -81,6 +81,11 @@ import { makeLimiter } from "../services/ticketAccess.js";
 import { directory as peopleDirectory, mediaOfPasses } from "./people.js";
 import { autoLinkEmail } from "../services/passAutoLink.js";
 import { HIDE_SELECT, hiddenState, oids, personHide } from "../services/appHide.js";
+import ScheduledBroadcast from "../models/ScheduledBroadcast.js";
+import {
+  QUIET_HOURS, validateScheduled, scheduledDTO, batchIdOf as scheduledBatchId, auditLine as scheduledAuditLine,
+} from "../services/scheduledBroadcastRules.js";
+import { estimates as scheduledEstimates, claimOne as claimScheduled, deliver as deliverScheduled } from "../services/scheduledBroadcasts.js";
 
 /* =========================================================
    /api/console — the TTFC admin console (staff only).
@@ -485,6 +490,7 @@ router.get("/app-content", async (req, res) => {
     key, default: def, value: byKey[key] ? byKey[key].value : def,
     updatedBy: byKey[key]?.updatedBy || "", updatedAt: byKey[key]?.updatedAt || null, ...contentAccess(key),
     ...(SWAG_LABELS[key] ? { label: SWAG_LABELS[key] } : {}),
+    ...(CONTENT_LABELS[key] || {}),   // { label, description } for the keys the backend labels (review.*)
   })));
 });
 
@@ -557,6 +563,83 @@ router.post("/broadcast", requireManagement, async (req, res) => {
   // Phones with push get it straight away; the rest see it on their next check-in.
   pushToEveryone({ title: "TTFC update", body, link: "ttfc://tab/feed", kind: "announcement", id: String(post._id) });
   res.status(201).json({ ok: true, id: String(post._id) });
+});
+
+/* ---------- Scheduled broadcasts (Oct 27 2026): management only ----------
+   A feed post, the Home banner and / or a notification to everyone on the app (or those who checked in, or those on
+   an older app version than "App updates" says is the newest: audience "outdated"), sent once
+   at sendAt by the minute job (services/scheduledBroadcasts.js; rules services/scheduledBroadcastRules.js).
+   GET /broadcasts/scheduled → { items: [item] (newest sendAt first, every status), quietHours: { from, to, tz } }
+   POST /broadcasts/scheduled { sendAt, title, body, linkUrl, feedPost, banner, notify, audience } → 201 item
+   PATCH /broadcasts/scheduled/:id { any of those } → item (only while scheduled: 409 otherwise)
+   POST /broadcasts/scheduled/:id/cancel → item (only while scheduled: 409 otherwise)
+   POST /broadcasts/scheduled/:id/send-now → item after sending (status sent, or failed with error); quiet hours and
+     the 2 minutes don't apply, but it must be scheduled (409 otherwise)
+   400 { error, field } when something can't be saved (field: sendAt | title | body | linkUrl | channels | audience).
+   Never deleted. */
+const NOT_SCHEDULED = "This message isn't scheduled any more (it was sent, cancelled or missed), so it can't be changed.";
+const notScheduled = (res, item) => res.status(409).json({ error: NOT_SCHEDULED, code: "not_scheduled", status: item.status });
+
+async function scheduledItems(rows) {
+  const want = rows.filter((r) => r.status === "scheduled" && r.notify).map((r) => r.audience || "app");
+  const est = want.length ? await scheduledEstimates(want, { directory: peopleDirectory }) : {};
+  return rows.map((r) => scheduledDTO(r, { estimate: est[r.audience || "app"] }));
+}
+
+router.get("/broadcasts/scheduled", requireManagement, async (req, res) => {
+  const rows = await ScheduledBroadcast.find({}).sort({ sendAt: -1, _id: -1 }).limit(200).lean();
+  res.set("Cache-Control", "no-store");
+  res.json({ items: await scheduledItems(rows), quietHours: QUIET_HOURS });
+});
+
+router.post("/broadcasts/scheduled", requireManagement, async (req, res) => {
+  const v = validateScheduled(req.body);
+  if (v.error) return res.status(400).json({ error: v.error, field: v.field });
+  const _id = new mongoose.Types.ObjectId();
+  const doc = await ScheduledBroadcast.create({
+    _id, ...v.value, status: "scheduled", batchId: scheduledBatchId(_id), createdBy: req.user._id, createdByName: req.user.name || "",
+  });
+  await audit(req, "scheduled_broadcast_create", "scheduled_broadcast", _id, scheduledAuditLine(v.value));
+  res.status(201).json((await scheduledItems([doc.toObject()]))[0]);
+});
+
+router.patch("/broadcasts/scheduled/:id", requireManagement, async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const existing = await ScheduledBroadcast.findById(req.params.id).lean();
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.status !== "scheduled") return notScheduled(res, existing);
+  const v = validateScheduled(req.body, { existing });
+  if (v.error) return res.status(400).json({ error: v.error, field: v.field });
+  const doc = await ScheduledBroadcast.findOneAndUpdate({ _id: existing._id, status: "scheduled" },
+    { $set: { ...v.value, updatedByName: req.user.name || "" } }, { returnDocument: "after" }).lean();
+  if (!doc) return notScheduled(res, (await ScheduledBroadcast.findById(existing._id).select("status").lean()) || existing);
+  await audit(req, "scheduled_broadcast_edit", "scheduled_broadcast", doc._id, scheduledAuditLine(doc));
+  res.json((await scheduledItems([doc]))[0]);
+});
+
+router.post("/broadcasts/scheduled/:id/cancel", requireManagement, async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const doc = await ScheduledBroadcast.findOneAndUpdate({ _id: req.params.id, status: "scheduled" },
+    { $set: { status: "cancelled", updatedByName: req.user.name || "" } }, { returnDocument: "after" }).lean();
+  if (!doc) {
+    const now = await ScheduledBroadcast.findById(req.params.id).select("status").lean();
+    return now ? notScheduled(res, now) : res.status(404).json({ error: "Not found" });
+  }
+  await audit(req, "scheduled_broadcast_cancel", "scheduled_broadcast", doc._id, scheduledAuditLine(doc));
+  res.json((await scheduledItems([doc]))[0]);
+});
+
+router.post("/broadcasts/scheduled/:id/send-now", requireManagement, async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Not found" });
+  const existing = await ScheduledBroadcast.findById(req.params.id).lean();
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.status !== "scheduled") return notScheduled(res, existing);
+  // Taken like the job takes it (scheduled → sending, atomically): if the job got there first, 409.
+  const claimed = await claimScheduled(existing._id);
+  if (!claimed) return notScheduled(res, (await ScheduledBroadcast.findById(existing._id).select("status").lean()) || existing);
+  await audit(req, "scheduled_broadcast_send_now", "scheduled_broadcast", claimed._id, scheduledAuditLine(claimed));
+  const done = await deliverScheduled(claimed, { actor: req.user, directory: peopleDirectory });
+  res.json((await scheduledItems([done]))[0]);
 });
 
 /* ---------- Personal notifications: staff → one or a few people on the app ----------

@@ -39,10 +39,13 @@ import { escapeHtml as esc } from "./ticketInfo.js";
 import { trackSecret } from "./trackToken.js";
 import { DEFAULT_JOURNEY_JSON, JOURNEY_KEY } from "./stayJourney.js";
 
-/** What can be ticked (stored values, in this order). */
-export const INTERESTS = Object.freeze(["sponsorship", "exhibitor", "delegation"]);
-/** Staff's words (the team email's subject, the admin list, the CSV). */
-export const INTEREST_LABEL = Object.freeze({ sponsorship: "Sponsorship", exhibitor: "Exhibitor", delegation: "Delegation" });
+/** What can be ticked (stored values, in this order). "delegate" (Oct 27 2026, the organiser: "Provide the ability to
+    share interest like delegate, exhibitor, and sponsor"): coming to TTFC 2027 as a delegate, first; "delegation" is
+    bringing a group. */
+export const INTERESTS = Object.freeze(["delegate", "exhibitor", "sponsorship", "delegation"]);
+/** Staff's words (the team email's subject, the admin list, the CSV). The page's and the person's email's words are
+    the stay.interest_<value> keys. */
+export const INTEREST_LABEL = Object.freeze({ delegate: "Delegate", exhibitor: "Exhibitor", sponsorship: "Sponsorship", delegation: "Delegation" });
 /** Where a sign-up came from. */
 export const SOURCES = Object.freeze(["website", "webapp", "ios", "android", "programme"]);
 /* "programme": the sign-up form at the bottom of the website's /programme page (Oct 24 2026). */
@@ -87,9 +90,10 @@ export const STAY_DEFAULTS = Object.freeze({
   "stay.field_company": "Company or organisation",
   "stay.field_email": "Email",
   "stay.field_phone": "Phone",
-  "stay.interests_label": "I'm also interested in (optional)",
-  "stay.interest_sponsorship": "Sponsorship",
+  "stay.interests_label": "I'm interested in (optional)",
+  "stay.interest_delegate": "Attending as a delegate",
   "stay.interest_exhibitor": "Exhibiting",
+  "stay.interest_sponsorship": "Sponsorship",
   "stay.interest_delegation": "Bringing a delegation",
   "stay.consent": "By joining, you agree The Tech Festival Canada can contact you about TTFC 2027.",
   "stay.button": "Join the waitlist",
@@ -264,7 +268,7 @@ export const telHref = (phone) => {
   return d ? `tel:${String(phone).trim().startsWith("+") ? "+" : ""}${d}` : "";
 };
 
-/** "Sponsorship + Exhibitor interest", or "Attending" with nothing ticked. */
+/** "Exhibitor + Sponsorship interest", or "Attending" with nothing ticked. */
 export function interestSummary(interests) {
   const list = cleanInterests(interests);
   return list.length ? `${list.map((k) => INTEREST_LABEL[k]).join(" + ")} interest` : "Attending";
@@ -284,7 +288,7 @@ export const earlierOf = (list, current) => {
 };
 
 /**
- * "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.com",
+ * "TTFC 2027 waitlist: Exhibitor + Sponsorship interest – Jane Doe (Acme Inc.) – jane@acme.com",
  * "TTFC 2027 waitlist: Attending – …" (no name or company given: just the email); a repeat sign-up ends "(updated)".
  */
 export function alertSubject({ email, interests, updated = false, name = "", company = "" }) {
@@ -373,8 +377,8 @@ export function buildWaitlistAlert(row, { updated = false, now = new Date(), adm
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Mongo filter for the admin list: ?q= part of the email, name, company or phone, ?interest= sponsorship | exhibitor |
-    delegation | attending (nothing ticked), ?source=. */
+/** Mongo filter for the admin list: ?q= part of the email, name, company or phone, ?interest= delegate | exhibitor |
+    sponsorship | delegation | attending (nothing ticked), ?source=. */
 export function waitlistFilter({ q, interest, source } = {}) {
   const f = {};
   const text = cleanText(q).slice(0, 100);
@@ -420,7 +424,8 @@ export function waitlistRow(d) {
   };
 }
 
-/** { total, attending, sponsorship, exhibitor, delegation, website, webapp, ios, android } from two $group results. */
+/** { total, attending, delegate, exhibitor, sponsorship, delegation, website, webapp, ios, android, programme } from
+    two $group results. */
 export function waitlistCounts({ total = 0, byInterest = [], attending = 0, bySource = [] } = {}) {
   const out = { total, attending, ...Object.fromEntries(INTERESTS.map((k) => [k, 0])), ...Object.fromEntries(SOURCES.map((k) => [k, 0])) };
   for (const g of byInterest) if (INTERESTS.includes(g._id)) out[g._id] = g.n;
@@ -428,8 +433,9 @@ export function waitlistCounts({ total = 0, byInterest = [], attending = 0, bySo
   return out;
 }
 
+/** One yes / no column per interest, in INTERESTS order (Delegate, Exhibitor, Sponsorship, Delegation). */
 export const CSV_HEAD = [
-  "Signed up (Toronto)", "Last sign-up (Toronto)", "Name", "Company", "Email", "Phone", "Sponsorship", "Exhibitor", "Delegation", "Interested in",
+  "Signed up (Toronto)", "Last sign-up (Toronto)", "Name", "Company", "Email", "Phone", ...INTERESTS.map((k) => INTEREST_LABEL[k]), "Interested in",
   "Signed up from", "Sign-ups", "Team emailed", "Confirmation email",
 ];
 
@@ -440,7 +446,7 @@ export function waitlistCsv(rows) {
     const r = waitlistRow(d);
     return [
       csvTime(r.createdAt), csvTime(r.lastSubmittedAt), r.name, r.company, r.email, r.phone,
-      r.interests.includes("sponsorship"), r.interests.includes("exhibitor"), r.interests.includes("delegation"),
+      ...INTERESTS.map((k) => r.interests.includes(k)),
       r.interestLabels.join(", ") || "Attending",
       [...new Set([r.source, ...r.sources])].map((s) => SOURCE_LABEL[s] || s).join(", "),
       r.count, r.alertStatus || "", r.confirmStatus || "",

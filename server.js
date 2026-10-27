@@ -13,6 +13,7 @@ import { startDigests } from "./services/digest.js";
 import { startSwagSnapshot } from "./services/swag.js";
 import { publicRouter as swagPublicRouter, adminRouter as swagAdminRouter } from "./routes/swag.js";   // "Win the TTFC swag kit"
 import { startSurveyNotify } from "./services/survey.js";
+import { startScheduledBroadcasts } from "./services/scheduledBroadcasts.js";   // management's scheduled broadcasts
 import { publicRouter as surveyPublicRouter, appRouter as surveyAppRouter, adminRouter as surveyAdminRouter } from "./routes/survey.js";   // the post-event survey
 import { attendeeRouter as sosAttendeeRouter, staffRouter as sosStaffRouter } from "./routes/sos.js";   // Help & SOS
 import digestAdminRouter, { publicRouter as digestPublicRouter } from "./routes/digest.js";   // "What you missed" emails
@@ -255,6 +256,9 @@ if (!IMPORT_ONLY) mongoose
     // Every minute: the survey's app prompt in waves from opensAt + 15 min to 10 PM Toronto that day, while autoNotify
     // is on (the default since Oct 26 2026, late; nothing outside that window, nothing on deploy; services/survey.js).
     startSurveyNotify();
+    // Every minute, one server: management's scheduled broadcasts that are due (each sent once; over 2 h late = missed;
+    // services/scheduledBroadcasts.js). Nothing is scheduled by itself: management creates each one.
+    startScheduledBroadcasts();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.

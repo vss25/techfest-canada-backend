@@ -68,7 +68,7 @@ const GOOD = {
 test("validateSignup: only the email is required; a phone that is given has 7–20 digits after + spaces dashes parens; consent; known ticks only", () => {
   const ok = validateSignup(GOOD);
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.value, { name: "Jane Doe", company: "Acme Inc.", email: "jane@acme.example", phone: "+1 (416) 555-0100", phoneDigits: "14165550100", interests: ["sponsorship", "exhibitor"], source: "ios", consent: true });
+  assert.deepEqual(ok.value, { name: "Jane Doe", company: "Acme Inc.", email: "jane@acme.example", phone: "+1 (416) 555-0100", phoneDigits: "14165550100", interests: ["exhibitor", "sponsorship"], source: "ios", consent: true });
   const field = (b) => validateSignup({ ...GOOD, ...b });
   assert.deepEqual([field({ email: "" }).field, field({ email: "" }).error], ["email", "Enter your email address."]);
   for (const email of ["jane", "jane@acme", "jane@@acme.example", "jane acme@x.example", `${"a".repeat(250)}@x.example`]) {
@@ -182,10 +182,10 @@ test("WAITLIST_INBOX: default enquire@, comma-separated override", () => {
 /* ---------- the team's email ---------- */
 
 test("the team's subject: interests, or Attending; a repeat ends (updated)", () => {
-  assert.equal(alertSubject({ email: "jane@acme.example", interests: ["exhibitor", "sponsorship"] }), "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – jane@acme.example");
+  assert.equal(alertSubject({ email: "jane@acme.example", interests: ["exhibitor", "sponsorship"] }), "TTFC 2027 waitlist: Exhibitor + Sponsorship interest – jane@acme.example");
   assert.equal(alertSubject({ email: "jane@acme.example", interests: [] }), "TTFC 2027 waitlist: Attending – jane@acme.example");
   assert.equal(alertSubject({ email: "jane@acme.example", interests: ["delegation"], updated: true }), "TTFC 2027 waitlist: Delegation interest – jane@acme.example (updated)");
-  assert.equal(alertSubject({ email: "a@b.example", interests: INTERESTS }), "TTFC 2027 waitlist: Sponsorship + Exhibitor + Delegation interest – a@b.example");
+  assert.equal(alertSubject({ email: "a@b.example", interests: INTERESTS }), "TTFC 2027 waitlist: Delegate + Exhibitor + Sponsorship + Delegation interest – a@b.example");
   // With their name and company (Oct 24 2026).
   assert.equal(alertSubject({ email: "jane@acme.example", interests: ["exhibitor"], name: "Jane Doe", company: "Acme Inc." }), "TTFC 2027 waitlist: Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.example");
   assert.equal(alertSubject({ email: "jane@acme.example", interests: [], name: "Jane Doe", updated: true }), "TTFC 2027 waitlist: Attending – Jane Doe – jane@acme.example (updated)");
@@ -269,11 +269,11 @@ test("admin list: filter by interest (or attending), source and search; rows; co
   assert.deepEqual([r.name, r.company, r.earlierNames, r.earlierCompanies], ["Jane Doe", "Acme, Inc.", [], ["Old Co"]]);
   assert.deepEqual([waitlistRow({ _id: "x" }).name, waitlistRow({ _id: "x" }).company], ["", ""]);
   assert.deepEqual(waitlistCounts({ total: 5, attending: 2, byInterest: [{ _id: "sponsorship", n: 3 }, { _id: "golf", n: 9 }], bySource: [{ _id: "ios", n: 1 }] }),
-    { total: 5, attending: 2, sponsorship: 3, exhibitor: 0, delegation: 0, website: 0, webapp: 0, ios: 1, android: 0, programme: 0 });
+    { total: 5, attending: 2, delegate: 0, exhibitor: 0, sponsorship: 3, delegation: 0, website: 0, webapp: 0, ios: 1, android: 0, programme: 0 });
   const csv = waitlistCsv([d, { ...d, _id: "a2", name: "", company: "=HYPERLINK(1)", email: "=cmd@x.example", interests: [] }]);
   const lines = csv.replace(/^﻿/, "").split("\n");
-  assert.equal(lines[0], "Signed up (Toronto),Last sign-up (Toronto),Name,Company,Email,Phone,Sponsorship,Exhibitor,Delegation,Interested in,Signed up from,Sign-ups,Team emailed,Confirmation email");
-  assert.match(lines[1], /,Jane Doe,"Acme, Inc\.",jane@acme\.example,416-555-0100,No,Yes,No,Exhibitor,"Website, iOS app",2,,$/);
+  assert.equal(lines[0], "Signed up (Toronto),Last sign-up (Toronto),Name,Company,Email,Phone,Delegate,Exhibitor,Sponsorship,Delegation,Interested in,Signed up from,Sign-ups,Team emailed,Confirmation email");
+  assert.match(lines[1], /,Jane Doe,"Acme, Inc\.",jane@acme\.example,416-555-0100,No,Yes,No,No,Exhibitor,"Website, iOS app",2,,$/);
   assert.match(lines[2], /,,'=HYPERLINK\(1\),'=cmd@x\.example,/, "no name; formulas neutralised");
   assert.match(lines[2], /,Attending,/);
 });
@@ -421,9 +421,9 @@ test("a first sign-up: 200 with the thank-you, then the team's email and the per
   await t.settle();
   assert.equal(t.alerts.length, 1);
   assert.deepEqual(t.alerts[0].to, ["team@example.com"]);
-  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Sponsorship + Exhibitor interest – Jane Doe (Acme Inc.) – jane@acme.example");
+  assert.equal(t.alerts[0].subject, "TTFC 2027 waitlist: Exhibitor + Sponsorship interest – Jane Doe (Acme Inc.) – jane@acme.example");
   assert.equal(t.alerts[0].replyTo, "jane@acme.example");
-  assert.deepEqual(t.confirmations, [{ to: "jane@acme.example", interests: ["sponsorship", "exhibitor"], copy: STAY_DEFAULTS, name: "Jane Doe" }]);
+  assert.deepEqual(t.confirmations, [{ to: "jane@acme.example", interests: ["exhibitor", "sponsorship"], copy: STAY_DEFAULTS, name: "Jane Doe" }]);
   const row = t.rows.get("jane@acme.example");
   assert.deepEqual([row.alertStatus, row.confirmStatus, row.count], ["sent", "sent", 1]);
   assert.match(row.ipHash, /^[0-9a-f]{32}$/);
@@ -547,4 +547,41 @@ test("the save fails: the team's email is the only copy, so it's waited for; bot
   const t2 = setup({ saveFails: true, alertFails: true });
   const r2 = await t2.call({ ...GOOD });
   assert.deepEqual([r2.statusCode, r2.body], [500, { ok: false, error: FAILED }]);
+});
+
+/* ---------- "delegate" (Oct 27 2026) ---------- */
+
+test("delegate: the first interest everywhere (delegate, exhibitor, sponsorship, delegation), in the page's and staff's words", () => {
+  assert.deepEqual(INTERESTS, ["delegate", "exhibitor", "sponsorship", "delegation"]);
+  // The form: accepted, put in order, unknown ones still dropped.
+  const r = validateSignup({ ...GOOD, interests: ["delegation", "sponsorship", "Delegate ", "golf", "delegates"] });
+  assert.deepEqual(r.value.interests, ["delegate", "sponsorship", "delegation"]);
+  assert.deepEqual(cleanInterests("exhibitor,delegate"), ["delegate", "exhibitor"]);
+  // The page's words: a new key, first among the ticks; the label above them no longer says "also".
+  assert.equal(STAY_DEFAULTS["stay.interest_delegate"], "Attending as a delegate");
+  assert.equal(STAY_DEFAULTS["stay.interests_label"], "I'm interested in (optional)");
+  assert.deepEqual(STAY_KEYS.filter((k) => k.startsWith("stay.interest_")), ["stay.interest_delegate", "stay.interest_exhibitor", "stay.interest_sponsorship", "stay.interest_delegation"]);
+  assert.equal(CONTENT_KEYS["stay.interest_delegate"], "Attending as a delegate", "in GET /api/app/content and Admin's editor");
+  assert.deepEqual(cleanContent("stay.interest_delegate", "Coming as a delegate"), ["stay.interest_delegate", "Coming as a delegate"], "any staff, plain text");
+  for (const k of ["stay.interest_golf", "stay.interest_Delegate", "stay.interest_delegates"]) assert.equal(cleanContent(k, "x"), null, `${k}: unknown keys are refused`);
+  // The team's email.
+  assert.equal(alertSubject({ email: "dee@acme.example", interests: ["delegate"] }), "TTFC 2027 waitlist: Delegate interest – dee@acme.example");
+  assert.equal(alertSubject({ email: "dee@acme.example", interests: ["sponsorship", "delegate"] }), "TTFC 2027 waitlist: Delegate + Sponsorship interest – dee@acme.example");
+  const alert = buildWaitlistAlert({ email: "dee@acme.example", interests: ["exhibitor", "delegate"], source: "website" });
+  assert.match(alert.text, /Interested in: Delegate, Exhibitor/);
+  // The person's confirmation: their ticks in the page's words, the delegate first.
+  assert.deepEqual(askedAbout(["delegation", "delegate", "exhibitor"]), ["Attending as a delegate", "Exhibiting", "Bringing a delegation"]);
+  assert.deepEqual(askedAbout(["delegate"], { ...STAY_DEFAULTS, "stay.interest_delegate": "Coming as a delegate" }), ["Coming as a delegate"]);
+  const e = buildWaitlistEmail({ interests: ["sponsorship", "delegate"] });
+  assert.match(e.text, /WHAT YOU ASKED ABOUT\n  • Attending as a delegate\n  • Sponsorship\n/);
+  assert.ok(e.html.indexOf(">Attending as a delegate<") > 0 && e.html.indexOf(">Attending as a delegate<") < e.html.indexOf(">Sponsorship<"));
+  // The admin list: filter, row labels, counts, the CSV's columns.
+  assert.deepEqual(waitlistFilter({ interest: "delegate" }), { interests: "delegate" });
+  assert.deepEqual(waitlistRow({ _id: "d1", interests: ["exhibitor", "delegate"] }).interestLabels, ["Delegate", "Exhibitor"]);
+  assert.deepEqual(waitlistCounts({ total: 3, byInterest: [{ _id: "delegate", n: 2 }, { _id: "delegation", n: 1 }] }),
+    { total: 3, attending: 0, delegate: 2, exhibitor: 0, sponsorship: 0, delegation: 1, website: 0, webapp: 0, ios: 0, android: 0, programme: 0 });
+  const csv = waitlistCsv([{ _id: "d1", name: "Dee Lee", email: "dee@acme.example", interests: ["delegate"], source: "ios", sources: ["ios"], count: 1, createdAt: new Date("2026-10-27T15:00:00Z") }]);
+  const [head, row] = csv.replace(/^﻿/, "").split("\n");
+  assert.match(head, /,Phone,Delegate,Exhibitor,Sponsorship,Delegation,Interested in,/);
+  assert.match(row, /,dee@acme\.example,,Yes,No,No,No,Delegate,iOS app,1,/);
 });
