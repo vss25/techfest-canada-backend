@@ -7,10 +7,12 @@ import { buildSurveyEmail, surveyLogoPng } from "../services/surveyEmail.js";
 import { previewUnsubscribeUrl } from "../services/unsubscribe.js";
 import {
   SURVEY_PAGE, AUDIENCES, INVITE_ONLY_MESSAGE, publicSurvey, appSurveyCard, responseRow, responsesCsv, signSurveyToken, surveyOpen,
+  filterTracking, trackingCsv, TRACKING_STATUSES,
 } from "../services/surveyRules.js";
 import {
   loadSurvey, saveSurvey, identify, bearerUser, hasResponded, submitResponse, surveyStats, sendPrompt, emailPlan,
-  sendSurveyEmails, isCheckedIn, asRespondent, personalLinks, MAX_LINKS,
+  sendSurveyEmails, isCheckedIn, asRespondent, personalLinks, MAX_LINKS, notifyProgress, surveyPeople, trackingList,
+  loadTracking,
 } from "../services/survey.js";
 import { directory as peopleDirectory } from "./people.js";
 
@@ -64,12 +66,23 @@ import { directory as peopleDirectory } from "./people.js";
 
    Admin (staff read, management changes and sends; audited), mounted at /api/console/survey:
      GET  /                 → { config, counts: { responses, app, link }, averages: { [ratingOrNpsId]: n | null },
-                                na: { [id]: n }, open, invitationOnly: true, canEdit, audiences: ["day1", "day2", "both"] }
+                                na: { [id]: n }, open, invitationOnly: true, canEdit, audiences: ["day1", "day2", "both"],
+                                notifyProgress: { sent, remaining, nextAt, done, auto, startsAt, endsAt, batchSize,
+                                intervalMin, lastWaveAt } }
+                              notifyProgress: the paced app prompt (Oct 26 2026, late: "prompted/notified some time
+                                after 4 pm. All of them don't need to be notified immediately."): from opensAt +
+                                notifyStartDelayMin, notifyBatchSize people every notifyIntervalMin minutes, the most
+                                recently active first, until 10 PM Toronto on the opening day (endsAt). sent = prompts so
+                                far; remaining = checked-in app users not answered or prompted yet; nextAt = the next
+                                wave (null when none); done = nobody waiting after a wave, or the window is over.
                               (no public link: the survey is by invitation; links come from /link and /links)
                               config: { enabled, opensAt, closesAt, title, intro, thankYou, notifyTitle, notifyBody,
                                 autoNotify, notifiedAt, notifiedCount, questions, retired (deleted questions, their
                                 answers kept), saved, updatedAt, updatedBy }. averages leave "na" out.
      PUT  /  { any config fields, questions: the full list } (management) → { config, changed }
+              autoNotify (default true; stored as management's choice only when a save changes it),
+              notifyStartDelayMin (0–240, default 15), notifyBatchSize (1–200, default 30), notifyIntervalMin (1–60,
+              default 5): whole numbers, else 400.
               Questions added without an id get one from their label (unique, never a deleted question's). Ids:
               unique slugs; types known; choice / multi need 2–20 options; at most 40; showIf must point to a choice /
               multi question above it and one of its options. A question left out is deleted: it moves to retired and
@@ -89,13 +102,25 @@ import { directory as peopleDirectory } from "./people.js";
               they haven't checked in. Audited survey_link.
      POST /links { emails: [...] } (management, at most 500) → [{ email, name, url, kind, checkedIn, warning? } |
               { email, error }]   in the order asked. Audited survey_links.
-     GET  /email?audience=day1|day2|both → { audience, count, sample: [up to 5 names], counts: { checkedIn, toSend,
-              unsubscribed, alreadySent, responded, noEmail, noLink }, subject, html, text }   nothing is sent
+              /link and /links rows also carry answeredAt, emailedAt, appNotifiedAt (ISO or null), so nobody sends the
+              survey again to someone who has filled it in.
+     GET  /people?status=all|answered|not_answered|emailed|not_emailed&q=&page=  (staff) → { total, page, size: 50,
+              counts: { checkedIn, answered, notAnswered, emailed, appNotified, onApp }, rows: [{ name, email, company,
+              onApp, checkedInDays: ["day1", "day2"], emailedAt, appNotifiedAt, answeredAt, updatedAt, source,
+              personId }] }   everyone with a door check-in (the survey's rule), each address once, joined with the
+              survey email's sends, the app prompts and the answers (by account, pass or address). Not answered first,
+              then by name. counts are for everyone (not the filter); q matches name, email or company.
+     GET  /people/export?status=&q=  CSV of the same (every page). Audited survey_people_export.
+     GET  /email?audience=day1|day2|both → { audience, count, sample: [up to 5 names], sampleRows: [{ name, email,
+              answeredAt, emailedAt, appNotifiedAt }], counts: { checkedIn, toSend, unsubscribed, alreadySent, responded,
+              noEmail, noLink }, subject, html, text }   nothing is sent. People who answered are never sent it
+              (responded comes before alreadySent: an answer after an earlier email is never followed by another).
               (noLink: people with neither an account nor a pass, who can't be given a personal link)
      POST /email { audience, confirm: "SEND" } (management) → { sent, skipped, failed, counts }
               people with a door check-in that day (both = Day 1 or Day 2), each address once, never twice, never the
               unsubscribed, not people who've answered. 403 { code: "closed" } while the survey isn't open.
-   Nothing here or in the jobs sends by itself with the defaults (autoNotify is off).
+   What goes by itself: only the app prompt's paced waves (autoNotify, on by default) from opensAt + the delay until
+   10 PM Toronto that day. The email only ever goes from POST /email.
 ========================================================= */
 
 export const publicRouter = express.Router();
@@ -168,9 +193,10 @@ const PAGE_SIZE = 50;
 
 adminRouter.get("/", wrap(async (req, res) => {
   const cfg = await loadSurvey({ fresh: true });
-  const stats = await surveyStats(cfg);
+  const [stats, progress] = await Promise.all([surveyStats(cfg), notifyProgress(cfg)]);
   res.json({
     config: cfg, ...stats, open: surveyOpen(cfg), invitationOnly: true, canEdit: isManagement(req.user), audiences: Object.keys(AUDIENCES),
+    notifyProgress: progress,
   });
 }));
 
@@ -230,6 +256,22 @@ adminRouter.post("/links", requireManagement, wrap(async (req, res) => {
   res.json(out);
 }));
 
+/* Who answered (the organiser: "so that I don't end up resending the survey request to them"). */
+const statusQuery = (v) => (TRACKING_STATUSES.includes(String(v || "")) ? String(v) : "all");
+
+adminRouter.get("/people", wrap(async (req, res) => {
+  res.set("Cache-Control", "private, no-store");
+  res.json(await surveyPeople({ status: statusQuery(req.query.status), q: String(req.query.q || "").slice(0, 100), page: req.query.page }));
+}));
+
+adminRouter.get("/people/export", wrap(async (req, res) => {
+  const rows = filterTracking(await trackingList(), { status: statusQuery(req.query.status), q: String(req.query.q || "").slice(0, 100) });
+  await audit(req, "survey_people_export", `${rows.length} people (${statusQuery(req.query.status)})`);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ttfc-2026-survey-people-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(trackingCsv(rows));
+}));
+
 const audienceOf = (v) => (Object.prototype.hasOwnProperty.call(AUDIENCES, String(v || "")) ? String(v) : "");
 
 adminRouter.get("/email", wrap(async (req, res) => {
@@ -241,8 +283,13 @@ adminRouter.get("/email", wrap(async (req, res) => {
   // The admin panel's preview: the first person's greeting, the page without a personal link, the logo inline.
   const logoSrc = `data:image/png;base64,${surveyLogoPng().toString("base64")}`;
   const e = buildSurveyEmail({ firstName: first?.firstName || "", url: SURVEY_PAGE, copy: cfg, logoSrc, unsubscribeUrl: previewUnsubscribeUrl() });
+  const statusOf = await loadTracking();
   res.json({
     audience, count: plan.toSend.length, sample: plan.toSend.slice(0, 5).map((r) => r.name || r.firstName || "(no name)"),
+    sampleRows: plan.toSend.slice(0, 5).map((r) => {
+      const st = statusOf({ userIds: r.userId ? [r.userId] : [], attendeeIds: r.attendeeId ? [r.attendeeId] : [], emails: [r.email] });
+      return { name: r.name || r.firstName || "", email: r.email, answeredAt: st.answeredAt, emailedAt: st.emailedAt, appNotifiedAt: st.appNotifiedAt };
+    }),
     counts: plan.counts, subject: e.subject, html: e.html, text: e.text,
   });
 }));

@@ -6,7 +6,8 @@ import {
   DEFAULT_QUESTIONS, SURVEY_DEFAULTS, surveyConfig, surveyOpen, cleanQuestions, cleanSurveySave, cleanAnswers, cleanAnswer,
   respondentFields, signSurveyToken, verifySurveyToken, surveyUrl, publicSurvey, appSurveyCard, averagesOf, naCountsOf,
   scoreGroup, responsesCsv, checkedInAudience, slugOf, AUDIENCES, cleanWhen, checkedInPersons, checkedInKeys, personsMatching,
-  personSubjects, linkTarget, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
+  personSubjects, linkTarget, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE, waveDue, notifyWindow, torontoMoment, trackingIndex,
+  trackingRows, filterTracking, trackingCounts, trackingCsv,
 } from "../services/surveyRules.js";
 import { buildSurveyEmail, surveyMessage, sendSurveyBatch, SURVEY_SUBJECT } from "../services/surveyEmail.js";
 
@@ -14,8 +15,9 @@ const cfg = surveyConfig(null);
 const ids = (list) => list.map((x) => x.id);
 
 test("defaults: open Tue 4 PM to Nov 30, nothing sent by itself, the questions in their sections and order", () => {
-  assert.deepEqual([cfg.enabled, cfg.autoNotify, cfg.notifiedAt, cfg.saved], [true, false, null, false]);
-  assert.equal(SURVEY_DEFAULTS.autoNotify, false);   // the organiser reviews it first
+  assert.deepEqual([cfg.enabled, cfg.autoNotify, cfg.notifiedAt, cfg.saved], [true, true, null, false]);
+  // The paced prompt (Oct 26 2026, late): on, from 4:15 PM, 30 people every 5 minutes.
+  assert.deepEqual([SURVEY_DEFAULTS.autoNotify, cfg.notifyStartDelayMin, cfg.notifyBatchSize, cfg.notifyIntervalMin], [true, 15, 30, 5]);
   assert.equal(new Date(cfg.opensAt).toISOString(), "2026-10-27T20:00:00.000Z");
   assert.equal(new Date(cfg.closesAt).toISOString(), "2026-12-01T04:59:00.000Z");
   assert.deepEqual([cfg.title, cfg.thankYou, cfg.notifyTitle], ["How was TTFC 2026?", "Thank you! Your feedback helps shape TTFC 2027.", "How was TTFC 2026?"]);
@@ -117,7 +119,7 @@ test("saving questions: what's refused", () => {
   assert.match(cleanSurveySave({ closesAt: "2026-10-27T15:00:00-04:00" }, cfg).error, /close after it opens/);
   assert.match(cleanSurveySave({ autoNotify: "yes" }, cfg).error, /true or false/);
   assert.match(cleanSurveySave({ notifyTitle: "x".repeat(81) }, cfg).error, /too long/);
-  assert.deepEqual(cleanSurveySave({ notifiedAt: "2026-10-27T20:00:00Z", autoNotify: true }, cfg).config, { autoNotify: true });   // never notifiedAt
+  assert.deepEqual(cleanSurveySave({ notifiedAt: "2026-10-27T20:00:00Z", autoNotify: false }, cfg).config, { autoNotify: false, autoNotifyExplicit: true });   // never notifiedAt
   assert.equal(slugOf("How was TTFC 2026?"), "how_was_ttfc_2026");
   assert.equal(slugOf("¿¿"), "q");
 });
@@ -316,4 +318,74 @@ test("who checked in: a person's passes and ISSUE PASS ids, their email addresse
   assert.deepEqual(linkTarget(ann), { kind: "u", id: "65a1b2c3d4e5f6a7b8c9d0e1" });
   assert.deepEqual(linkTarget(twin, "ann@example.com"), { kind: "p", id: "65a1b2c3d4e5f6a7b8c9d0e2" });
   assert.equal(linkTarget(rsvpOnly), null);
+});
+
+test("the paced prompt: from opensAt + the delay, a wave every interval, until 10 PM Toronto on the opening day", () => {
+  const T0 = Date.parse("2026-10-27T16:00:00-04:00");
+  const at = (min) => new Date(T0 + min * 60_000);
+  const w = notifyWindow(cfg);
+  assert.deepEqual([w.startsAt.toISOString(), w.endsAt.toISOString()], ["2026-10-27T20:15:00.000Z", "2026-10-28T02:00:00.000Z"]);
+  assert.equal(waveDue(cfg, { now: at(14) }).due, false);
+  assert.equal(waveDue(cfg, { now: at(14) }).nextAt.toISOString(), "2026-10-27T20:15:00.000Z");
+  assert.equal(waveDue(cfg, { now: at(15) }).due, true);
+  // An interval after the last wave (a few seconds of drift allowed), never two in one interval.
+  assert.equal(waveDue(cfg, { now: at(18), lastWaveAt: at(15) }).due, false);
+  assert.equal(waveDue(cfg, { now: new Date(at(20).getTime() - 5_000), lastWaveAt: at(15) }).due, true);
+  assert.equal(waveDue(cfg, { now: at(20), lastWaveAt: at(15) }).nextAt.toISOString(), at(20).toISOString());
+  // 10 PM Toronto: no more waves (nobody pushed at night); not while off; not while the survey is switched off.
+  assert.equal(waveDue(cfg, { now: new Date("2026-10-27T22:00:00-04:00"), lastWaveAt: at(300) }).due, false);
+  assert.equal(waveDue(cfg, { now: new Date("2026-10-27T21:59:00-04:00"), lastWaveAt: new Date("2026-10-27T21:50:00-04:00") }).due, true);
+  assert.deepEqual(waveDue({ ...cfg, autoNotify: false }, { now: at(15) }), { due: false, nextAt: null, ...w });
+  assert.equal(waveDue({ ...cfg, enabled: false }, { now: at(15) }).due, false);
+  assert.equal(waveDue({ ...cfg, notifyStartDelayMin: 0 }, { now: at(0) }).due, true);
+  assert.equal(torontoMoment("2026-12-01", "22:00").toISOString(), "2026-12-02T03:00:00.000Z");   // EST
+  // The numbers: whole, in range.
+  assert.deepEqual(cleanSurveySave({ notifyBatchSize: 50, notifyIntervalMin: "10", notifyStartDelayMin: 0 }, cfg).config, { notifyBatchSize: 50, notifyIntervalMin: 10, notifyStartDelayMin: 0 });
+  for (const [k, v] of [["notifyBatchSize", 0], ["notifyBatchSize", 201], ["notifyIntervalMin", 0], ["notifyIntervalMin", 61], ["notifyStartDelayMin", 241], ["notifyStartDelayMin", -1], ["notifyBatchSize", 2.5], ["notifyBatchSize", "x"]]) {
+    assert.match(cleanSurveySave({ [k]: v }, cfg).error, /whole number/, `${k}=${v}`);
+  }
+});
+
+test("autoNotify: on unless management switched it off (a stored false from the old default is ignored)", () => {
+  assert.equal(surveyConfig({ autoNotify: false }).autoNotify, true);   // saved with the whole form before: not a choice
+  assert.equal(surveyConfig({ autoNotify: false, autoNotifyExplicit: true }).autoNotify, false);
+  assert.equal(surveyConfig({ autoNotify: true, autoNotifyExplicit: true }).autoNotify, true);
+  // A save that repeats what's shown stores nothing; one that changes it is management's choice.
+  assert.deepEqual(cleanSurveySave({ autoNotify: true }, cfg).config, {});
+  assert.deepEqual(cleanSurveySave({ autoNotify: false }, cfg).config, { autoNotify: false, autoNotifyExplicit: true });
+  const off = surveyConfig({ autoNotify: false, autoNotifyExplicit: true });
+  assert.deepEqual(cleanSurveySave({ autoNotify: true }, off).config, { autoNotify: true, autoNotifyExplicit: true });
+});
+
+test("who answered: everyone checked in, each address once, emailed / prompted / answered, not answered first", () => {
+  const p = (id, name, email, extra = {}) => ({ id, name, email, emails: new Set([email]), attendees: [], tickets: new Map(), ...extra });
+  const ann = p("u-1", "Ann Attendee", "ann@example.com", { user: { _id: "u1", appOnboarded: true }, company: "Acme" });
+  const annPass = p("a-2", "Ann Attendee", "ann@example.com", { attendees: [{ _id: "a2" }] });
+  const bob = p("a-3", "Bob Pass", "bob@example.com", { attendees: [{ _id: "a3" }] });
+  const cy = p("u-4", "Cy App", "cy@example.com", { user: { _id: "u4", lastActiveAt: new Date() } });
+  const statusOf = trackingIndex({
+    sends: [{ email: "bob@example.com", sentAt: new Date("2026-10-27T21:00:00Z") }, { email: "cy@example.com", sentAt: new Date("2026-10-27T21:00:00Z") }],
+    notes: [{ userId: "u4", createdAt: new Date("2026-10-27T20:15:00Z") }, { userId: "u4", createdAt: new Date("2026-10-27T20:30:00Z") }],
+    responses: [
+      { attendeeId: "a3", email: "bob@example.com", createdAt: new Date("2026-10-27T21:10:00Z"), submittedAt: new Date("2026-10-27T21:40:00Z"), source: "link" },
+      { userId: "u1", email: "ann@example.com", createdAt: new Date("2026-10-27T20:20:00Z"), submittedAt: new Date("2026-10-27T20:20:00Z"), source: "app" },
+    ],
+  });
+  const rows = trackingRows({ byDay: { day1: [ann, bob], day2: [annPass, cy] }, statusOf });
+  assert.deepEqual(rows.map((r) => [r.email, r.checkedInDays, r.onApp, !!r.answeredAt, !!r.emailedAt, !!r.appNotifiedAt]), [
+    ["ann@example.com", ["day1", "day2"], true, true, false, false],   // her account and her pass: one row
+    ["bob@example.com", ["day1"], false, true, true, false],
+    ["cy@example.com", ["day2"], true, false, true, true],
+  ]);
+  const bobRow = rows[1];
+  assert.deepEqual([bobRow.answeredAt, bobRow.updatedAt, bobRow.source], ["2026-10-27T21:10:00.000Z", "2026-10-27T21:40:00.000Z", "link"]);
+  assert.equal(rows[2].appNotifiedAt, "2026-10-27T20:15:00.000Z");   // the first prompt
+  assert.deepEqual(trackingCounts(rows), { checkedIn: 3, answered: 2, notAnswered: 1, emailed: 2, appNotified: 1, onApp: 2 });
+  assert.deepEqual(filterTracking(rows).map((r) => r.name), ["Cy App", "Ann Attendee", "Bob Pass"]);   // not answered first
+  assert.deepEqual(filterTracking(rows, { status: "answered" }).map((r) => r.name), ["Ann Attendee", "Bob Pass"]);
+  assert.deepEqual(filterTracking(rows, { status: "not_emailed" }).map((r) => r.name), ["Ann Attendee"]);
+  assert.deepEqual(filterTracking(rows, { q: "ACME" }).map((r) => r.name), ["Ann Attendee"]);
+  const csv = trackingCsv(filterTracking(rows)).slice(1).split("\n");
+  assert.equal(csv[0], "Name,Email,Company,On the app,Checked in,Emailed (UTC),Prompted in the app (UTC),Answered (UTC),Last updated (UTC),Source");
+  assert.equal(csv[2], "Ann Attendee,ann@example.com,Acme,Yes,\"Day 1, Day 2\",,,2026-10-27 20:20:00,2026-10-27 20:20:00,app");
 });

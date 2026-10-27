@@ -2,7 +2,7 @@
    opens (staff can preview), management edits the questions (add, edit, delete: answers to deleted questions are
    kept and in the CSV), answers checked against the current questions (skip, N/A, show-only-if), one response per
    person (answering again updates it), who's answering (the app's sign-in, a personal link for an account or a pass),
-   the app's card, the averages without N/A, the app prompt (nothing with the defaults; once autoNotify is on, the job
+   the app's card, the averages without N/A, the app prompt (nothing while autoNotify is off; while on, the job's wave
    sends it once; management's Send never twice to anyone), and the email to the people checked in (the audience from
    the check-in desk's marks, each address once, a preview sends nothing, a second Send emails nobody twice, the
    unsubscribed and people who've answered left out).
@@ -188,9 +188,9 @@ test("with the defaults: closed until Tue 4 PM (staff can preview), nothing sent
   assert.equal((await ok(call("GET", "/api/survey?preview=1", { as: U.sam }))).questions.length, 32);
   assert.equal((await ok(call("GET", "/api/survey?preview=1", { as: U.ann }))).preview, undefined);
   assert.equal((await call("GET", "/api/app/survey")).status, 401);
-  // The job, now and at opensAt and later, with nothing saved: nothing.
+  // The paced prompt (on by default since late Oct 26): no wave before 4:15 PM on Tue or after 10 PM that day.
   for (const at of ["2026-10-27T20:00:30Z", "2026-10-28T12:00:00Z"]) assert.equal(await S.runSurveyNotify({ now: new Date(at), held: true }), null);
-  // Saved but autoNotify still off (the default), open: still nothing.
+  // Opened long ago: its waves' window (that day until 10 PM) is over: nothing now.
   await ok(put(U.mia, { opensAt: PAST }));
   assert.equal(await S.runSurveyNotify({ now: new Date(), held: true }), null);
   await pause(50);
@@ -200,7 +200,7 @@ test("with the defaults: closed until Tue 4 PM (staff can preview), nothing sent
 
 test("management edits the survey: add, edit and delete questions; staff can only read; bad saves refused", { skip }, async () => {
   const sam = await ok(call("GET", "/api/console/survey", { as: U.sam }));
-  assert.deepEqual([sam.canEdit, sam.invitationOnly, sam.url, sam.config.autoNotify, sam.counts], [false, true, undefined, false, { responses: 0, app: 0, link: 0 }]);
+  assert.deepEqual([sam.canEdit, sam.invitationOnly, sam.url, sam.config.autoNotify, sam.counts], [false, true, undefined, true, { responses: 0, app: 0, link: 0 }]);
   assert.equal((await put(U.sam, { title: "Nope" })).status, 403);
   const before = sam.config.questions;
   // Delete "food", edit "meals", add one without an id and one with.
@@ -328,19 +328,21 @@ test("deleted questions keep their answers: in the stored responses and the CSV,
   await ok(put(U.mia, { questions: cfg.config.questions }));   // and back
 });
 
-test("the app prompt: nothing until autoNotify is on; then the job sends it once; management's Send never twice", { skip }, async () => {
+test("the app prompt: nothing while autoNotify is off; a wave sends it once; management's Send never twice", { skip }, async () => {
   pushes.length = 0;
   await M.AppNotification.deleteMany({});
-  // Open, autoNotify off: the job sends nothing.
-  assert.equal(await S.runSurveyNotify({ now: new Date(), held: true }), null);
+  // Switched off by management: the job sends nothing, even inside its window.
+  const IN = new Date("2026-01-01T09:20:00-05:00");   // opensAt (PAST) + 20 min: inside the waves' window
+  await ok(put(U.mia, { autoNotify: false }));
+  assert.equal(await S.runSurveyNotify({ now: IN, held: true }), null);
   assert.equal(await M.AppNotification.countDocuments({}), 0);
   // Staff can't send; management must confirm.
   assert.equal((await call("POST", "/api/console/survey/notify", { as: U.sam, body: { confirm: "SEND" } })).status, 403);
   assert.equal((await call("POST", "/api/console/survey/notify", { as: U.mia, body: {} })).status, 400);
-  // Management turns autoNotify on: the next run sends it (to Cal, who checked in, is on the app and hasn't answered;
-  // not Ann, Ben or Nat, who answered, Hal, hidden, Ola, who never checked in, Bea, suspended, or Wes, never on the app).
+  // On again: the next wave sends it (to Cal, who checked in, is on the app and hasn't answered; not Ann, Ben or Nat,
+  // who answered, Hal, hidden, Ola, who never checked in, Bea, suspended, or Wes, never on the app).
   await ok(put(U.mia, { autoNotify: true }));
-  const out = await S.runSurveyNotify({ now: new Date(), held: true });
+  const out = await S.runSurveyNotify({ now: IN, held: true });
   assert.deepEqual([out.sent, out.answered, out.hidden, out.notCheckedIn], [1, 3, 1, 1]);
   const notes = await M.AppNotification.find({ batchId: "survey-2026" }).lean();
   assert.deepEqual(notes.map((n) => String(n.userId)), [String(U.cal._id)]);
@@ -352,8 +354,8 @@ test("the app prompt: nothing until autoNotify is on; then the job sends it once
   const cfg = await ok(call("GET", "/api/console/survey", { as: U.sam }));
   assert.ok(cfg.config.notifiedAt);
   assert.equal(cfg.config.notifiedCount, 1);
-  // Once: later runs send nothing.
-  assert.equal(await S.runSurveyNotify({ now: new Date(Date.now() + 60_000), held: true }), null);
+  // Once: later waves send nothing.
+  assert.equal((await S.runSurveyNotify({ now: new Date(IN.getTime() + 6 * 60_000), held: true }))?.sent ?? 0, 0);
   // A new person on the app who checked in: management's Send reaches them (with a push), and never Cal again; Ola
   // still hasn't checked in.
   const dee = await M.User.create({ name: "Dee Late", email: "dee@example.com", tickets: [{ ticketId: "CON260000020", type: "connect" }], appOnboarded: true, lastActiveAt: new Date() });
