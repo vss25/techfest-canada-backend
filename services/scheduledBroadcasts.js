@@ -5,13 +5,14 @@ import AppNotification from "../models/AppNotification.js";
 import CheckinMark from "../models/CheckinMark.js";
 import ScheduledBroadcast from "../models/ScheduledBroadcast.js";
 import { SocialPost } from "../models/Social.js";
-import { AppContent, AdminAudit } from "../models/Admin.js";
+import { AppContent, AdminAudit, AppEvent } from "../models/Admin.js";
 import { pushToUsers } from "./push.js";
 import { recipientFilter } from "./notifyHelpers.js";
+import { APP_VERSION_DEFAULTS } from "./appVersion.js";
 import { EVENT_DAYS, DOOR_POINTS, checkedInPersons, checkedInKeys, cleanEmail } from "./surveyRules.js";
 import {
   MISSED_AFTER_MS, STUCK_AFTER_MS, CHUNK, ORG_NAME, ORG_TITLE, ORG_COMPANY, BANNER_KEY, BANNER_LINK_KEY, BANNER_MAX,
-  batchIdOf, chunks, auditLine,
+  STORE_PLATFORMS, batchIdOf, chunks, auditLine, outdatedUserIds,
 } from "./scheduledBroadcastRules.js";
 
 /* =========================================================
@@ -92,14 +93,51 @@ export async function checkedInKeysNow({ directory = peopleDirectory } = {}) {
   return checkedInKeys(persons);
 }
 
+/** The newest store versions the apps' update banner uses (GET /api/app/content: a saved value, else the default). */
+export async function latestStoreVersions() {
+  const keys = { ios: "app.ios_latest", android: "app.android_latest" };
+  const rows = await AppContent.find({ key: { $in: Object.values(keys) } }).select("key value").lean();
+  const saved = new Map(rows.map((r) => [r.key, r.value]));
+  return Object.fromEntries(Object.entries(keys).map(([p, k]) => [p, str(saved.has(k) ? saved.get(k) : APP_VERSION_DEFAULTS[k])]));
+}
+
+/** Of these accounts, the ones whose app is older than the newest version for their platform (the platform of their
+    newest app event, the newest version recorded on it; services/scheduledBroadcastRules.js outdatedUserIds).
+    → Set of userId strings */
+export async function outdatedIdsNow(userIds = []) {
+  if (!userIds.length) return new Set();
+  const [latest, platforms, versions] = await Promise.all([
+    latestStoreVersions(),
+    AppEvent.aggregate([
+      { $match: { userId: { $in: userIds } } },
+      { $group: { _id: { u: "$userId", p: "$platform" }, lastAt: { $max: "$at" } } },
+    ]).allowDiskUse(true),
+    AppEvent.aggregate([
+      { $match: { userId: { $in: userIds }, platform: { $in: [...STORE_PLATFORMS] }, appVersion: { $nin: ["", null] } } },
+      { $sort: { userId: 1, at: -1 } },
+      { $group: { _id: { u: "$userId", p: "$platform" }, appVersion: { $first: "$appVersion" } } },
+    ]).allowDiskUse(true),
+  ]);
+  return outdatedUserIds({
+    platforms: platforms.map((r) => ({ userId: str(r._id.u), platform: r._id.p, lastAt: r.lastAt })),
+    versions: versions.map((r) => ({ userId: str(r._id.u), platform: r._id.p, appVersion: r.appVersion })),
+    latest,
+  });
+}
+
 /**
  * Who a notification goes to now: "app" = everyone signed into the app who isn't suspended (POST /console/notify's
  * rule, services/notifyHelpers.js recipientFilter); "checkedIn" = those of them whose account or email had a door
- * check-in on Day 1 or Day 2. → [User _id]
+ * check-in on Day 1 or Day 2; "outdated" = those of them on an older iOS / Android app than the "App updates" keys'
+ * newest version (nobody without a version recorded, nobody whose newest event is from the web app). → [User _id]
  */
 export async function audienceIds(audience = "app", { directory = peopleDirectory } = {}) {
   const users = await User.find(recipientFilter()).select("_id email").lean();
-  if (audience !== "checkedIn" || !users.length) return users.map((u) => u._id);
+  if (!users.length || (audience !== "checkedIn" && audience !== "outdated")) return users.map((u) => u._id);
+  if (audience === "outdated") {
+    const behind = await outdatedIdsNow(users.map((u) => u._id));
+    return users.filter((u) => behind.has(str(u._id))).map((u) => u._id);
+  }
   const ci = await checkedInKeysNow({ directory });
   return users.filter((u) => ci.userIds.has(str(u._id)) || ci.emails.has(cleanEmail(u.email))).map((u) => u._id);
 }

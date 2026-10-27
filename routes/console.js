@@ -566,7 +566,8 @@ router.post("/broadcast", requireManagement, async (req, res) => {
 });
 
 /* ---------- Scheduled broadcasts (Oct 27 2026): management only ----------
-   A feed post, the Home banner and / or a notification to everyone on the app (or those who checked in), sent once
+   A feed post, the Home banner and / or a notification to everyone on the app (or those who checked in, or those on
+   an older app version than "App updates" says is the newest: audience "outdated"), sent once
    at sendAt by the minute job (services/scheduledBroadcasts.js; rules services/scheduledBroadcastRules.js).
    GET /broadcasts/scheduled → { items: [item] (newest sendAt first, every status), quietHours: { from, to, tz } }
    POST /broadcasts/scheduled { sendAt, title, body, linkUrl, feedPost, banner, notify, audience } → 201 item

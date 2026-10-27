@@ -10,7 +10,8 @@ const { Schema, Types } = mongoose;
                linkUrl, or "" when there is none);
      notify    an inbox row (AppNotification kind "personal", batchId "sched:<_id>") for each recipient + a push.
    audience (notify only): "app" = everyone signed into the app (POST /console/notify's rule), "checkedIn" = those of
-   them with a door check-in on Day 1 or Day 2.
+   them with a door check-in on Day 1 or Day 2, "outdated" = those on an older iOS / Android app than the newest
+   version in the "App updates" keys (app.ios_latest / app.android_latest).
    status: scheduled → sending (claimed by one server, atomically) → sent | failed; scheduled → cancelled (management)
    or missed (the job found it more than 2 hours late: the server was down; never sent late). Never deleted. */
 export const STATUSES = Object.freeze(["scheduled", "sending", "sent", "cancelled", "failed", "missed"]);

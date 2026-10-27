@@ -14,7 +14,11 @@
    when notify), body (≤ 500, always), linkUrl ("" or a link the
    personal notifications accept: ttfc://tab/…, ttfc://session/…,
    https://…), the channels feedPost / banner / notify (at least
-   one) and audience ("app" | "checkedIn", for notify).
+   one) and audience (for notify): "app" (everyone signed into the
+   app), "checkedIn" (those with a door check-in on Day 1 or 2) or
+   "outdated" (those whose app is older than the newest version for
+   their platform, the "App updates" keys app.ios_latest /
+   app.android_latest: outdatedUserIds below).
    sendAt must be at least 2 minutes ahead and outside the quiet
    hours, 22:00–08:00 Toronto time (the organiser's rule: no pushes
    at night), with Toronto's own offset on that date (EDT / EST).
@@ -22,6 +26,7 @@
 ========================================================= */
 
 import { BODY_MAX, TITLE_MAX, cleanLink } from "./notifyHelpers.js";
+import { compareVersions } from "./appVersion.js";
 
 export const TZ = "America/Toronto";
 /** No scheduled send may be set for these Toronto times: from 22:00 (included) to 08:00 (excluded). */
@@ -36,7 +41,9 @@ export const MISSED_AFTER_MS = 2 * 60 * 60_000;
 export const STUCK_AFTER_MS = 15 * 60_000;
 /** Inbox rows written (and pushes asked for) at a time. */
 export const CHUNK = 500;
-export const AUDIENCES = Object.freeze(["app", "checkedIn"]);
+export const AUDIENCES = Object.freeze(["app", "checkedIn", "outdated"]);
+/** The platforms with a store version to be behind ("web" never is). */
+export const STORE_PLATFORMS = Object.freeze(["ios", "android"]);
 export const CHANNELS = Object.freeze(["feedPost", "banner", "notify"]);
 /** The fields a create or an edit may send. */
 export const FIELDS = Object.freeze(["sendAt", "title", "body", "linkUrl", "feedPost", "banner", "notify", "audience"]);
@@ -61,7 +68,7 @@ export const ERRORS = Object.freeze({
   bodyLong: `Keep the message to ${BODY_MAX} characters.`,
   link: "That link can't be used. Pick a screen in the app, a session, or an https:// web page.",
   channels: "Pick at least one: a feed post, the Home banner or a notification.",
-  audience: "Pick who gets the notification: \"app\" (everyone on the app) or \"checkedIn\" (people who checked in).",
+  audience: "Pick who gets the notification: \"app\" (everyone on the app), \"checkedIn\" (people who checked in) or \"outdated\" (people on an older app version).",
 });
 
 const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -131,6 +138,43 @@ export function validateScheduled(input, { now = new Date(), existing = null } =
     sendAt = new Date(base.sendAt);
   }
   return { value: { sendAt, title, body, linkUrl, feedPost, banner, notify, audience } };
+}
+
+/* ---------- the "outdated" audience ---------- */
+
+/** The version an app sent with its events: "1.0.3 (20)" (iOS) or "1.0.6 (9) android" (Android) → "1.0.3"; "" when
+    there's none ("", "?", "web"). */
+export function appVersionNumber(raw) {
+  const m = /^\s*v?(\d{1,4}(?:\.\d{1,4}){0,3})(?![\d.])/i.exec(String(raw ?? ""));
+  return m ? m[1] : "";
+}
+
+/**
+ * Who is on an older app than the newest one for their platform.
+ *   platforms: [{ userId, platform, lastAt }]   each person's newest event per platform (AppEvent)
+ *   versions:  [{ userId, platform, appVersion }] each person's newest event with a version, per store platform
+ *   latest:    { ios, android }                   the "App updates" keys (app.ios_latest / app.android_latest)
+ * A person's platform is the one of their newest event; their version is the newest one recorded on it. Left out:
+ * nobody with a version recorded on that platform, a newest event from the web app, a platform whose newest version
+ * is empty or not a version. Versions compare numerically ("1.0.10" is newer than "1.0.9"). → Set of userId strings
+ */
+export function outdatedUserIds({ platforms = [], versions = [], latest = {} } = {}) {
+  const newest = new Map();
+  for (const r of platforms) {
+    const id = String(r?.userId ?? "");
+    const at = new Date(r?.lastAt).getTime();
+    if (!id || Number.isNaN(at)) continue;
+    const was = newest.get(id);
+    if (!was || at > was.at) newest.set(id, { platform: String(r.platform || ""), at });
+  }
+  const versionOf = new Map(versions.map((r) => [`${r?.userId}|${r?.platform}`, appVersionNumber(r?.appVersion)]));
+  const out = new Set();
+  for (const [id, { platform }] of newest) {
+    if (!STORE_PLATFORMS.includes(platform)) continue;
+    const v = versionOf.get(`${id}|${platform}`);
+    if (v && compareVersions(v, String(latest?.[platform] ?? "").trim()) === -1) out.add(id);
+  }
+  return out;
 }
 
 /** Did the job find it too late to send (more than MISSED_AFTER_MS after sendAt)? */

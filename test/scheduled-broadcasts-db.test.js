@@ -235,6 +235,45 @@ test("who gets it: app = everyone signed in and not suspended; checkedIn = those
   assert.deepEqual(await SB.estimates(["app", "checkedIn", "app"]), { app: 7, checkedIn: 4 });
 });
 
+test("who gets it: outdated = on the app with an older iOS / Android version than App updates' newest, by their newest event", { skip }, async () => {
+  const ev = (u, platform, appVersion, h) => ({ userId: U[u]._id, deviceId: `d-${u}-${platform}`, name: "screen_view", screen: "home", appVersion, platform, at: new Date(Date.UTC(2026, 9, 27, h)) });
+  await M.AppEvent.insertMany([
+    ev("ann", "ios", "1.0.3 (20)", 9), ev("ann", "ios", "1.0.3 (20)", 12),                   // behind iOS 1.0.4
+    ev("dan", "ios", "1.0.1 (10)", 8), ev("dan", "android", "1.0.7 (10) android", 11),        // now on Android, up to date
+    ev("cal", "ios", "1.0.4 (21)", 8), ev("cal", "android", "1.0.6 (9) android", 11),         // now on Android, behind 1.0.7
+    ev("ola", "ios", "1.0.10 (40)", 12),                                                      // 1.0.10 is newer than 1.0.4
+    ev("pat", "ios", "1.0.1 (12)", 8), ev("pat", "web", "", 12),                               // the web app last
+    ev("eve", "ios", "", 12),                                                                 // no version recorded
+    ev("ban", "ios", "1.0.1 (12)", 12), ev("web", "ios", "1.0.1 (12)", 12), ev("mia", "android", "1.0.5 (8) android", 12),   // not on the app / suspended
+  ]);
+  // The defaults (iOS 1.0.3, Android 1.0.6): nobody is behind.
+  await M.AppContent.deleteMany({ key: { $in: ["app.ios_latest", "app.android_latest"] } });
+  assert.deepEqual(await SB.latestStoreVersions(), { ios: "1.0.3", android: "1.0.6" });
+  assert.deepEqual(await SB.audienceIds("outdated"), []);
+  // Once management sets the new store versions (Admin › App updates).
+  await M.AppContent.create([{ key: "app.ios_latest", value: "1.0.4" }, { key: "app.android_latest", value: "1.0.7" }]);
+  assert.deepEqual(names(await SB.audienceIds("outdated")), ["ann", "cal"]);
+  assert.deepEqual(await SB.estimates(["outdated"]), { outdated: 2 });
+  // An empty newest version (no store version set): nobody on that platform.
+  await M.AppContent.updateOne({ key: "app.android_latest" }, { $set: { value: "" } });
+  assert.deepEqual(names(await SB.audienceIds("outdated")), ["ann"]);
+  await M.AppContent.updateOne({ key: "app.android_latest" }, { $set: { value: "1.0.7" } });
+
+  // Scheduling for it: the estimate, then the send reaches only them.
+  const item = await create({ audience: "outdated", feedPost: false, banner: false, title: "Update the TTFC app", body: "A new version of the TTFC app is out.", linkUrl: "", sendAt: at(26) });
+  assert.deepEqual([item.audience, item.estimate], ["outdated", 2]);
+  const listed = (await ok(call("GET", BASE))).items.find((i) => i.id === item.id);
+  assert.equal(listed.estimate, 2);
+  await run(plus(at(26), 1000));
+  const doc = await M.ScheduledBroadcast.findById(item.id).lean();
+  assert.deepEqual([doc.status, doc.recipients], ["sent", 2]);
+  assert.deepEqual(names((await M.AppNotification.find({ batchId: `sched:${item.id}` }).lean()).map((r) => r.userId)), ["ann", "cal"]);
+  const push = await waitFor(() => pushes.find((x) => x.note.id === `sched:${item.id}`));
+  assert.deepEqual(names(push.to), ["ann"], "Cal switched Announcements off: inbox only");
+  // Validation knows it; anything else is still refused.
+  assert.equal((await call("POST", BASE, { body: { ...ITEM, sendAt: at(27), audience: "older" } })).body.field, "audience");
+});
+
 test("the send: the feed post like /broadcast, the Home banner, inbox rows and pushes to the audience, once", { skip }, async () => {
   pushes.length = 0;
   const item = await create({ audience: "checkedIn", sendAt: at(16, "19:00") });

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   QUIET_HOURS, MIN_LEAD_MS, MISSED_AFTER_MS, ERRORS, CHUNK, torontoClock, inQuietHours, parseSendAt, validateScheduled,
-  isMissed, batchIdOf, chunks, scheduledDTO, auditLine,
+  isMissed, batchIdOf, chunks, scheduledDTO, auditLine, AUDIENCES, appVersionNumber, outdatedUserIds,
 } from "../services/scheduledBroadcastRules.js";
 
 const NOON = new Date("2026-10-27T16:00:00Z");   // Day 2, noon in Toronto (EDT, UTC-4)
@@ -94,7 +94,9 @@ test("title, body, link, channels and audience", () => {
   // Audience: app (the default) or checkedIn.
   assert.equal(v({ audience: undefined }).value.audience, "app");
   assert.equal(v({ audience: "checkedIn" }).value.audience, "checkedIn");
-  for (const audience of ["everyone", "", "CHECKEDIN", 1]) assert.deepEqual(field({ audience }), ["audience", ERRORS.audience], String(audience));
+  assert.equal(v({ audience: "outdated" }).value.audience, "outdated");
+  assert.deepEqual(AUDIENCES, ["app", "checkedIn", "outdated"]);
+  for (const audience of ["everyone", "", "CHECKEDIN", "Outdated", 1]) assert.deepEqual(field({ audience }), ["audience", ERRORS.audience], String(audience));
   // Not an object at all.
   assert.deepEqual([validateScheduled(null, { now: NOON }).field, validateScheduled([], { now: NOON }).field], ["body", "body"]);
 });
@@ -142,4 +144,38 @@ test("the panel's item: every field; an estimate only for a scheduled notificati
   assert.equal(scheduledDTO({ ...d, status: "sent", postId: "64b000000000000000000002" }).postId, "64b000000000000000000002");
   assert.equal(auditLine(d), "Oct 27, 7:00 PM · post + banner + notify (checkedIn) · Thanks");
   assert.equal(auditLine({ ...d, title: "", banner: false, notify: false }), "Oct 27, 7:00 PM · post · Bye");
+});
+
+test("the outdated audience: the platform of the newest event, its newest version, compared numerically", () => {
+  // The apps' own formats: iOS "1.0.3 (20)", Android "1.0.6 (9) android".
+  assert.deepEqual(["1.0.3 (20)", "1.0.6 (9) android", "1.0.10", " 2.1 ", "v1.0.4", "", "?", "web", null, "1.0.3.4.5", "1.0.3beta"].map(appVersionNumber),
+    ["1.0.3", "1.0.6", "1.0.10", "2.1", "1.0.4", "", "", "", "", "", "1.0.3"]);
+  const T = (h) => new Date(Date.UTC(2026, 9, 27, h));
+  const latest = { ios: "1.0.4", android: "1.0.7" };
+  const platforms = [
+    { userId: "ann", platform: "ios", lastAt: T(12) },                                         // 1.0.3 < 1.0.4
+    { userId: "ben", platform: "ios", lastAt: T(12) },                                         // 1.0.10 > 1.0.4 (not "1.0.10" < "1.0.4")
+    { userId: "cal", platform: "ios", lastAt: T(9) }, { userId: "cal", platform: "android", lastAt: T(11) },   // now on Android 1.0.6
+    { userId: "dan", platform: "android", lastAt: T(9) }, { userId: "dan", platform: "ios", lastAt: T(11) },   // now on iOS 1.0.4
+    { userId: "eve", platform: "ios", lastAt: T(12) },                                         // no version recorded
+    { userId: "pat", platform: "ios", lastAt: T(9) }, { userId: "pat", platform: "web", lastAt: T(12) },       // the web app last
+    { userId: "wes", platform: "web", lastAt: T(12) },                                         // the web app only
+    { userId: "bad", platform: "ios", lastAt: "not a date" },
+  ];
+  const versions = [
+    { userId: "ann", platform: "ios", appVersion: "1.0.3 (20)" },
+    { userId: "ben", platform: "ios", appVersion: "1.0.10 (40)" },
+    { userId: "cal", platform: "ios", appVersion: "1.0.4 (21)" }, { userId: "cal", platform: "android", appVersion: "1.0.6 (9) android" },
+    { userId: "dan", platform: "android", appVersion: "1.0.5 (8) android" }, { userId: "dan", platform: "ios", appVersion: "1.0.4 (21)" },
+    { userId: "pat", platform: "ios", appVersion: "1.0.1 (12)" },
+    { userId: "bad", platform: "ios", appVersion: "1.0.1 (12)" },
+  ];
+  assert.deepEqual([...outdatedUserIds({ platforms, versions, latest })].sort(), ["ann", "cal"]);
+  // 1.0.10 is newer than 1.0.9.
+  assert.deepEqual([...outdatedUserIds({ platforms, versions, latest: { ios: "1.0.9", android: "1.0.7" } })].sort(), ["ann", "cal", "dan"]);
+  assert.deepEqual([...outdatedUserIds({ platforms, versions, latest: { ios: "1.0.11", android: "1.0.7" } })].sort(), ["ann", "ben", "cal", "dan"]);
+  // An empty or broken newest version: nobody on that platform.
+  assert.deepEqual([...outdatedUserIds({ platforms, versions, latest: { ios: "", android: "1.0.7" } })], ["cal"]);
+  assert.deepEqual([...outdatedUserIds({ platforms, versions, latest: { ios: "1.0.4", android: "soon" } })], ["ann"]);
+  assert.deepEqual([...outdatedUserIds()], []);
 });
