@@ -10,7 +10,7 @@ import { pushToUsers } from "./push.js";
 import { recipientFilter } from "./notifyHelpers.js";
 import { EVENT_DAYS, DOOR_POINTS, checkedInPersons, checkedInKeys, cleanEmail } from "./surveyRules.js";
 import {
-  MISSED_AFTER_MS, STUCK_AFTER_MS, CHUNK, ORG_NAME, ORG_TITLE, ORG_COMPANY, BANNER_KEY, BANNER_MAX,
+  MISSED_AFTER_MS, STUCK_AFTER_MS, CHUNK, ORG_NAME, ORG_TITLE, ORG_COMPANY, BANNER_KEY, BANNER_LINK_KEY, BANNER_MAX,
   batchIdOf, chunks, auditLine,
 } from "./scheduledBroadcastRules.js";
 
@@ -35,7 +35,8 @@ import {
         "Organizers", "AtlasLink Markets", kind "announcement",
         approved) with linkUrl; authorId = who scheduled it;
      2. banner: AppContent home.announcement = the body's first 280
-        characters (home.announcement_link is left as it is);
+        characters, and home.announcement_link = linkUrl ("" when the
+        item has none, so an older link doesn't stay on the new text);
      3. notify: the audience now (audienceIds) less anyone who already
         has this batch: AppNotification rows (kind "personal", batchId
         "sched:<id>", sentBy = who scheduled it, sentByName "The Tech
@@ -190,8 +191,9 @@ export async function deliver(item, { now = new Date(), directory = peopleDirect
       await ScheduledBroadcast.updateOne({ _id: item._id }, { $set: { postId } });
     }
     if (item.banner) {
-      await AppContent.updateOne({ key: BANNER_KEY },
-        { $set: { value: str(item.body).slice(0, BANNER_MAX), updatedBy: actor?.name || item.createdByName || ORG_NAME } }, { upsert: true });
+      const updatedBy = actor?.name || item.createdByName || ORG_NAME;
+      await AppContent.updateOne({ key: BANNER_KEY }, { $set: { value: str(item.body).slice(0, BANNER_MAX), updatedBy } }, { upsert: true });
+      await AppContent.updateOne({ key: BANNER_LINK_KEY }, { $set: { value: item.linkUrl || "", updatedBy } }, { upsert: true });
     }
     if (item.notify) {
       const ids = await audienceIds(item.audience, { directory });

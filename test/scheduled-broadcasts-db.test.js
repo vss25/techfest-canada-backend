@@ -254,6 +254,8 @@ test("the send: the feed post like /broadcast, the Home banner, inbox rows and p
   // The banner.
   const banner = await M.AppContent.findOne({ key: "home.announcement" }).lean();
   assert.deepEqual([banner.value, banner.updatedBy], [ITEM.body.slice(0, 280), "Mia Manager"]);
+  const bannerLink = await M.AppContent.findOne({ key: "home.announcement_link" }).lean();
+  assert.deepEqual([bannerLink.value, bannerLink.updatedBy], [ITEM.linkUrl, "Mia Manager"], "the banner opens the item's link");
   // The inbox: one row each for the people who checked in.
   const rows = await M.AppNotification.find({ batchId: `sched:${item.id}` }).lean();
   assert.deepEqual(names(rows.map((r) => r.userId)), ["ann", "cal", "dan", "eve"]);
@@ -283,6 +285,7 @@ test("the send: the feed post like /broadcast, the Home banner, inbox rows and p
 
 test("only the channels that are on: a notification alone writes no post and leaves the banner", { skip }, async () => {
   await M.AppContent.updateOne({ key: "home.announcement" }, { $set: { value: "Doors open at 8" } }, { upsert: true });
+  await M.AppContent.updateOne({ key: "home.announcement_link" }, { $set: { value: "ttfc://tab/venue" } }, { upsert: true });
   const posts = await M.SocialPost.countDocuments();
   const item = await create({ feedPost: false, banner: false, linkUrl: "ttfc://tab/home", body: "Enjoying TTFC? Rate the app.", sendAt: at(17) });
   await run(plus(at(17), 1000));
@@ -290,6 +293,7 @@ test("only the channels that are on: a notification alone writes no post and lea
   assert.deepEqual([doc.status, doc.recipients, doc.postId], ["sent", 7, null]);
   assert.equal(await M.SocialPost.countDocuments(), posts);
   assert.equal((await M.AppContent.findOne({ key: "home.announcement" }).lean()).value, "Doors open at 8");
+  assert.equal((await M.AppContent.findOne({ key: "home.announcement_link" }).lean()).value, "ttfc://tab/venue", "the banner's link too");
   assert.equal((await M.AppNotification.findOne({ batchId: `sched:${item.id}` }).lean()).link, "ttfc://tab/home");
   // A banner alone: no inbox rows, recipients 0.
   const b = await create({ feedPost: false, notify: false, title: "", body: "See you in 2027", sendAt: at(18) });
@@ -298,6 +302,22 @@ test("only the channels that are on: a notification alone writes no post and lea
   assert.deepEqual([bdoc.status, bdoc.recipients], ["sent", 0]);
   assert.equal(await M.AppNotification.countDocuments({ batchId: `sched:${b.id}` }), 0);
   assert.equal((await M.AppContent.findOne({ key: "home.announcement" }).lean()).value, "See you in 2027");
+  assert.equal((await M.AppContent.findOne({ key: "home.announcement_link" }).lean()).value, ITEM.linkUrl);
+});
+
+test("the banner's link: the item's linkUrl, or cleared when it has none (an older link never stays on new text)", { skip }, async () => {
+  await M.AppContent.updateOne({ key: "home.announcement_link" }, { $set: { value: "https://www.thetechfestival.com/agenda" } }, { upsert: true });
+  const none = await create({ feedPost: false, notify: false, title: "", linkUrl: "", body: "Thank you for coming to TTFC 2026", sendAt: at(24) });
+  await run(plus(at(24), 1000));
+  assert.equal((await M.ScheduledBroadcast.findById(none.id).lean()).status, "sent");
+  const cleared = await M.AppContent.findOne({ key: "home.announcement_link" }).lean();
+  assert.deepEqual([cleared.value, cleared.updatedBy], ["", "Mia Manager"]);
+  assert.equal((await M.AppContent.findOne({ key: "home.announcement" }).lean()).value, "Thank you for coming to TTFC 2026");
+  // An app screen works the same way; Send now too (the presser's name on it).
+  const tab = await create({ feedPost: false, notify: false, title: "", linkUrl: "ttfc://tab/Schedule", body: "Last sessions today", sendAt: at(25) });
+  await ok(call("POST", `${BASE}/${tab.id}/send-now`));
+  const set = await M.AppContent.findOne({ key: "home.announcement_link" }).lean();
+  assert.deepEqual([set.value, set.updatedBy], ["ttfc://tab/schedule", "Mia Manager"]);
 });
 
 test("exactly once: two servers running at the same moment send each item once; the minute's lock is one server's", { skip }, async () => {

@@ -46,6 +46,8 @@ export const ORG_TITLE = "Organizers";
 export const ORG_COMPANY = "AtlasLink Markets";
 /** The Home banner's key and length (like POST /api/console/broadcast). */
 export const BANNER_KEY = "home.announcement";
+/** The banner's link: the item's linkUrl, or "" (cleared, so an older link doesn't stay on the new text). */
+export const BANNER_LINK_KEY = "home.announcement_link";
 export const BANNER_MAX = 280;
 
 export const ERRORS = Object.freeze({

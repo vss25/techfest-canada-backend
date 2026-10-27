@@ -6,7 +6,8 @@ const { Schema, Types } = mongoose;
 /* A message management schedules for later (Oct 27 2026, services/scheduledBroadcasts.js): at `sendAt` the minute job
    sends it once, on the channels that are on:
      feedPost  an official announcement post, like POST /api/console/broadcast (kind "announcement", with linkUrl);
-     banner    the Home banner (AppContent home.announcement = body, first 280 characters);
+     banner    the Home banner (AppContent home.announcement = body, first 280 characters; home.announcement_link =
+               linkUrl, or "" when there is none);
      notify    an inbox row (AppNotification kind "personal", batchId "sched:<_id>") for each recipient + a push.
    audience (notify only): "app" = everyone signed into the app (POST /console/notify's rule), "checkedIn" = those of
    them with a door check-in on Day 1 or Day 2.
