@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_QUESTIONS, SURVEY_DEFAULTS, surveyConfig, surveyOpen, cleanQuestions, cleanSurveySave, cleanAnswers, cleanAnswer,
   respondentFields, signSurveyToken, verifySurveyToken, surveyUrl, publicSurvey, appSurveyCard, averagesOf, naCountsOf,
-  scoreGroup, responsesCsv, checkedInAudience, slugOf, AUDIENCES, cleanWhen,
+  scoreGroup, responsesCsv, checkedInAudience, slugOf, AUDIENCES, cleanWhen, checkedInPersons, checkedInKeys, personsMatching,
+  personSubjects, linkTarget, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
 } from "../services/surveyRules.js";
 import { buildSurveyEmail, surveyMessage, sendSurveyBatch, SURVEY_SUBJECT } from "../services/surveyEmail.js";
 
@@ -47,12 +48,14 @@ test("the window: enabled and opensAt <= now < closesAt", () => {
   assert.equal(surveyOpen(cfg, new Date("2026-10-27T20:00:00Z")), true);
   assert.equal(surveyOpen(cfg, new Date("2026-12-01T04:59:00Z")), false);
   assert.equal(surveyOpen({ ...cfg, enabled: false }, new Date("2026-10-28T12:00:00Z")), false);
-  const shut = publicSurvey(cfg, { now: new Date("2026-10-27T12:00:00Z") });
+  const shut = publicSurvey(cfg, { now: new Date("2026-10-27T12:00:00Z"), invited: true, eligible: true });
   assert.deepEqual([shut.open, shut.questions.length, shut.respondent, shut.responded], [false, 0, null, false]);
   assert.equal(publicSurvey(cfg, { now: new Date("2026-10-27T12:00:00Z"), preview: true }).questions.length, 32);
   const card = appSurveyCard(cfg, { now: new Date("2026-10-28T12:00:00Z"), token: "abc.def" });
-  assert.deepEqual([card.show, card.cta, card.url, card.title, card.body], [true, "Share feedback", "https://www.thetechfestival.com/survey?t=abc.def", cfg.title, cfg.notifyBody]);
+  assert.deepEqual([card.show, card.eligible, card.cta, card.url, card.title, card.body], [true, true, "Share feedback", "https://www.thetechfestival.com/survey?t=abc.def", cfg.title, cfg.notifyBody]);
   assert.equal(appSurveyCard(cfg, { now: new Date("2026-10-28T12:00:00Z"), responded: true }).show, false);
+  // Not checked in: no card.
+  assert.deepEqual(Object.values(appSurveyCard(cfg, { now: new Date("2026-10-28T12:00:00Z"), eligible: false })).slice(0, 3), [false, true, false]);
   assert.equal(cleanWhen("2026-10-27 16:00"), "");
   assert.equal(cleanWhen("2026-10-27T16:00:00-04:00"), "2026-10-27T16:00:00-04:00");
 });
@@ -273,4 +276,44 @@ test("the email: the subject, the survey's title and intro, one button to their 
   assert.deepEqual([calls[0][0].from, calls[0][0].reply_to, calls[0][0].to], ["The Tech Festival Canada <enquire@thetechfestival.com>", "enquire@thetechfestival.com", ["ann@example.com"]]);
   assert.equal("attachments" in calls[0][0], false);   // the batch API takes none
   await assert.rejects(sendSurveyBatch([msg], { client: { batch: { send: async () => ({ data: null, error: { message: "nope" } }) } } }), /nope/);
+});
+
+test("by invitation, for people who attended: no link, no questions; not checked in, a message; staff preview", () => {
+  const now = new Date("2026-10-28T12:00:00Z");
+  const head = { open: true, opensAt: cfg.opensAt, closesAt: cfg.closesAt, title: cfg.title, invitationOnly: true };
+  assert.deepEqual(publicSurvey(cfg, { now }), { ...head, questions: [] });
+  assert.deepEqual(publicSurvey(cfg, { now, invited: true, eligible: false, respondent: { name: "Pat" } }), { ...head, eligible: false, message: NOT_ATTENDED_MESSAGE, questions: [] });
+  const inn = publicSurvey(cfg, { now, invited: true, eligible: true, respondent: { name: "Ann" }, responded: true });
+  assert.deepEqual([inn.eligible, inn.questions.length, inn.respondent, inn.responded, inn.intro], [true, 32, { name: "Ann" }, true, cfg.intro]);
+  const pv = publicSurvey(cfg, { now: new Date("2026-10-27T12:00:00Z"), invited: true, eligible: false, preview: true });
+  assert.deepEqual([pv.preview, pv.eligible, pv.questions.length], [true, false, 32]);
+  assert.equal(INVITE_ONLY_MESSAGE, "This survey is by invitation. Please use the link we sent you.");
+  assert.equal(NOT_ATTENDED_MESSAGE, "This survey is for people who attended TTFC 2026.");
+});
+
+test("who checked in: a person's passes and ISSUE PASS ids, their email addresses; where their link goes", () => {
+  const ann = { id: "u-65a1b2c3d4e5f6a7b8c9d0e1", user: { _id: "65a1b2c3d4e5f6a7b8c9d0e1", email: "ann@example.com" }, attendees: [{ _id: "65a1b2c3d4e5f6a7b8c9d0e5" }],
+    tickets: new Map([["con1", {}], ["spk1", {}]]), email: "ann@example.com", emails: new Set(["ann@example.com"]) };
+  const twin = { id: "a-65a1b2c3d4e5f6a7b8c9d0e2", user: null, attendees: [{ _id: "65a1b2c3d4e5f6a7b8c9d0e2", email: "ANN@example.com" }], tickets: new Map([["con2", {}]]), email: "ann@example.com", emails: new Set(["ann@example.com"]) };
+  const pat = { id: "a-65a1b2c3d4e5f6a7b8c9d0e3", user: null, attendees: [{ _id: "65a1b2c3d4e5f6a7b8c9d0e3", email: "pat@example.com" }], tickets: new Map([["con3", {}]]), email: "pat@example.com", emails: new Set(["pat@example.com"]) };
+  const rsvpOnly = { id: "r-1", user: null, attendees: [], tickets: new Map(), email: "ivy@example.com", emails: new Set(["ivy@example.com"]) };
+  const people = [ann, twin, pat, rsvpOnly];
+  const byId = new Map([["u-65a1b2c3d4e5f6a7b8c9d0e1", ann], ["a-65a1b2c3d4e5f6a7b8c9d0e5", ann], ["t-con1", ann], ["t-spk1", ann], ["a-65a1b2c3d4e5f6a7b8c9d0e2", twin], ["t-con2", twin], ["a-65a1b2c3d4e5f6a7b8c9d0e3", pat], ["t-con3", pat], ["r-1", rsvpOnly]]);
+  const dir = { people, byId };
+  // The account, its pass record and everyone on its address.
+  assert.deepEqual(personsMatching(dir, { userId: "65a1b2c3d4e5f6a7b8c9d0e1", email: "Ann@Example.com" }).map((p) => p.id), [ann.id, twin.id]);
+  assert.deepEqual(personsMatching(dir, { attendeeId: "65a1b2c3d4e5f6a7b8c9d0e3" }).map((p) => p.id), [pat.id]);
+  assert.deepEqual(personsMatching(dir, { email: "nobody@example.com" }), []);
+  assert.deepEqual(personSubjects([ann]).sort(), ["con1", "person:a-65a1b2c3d4e5f6a7b8c9d0e5", "person:u-65a1b2c3d4e5f6a7b8c9d0e1", "spk1"]);
+  // Check-ins: the twin's pass at the door counts for Ann's address; a rehearsal doesn't count; a meal isn't the door.
+  const m = (subject, day, point = "arrived", extra = {}) => ({ subject, day, point, at: new Date(`${day}T14:00:00Z`), ...extra });
+  const { persons } = checkedInPersons({ byId, marks: [m("con2", "2026-10-27"), m("con3", "2026-10-25", "checked_in"), m("con3", "2026-10-26", "lunch"), m("con3", "2026-10-26", "arrived", { practice: true })] });
+  assert.deepEqual(persons.map((p) => p.id), [twin.id]);
+  const keys = checkedInKeys(persons);
+  assert.deepEqual([[...keys.userIds], [...keys.emails]], [[], ["ann@example.com"]]);
+  assert.deepEqual(checkedInPersons({ byId, marks: [m("person:r-1", "2026-10-26")] }).persons.map((p) => p.id), ["r-1"]);
+  // Links: an account first, else the pass on that address; nobody without either.
+  assert.deepEqual(linkTarget(ann), { kind: "u", id: "65a1b2c3d4e5f6a7b8c9d0e1" });
+  assert.deepEqual(linkTarget(twin, "ann@example.com"), { kind: "p", id: "65a1b2c3d4e5f6a7b8c9d0e2" });
+  assert.equal(linkTarget(rsvpOnly), null);
 });
