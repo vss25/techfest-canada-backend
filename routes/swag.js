@@ -1,7 +1,7 @@
 import express from "express";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
-import { publicSwag } from "../services/swagRules.js";
+import { publicSwag, longTime } from "../services/swagRules.js";
 import { loadSwag, loadAnnounced, validSnapshot, currentWinners, announceWinners, takeSnapshot, announcedWinners } from "../services/swag.js";
 
 /* =========================================================
@@ -21,7 +21,12 @@ import { loadSwag, loadAnnounced, validSnapshot, currentWinners, announceWinners
 
    Admin (staff read, management announces), mounted at /api/console/swag:
      GET  /           → { settings (as public), winners: [{ userId, name, organization, points, rank }], live, takenAt,
-                          staleTakenAt, cutoffPassed, announced: { at, by, winners } | null, canAnnounce }
+                          staleTakenAt, cutoffPassed, announced: { at, by, winners } | null, canAnnounce,
+                          autoAnnounce, autoAnnounceAt (ISO: swag.announce), autoAnnounceLabel ("5:00 PM on Tuesday,
+                          October 27") }
+                        autoAnnounce (swag.autoAnnounce, on by default, Oct 26 2026: "Keep the 5 PM announcement
+                        automatic within the app"): at autoAnnounceAt the minute job announces this list by itself
+                        (services/swag.js runSwagAutoAnnounce, by "Automatic (5 PM)"), unless it was announced first.
                         winners: the first `kits` who can win, from the leaderboard kept at the cutoff (live: true
                         before it's kept). Oct 26 2026: a leaderboard kept at an earlier cutoff (the cutoff moved later
                         since) doesn't count: live: true until the new cutoff, staleTakenAt = when that one was kept.
@@ -29,7 +34,8 @@ import { loadSwag, loadAnnounced, validSnapshot, currentWinners, announceWinners
                         userIds must be exactly the list shown (409 { code: "changed", winners } when it changed);
                         409 { code: "not_yet" } before the cutoff, { code: "swag_off" } while off,
                         { code: "already_announced" } the second time. Each winner gets an in-app notification and a
-                        push: "You won a TTFC swag kit!" / "Collect it at the registration desk." Audited.
+                        push: "You won a TTFC swag kit!" / "Collect it at the registration desk." Audited. It still works
+                        before the automatic time; whichever comes first wins (the other: already_announced).
 ========================================================= */
 
 export const publicRouter = express.Router();
@@ -55,6 +61,7 @@ adminRouter.get("/", wrap(async (req, res) => {
     settings: publicSwag(w.settings, { announced: !!announced?.at }), winners: w.winners, live: w.live, takenAt: w.takenAt,
     staleTakenAt: w.staleTakenAt, cutoffPassed: w.cutoffPassed, announced: announced || null,
     canAnnounce: isManagement(req.user) && w.settings.enabled && w.cutoffPassed && !announced?.at,
+    autoAnnounce: w.settings.autoAnnounce, autoAnnounceAt: w.settings.announce.toISOString(), autoAnnounceLabel: longTime(w.settings.announce),
   });
 }));
 

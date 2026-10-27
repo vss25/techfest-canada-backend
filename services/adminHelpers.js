@@ -108,7 +108,8 @@ export const CONTENT_KEYS = {
   "site.brochure_url": "",
   /* "Win the TTFC swag kit" (Oct 22 2026, services/swagRules.js): swag.enabled (off until management turns it on),
      swag.kits (1–50), swag.cutoff and swag.announce (ISO times with their offset, Toronto), swag.title, swag.rules
-     ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag). Management only (services/staffPowers.js). */
+     ({kits}, {cutoff}, {announce} filled in by GET /api/app/swag), swag.autoAnnounce (on: the winners are announced
+     by themselves at swag.announce, Oct 26 2026). Management only (services/staffPowers.js). */
   ...SWAG_DEFAULTS,
   /* "Stay updated": the TTFC 2027 waitlist page (website /stay-updated, the web app's /app/stay-updated) and the
      person's "You're on the TTFC 2027 waitlist" email (Oct 23 2026, services/waitlist.js). Plain text, any staff;

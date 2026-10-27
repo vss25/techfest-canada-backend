@@ -14,6 +14,12 @@
    Very important … Winners will be told end of day 1." The offer is in
    the app invite email (services/appInviteEmail.js), not a campaign of
    its own; the cutoff is Day 1, 4 PM, the announcement Day 1, 5 PM.
+   Oct 26 2026, the organiser: "Keep the 5 PM announcement automatic
+   within the app." swag.autoAnnounce (on by default, management only):
+   at swag.announce the minute job announces the winners itself
+   (services/swag.js runSwagAutoAnnounce), exactly as management's
+   "Announce winners" would; the button still works before then, and
+   whichever comes first wins.
 ========================================================= */
 
 export const SWAG_DEFAULTS = Object.freeze({
@@ -23,6 +29,7 @@ export const SWAG_DEFAULTS = Object.freeze({
   "swag.announce": "2026-10-26T17:00:00-04:00",            // the end of Day 1, 5 PM
   "swag.title": "Win the TTFC swag kit",
   "swag.rules": "Only people using the TTFC app can win. Download the app, sign in and earn points by connecting, saving sessions, posting and taking part. The top {kits} people on the leaderboard at {cutoff} each win a TTFC swag kit. Open to registered TTFC 2026 attendees with 'Show me on the leaderboard' on; Quebec residents, TTFC staff, volunteers and their families can't win. Winners are told in the app at the end of Day 1 ({announce}) and collect their kit at the registration desk, Harbour Ballroom foyer, after answering a skill-testing question. Free to enter for TTFC 2026 pass holders. Prizes have no cash value and can't be exchanged.",
+  "swag.autoAnnounce": true,                               // announce the winners by itself at swag.announce
 });
 export const SWAG_KEYS = Object.freeze(Object.keys(SWAG_DEFAULTS));
 export const MAX_KITS = 50;
@@ -73,15 +80,21 @@ export function shortTime(d) {
 export function swagSettings(stored = {}) {
   const v = (k) => (stored[k] === undefined || stored[k] === null || stored[k] === "" ? SWAG_DEFAULTS[k] : stored[k]);
   const enabled = v("swag.enabled") === true || v("swag.enabled") === "true";
+  const autoAnnounce = !(v("swag.autoAnnounce") === false || v("swag.autoAnnounce") === "false");
   const kitsN = Number(v("swag.kits"));
   const kits = Number.isInteger(kitsN) && kitsN >= 1 && kitsN <= MAX_KITS ? kitsN : 3;
   const cutoff = when(v("swag.cutoff"), SWAG_DEFAULTS["swag.cutoff"]);
   const announce = when(v("swag.announce"), SWAG_DEFAULTS["swag.announce"]);
   return {
-    enabled, kits, cutoff, announce,
+    enabled, kits, cutoff, announce, autoAnnounce,
     title: str(v("swag.title")).trim() || SWAG_DEFAULTS["swag.title"],
     rulesText: str(v("swag.rules")).trim() || SWAG_DEFAULTS["swag.rules"],
   };
+}
+
+/** "5 PM", "4:30 PM" (Toronto): who announced automatically ("Automatic (5 PM)"). */
+export function clockTime(d) {
+  return new Date(d).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).replace(":00", "");
 }
 
 /** {kits}, {cutoff}, {announce} in a text (the rules, the email). */

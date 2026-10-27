@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import User from "../models/User.js";
 import JobLock from "../models/JobLock.js";
 import AppNotification from "../models/AppNotification.js";
-import { AppContent } from "../models/Admin.js";
+import { AppContent, AdminAudit } from "../models/Admin.js";
 import { rankedBoard } from "./points.js";
 import { hiddenState } from "./appHide.js";
 import { personAccess } from "./appRights.js";
@@ -11,7 +11,7 @@ import { rightsContext, RIGHTS_SELECT } from "./rightsStore.js";
 import { pushToUsers } from "./push.js";
 import { avatarFor } from "./socialHelpers.js";
 import {
-  SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinners, snapshotCounts, publicWinners,
+  SWAG_KEYS, SWAG_PAGE, WINNER_NOTE, swagSettings, swagEligible, pickWinners, snapshotCounts, publicWinners, clockTime,
 } from "./swagRules.js";
 
 /* =========================================================
@@ -25,8 +25,9 @@ import {
    the top 100), so points earned later don't change who won. The
    winners are the first `swag.kits` of it who can win (checked
    again when they're worked out: suspended or hidden since, or now
-   staff). Nothing is announced automatically: management reviews
-   the list and clicks "Announce winners" (routes/swag.js), which
+   staff). Until Oct 26 2026 nothing was announced automatically
+   (now it is at swag.announce, below): management reviews the list
+   and clicks "Announce winners" (routes/swag.js), which
    sends each winner an in-app notification and a push, once
    (AppContent "swag.announced").
    Oct 26 2026: the cutoff can move after the leaderboard was kept
@@ -41,6 +42,19 @@ import {
    its takenAt), so two servers (or the job and an "Announce" click)
    racing each other replace it once and both answer the same fresh
    leaderboard.
+   Oct 26 2026, the organiser: "Keep the 5 PM announcement automatic
+   within the app." (this replaces "nothing is announced
+   automatically"). With swag.autoAnnounce on (the default), the same
+   minute job, at swag.announce, makes sure the leaderboard for the
+   current cutoff is kept (it takes it when the cutoff is the announce
+   time and it isn't yet), works out the winners exactly as the admin
+   page does (eligibility checked fresh) and announces them as
+   "Automatic (5 PM)": once, on one server (JobLock "swag-announce",
+   then announceWinners' own once-only row, so a run racing another, or
+   management's click, finds it already announced and does nothing).
+   Fewer eligible people than kits: whoever is eligible. Nobody: logged,
+   not announced (tried again each minute). Audited swag_announce like
+   the click.
 ========================================================= */
 
 export const SNAPSHOT_KEY = "swag.snapshot";
@@ -49,6 +63,7 @@ export const ANNOUNCED_KEY = "swag.announced";
 export const WINNERS_BATCH = "swag-winners-2026";
 const SNAPSHOT_ROWS = 100;
 const JOB_ID = "swag-snapshot";
+const ANNOUNCE_JOB = "swag-announce";
 const INSTANCE = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
 const isDup = (err) => err?.code === 11000 || /E11000/.test(String(err?.message || ""));
 
@@ -171,9 +186,9 @@ export async function announceWinners(winners, { by = "", byId = null, now = new
 
 /* ---------- the minute job ---------- */
 
-async function claimRun(now) {
+async function claimRun(now, id = JOB_ID) {
   try {
-    const r = await JobLock.findOneAndUpdate({ _id: JOB_ID, until: { $lte: now } }, { $set: { until: new Date(now.getTime() + 50_000), owner: INSTANCE } },
+    const r = await JobLock.findOneAndUpdate({ _id: id, until: { $lte: now } }, { $set: { until: new Date(now.getTime() + 50_000), owner: INSTANCE } },
       { upsert: true, returnDocument: "after", projection: { owner: 1 } }).lean();
     return r?.owner === INSTANCE;
   } catch (err) {
@@ -196,9 +211,59 @@ export async function runSwagSnapshot({ now = new Date(), held = false } = {}) {
   }
 }
 
+let loggedNobody = "";
+
+/**
+ * One run of the automatic announcement: the contest on, autoAnnounce on, now >= swag.announce and nothing announced
+ * yet → the leaderboard kept for the current cutoff (taken now if it isn't), the winners as the admin page shows them,
+ * announced once. → { announced } (the record), or null (not due, another server has it, already announced, nobody
+ * can win). `held`: the caller holds the lock (tests). Never throws.
+ */
+export async function runSwagAutoAnnounce({ now = new Date(), held = false } = {}) {
+  try {
+    const s = await loadSwag();
+    if (!s.enabled || !s.autoAnnounce || now < s.announce || now < s.cutoff) return null;
+    if ((await loadAnnounced())?.at) return null;
+    if (!held && !(await claimRun(now, ANNOUNCE_JOB))) return null;
+    // Checked again now that this server holds it: another may have announced (or management clicked) meanwhile.
+    if ((await loadAnnounced())?.at) return null;
+    if (!(await validSnapshot(s))) await takeSnapshot({ now, settings: s });
+    const { winners } = await currentWinners({ now });
+    if (!winners.length) {
+      const key = s.announce.toISOString();
+      if (loggedNobody !== key) console.warn("SWAG AUTO-ANNOUNCE: nobody on the leaderboard can win; not announced (tried again each minute).");
+      loggedNobody = key;
+      return null;
+    }
+    const by = `Automatic (${clockTime(s.announce)})`;
+    let out;
+    try {
+      out = await announceWinners(winners, { by, now });
+    } catch (err) {
+      if (err?.code === "already_announced") return null;   // management's click (or another server) got there first
+      throw err;
+    }
+    console.log(`SWAG AUTO-ANNOUNCE: ${winners.length} winners announced (${winners.map((w) => w.name).join(", ")})`);
+    await AdminAudit.create({ adminName: by, action: "swag_announce", targetType: "campaign", targetId: "swag",
+      detail: `${winners.length} winners (automatic): ${winners.map((w) => w.name).join(", ")}`.slice(0, 500) }).catch(() => {});
+    return out;
+  } catch (err) {
+    console.error("SWAG AUTO-ANNOUNCE ERROR:", err?.message || err);
+    return null;
+  } finally {
+    if (!held) await JobLock.updateOne({ _id: ANNOUNCE_JOB, owner: INSTANCE }, { $set: { until: new Date(0) } }).catch(() => {});
+  }
+}
+
+/** The minute job: keep the leaderboard at the cutoff, then (autoAnnounce) announce at the announce time. */
+export async function runSwagMinute({ now = new Date() } = {}) {
+  await runSwagSnapshot({ now });
+  await runSwagAutoAnnounce({ now });
+}
+
 /** server.js, once connected: a check every minute. */
 export function startSwagSnapshot({ everyMs = 60_000 } = {}) {
-  const t = setInterval(() => { runSwagSnapshot(); }, everyMs);
+  const t = setInterval(() => { runSwagMinute(); }, everyMs);
   t.unref?.();
   return t;
 }

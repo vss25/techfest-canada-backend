@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   SWAG_DEFAULTS, swagSettings, cleanSwagContent, fillSwag, longTime, shortTime, publicSwag, swagPhase, swagEligible, pickWinners, WINNER_NOTE,
-  snapshotCounts, publicWinners, SNAPSHOT_TOLERANCE_MS,
+  snapshotCounts, publicWinners, SNAPSHOT_TOLERANCE_MS, clockTime,
 } from "../services/swagRules.js";
 import { CONTENT_KEYS, cleanContent } from "../services/adminHelpers.js";
 import { DEFAULT_COPY, FIELDS, PLACEHOLDERS, fillInvite } from "../services/appInviteCopy.js";
@@ -15,7 +15,7 @@ import { APP_INVITE_CAMPAIGN, APP_INVITE_SWAG_KEY, inviteSendKey, planAppInvites
 const defaults = swagSettings({});
 
 test("settings: off until management turns it on; 3 kits; Day 1 4 PM and 5 PM (Toronto); stored as app content keys", () => {
-  assert.deepEqual(Object.keys(SWAG_DEFAULTS), ["swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules"]);
+  assert.deepEqual(Object.keys(SWAG_DEFAULTS), ["swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce"]);
   for (const k of Object.keys(SWAG_DEFAULTS)) assert.equal(CONTENT_KEYS[k], SWAG_DEFAULTS[k], k);   // GET /api/app/content carries them
   assert.deepEqual([defaults.enabled, defaults.kits, defaults.title], [false, 3, "Win the TTFC swag kit"]);
   assert.equal(defaults.cutoff.toISOString(), "2026-10-26T20:00:00.000Z");
@@ -155,4 +155,17 @@ test("GET /api/app/swag's winners: only once announced; the podium place, the ph
   assert.equal("winners" in before, false);
   assert.deepEqual(publicSwag(on, { announced: true, winners: w }).winners, w);
   assert.equal("winners" in publicSwag(on, { announced: true }), false);   // the admin panel's copy of the settings
+});
+
+test("the announcement is automatic by default (Oct 26 2026): swag.autoAnnounce, a switch management can turn off", () => {
+  assert.equal(SWAG_DEFAULTS["swag.autoAnnounce"], true);
+  assert.equal(CONTENT_KEYS["swag.autoAnnounce"], true);
+  assert.equal(defaults.autoAnnounce, true);
+  assert.equal(swagSettings({ "swag.autoAnnounce": false }).autoAnnounce, false);
+  assert.equal(swagSettings({ "swag.autoAnnounce": "false" }).autoAnnounce, false);
+  assert.equal(swagSettings({ "swag.autoAnnounce": "" }).autoAnnounce, true);
+  assert.deepEqual(cleanContent("swag.autoAnnounce", "false"), ["swag.autoAnnounce", false]);
+  assert.deepEqual(cleanContent("swag.autoAnnounce", true), ["swag.autoAnnounce", true]);
+  assert.equal(clockTime("2026-10-27T17:00:00-04:00"), "5 PM");
+  assert.equal(clockTime("2026-10-27T16:30:00-04:00"), "4:30 PM");
 });
