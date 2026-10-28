@@ -6,7 +6,7 @@ import TicketInventory from "../models/TicketInventory.js";
 import { applyDuePrices, priceAt } from "../services/scheduledPrices.js";
 import Promo from "../models/Promo.js";
 import { HOLD_MINUTES, LIMIT_REACHED, isFull, promoExpired, lockPromo, promoUsageNow } from "../services/promoLimits.js";
-import { switchOn, UPGRADES_KEY } from "../services/liveSwitches.js";
+import { switchOn, UPGRADES_KEY, SALES_KEY, salesClosedMessage } from "../services/liveSwitches.js";
 import { effectiveTypes, isSpeakerPass } from "../services/teamRoles.js";
 
 const router = express.Router();
@@ -401,6 +401,13 @@ router.post("/create-checkout", async (req, res) => {
 
     const basePriceCAD = priceAt(inventoryItem);   // never the old price once a scheduled change is due
     const isBooth = String(tier).startsWith("booth-");
+
+    // Ticket sales off in Admin (site.ticket_sales_open; TTFC 2026 over, Oct 27 2026): the website and the web app
+    // already hide the buy buttons, the native apps don't read the switch, so passes are refused here, with Admin's
+    // message. Booths are unaffected.
+    if (!isBooth && !(await switchOn(SALES_KEY))) {
+      return res.status(409).json({ error: await salesClosedMessage(), code: "sales_closed" });
+    }
 
     // A tier seeded without a price would otherwise create a $0 Stripe session
     if (!basePriceCAD || basePriceCAD <= 0) {

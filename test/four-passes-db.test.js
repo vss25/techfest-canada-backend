@@ -585,3 +585,28 @@ test("delete: shows what goes, needs management and their full name, empties eve
   assert.match(self.body.blockers.join(" "), /your own account/);
   assert.equal((await call("DELETE", `/api/console/people/u-${mia._id}`, { token: mgmtTok, body: { confirmName: "Mia Manager" } })).status, 409);
 });
+
+/* Ticket sales off (Oct 27 2026, TTFC 2026 over): the native apps don't read site.ticket_sales_open, so the checkout
+   refuses passes itself, with Admin's message; booths are unaffected. */
+test("ticket sales off: no pass checkout (Admin's message, code sales_closed); on again, past the gate; booths unaffected", { skip }, async () => {
+  const { TicketInventory, AppContent } = M;
+  const { forgetSwitches } = await import("../services/liveSwitches.js");
+  for (const t of [{ tier: "influence", total: 10, sold: 0, price: 934 }, { tier: "booth-salestest", total: 5, sold: 0, price: 3500 }]) {
+    await TicketInventory.updateOne({ tier: t.tier }, { $set: t }, { upsert: true });
+  }
+  const setSales = async (open) => {
+    await AppContent.updateOne({ key: "site.ticket_sales_open" }, { $set: { value: open, updatedBy: "test" } }, { upsert: true });
+    forgetSwitches();
+  };
+  const buy = (tier) => call("POST", "/api/payments/create-checkout", { body: { tier, client: "ios" } });
+  await setSales(false);
+  // No message saved: the default.
+  assert.deepEqual([(await buy("influence")).status, (await buy("influence")).body], [409, { error: "Ticket sales are paused right now. Please check back soon.", code: "sales_closed" }]);
+  await AppContent.updateOne({ key: "site.ticket_sales_message" }, { $set: { value: "See you soon. Early bird passes for TTFC 2027 are coming soon.", updatedBy: "test" } }, { upsert: true });
+  assert.deepEqual((await buy("influence")).body, { error: "See you soon. Early bird passes for TTFC 2027 are coming soon.", code: "sales_closed" });
+  assert.notEqual((await buy("booth-salestest")).body?.code, "sales_closed");
+  await setSales(true);
+  assert.notEqual((await buy("influence")).body?.code, "sales_closed");
+  const sold = Object.fromEntries((await TicketInventory.find({ tier: { $in: ["influence", "booth-salestest"] } }).lean()).map((x) => [x.tier, x.sold]));
+  assert.deepEqual(sold, { influence: 0, "booth-salestest": 0 });
+});
