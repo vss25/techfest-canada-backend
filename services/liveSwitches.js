@@ -13,6 +13,9 @@ import { CONTENT_KEYS } from "./adminHelpers.js";
 export const POLLS_KEY = "flag.polls";
 export const QA_KEY = "flag.qa";
 export const UPGRADES_KEY = "flag.upgrades";
+/** Ticket sales (management only): off = no pass checkout anywhere, Admin's message shown instead. */
+export const SALES_KEY = "site.ticket_sales_open";
+export const SALES_MESSAGE_KEY = "site.ticket_sales_message";
 
 const TTL = 10_000;
 const cache = new Map();
@@ -37,6 +40,15 @@ export async function switchOn(key) {
   }
   cache.set(key, { on, at: Date.now() });
   return on;
+}
+
+/** Admin's "sales are off" message (site.ticket_sales_message), else the default. */
+export async function salesClosedMessage() {
+  try {
+    const doc = await AppContent.findOne({ key: SALES_MESSAGE_KEY }).lean();
+    if (typeof doc?.value === "string" && doc.value.trim()) return doc.value.trim();
+  } catch { /* the default below */ }
+  return CONTENT_KEYS[SALES_MESSAGE_KEY];
 }
 
 /** Drops the cached values (after an admin change, and in tests). */
