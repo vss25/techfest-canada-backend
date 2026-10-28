@@ -175,6 +175,10 @@ export const SURVEY_DEFAULTS = Object.freeze({
   // default earlier that evening, "nothing until they've reviewed it"; a stored false counts only when management
   // switched it off themselves: autoNotifyExplicit, see surveyConfig.)
   autoNotify: true,
+  // Oct 27 2026, 3:45 PM, the organiser: "Show the survey for everyone using the app." Off = anyone invited (the
+  // app's sign-in or a personal link) gets the card and may answer, checked in or not; on = only people with a door
+  // check-in (the rule from Oct 26). The automatic waves and the email still go only to people who checked in.
+  checkedInOnly: false,
   notifyStartDelayMin: 15,                  // the first wave at 4:15 PM
   notifyBatchSize: 30,
   notifyIntervalMin: 5,
@@ -383,7 +387,7 @@ export function cleanSurveySave(body, current) {
   const b = body && typeof body === "object" ? body : {};
   const cur = current || surveyConfig(null);
   const next = {};
-  for (const k of ["enabled", "autoNotify"]) {
+  for (const k of ["enabled", "autoNotify", "checkedInOnly"]) {
     if (b[k] === undefined) continue;
     if (typeof b[k] !== "boolean") return { error: `${k} must be true or false.`, field: k };
     if (k === "autoNotify") {
@@ -582,7 +586,7 @@ export function publicSurvey(cfg, { now = new Date(), preview = false, invited =
   };
 }
 
-/** GET /api/app/survey: the app's card. show = open, checked in (`eligible`) and not answered yet. */
+/** GET /api/app/survey: the app's card. show = open, may answer (`eligible`: canAnswer) and not answered yet. */
 export function appSurveyCard(cfg, { now = new Date(), responded = false, eligible = true, token = "" } = {}) {
   const open = surveyOpen(cfg, now);
   return {
