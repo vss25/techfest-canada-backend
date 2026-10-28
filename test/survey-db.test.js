@@ -229,7 +229,8 @@ test("management edits the survey: add, edit and delete questions; staff can onl
 });
 
 test("by invitation, for people who checked in: no link, no survey; not checked in, turned away; one response per person", { skip }, async () => {
-  await ok(put(U.mia, { opensAt: PAST, closesAt: LATER }));
+  // Kept to people who checked in (checkedInOnly, off by default since Oct 27 2026), for this test and the ones after.
+  await ok(put(U.mia, { opensAt: PAST, closesAt: LATER, checkedInOnly: true }));
   const TITLE = "How was TTFC 2026, really?";
   const NOT_ATTENDED = "This survey is for people who attended TTFC 2026.";
   // No link: the title and the window only, even while it's open; answering is refused, whatever email is typed.
@@ -251,6 +252,17 @@ test("by invitation, for people who checked in: no link, no survey; not checked 
   });
   const patPost = await answer({ answers: { checkin: 4 } }, { t: tPat });
   assert.deepEqual([patPost.status, patPost.body.code, patPost.body.error], [403, "not_checked_in", NOT_ATTENDED]);
+  // Oct 27 2026, "Show the survey for everyone using the app" (checkedInOnly off): Pat's link and Nat's app get it,
+  // and Pat may answer; then back to checked-in only.
+  await ok(put(U.mia, { checkedInOnly: false }));
+  const patAll = await ok(call("GET", `/api/survey?t=${tPat}`));
+  assert.deepEqual([patAll.eligible, patAll.questions.length > 0], [true, true]);
+  const natAll = await ok(call("GET", "/api/app/survey", { as: U.nat }));
+  assert.deepEqual([natAll.show, natAll.eligible], [true, true]);
+  await ok(answer({ answers: { checkin: 4 } }, { t: tPat }), 201);
+  await M.SurveyResponse.deleteMany({});
+  assert.equal((await put(U.mia, { checkedInOnly: "yes" })).status, 400);
+  await ok(put(U.mia, { checkedInOnly: true }));
   // Nat is on the app and hasn't checked in: no card, refused. Checked in on Day 2 a moment ago: in at once.
   let nat = await ok(call("GET", "/api/app/survey", { as: U.nat }));
   assert.deepEqual([nat.show, nat.eligible, nat.open], [false, false, true]);

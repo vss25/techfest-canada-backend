@@ -11,7 +11,7 @@ import {
 } from "../services/surveyRules.js";
 import {
   loadSurvey, saveSurvey, identify, bearerUser, hasResponded, submitResponse, surveyStats, sendPrompt, emailPlan,
-  sendSurveyEmails, isCheckedIn, asRespondent, personalLinks, MAX_LINKS, notifyProgress, surveyPeople, trackingList,
+  sendSurveyEmails, canAnswer, asRespondent, personalLinks, MAX_LINKS, notifyProgress, surveyPeople, trackingList,
   loadTracking,
 } from "../services/survey.js";
 import { directory as peopleDirectory } from "./people.js";
@@ -60,8 +60,9 @@ import { directory as peopleDirectory } from "./people.js";
 
    The app (signed in), mounted at /api/app/survey:
      GET  /   → { show, open, eligible, responded, opensAt, closesAt, title, body, cta: "Share feedback", url }
-              url = https://www.thetechfestival.com/survey?t=<their token>; show = open && eligible (checked in)
-              && !responded.
+              url = https://www.thetechfestival.com/survey?t=<their token>; show = open && eligible && !responded.
+              eligible: anyone signed in (Oct 27 2026, "Show the survey for everyone using the app"), or only people
+              who checked in while the config's checkedInOnly is on (the same rule for the page and its answers).
               Cache-Control private, no-store. 401 without a sign-in.
 
    Admin (staff read, management changes and sends; audited), mounted at /api/console/survey:
@@ -149,7 +150,7 @@ publicRouter.get("/email-logo.png", (req, res) => {
 publicRouter.get("/", wrap(async (req, res) => {
   const [cfg, who] = await Promise.all([loadSurvey(), identify({ authorization: req.headers.authorization, token: tokenOf(req) })]);
   const preview = String(req.query.preview || "") === "1" && who?.user?.role === "admin";
-  const eligible = who ? await isCheckedIn(who) : false;
+  const eligible = await canAnswer(who, cfg);
   noStore(res);
   res.json(publicSurvey(cfg, {
     preview, invited: !!who, eligible, respondent: who ? { ...who.known } : null, responded: who && (eligible || preview) ? await hasResponded(who) : false,
@@ -177,7 +178,8 @@ appRouter.get("/", wrap(async (req, res) => {
   if (!user) return res.status(401).json({ error: "Unauthorized" });
   if (user.banned) return res.status(403).json({ error: "This account is suspended. Contact enquire@thetechfestival.com." });
   const who = asRespondent(user);
-  const [cfg, eligible, responded] = await Promise.all([loadSurvey(), isCheckedIn(who), hasResponded(who)]);
+  const [cfg, responded] = await Promise.all([loadSurvey(), hasResponded(who)]);
+  const eligible = await canAnswer(who, cfg);
   res.json(appSurveyCard(cfg, { responded, eligible, token: signSurveyToken("u", String(user._id)) }));
 }));
 

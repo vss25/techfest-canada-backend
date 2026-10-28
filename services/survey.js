@@ -189,6 +189,13 @@ export async function isCheckedIn(who, { directory = peopleDirectory } = {}) {
   return !!(await CheckinMark.exists({ subject: { $in: [...subjects] }, ...doorFilter() }));
 }
 
+/** May this person (identify()'s answer) see and answer the survey? Anyone invited, unless the config keeps it to
+    people who checked in (checkedInOnly). */
+export async function canAnswer(who, cfg, { checkedIn = () => isCheckedIn(who) } = {}) {
+  if (!who) return false;
+  return cfg?.checkedInOnly ? !!(await checkedIn()) : true;
+}
+
 /** Everyone with a door check-in now, for the prompt and staff's links: { persons, userIds: Set, emails: Set }. */
 export async function checkedInIndex({ directory = peopleDirectory } = {}) {
   const [dir, marks] = await Promise.all([directory(), CheckinMark.find(doorFilter()).select("subject day point at practice").lean()]);
@@ -215,7 +222,7 @@ export async function submitResponse({ who = null, body = {}, now = new Date(), 
   if (!who) return { ok: false, status: 403, code: "link_required", error: INVITE_ONLY_MESSAGE };
   const cfg = await loadSurvey();
   if (!surveyOpen(cfg, now)) return { ok: false, status: 403, code: "closed", error: "The survey isn't open." };
-  if (!(await checkedIn())) return { ok: false, status: 403, code: "not_checked_in", error: NOT_ATTENDED_MESSAGE };
+  if (!(await canAnswer(who, cfg, { checkedIn }))) return { ok: false, status: 403, code: "not_checked_in", error: NOT_ATTENDED_MESSAGE };
   const b = body && typeof body === "object" ? body : {};
   const known = who?.known || {};
   const fill = {};
@@ -457,7 +464,7 @@ export const MAX_LINKS = 500;
  * `queries`: [{ email } | { person }].
  */
 export async function personalLinks(queries = [], { directory = peopleDirectory } = {}) {
-  const [ci, statusOf] = await Promise.all([checkedInIndex({ directory }), loadTracking()]);
+  const [ci, statusOf, cfg] = await Promise.all([checkedInIndex({ directory }), loadTracking(), loadSurvey()]);
   const dir = ci.dir;
   return queries.map((q) => {
     const asked = q.person ? str(q.person) : cleanEmail(q.email);
@@ -476,7 +483,7 @@ export async function personalLinks(queries = [], { directory = peopleDirectory 
     const st = statusOf(personKeys(same));
     return {
       email, name, url: surveyUrl(signSurveyToken(target.kind, target.id)), kind: target.kind === "u" ? "account" : "pass",
-      checkedIn: !!checkedIn, ...(checkedIn ? {} : { warning: NOT_CHECKED_IN_WARNING }),
+      checkedIn: !!checkedIn, ...(checkedIn || !cfg.checkedInOnly ? {} : { warning: NOT_CHECKED_IN_WARNING }),
       answeredAt: st.answeredAt, emailedAt: st.emailedAt, appNotifiedAt: st.appNotifiedAt,
     };
   });
