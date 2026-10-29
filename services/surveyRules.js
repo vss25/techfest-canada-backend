@@ -772,9 +772,122 @@ export function checkedInAudience({ byId = new Map(), marks = [], days = AUDIENC
     rows.push({
       key: str(p.id), personId: str(p.id), userId: p.user?._id ? str(p.user._id) : null, attendeeId: attendee?._id ? str(attendee._id) : null,
       name, firstName: oneLine(p.firstName) || name.split(" ")[0] || "", email, title: oneLine(p.jobTitle), company: oneLine(p.company),
+      role: personRole(p),
     });
   }
   return { rows, noEmail, unmatched };
+}
+
+/**
+ * Which thank-you a person gets (Oct 29 2026: "Personalize the email verbiage to speakers, exhibitors, delegate"), from
+ * their People types (a Speaker Pass or the speaker type; an exhibitor pass or the exhibitor / vendor type): "team"
+ * (staff, volunteers: no thank-you email) | "speaker" | "exhibitor" | "delegate" (everyone else, media too).
+ */
+export function personRole(p) {
+  const types = new Set((Array.isArray(p?.types) ? p.types : []).map((t) => str(t).toLowerCase()));
+  if (types.has("staff") || types.has("volunteer")) return "team";
+  if (types.has("speaker")) return "speaker";
+  if (types.has("exhibitor") || types.has("vendor") || p?.exhibitor === true) return "exhibitor";
+  return "delegate";
+}
+
+/* ---------- the thank-you email and the reminders (Oct 29 2026) ---------- */
+
+/* The organiser, Oct 29 2026: "Create a thank you email for those who were checked in and then start sending them TTFC
+   survey email in the batch of 20 per hour between 8 am to 6 pm today and … from 8 am to 2 pm on Friday. Use
+   marcom@thetechfestival.com … Everyone should get their own survey URL with prefilled data … send a notification to
+   these people … and a second reminder to those who haven't filled out the survey at 10 am tomorrow."
+   One config (AppContent "survey.thanks"), off until management switches it on:
+     { enabled, perHour (1–200), windows: [{ start, end }] (ISO with offset; a batch at most every clock hour inside
+       one), from, replyTo, reminders: [{ id, at, title, body }] (each once, to checked-in app users who haven't
+       answered; never more than 2 h late, never 10 PM–8 AM Toronto) } */
+export const THANKS_KEY = "survey.thanks";
+export const THANKS_DEFAULTS = Object.freeze({
+  enabled: false,
+  perHour: 20,
+  windows: [
+    { start: "2026-10-29T08:00:00-04:00", end: "2026-10-29T18:00:00-04:00" },
+    { start: "2026-10-30T08:00:00-04:00", end: "2026-10-30T14:00:00-04:00" },
+  ],
+  from: "The Tech Festival Canada <marcom@thetechfestival.com>",
+  replyTo: "marcom@thetechfestival.com",
+  reminders: [
+    { id: "r1", at: "2026-10-29T12:00:00-04:00", title: "How was TTFC 2026?", body: "Two minutes: tell us how the festival went for you. Your answers help shape TTFC 2027." },
+    { id: "r2", at: "2026-10-30T10:00:00-04:00", title: "Two minutes for TTFC?", body: "A quick reminder: tell us how TTFC 2026 went for you. Your answers help shape TTFC 2027." },
+  ],
+});
+export const REMINDER_LATE_MS = 2 * 3600_000;
+const EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const fromOk = (v) => { const m = str(v).match(/<([^>]+)>\s*$/); return EMAIL_RE.test(m ? m[1] : str(v)); };
+
+/** The stored value → the config with the defaults filled in (bad entries dropped). */
+export function thanksConfig(stored = null) {
+  const v = stored && typeof stored === "object" ? stored : {};
+  const out = { ...THANKS_DEFAULTS };
+  if (typeof v.enabled === "boolean") out.enabled = v.enabled;
+  if (Number.isInteger(v.perHour) && v.perHour >= 1 && v.perHour <= 200) out.perHour = v.perHour;
+  if (Array.isArray(v.windows)) out.windows = v.windows.filter((w) => cleanWhen(w?.start) && cleanWhen(w?.end) && parseWhen(w.start) < parseWhen(w.end)).map((w) => ({ start: w.start, end: w.end }));
+  if (fromOk(v.from)) out.from = str(v.from).trim();
+  if (EMAIL_RE.test(str(v.replyTo).trim())) out.replyTo = str(v.replyTo).trim();
+  if (Array.isArray(v.reminders)) {
+    out.reminders = v.reminders.filter((r) => isSlug(r?.id) && cleanWhen(r?.at) && str(r?.title).trim() && str(r?.body).trim())
+      .map((r) => ({ id: r.id, at: r.at, title: oneLine(r.title).slice(0, 80), body: str(r.body).trim().slice(0, 300), ...(r.sentAt ? { sentAt: r.sentAt, sent: Number(r.sent) || 0 } : {}) }));
+  }
+  return out;
+}
+
+/** Management's save → { config } (only the fields sent change; a reminder already sent keeps its sentAt) or { error, field }. */
+export function cleanThanksSave(body, current) {
+  const b = body && typeof body === "object" ? body : {};
+  const cur = current || thanksConfig(null);
+  const next = { ...cur };
+  if (b.enabled !== undefined) { if (typeof b.enabled !== "boolean") return { error: "enabled must be true or false.", field: "enabled" }; next.enabled = b.enabled; }
+  if (b.perHour !== undefined) { if (!(Number.isInteger(b.perHour) && b.perHour >= 1 && b.perHour <= 200)) return { error: "perHour must be a whole number from 1 to 200.", field: "perHour" }; next.perHour = b.perHour; }
+  if (b.windows !== undefined) {
+    if (!Array.isArray(b.windows) || b.windows.some((w) => !cleanWhen(w?.start) || !cleanWhen(w?.end) || parseWhen(w.start) >= parseWhen(w.end))) return { error: "windows: [{ start, end }], ISO times with their offset, start before end.", field: "windows" };
+    next.windows = b.windows.map((w) => ({ start: w.start, end: w.end }));
+  }
+  if (b.from !== undefined) { if (!fromOk(b.from)) return { error: "from must be an email address (or Name <address>).", field: "from" }; next.from = str(b.from).trim(); }
+  if (b.replyTo !== undefined) { if (!EMAIL_RE.test(str(b.replyTo).trim())) return { error: "replyTo must be an email address.", field: "replyTo" }; next.replyTo = str(b.replyTo).trim(); }
+  if (b.reminders !== undefined) {
+    if (!Array.isArray(b.reminders) || b.reminders.some((r) => !isSlug(r?.id) || !cleanWhen(r?.at) || !str(r?.title).trim() || !str(r?.body).trim())) return { error: "reminders: [{ id, at, title, body }].", field: "reminders" };
+    const sentBefore = new Map((cur.reminders || []).filter((r) => r.sentAt).map((r) => [r.id, r]));
+    next.reminders = b.reminders.map((r) => {
+      const was = sentBefore.get(r.id);
+      return { id: r.id, at: r.at, title: oneLine(r.title).slice(0, 80), body: str(r.body).trim().slice(0, 300), ...(was ? { sentAt: was.sentAt, sent: was.sent } : {}) };
+    });
+  }
+  return { config: next };
+}
+
+/** The window `now` is in, else null. */
+export function thanksWindow(cfg, now = new Date()) {
+  const t = new Date(now).getTime();
+  return (cfg?.windows || []).find((w) => parseWhen(w.start).getTime() <= t && t < parseWhen(w.end).getTime()) || null;
+}
+/** The start of `now`'s clock hour (Toronto's offset is whole hours, so UTC's hour is Toronto's). */
+export const hourStart = (now = new Date()) => { const d = new Date(now); d.setUTCMinutes(0, 0, 0); return d; };
+/** The next batch: now (inside a window, under the hour's limit), the next hour inside a window, or the next window. */
+export function nextBatchAt(cfg, { now = new Date(), sentThisHour = 0 } = {}) {
+  if (!cfg?.enabled) return null;
+  const t = new Date(now);
+  if (thanksWindow(cfg, t) && sentThisHour < cfg.perHour) return t;
+  const nextHour = new Date(hourStart(t).getTime() + 3600_000);
+  if (thanksWindow(cfg, nextHour)) return nextHour;
+  const later = (cfg.windows || []).map((w) => parseWhen(w.start)).filter((d) => d > t).sort((a, b) => a - b)[0];
+  return later || null;
+}
+/** Toronto's hour (0–23) at `now`. */
+export function torontoHour(now = new Date()) {
+  return Number(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", hour: "numeric", hourCycle: "h23" }).format(new Date(now)));
+}
+/** The reminders due now: at or after their time, at most 2 h late, not sent, 8 AM–10 PM Toronto. */
+export function remindersDue(cfg, now = new Date()) {
+  if (!cfg?.enabled) return [];
+  const t = new Date(now).getTime();
+  const h = torontoHour(now);
+  if (h < 8 || h >= 22) return [];
+  return (cfg.reminders || []).filter((r) => !r.sentAt && parseWhen(r.at).getTime() <= t && t - parseWhen(r.at).getTime() <= REMINDER_LATE_MS);
 }
 
 /* ---------- who answered (the admin panel's tracking list) ---------- */

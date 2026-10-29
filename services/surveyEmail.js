@@ -30,6 +30,32 @@ import { SURVEY_DEFAULTS } from "./surveyRules.js";
 ========================================================= */
 
 export const SURVEY_SUBJECT = "How was TTFC 2026? Two minutes, please";
+
+/* The thank-you email (Oct 29 2026, the organiser: "Create a thank you email for those who were checked in … Personalize
+   the email verbiage to speakers, exhibitors, delegate"): the same email with a thank-you written for the person's
+   role (services/surveyRules.js personRole), sent by the paced sender (services/survey.js runThanksEmails). */
+export const ROLE_COPY = Object.freeze({
+  speaker: {
+    subject: "Thank you for speaking at TTFC 2026",
+    title: "Thank you for speaking",
+    thanks: "Thank you for speaking at The Tech Festival Canada 2026.",
+    intro: "Your session was a big part of what made the two days at the Westin Harbour Castle worth attending, and we're grateful you shared your time and ideas with our delegates.\n\nWe'd love to hear how the festival was from the stage: the run of show, the speaker experience and the audience, and anything we could do better for speakers next year.",
+  },
+  exhibitor: {
+    subject: "Thank you for exhibiting at TTFC 2026",
+    title: "Thank you for exhibiting",
+    thanks: "Thank you for exhibiting at The Tech Festival Canada 2026.",
+    intro: "Your team and your booth helped make the expo floor what it was, and we're grateful you joined us.\n\nWe'd like to know how the two days worked for you: setup and logistics, footfall, the conversations you had, and what would make exhibiting next year even better.",
+  },
+  delegate: {
+    subject: "Thank you for joining us at TTFC 2026",
+    title: "Thank you for joining us",
+    thanks: "Thank you for joining us at The Tech Festival Canada 2026.",
+    intro: "We hope the sessions sparked new ideas and that you met people worth staying in touch with.\n\nWe'd like to hear how the festival was for you: check-in, the sessions, meals, networking and the app, and what we can do better next year.",
+  },
+});
+export const ROLE_CLOSING = "It takes about two minutes. The link below is just for you, so your name and company are already filled in.";
+export const ROLE_SIGNOFF = "Thank you again. See you in 2027.\nThe TTFC team";
 export const SURVEY_BUTTON = "Share your feedback";
 export const BATCH_SIZE = 100;
 export const surveyLogoUrl = (base = apiBaseUrl()) => `${base}/api/survey/email-logo.png`;
@@ -48,12 +74,13 @@ const paras = (text, style) => str(text).split(/\n{2,}/).map((p) => p.trim()).fi
  * @param {string} [p.unsubscribeUrl] their one-click unsubscribe link ("" = reply "unsubscribe")
  * @returns {{ subject, preheader, html, text }}
  */
-export function buildSurveyEmail({ firstName = "", url = "", copy = {}, logoSrc = "", unsubscribeUrl = "" } = {}) {
-  const subject = SURVEY_SUBJECT;
-  const title = str(copy.title).trim() || SURVEY_DEFAULTS.title;
-  const intro = str(copy.intro).trim() || SURVEY_DEFAULTS.intro;
+export function buildSurveyEmail({ firstName = "", url = "", copy = {}, logoSrc = "", unsubscribeUrl = "", role = "" } = {}) {
+  const rc = ROLE_COPY[role] || null;   // the thank-you email: worded for speakers, exhibitors or delegates
+  const subject = rc ? rc.subject : SURVEY_SUBJECT;
+  const title = rc ? rc.title : str(copy.title).trim() || SURVEY_DEFAULTS.title;
+  const intro = rc ? `${rc.intro}\n\n${ROLE_CLOSING}` : str(copy.intro).trim() || SURVEY_DEFAULTS.intro;
   const greeting = `Hi ${str(firstName).trim() || "there"},`;
-  const thanks = "Thank you for being at The Tech Festival Canada 2026.";
+  const thanks = rc ? rc.thanks : "Thank you for being at The Tech Festival Canada 2026.";
   const preheader = intro.split(/\n/)[0].slice(0, 140);
   const P = `font-family:${SANS};font-size:16px;line-height:25px;color:${C.text};margin:0 0 14px;`;
   const off = unsubscribeUrl
@@ -118,7 +145,12 @@ ${appStoreBlockCss({ adapt: "light" })}
           <td class="pad mut" align="center" style="padding:0 44px 30px;font-family:${SANS};font-size:12px;line-height:18px;color:${C.muted};">
             Or open this link: <a href="${esc(url)}" target="_blank" class="lk" style="color:${C.muted};text-decoration:underline;word-break:break-all;">${esc(url)}</a>
           </td>
-        </tr>
+        </tr>${rc ? `
+        <tr>
+          <td class="pad" style="padding:0 44px 30px;">
+            ${paras(ROLE_SIGNOFF, P)}
+          </td>
+        </tr>` : ""}
         <!-- Get the TTFC app (services/appStoreBlock.js) -->
         <tr>
           <td class="pad" style="padding:0 44px 32px;">
@@ -144,6 +176,7 @@ ${appStoreBlockCss({ adapt: "light" })}
   const text = [
     greeting, "", thanks, "", title, "", intro, "",
     `${SURVEY_BUTTON}: ${url}`, "",
+    ...(rc ? [ROLE_SIGNOFF, ""] : []),
     ...appStoreBlockLines(), "",
     `${EVENT.name} · ${EVENT.dates}`,
     `Questions? ${ENQUIRE_EMAIL}`,
@@ -154,8 +187,8 @@ ${appStoreBlockCss({ adapt: "light" })}
 }
 
 /** One person's message for the batch: { to, subject, html, text, headers } (from and reply-to are added on send). */
-export function surveyMessage({ to, firstName = "", url, copy = {}, unsubscribe = { url: "", headers: {} }, logoSrc = surveyLogoUrl() }) {
-  const e = buildSurveyEmail({ firstName, url, copy, logoSrc, unsubscribeUrl: unsubscribe.url || "" });
+export function surveyMessage({ to, firstName = "", url, copy = {}, unsubscribe = { url: "", headers: {} }, logoSrc = surveyLogoUrl(), role = "" }) {
+  const e = buildSurveyEmail({ firstName, url, copy, logoSrc, unsubscribeUrl: unsubscribe.url || "", role });
   return { to, subject: e.subject, html: e.html, text: e.text, headers: unsubscribe.headers || {} };
 }
 
@@ -163,14 +196,15 @@ let resendClient = null;
 const resend = () => (resendClient ||= new Resend(process.env.RESEND_API_KEY));
 
 /**
- * Sends up to BATCH_SIZE messages in one Resend batch call: from and reply-to enquire@. → [{ to, id }] in order.
+ * Sends up to BATCH_SIZE messages in one Resend batch call: from and reply-to enquire@ (the thank-you email: marcom@,
+ * `from` / `replyTo`). → [{ to, id }] in order.
  * Throws when Resend refuses the batch (a batch goes whole or not at all: none of them went).
  */
-export async function sendSurveyBatch(messages = [], { client = resend() } = {}) {
+export async function sendSurveyBatch(messages = [], { client = resend(), from = FROM, replyTo = ENQUIRE_EMAIL } = {}) {
   if (!messages.length) return [];
   if (messages.length > BATCH_SIZE) throw new Error(`At most ${BATCH_SIZE} emails a batch.`);
   const payload = messages.map((m) => ({
-    from: FROM, to: [m.to], reply_to: ENQUIRE_EMAIL, subject: m.subject, html: m.html, text: m.text,
+    from, to: [m.to], reply_to: replyTo, subject: m.subject, html: m.html, text: m.text,
     ...(m.headers && Object.keys(m.headers).length ? { headers: m.headers } : {}),
   }));
   const { data, error } = await client.batch.send(payload);

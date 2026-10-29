@@ -17,13 +17,13 @@ import { unsubscribeFor } from "./unsubscribe.js";
 import { campaignSendStore } from "./rsvpReminder.js";
 import { normalizeTicketId } from "./ticketAccess.js";
 import { ENQUIRE_EMAIL } from "./appInviteEmail.js";
-import { surveyMessage, sendSurveyBatch, BATCH_SIZE } from "./surveyEmail.js";
+import { surveyMessage, sendSurveyBatch, BATCH_SIZE, buildSurveyEmail, surveyLogoUrl, ROLE_COPY } from "./surveyEmail.js";
 import {
   SURVEY_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, EVENT_DAYS, DOOR_POINTS, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
   surveyConfig, surveyOpen, cleanSurveySave, cleanAnswers, respondentFields, signSurveyToken, verifySurveyToken, surveyUrl,
   checkedInAudience, checkedInPersons, checkedInKeys, personsMatching, personSubjects, personEmails, linkTarget, scoreGroup,
   averagesOf, naCountsOf, cleanEmail, waveDue, notifyWindow, trackingRows, trackingIndex, personKeys, filterTracking,
-  trackingCounts,
+  trackingCounts, THANKS_KEY, thanksConfig, cleanThanksSave, thanksWindow, hourStart, nextBatchAt, remindersDue,
 } from "./surveyRules.js";
 
 /* =========================================================
@@ -286,16 +286,16 @@ const releaseLock = (id) => JobLock.updateOne({ _id: id, owner: INSTANCE }, { $s
  * Everyone the prompt is for now: on the app, not suspended, not hidden from the app, checked in (`checked`:
  * checkedInIndex()), not answered, not prompted.
  */
-export async function promptAudience({ checked = null } = {}) {
+export async function promptAudience({ checked = null, batchId = NOTIFY_BATCH, skipTeam = false } = {}) {
   // The most recently active first (the paced waves take them in this order).
   const users = await User.find({ $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }], banned: { $ne: true } })
-    .select("_id email lastActiveAt").sort({ lastActiveAt: -1, _id: 1 }).lean();
+    .select("_id email lastActiveAt role").sort({ lastActiveAt: -1, _id: 1 }).lean();
   if (!users.length) return { ids: [], already: 0, answered: 0, hidden: 0, notCheckedIn: 0 };
   const [hidden, ci] = await Promise.all([hiddenState(), checked || checkedInIndex()]);
   const ids = users.map((u) => u._id);
   const [answeredRows, prompted] = await Promise.all([
     SurveyResponse.find({ $or: [{ userId: { $in: ids } }, { email: { $in: users.map((u) => cleanEmail(u.email)).filter(Boolean) } }] }).select("userId email").lean(),
-    AppNotification.distinct("userId", { batchId: NOTIFY_BATCH }),
+    AppNotification.distinct("userId", { batchId }),
   ]);
   const answeredIds = new Set(answeredRows.map((r) => str(r.userId)).filter(Boolean));
   const answeredEmails = new Set(answeredRows.map((r) => r.email).filter(Boolean));
@@ -304,6 +304,8 @@ export async function promptAudience({ checked = null } = {}) {
   for (const u of users) {
     const id = str(u._id);
     if (hidden.ids.has(id)) { out.hidden += 1; continue; }
+    // The reminders (Oct 29 2026) are for the people the thank-you email is for: not staff or volunteers.
+    if (skipTeam && (u.role === "admin" || u.role === "volunteer")) continue;
     if (!ci.userIds.has(id) && !ci.emails.has(cleanEmail(u.email))) { out.notCheckedIn += 1; continue; }
     if (answeredIds.has(id) || answeredEmails.has(cleanEmail(u.email))) { out.answered += 1; continue; }
     if (promptedIds.has(id)) { out.already += 1; continue; }
@@ -318,26 +320,29 @@ export async function promptAudience({ checked = null } = {}) {
  * createdAt is when they were prompted: appNotifiedAt). → { sent, remaining, already, answered, hidden, notCheckedIn }
  * or { busy: true } when another send is running.
  */
-export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date(), checked = null, limit = Infinity } = {}) {
-  const c = cfg || (await loadSurvey({ fresh: true }));
+export async function sendPrompt({ cfg = null, by = "TTFC", byId = null, now = new Date(), checked = null, limit = Infinity,
+  batchId = NOTIFY_BATCH, title = "", body = "", skipTeam = false } = {}) {
+  const c0 = cfg || (await loadSurvey({ fresh: true }));
+  // A reminder (Oct 29 2026): its own batch (once per reminder, whoever had the first prompt) and its own words.
+  const c = { ...c0, notifyTitle: title || c0.notifyTitle, notifyBody: body || c0.notifyBody };
   if (!(await claimLock(SEND_LOCK, now, 5 * 60_000))) return { busy: true };
   try {
-    const aud = await promptAudience({ checked });
+    const aud = await promptAudience({ checked, batchId, skipTeam });
     const all = aud.ids;
     aud.ids = all.slice(0, Math.max(0, limit));
     for (let i = 0; i < aud.ids.length; i += 500) {
       const chunk = aud.ids.slice(i, i + 500);
       await AppNotification.insertMany(chunk.map((id) => ({
         userId: id, title: c.notifyTitle.slice(0, 80), body: c.notifyBody.slice(0, 500), link: surveyUrl(signSurveyToken("u", id)),
-        kind: "personal", batchId: NOTIFY_BATCH, ...(byId ? { sentBy: byId } : {}), sentByName: by,
+        kind: "personal", batchId, ...(byId ? { sentBy: byId } : {}), sentByName: by,
       })));
     }
     // One push for all (each person's own link is in their inbox, where it opens): not to people who switched
     // "Announcements from TTFC" off, like the other messages to everyone.
     if (aud.ids.length) {
-      pushToUsers(aud.ids, { title: c.notifyTitle, body: c.notifyBody, link: "", kind: "personal", id: NOTIFY_BATCH, url: "/app/notifications" }, { pref: "announcements" });
+      pushToUsers(aud.ids, { title: c.notifyTitle, body: c.notifyBody, link: "", kind: "personal", id: batchId, url: "/app/notifications" }, { pref: "announcements" });
     }
-    if (aud.ids.length) {
+    if (aud.ids.length && batchId === NOTIFY_BATCH) {
       await AppContent.collection.updateOne({ key: SURVEY_KEY },
         { $min: { "value.notifiedAt": now }, $set: { updatedAt: now }, $inc: { "value.notifiedCount": aud.ids.length }, $setOnInsert: { createdAt: now, updatedBy: by } },
         { upsert: true });
@@ -409,7 +414,7 @@ export async function notifyProgress(cfg, { now = new Date() } = {}) {
 
 /** server.js, once connected: a check every minute (the paced prompt's waves; nothing outside its window). */
 export function startSurveyNotify({ everyMs = 60_000 } = {}) {
-  const t = setInterval(() => { runSurveyNotify(); }, everyMs);
+  const t = setInterval(() => { runSurveyNotify(); runThanksEmails(); runSurveyReminders(); }, everyMs);
   t.unref?.();
   return t;
 }
@@ -538,26 +543,27 @@ export async function emailPlan(audience, dir) {
  * claimed first (CampaignSend "survey-2026": a sent one is never sent again, one being sent is left alone, a failed
  * one may be retried) and checked against the unsubscribe list just before. → { sent, skipped, failed, counts }
  */
-export async function sendSurveyEmails({ plan, cfg, by = "", send = sendSurveyBatch, gapMs = 600, now = () => new Date() }) {
+export async function sendSurveyEmails({ plan, cfg, by = "", send = sendSurveyBatch, gapMs = 600, now = () => new Date(), from = "", replyTo = "", byRole = false }) {
   const store = campaignSendStore(CampaignSend, { campaign: EMAIL_CAMPAIGN, cooldownMs: FOREVER_MS, Subscription });
   let sent = 0;
   let skipped = plan.rows.length - plan.toSend.length;
   let failed = 0;
   for (let i = 0; i < plan.toSend.length; i += BATCH_SIZE) {
     const chunk = plan.toSend.slice(i, i + BATCH_SIZE);
-    const claimed = [];
-    await Promise.all(chunk.map(async (r) => {
-      if (await store.optedOut(r.email)) { skipped += 1; return; }
-      if (!(await store.claim(r.email, { name: r.name, by, now: now() }))) { skipped += 1; return; }
-      claimed.push(r);
+    // Claimed in parallel, kept in the plan's order.
+    const ok = await Promise.all(chunk.map(async (r) => {
+      if (await store.optedOut(r.email)) { skipped += 1; return false; }
+      if (!(await store.claim(r.email, { name: r.name, by, now: now() }))) { skipped += 1; return false; }
+      return true;
     }));
+    const claimed = chunk.filter((_, i) => ok[i]);
     if (!claimed.length) continue;
     const messages = claimed.map((r) => surveyMessage({
-      to: r.email, firstName: r.firstName, url: linkFor(r), copy: cfg,
+      to: r.email, firstName: r.firstName, url: linkFor(r), copy: cfg, role: byRole ? r.role : "",
       unsubscribe: unsubscribeFor(r.email, { real: true, mailto: ENQUIRE_EMAIL }),
     }));
     try {
-      const out = await send(messages);
+      const out = await send(messages, from ? { from, replyTo: replyTo || undefined } : undefined);
       const at = now();
       await Promise.all(out.map((o) => store.sent(o.to, { sentAt: at, resendId: o.id })));
       sent += out.length;
@@ -570,4 +576,132 @@ export async function sendSurveyEmails({ plan, cfg, by = "", send = sendSurveyBa
     if (gapMs && i + BATCH_SIZE < plan.toSend.length) await pause(gapMs);   // Resend: a couple of calls a second
   }
   return { sent, skipped, failed, counts: plan.counts };
+}
+
+/* ---------- the thank-you email and the reminders (Oct 29 2026; services/surveyRules.js THANKS_KEY) ---------- */
+
+const THANKS_JOB = "survey-thanks";
+const REMIND_JOB = "survey-remind";
+
+export async function loadThanks() {
+  const row = await AppContent.findOne({ key: THANKS_KEY }).lean();
+  return { ...thanksConfig(row?.value ?? null), updatedAt: row?.updatedAt || null, updatedBy: row?.updatedBy || "" };
+}
+export async function saveThanks(body, { by = "", now = new Date() } = {}) {
+  const current = await loadThanks();
+  const c = cleanThanksSave(body, current);
+  if (c.error) return c;
+  const { updatedAt, updatedBy, ...value } = c.config;
+  await AppContent.collection.updateOne({ key: THANKS_KEY }, { $set: { value, updatedBy: by, updatedAt: now }, $setOnInsert: { createdAt: now } }, { upsert: true });
+  return { config: await loadThanks() };
+}
+
+/** Thank-you emails sent since the start of this clock hour (any survey email counts against the hour). */
+const sentSince = (since) => CampaignSend.countDocuments({ campaign: EMAIL_CAMPAIGN, status: { $in: ["sent", "sending"] }, $or: [{ sentAt: { $gte: since } }, { status: "sending" }] });
+
+/**
+ * Who's next for the thank-you email: everyone checked in on Day 1 or Day 2 (emailPlan "both": never the unsubscribed,
+ * people who answered or anyone it already went to), staff and volunteers left out; people not on the app first (the
+ * app already asks the others), then by name. → { plan, queue }
+ */
+export async function thanksQueue({ directory = peopleDirectory } = {}) {
+  const dir = await directory();
+  const plan = await emailPlan("both", dir);
+  const userIds = plan.toSend.map((r) => r.userId).filter(Boolean);
+  const onApp = new Set(userIds.length ? (await User.find({ _id: { $in: userIds }, $or: [{ appOnboarded: true }, { lastActiveAt: { $ne: null } }] }).select("_id").lean()).map((u) => str(u._id)) : []);
+  const queue = plan.toSend.filter((r) => r.role !== "team")
+    .map((r) => ({ ...r, onApp: !!(r.userId && onApp.has(r.userId)) }))
+    .sort((a, b) => (a.onApp - b.onApp) || a.name.localeCompare(b.name) || a.email.localeCompare(b.email));
+  return { plan, queue };
+}
+
+/**
+ * One run of the minute job: inside a window and under the hour's limit (perHour), the next people in thanksQueue()
+ * get the thank-you email worded for their role, from marcom@ (the config's from / replyTo), with their own survey
+ * link. One server at a time (JobLock). → sendSurveyEmails' answer, or null. Never throws.
+ */
+export async function runThanksEmails({ now = new Date(), held = false, directory = peopleDirectory, send = sendSurveyBatch } = {}) {
+  try {
+    const cfg = await loadThanks();
+    if (!cfg.enabled || !thanksWindow(cfg, now)) return null;
+    const survey = await loadSurvey({ fresh: true });
+    if (!surveyOpen(survey, now)) return null;
+    const room = cfg.perHour - (await sentSince(hourStart(now)));
+    if (room <= 0) return null;
+    if (!held && !(await claimLock(THANKS_JOB, now, 5 * 60_000))) return null;
+    try {
+      const { plan, queue } = await thanksQueue({ directory });
+      const batch = queue.slice(0, room);
+      if (!batch.length) return null;
+      const out = await sendSurveyEmails({ plan: { ...plan, toSend: batch }, cfg: survey, by: "TTFC (thank-you, paced)", send, gapMs: 0,
+        now: () => new Date(now), from: cfg.from, replyTo: cfg.replyTo, byRole: true });
+      console.log(`SURVEY THANK-YOU BATCH: ${out.sent} sent, ${out.failed} failed, ${queue.length - batch.length} left`);
+      return { ...out, left: queue.length - batch.length };
+    } finally {
+      if (!held) await releaseLock(THANKS_JOB);
+    }
+  } catch (err) {
+    console.error("SURVEY THANK-YOU ERROR:", err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * One run of the minute job: each reminder that's due (remindersDue) goes once to checked-in app users who haven't
+ * answered (its own batch, "survey-2026-<id>"), claimed in the config first so only one server sends it.
+ * → [{ id, sent }] or null. Never throws.
+ */
+export async function runSurveyReminders({ now = new Date() } = {}) {
+  try {
+    const cfg = await loadThanks();
+    const due = remindersDue(cfg, now);
+    if (!due.length) return null;
+    const survey = await loadSurvey({ fresh: true });
+    if (!surveyOpen(survey, now)) return null;
+    if (!(await claimLock(REMIND_JOB, now, 5 * 60_000))) return null;
+    const done = [];
+    try {
+      for (const r of due) {
+        const claimed = await AppContent.collection.updateOne(
+          { key: THANKS_KEY, "value.reminders": { $elemMatch: { id: r.id, sentAt: { $exists: false } } } },
+          { $set: { "value.reminders.$.sentAt": now.toISOString() } });
+        if (!claimed.modifiedCount) continue;
+        const out = await sendPrompt({ cfg: survey, by: "TTFC (reminder)", now, batchId: `${NOTIFY_BATCH}-${r.id}`, title: r.title, body: r.body, skipTeam: true });
+        if (out.busy) {
+          await AppContent.collection.updateOne({ key: THANKS_KEY, "value.reminders.id": r.id }, { $unset: { "value.reminders.$.sentAt": "" } });
+          continue;
+        }
+        await AppContent.collection.updateOne({ key: THANKS_KEY, "value.reminders.id": r.id }, { $set: { "value.reminders.$.sent": out.sent } });
+        console.log(`SURVEY REMINDER ${r.id}: ${out.sent} sent (${out.answered} answered, ${out.notCheckedIn} not checked in)`);
+        done.push({ id: r.id, sent: out.sent });
+      }
+    } finally {
+      await releaseLock(REMIND_JOB);
+    }
+    return done;
+  } catch (err) {
+    console.error("SURVEY REMINDER ERROR:", err?.message || err);
+    return null;
+  }
+}
+
+/** The admin view: { config, progress: { sent, sentThisHour, left, byRole, nextAt, inWindow }, reminders, previews }. */
+export async function thanksStatus({ now = new Date(), directory = peopleDirectory } = {}) {
+  const cfg = await loadThanks();
+  const [{ queue }, sent, sentThisHour, survey] = await Promise.all([
+    thanksQueue({ directory }), CampaignSend.countDocuments({ campaign: EMAIL_CAMPAIGN, status: "sent" }), sentSince(hourStart(now)), loadSurvey(),
+  ]);
+  const byRole = {};
+  for (const r of queue) byRole[r.role] = (byRole[r.role] || 0) + 1;
+  const sample = "https://www.thetechfestival.com/survey?t=PERSONAL-LINK";
+  const previews = Object.fromEntries(Object.keys(ROLE_COPY).map((role) => {
+    const e = buildSurveyEmail({ firstName: "Alex", url: sample, copy: survey, logoSrc: surveyLogoUrl(), unsubscribeUrl: "https://www.thetechfestival.com/unsubscribe", role });
+    return [role, { subject: e.subject, html: e.html, text: e.text }];
+  }));
+  const next = nextBatchAt(cfg, { now, sentThisHour });
+  return {
+    config: cfg,
+    progress: { sent, sentThisHour, left: queue.length, leftOnApp: queue.filter((r) => r.onApp).length, byRole, inWindow: !!thanksWindow(cfg, now), nextAt: next ? next.toISOString() : null },
+    previews,
+  };
 }
