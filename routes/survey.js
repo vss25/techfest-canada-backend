@@ -11,7 +11,7 @@ import {
 } from "../services/surveyRules.js";
 import {
   loadSurvey, saveSurvey, identify, bearerUser, hasResponded, submitResponse, surveyStats, sendPrompt, emailPlan,
-  sendSurveyEmails, canAnswer, asRespondent, personalLinks, MAX_LINKS, notifyProgress, surveyPeople, trackingList,
+  sendSurveyEmails, canAnswer, thanksStatus, saveThanks, asRespondent, personalLinks, MAX_LINKS, notifyProgress, surveyPeople, trackingList,
   loadTracking,
 } from "../services/survey.js";
 import { directory as peopleDirectory } from "./people.js";
@@ -294,6 +294,26 @@ adminRouter.get("/email", wrap(async (req, res) => {
     }),
     counts: plan.counts, subject: e.subject, html: e.html, text: e.text,
   });
+}));
+
+/* The thank-you email and the reminders (Oct 29 2026; services/survey.js runThanksEmails / runSurveyReminders):
+     GET /thanks (staff) → { config: { enabled, perHour, windows, from, replyTo, reminders: [{ id, at, title, body,
+       sentAt?, sent? }] }, progress: { sent, sentThisHour, left, leftOnApp, byRole: { speaker, exhibitor, delegate },
+       inWindow, nextAt }, previews: { speaker | exhibitor | delegate: { subject, html, text } } }   nothing is sent.
+     PUT /thanks { enabled?, perHour?, windows?, from?, replyTo?, reminders? } (management) → the same GET answer.
+       Off by default: nothing goes until management switches it on. Audited survey_thanks. */
+adminRouter.get("/thanks", wrap(async (req, res) => {
+  noStore(res);
+  res.json(await thanksStatus({ directory: peopleDirectory }));
+}));
+
+adminRouter.put("/thanks", requireManagement, wrap(async (req, res) => {
+  const r = await saveThanks(req.body, { by: req.user.name || "" });
+  if (r.error) return res.status(400).json({ ok: false, field: r.field, error: r.error });
+  const c = r.config;
+  await audit(req, "survey_thanks", `${c.enabled ? "on" : "off"}, ${c.perHour}/h, ${c.windows.length} window(s), from ${c.from}, reminders ${c.reminders.map((x) => x.at).join(", ")}`);
+  noStore(res);
+  res.json(await thanksStatus({ directory: peopleDirectory }));
 }));
 
 adminRouter.post("/email", requireManagement, wrap(async (req, res) => {
