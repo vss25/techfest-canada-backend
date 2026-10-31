@@ -13,6 +13,20 @@ const submittedSchema = new mongoose.Schema({
   nomineePillar: { type: String, default: "" },
 }, { _id: false });
 
+/* What the website shows for a winner (Admin › Catalyst Awards › Winners, Oct 31 2026; services/awardWinners.js).
+   Empty text = the default worked out from the nomination. */
+const awardSchema = new mongoose.Schema({
+  title: { type: String, default: "" },        // the award's name
+  company: { type: String, default: "" },
+  presentedTo: { type: String, default: "" },
+  presentedOn: { type: String, default: "" },  // YYYY-MM-DD (Toronto); "" = Awards Night, 2026-10-26
+  citation: { type: String, default: "" },     // a line about why (optional)
+  order: { type: Number, default: 0 },         // lowest first
+  hidden: { type: Boolean, default: false },   // a winner, but not on the website
+  updatedBy: { type: String, default: "" },
+  updatedAt: { type: Date, default: null },
+}, { _id: false });
+
 const nominationSchema = new mongoose.Schema({
   // ═════ SECTION 1 — Award Category ═════
   categoryType: { type: String, enum: ["matrix", "special"], required: true },
@@ -68,6 +82,7 @@ const nominationSchema = new mongoose.Schema({
      services/nominations.js). The live fields above are what everything reads (jury, results, award counts,
      CSV, filters); `submitted` keeps what came in, copied once, at the first change. */
   submitted: { type: submittedSchema, default: undefined },
+  award: { type: awardSchema, default: undefined },
   categoryChangedBy: { type: String, default: "" },
   categoryChangedAt: { type: Date, default: null },
   categoryNote: { type: String, default: "" },

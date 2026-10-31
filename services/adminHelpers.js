@@ -93,6 +93,10 @@ export const CONTENT_KEYS = {
      web app (GET /api/app/awards/applications, services/awardApplications.js). Off = the list is empty
      ({ enabled: false }) and the apps hide the Applications entry; the category count still shows. */
   "site.award_applications": true,
+  /* "Results are out" (Oct 31 2026): the Catalyst Awards winners on the website's /awards page and in the apps
+     (GET /api/awards/winners, services/awardWinners.js; who and what is shown: Admin › Catalyst Awards › Winners).
+     Off = no winners anywhere. */
+  "site.award_winners": true,
   "site.volunteer_open": true,
   "site.show_agenda": true,
   "flag.pwaPrompt": false,                 // on = the website offers "install the app" (the PWA at /app/)

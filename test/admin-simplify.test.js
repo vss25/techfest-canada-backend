@@ -21,6 +21,8 @@ test("staff can't change the selling switches or the guest offer; they keep the 
   assert.deepEqual(MANAGEMENT_CONTENT_KEYS, [
     "site.ticket_sales_open", "site.ticket_sales_message", "flag.upgrades",
     "flag.guestOffer", "offer.guest_code", "offer.guest_discount", "offer.guest_ends", "offer.guest_passes",
+    // The Catalyst Awards winners on the website and in the apps (Oct 31 2026, services/awardWinners.js).
+    "site.award_winners",
     "swag.enabled", "swag.kits", "swag.cutoff", "swag.announce", "swag.title", "swag.rules", "swag.autoAnnounce", "swag.celebrate", "swag.feedPost",
     // "Update the app" (Oct 24 2026, services/appVersion.js).
     "app.ios_latest", "app.ios_minimum", "app.android_latest", "app.android_minimum", "app.update_message",
