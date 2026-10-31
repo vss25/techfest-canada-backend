@@ -9,6 +9,9 @@ import {
   sameCategory, sameFocus, snapshotOf, submittedOf,
 } from "../services/nominations.js";
 import { forgetAwardApplications } from "./appAwards.js";
+import { forgetWinners } from "./awards.js";
+import { WINNERS_KEY, cleanAwardPatch, sortWinners, winnerAdminRow } from "../services/awardWinners.js";
+import { switchOn } from "../services/liveSwitches.js";
 
 /* =========================================================
    /api/console/nominations: Admin → Catalyst Awards → Nominations.
@@ -35,6 +38,12 @@ import { forgetAwardApplications } from "./appAwards.js";
           it is. The live fields change, so the jury, results, the apps' category
           count, the CSV and the filters follow; the first change copies what
           was submitted into `submitted` (once). Audited with labels only.
+
+   What the website shows for each winner (Admin › Catalyst Awards › Winners, Oct 31 2026; services/awardWinners.js):
+   GET    /winners             → { live, rows: [{ …the public view, hidden, set, defaults, nominee, category }] }
+                               (status "winner", the website's order; live = site.award_winners)
+   PATCH  /:id/award           { title?, company?, presentedTo?, presentedOn?, citation?, order?, hidden? } → { row }
+                               (management; winners only, else 409). Text "" = back to the default. Audited.
 ========================================================= */
 
 const router = express.Router();
@@ -124,6 +133,33 @@ router.post("/recover", requireManagement, async (req, res) => {
   }
   if (imported) await audit(req, "nominations_recover", "", `${imported} recovered from the email log`);
   res.json({ found, imported, cursor, done });
+});
+
+/* ---------- the winners on the website ---------- */
+
+const WINNER_FIELDS = "status categoryType pillar sector specialAward nomineeType nomineeName nomineeOrganisation nomineeWebsite award";
+
+router.get("/winners", async (req, res) => {
+  const noms = await Nomination.find({ status: "winner" }).select(WINNER_FIELDS).lean();
+  const rows = sortWinners(noms.map(winnerAdminRow));
+  res.json({ live: await switchOn(WINNERS_KEY), rows });
+});
+
+router.patch("/:id/award", requireManagement, async (req, res) => {
+  if (!isId(req.params.id)) return res.status(404).json({ error: "Nomination not found" });
+  const patch = cleanAwardPatch(req.body);
+  if (!patch.ok) return res.status(400).json({ error: patch.error });
+  const before = await Nomination.findById(req.params.id).select(WINNER_FIELDS).lean();
+  if (!before) return res.status(404).json({ error: "Nomination not found" });
+  if (before.status !== "winner") return res.status(409).json({ error: "Only winners are shown on the website. Mark it as a winner first." });
+  const set = Object.fromEntries(Object.entries(patch.set).map(([k, v]) => [`award.${k}`, v]));
+  set["award.updatedBy"] = by(req);
+  set["award.updatedAt"] = new Date();
+  const n = await Nomination.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).select(WINNER_FIELDS).lean();
+  forgetWinners();
+  const what = Object.entries(patch.set).map(([k, v]) => (typeof v === "string" ? `${k} ${v ? `"${v.slice(0, 60)}"` : "(default)"}` : `${k} ${v}`)).join(", ");
+  await audit(req, "award_winner_edit", n._id, `${n.nomineeName}: ${what}`);
+  res.json({ row: winnerAdminRow(n) });
 });
 
 /** Jurors allocated to the nomination now, and assessments saved for it (submitted or draft, any allocation). */
@@ -236,6 +272,7 @@ router.patch("/:id", async (req, res) => {
   const n = await Nomination.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
   const what = [statusChanged ? `status ${before.status || "pending"} → ${set.status}` : "", "adminNotes" in patch.set ? "notes" : ""]
     .filter(Boolean).join(", ") || "no change";
+  if (statusChanged) forgetWinners();
   await audit(req, "nomination_edit", n._id, `${n.nomineeName}: ${what}`);
   res.json({ nomination: nominationDetail(n) });
 });
@@ -244,6 +281,7 @@ router.delete("/:id", requireManagement, async (req, res) => {
   if (!isId(req.params.id)) return res.status(404).json({ error: "Nomination not found" });
   const n = await Nomination.findByIdAndDelete(req.params.id).lean();
   if (!n) return res.status(404).json({ error: "Nomination not found" });
+  if (n.status === "winner") forgetWinners();
   await audit(req, "nomination_delete", n._id, `${n.nomineeName} (${n.nominatorEmail || "no email"})`);
   res.json({ deleted: true });
 });

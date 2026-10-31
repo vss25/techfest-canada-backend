@@ -71,6 +71,7 @@ import { requireManagementAdmin } from "./middleware/adminAuth.js";
 import filesRouter from "./routes/files.js";           // post photos + profile photos
 import completeProfileRouter from "./routes/completeProfile.js"; // attendee "complete your profile" form (signed link)
 import attendingRouter, { attendingLinkedinCallback, attendingPostDraft } from "./routes/attending.js"; // website /attending: LinkedIn photo + proxy
+import awardsRouter, { awardLinkedinCallback, awardPostDraft } from "./routes/awards.js"; // website /awards: the Catalyst Awards winners
 import attendingCampaignRouter from "./routes/attendingCampaign.js";              // "I'm attending" email (admin console)
 import appInviteRouter from "./routes/appInvite.js";                                // app invite email (admin console)
 import rsvpRemindersRouter from "./routes/rsvpReminders.js";                         // RSVP reminder email (admin console)
@@ -136,6 +137,8 @@ app.post("/api/cms/upload-file", requireManagementAdmin, siteFileBody, uploadSit
 app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
 // "I'm attending" Post to LinkedIn: the finished image arrives as a base64 PNG.
 app.post("/api/attending/post", express.json({ limit: "9mb" }), attendingPostDraft);
+// A Catalyst Awards winner's certificate, posted to LinkedIn from /awards/winners/<id> (a base64 JPEG).
+app.post("/api/awards/post", express.json({ limit: "9mb" }), awardPostDraft);
 // Company logos uploaded in Admin → People (2 MB images, as base64).
 app.use("/api/console/companies", express.json({ limit: "4mb" }), companiesRouter);
 // Feed photos and profile photos arrive as base64 JSON.
@@ -159,6 +162,8 @@ app.get("/api/status", statusHandler);
 /* ==========================================
    ROUTES
 ========================================== */
+// A Catalyst Awards winner's "Post to LinkedIn" (state "ttfc-awd.…", routes/awards.js): the same registered redirect URI.
+app.get("/api/auth/linkedin/callback", awardLinkedinCallback);
 // "I'm attending" LinkedIn photo: its callbacks (state "ttfc-att.…") share the registered redirect URI; others fall through.
 app.get("/api/auth/linkedin/callback", attendingLinkedinCallback);
 // "Share on LinkedIn" from the apps (state "ttfc-shr.…", routes/linkedinShare.js): the same registered redirect URI.
@@ -224,6 +229,7 @@ app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no 
 // The admin console website: https://<backend>/console
 app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));
 app.use("/api", promosRouter);
+app.use("/api/awards", awardsRouter);    // GET /winners, /winners/:id, /linkedin/post (no sign-in)
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);
 app.use("/api", linkedinRouter);
