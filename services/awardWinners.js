@@ -180,15 +180,23 @@ export function cleanAwardPatch(body = {}) {
 /* ---------- "Post to LinkedIn" from a winner's page ----------
    The certificate (a JPEG or PNG the page draws) and the text wait here while they approve posting on LinkedIn
    (models/AwardPost.js, 30 minutes). Its own state prefix and cookie, so the attending and app-share flows on the
-   same redirect URI are untouched. */
+   same redirect URI are untouched. The state carries the winner's id ("ttfc-awd.<random>.<id>"), so every way back,
+   a lost draft included, lands on that winner's page with the message.
+   Sized for what the page sends (Oct 31 2026 review): one certificate JPEG is about 0.3 MB, so 2 MB at most, 20
+   drafts per address per 15 minutes, and at most AWARD_DRAFTS_MAX waiting at once for everyone together. */
 
 export const AWARD_STATE_PREFIX = "ttfc-awd.";
 export const AWARD_COOKIE = "ttfc_awd_li";
-export const AWARD_IMAGE_MAX_BYTES = 6 * 1024 * 1024;
+export const AWARD_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+export const AWARD_DRAFTS_PER_IP = 20;
+export const AWARD_DRAFTS_MAX = 150;
 
-export const newAwardState = () => `${AWARD_STATE_PREFIX}${crypto.randomBytes(16).toString("hex")}`;
-export const isAwardState = (s) => typeof s === "string" && /^ttfc-awd\.[0-9a-f]{32}$/.test(s);
 export const isWinnerId = (s) => typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
+export const newAwardState = (winnerId = "") =>
+  `${AWARD_STATE_PREFIX}${crypto.randomBytes(16).toString("hex")}${isWinnerId(winnerId) ? `.${winnerId.toLowerCase()}` : ""}`;
+export const isAwardState = (s) => typeof s === "string" && /^ttfc-awd\.[0-9a-f]{32}(\.[a-f0-9]{24})?$/.test(s);
+/** The winner's id a state was made for ("" when it has none). */
+export const winnerIdOfState = (s) => (isAwardState(s) ? s.split(".")[2] || "" : "");
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);

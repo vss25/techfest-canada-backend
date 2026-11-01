@@ -137,8 +137,8 @@ app.post("/api/cms/upload-file", requireManagementAdmin, siteFileBody, uploadSit
 app.use("/api/cms", express.json({ limit: "9mb" }), cmsRouter);
 // "I'm attending" Post to LinkedIn: the finished image arrives as a base64 PNG.
 app.post("/api/attending/post", express.json({ limit: "9mb" }), attendingPostDraft);
-// A Catalyst Awards winner's certificate, posted to LinkedIn from /awards/winners/<id> (a base64 JPEG).
-app.post("/api/awards/post", express.json({ limit: "9mb" }), awardPostDraft);
+// A Catalyst Awards winner's certificate, posted to LinkedIn from /awards/winners/<id> (a base64 JPEG, 2 MB at most).
+app.post("/api/awards/post", express.json({ limit: "3mb" }), awardPostDraft);
 // Company logos uploaded in Admin → People (2 MB images, as base64).
 app.use("/api/console/companies", express.json({ limit: "4mb" }), companiesRouter);
 // Feed photos and profile photos arrive as base64 JSON.
