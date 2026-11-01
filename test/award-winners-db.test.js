@@ -208,14 +208,14 @@ test("Post to LinkedIn: the draft, the sign-in with its state cookie, and the wa
   assert.equal(d.status, 200);
   assert.match(d.body.id, /^[0-9a-f]{32}$/);
 
-  const go = await call("GET", `/api/awards/linkedin/post?d=${d.body.id}`, { redirect: "manual" });
+  const go = await call("GET", `/api/awards/linkedin/post?d=${d.body.id}&w=${id(N.w2)}`, { redirect: "manual" });
   assert.equal(go.status, 302);
   const to = new URL(go.headers.get("location"));
   assert.equal(to.origin + to.pathname, "https://www.linkedin.com/oauth/v2/authorization");
   assert.equal(to.searchParams.get("scope"), "openid profile w_member_social");
   const state = to.searchParams.get("state");
-  assert.match(state, /^ttfc-awd\.[0-9a-f]{32}$/);
-  assert.match(go.headers.get("set-cookie"), new RegExp(`ttfc_awd_li=${state.replace(".", "\\.")}; Path=/api/auth/linkedin`));
+  assert.match(state, new RegExp(`^ttfc-awd\\.[0-9a-f]{32}\\.${id(N.w2)}$`), "the state names the winner");
+  assert.match(go.headers.get("set-cookie"), new RegExp(`ttfc_awd_li=${state.replaceAll(".", "\\.")}; Path=/api/auth/linkedin`));
 
   // Not ours: on to the next handler. Forged (no cookie): back with "expired". Cancelled: back with "cancelled".
   assert.equal((await call("GET", "/api/auth/linkedin/callback?state=ttfc-att.x&code=1", { redirect: "manual" })).status, 299);
@@ -228,4 +228,34 @@ test("Post to LinkedIn: the draft, the sign-in with its state cookie, and the wa
   assert.ok(await M.AwardPost.findOne({ state }), "the draft stays for another try");
   assert.equal((await call("GET", "/api/awards/linkedin/post?d=nope", { redirect: "manual" })).headers.get("location"),
     "https://www.thetechfestival.com/awards#post_error=expired");
+  // A lost draft still goes back to the winner's page: from `w`, or from the state.
+  assert.equal((await call("GET", `/api/awards/linkedin/post?d=${"0".repeat(32)}&w=${id(N.w2).toUpperCase()}`, { redirect: "manual" })).headers.get("location"),
+    `https://www.thetechfestival.com/awards/winners/${id(N.w2)}#post_error=expired`);
+  const lost = `ttfc-awd.${"a".repeat(32)}.${id(N.w2)}`;
+  assert.equal((await call("GET", `/api/auth/linkedin/callback?state=${lost}&code=abc`, { redirect: "manual", headers: { cookie: `ttfc_awd_li=${lost}` } })).headers.get("location"),
+    `https://www.thetechfestival.com/awards/winners/${id(N.w2)}#post_error=expired`);
+});
+
+test("Post to LinkedIn: nothing is posted for a winner hidden since the draft, and the draft goes", { skip }, async () => {
+  fresh();
+  const d = await call("POST", "/api/awards/post", { body: { id: id(N.w3), image: JPEG, text: "Proud of Bluefin Labs at The Tech Festival Canada 2026." } });
+  const go = await call("GET", `/api/awards/linkedin/post?d=${d.body.id}`, { redirect: "manual" });
+  const state = new URL(go.headers.get("location")).searchParams.get("state");
+  await call("PATCH", `${NOM}/${id(N.w3)}/award`, { as: U.mia, body: { hidden: true } });
+  // LinkedIn would be called next (blocked in this test): the check comes first, so no request leaves.
+  const r = await call("GET", `/api/auth/linkedin/callback?state=${state}&code=abc`, { redirect: "manual", headers: { cookie: `ttfc_awd_li=${state}` } });
+  assert.equal(r.headers.get("location"), `https://www.thetechfestival.com/awards/winners/${id(N.w3)}#post_error=withdrawn`);
+  assert.equal(await M.AwardPost.countDocuments({ winnerId: id(N.w3) }), 0);
+  await call("PATCH", `${NOM}/${id(N.w3)}/award`, { as: U.mia, body: { hidden: false } });
+});
+
+test("Post to LinkedIn: at most AWARD_DRAFTS_MAX drafts wait at once", { skip }, async () => {
+  fresh();
+  const { AWARD_DRAFTS_MAX } = await import("../services/awardWinners.js");
+  await M.AwardPost.deleteMany({});
+  await M.AwardPost.insertMany(Array.from({ length: AWARD_DRAFTS_MAX }, (_, i) => ({ draftId: i.toString(16).padStart(32, "0"), winnerId: id(N.w1), image: Buffer.alloc(8), text: "x" })));
+  const r = await call("POST", "/api/awards/post", { body: { id: id(N.w1), image: JPEG, text: "Hi" } });
+  assert.equal(r.status, 503);
+  assert.equal(r.body.code, "busy");
+  await M.AwardPost.deleteMany({});
 });

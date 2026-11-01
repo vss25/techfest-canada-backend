@@ -5,8 +5,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  AWARDS_NIGHT, PILLAR_NAMES, SECTOR_NAMES, awardReturnUrl, certificateAltText, certificateFromDataUrl, cleanAwardPatch,
-  defaultAwardTitle, isAwardState, newAwardState, publicWebsite, publicWinners, winnerAdminRow, winnerView,
+  AWARDS_NIGHT, AWARD_IMAGE_MAX_BYTES, PILLAR_NAMES, SECTOR_NAMES, awardReturnUrl, certificateAltText, certificateFromDataUrl,
+  cleanAwardPatch, defaultAwardTitle, isAwardState, newAwardState, publicWebsite, publicWinners, winnerAdminRow, winnerIdOfState,
+  winnerView,
 } from "../services/awardWinners.js";
 import { PILLARS, SECTORS } from "../services/nominations.js";
 
@@ -120,11 +121,22 @@ test("certificate images: real JPEGs and PNGs only, of a sane size", () => {
   assert.equal(certificateFromDataUrl(`data:image/gif;base64,${jpeg.toString("base64")}`), null);
   assert.equal(certificateFromDataUrl("data:image/jpeg;base64,/9j/"), null);
   assert.equal(certificateFromDataUrl(null), null);
+  // Sized for one certificate (about 0.3 MB): 2 MB at most.
+  const big = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(AWARD_IMAGE_MAX_BYTES, 1)]);
+  assert.equal(AWARD_IMAGE_MAX_BYTES, 2 * 1024 * 1024);
+  assert.equal(certificateFromDataUrl(`data:image/jpeg;base64,${big.toString("base64")}`), null);
 });
 
 test("states and the way back from LinkedIn", () => {
   const s = newAwardState();
   assert.ok(isAwardState(s));
+  assert.equal(winnerIdOfState(s), "");
+  const withId = newAwardState(ID.toUpperCase());
+  assert.match(withId, new RegExp(`^ttfc-awd\\.[0-9a-f]{32}\\.${ID}$`));
+  assert.ok(isAwardState(withId));
+  assert.equal(winnerIdOfState(withId), ID);
+  assert.ok(!isAwardState(`${withId}x`));
+  assert.equal(newAwardState("../x").split(".").length, 2, "a bad id is left out");
   assert.ok(!isAwardState("ttfc-att.p" + "0".repeat(32)));
   assert.ok(!isAwardState("ttfc-shr." + "0".repeat(32)));
   const post = "https://www.linkedin.com/feed/update/urn:li:share:7123/";
