@@ -4,6 +4,8 @@ import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import TicketInventory from "../models/TicketInventory.js";
 import Promo from "../models/Promo.js";
+import Order from "../models/Order.js";
+import { fulfilOrder } from "../services/orderFulfilment.js";
 import crypto from "crypto";
 
 import { sendTicketEmail } from "../services/emailService.js";
@@ -101,6 +103,24 @@ router.post("/stripe", async (req, res) => {
           await recordDeposit(dep, "webhook");
           await linkDeposits();
           console.log("✅ Pavilion deposit recorded:", session.id);
+        }
+        return res.json({ received: true });
+      }
+
+      // Multi-attendee orders (routes/orders.js): the session carries the
+      // order's id in its metadata — a key the single-ticket checkout never
+      // sets, so this branch can only ever fire for an order checkout.
+      // Fulfil the order (one pass per attendee, a ticket email to each,
+      // one invoice to the booker; services/orderFulfilment.js is
+      // idempotent) and stop: nothing below applies — there is no single
+      // tier, no TicketInventory row and no legacy ticket for an order.
+      if (session.metadata?.orderId) {
+        const order = await Order.findById(session.metadata.orderId);
+        if (order) {
+          await fulfilOrder(order, session);
+          console.log("✅ Multi-attendee order fulfilled:", session.metadata.orderId);
+        } else {
+          console.error("❌ Webhook orderId not found:", session.metadata.orderId);
         }
         return res.json({ received: true });
       }
@@ -328,3 +348,4 @@ router.post("/stripe", async (req, res) => {
 });
 
 export default router;
+
