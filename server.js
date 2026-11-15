@@ -37,6 +37,8 @@ import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
 import adminEventsRoutes from "./routes/adminEvents.js"; // Admin › Events: event configs + attendee visibility (the event spine)
 import adminTicketTypesRoutes from "./routes/adminTicketTypes.js"; // Admin › Ticket types: per-event ticket types (commerce, plan §9)
+import adminSettingsRoutes from "./routes/adminSettings.js"; // Admin › Settings: the typed settings registry (Phase 3)
+import adminAuditRoutes from "./routes/adminAudit.js"; // Admin › Audit log: who changed what (Phase 3)
 import ticketsQuoteRoutes from "./routes/ticketsQuote.js"; // POST /api/tickets/quote: the price breakdown before payment
 import ordersRoutes from "./routes/orders.js"; // POST /api/orders/multi-checkout: one booker, N named attendees
 import kycRoutes from "./routes/kyc.js";
@@ -182,6 +184,8 @@ app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/events", adminEventsRoutes); // event spine: GET/POST/PATCH events, GET visibility-matrix (staff only)
 app.use("/api/admin/ticket-types", adminTicketTypesRoutes); // ticket types: GET/POST/PATCH/DELETE (staff only)
+app.use("/api/admin/settings", adminSettingsRoutes); // settings registry: GET list/one, PUT set (staff only, known keys only)
+app.use("/api/admin/audit-log", adminAuditRoutes); // audit log: GET paginated, filter by resource/actor/action (staff only)
 app.use("/api/tickets", ticketsQuoteRoutes); // POST /quote: public price breakdown (read-only; honours pricingAnnounced)
 app.use("/api/orders", ordersRoutes); // POST /multi-checkout: multi-attendee orders
 app.use("/api/leads", leadsRoutes);

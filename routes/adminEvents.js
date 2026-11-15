@@ -2,6 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import EventConfig from "../models/EventConfig.js";
 import { requireAdmin } from "../middleware/adminAuth.js";
+import { recordAudit } from "../services/auditLog.js";
 
 const router = express.Router();
 
@@ -137,6 +138,8 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
     if (gErr) return res.status(400).json({ error: gErr });
 
     await event.save();
+    recordAudit(req, "create", "event", event.eventKey,
+      `Created event ${event.eventKey} (${event.name || "unnamed"})`);
     res.status(201).json(event);
   } catch (err) {
     if (err.name === "ValidationError") {
@@ -173,6 +176,8 @@ router.patch("/:eventKey", authMiddleware, adminMiddleware, async (req, res) => 
     if (gErr) return res.status(400).json({ error: gErr });
 
     await event.save();
+    recordAudit(req, "update", "event", event.eventKey,
+      `Updated event ${event.eventKey}`, { fields: Object.keys(body) });
     res.json(event);
   } catch (err) {
     if (err.name === "ValidationError") {
