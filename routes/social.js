@@ -3,6 +3,10 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { buildDirectory } from "../services/ticketAccess.js";
 import { directoryRows } from "../services/directoryCache.js";
+import {
+  DEFAULT_EVENT_KEY, resolveVisibility, canSeePeople, userBelongsToEvent, guestBelongsToEvent,
+  directoryHiddenPeople, isHiddenEntry, namesShape,
+} from "../services/attendeeVisibility.js";
 import { Block } from "../models/Admin.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage,
@@ -184,7 +188,12 @@ function shareFromBody(req) {
 }
 
 // Attendees who have filled anything in (so the directory isn't every newsletter signup).
+// Per-event visibility (services/attendeeVisibility.js): the event is ?eventKey= or the
+// 2026 main event; the event's policy decides whether this viewer gets people at all,
+// and only the event's own pass holders are listed.
 router.get("/users", async (req, res) => {
+  const vis = await resolveVisibility({ user: req.user, targetEventKey: req.query.eventKey });
+  if (!canSeePeople(vis)) return res.json([]);
   const q = String(req.query.q || "").trim();
   const filter = {
     _id: { $nin: [req.user._id, ...oids(req.shadow)] },
@@ -197,24 +206,71 @@ router.get("/users", async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$and = [{ $or: [{ name: rx }, { organization: rx }, { jobTitle: rx }] }];
   }
-  const users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.unseen.has(String(u._id)));
-  res.json(await cardsFor(req.user, users));
+  // Membership in the target event: a pass for it, or (the default event only)
+  // a pass from before the event spine, or no pass at all — as in the directory.
+  const membership = vis.eventKey === DEFAULT_EVENT_KEY
+    ? { $or: [{ "tickets.eventKey": vis.eventKey }, { "tickets.eventKey": { $exists: false } }, { "tickets.0": { $exists: false } }] }
+    : { "tickets.eventKey": vis.eventKey };
+  filter.$and = [...(filter.$and || []), membership];
+  let users = (await User.find(filter).select(CARD_SELECT).limit(60).lean()).filter((u) => !req.unseen.has(String(u._id)));
+  // A pass flagged directoryHidden keeps its holder out, whatever the mode.
+  const hiddenPeople = await directoryHiddenPeople(vis.eventKey);
+  if (hiddenPeople.userIds.size) users = users.filter((u) => !hiddenPeople.userIds.has(String(u._id)));
+  const cards = await cardsFor(req.user, users);
+  if (vis.visibleMode === "names") return res.json(cards.map(namesShape));
+  res.json(cards);
+});
+
+/* The directory's people for one event (services/attendeeVisibility.js): the
+   shared rows scoped to the event's pass holders, the app-hidden people left
+   out as always, and anyone whose pass for the event is flagged
+   Attendee.directoryHidden left out whatever the event's mode says.
+   Returns { people, users } (users = the shared rows, for contactAccess). */
+async function eventDirectoryPeople(req, vis) {
+  // Shared for a few seconds and between requests in flight together (services/directoryCache.js); read only.
+  const { users, guests } = await directoryRows();
+  const { exhibitors, matrix } = req.ctx;
+  const memberUsers = users.filter((u) => userBelongsToEvent(u, vis.eventKey));
+  const memberGuests = guests.filter((g) => guestBelongsToEvent(g, vis.eventKey));
+  // Hidden people (and their passes not on the app yet) aren't in anyone else's directory.
+  const listed = req.shadow.size ? memberUsers.filter((u) => !req.shadow.has(String(u._id))) : memberUsers;
+  const passes = req.hide.passes.size || req.hide.emails.size ? memberGuests.filter((g) => !isHiddenGuest(g, req.hide)) : memberGuests;
+  let people = buildDirectory(listed, passes, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix, avatarOf: avatarFor });
+  people = people.filter((p) => !req.unseen.has(p.id));
+  const hiddenPeople = await directoryHiddenPeople(vis.eventKey);
+  if (hiddenPeople.userIds.size || hiddenPeople.attendeeIds.size) {
+    people = people.filter((p) => !isHiddenEntry(p, hiddenPeople));
+  }
+  return { people, users };
+}
+
+/* How many people the directory shows this viewer for an event
+   (?eventKey=, default the 2026 main event). The `count` visibility mode's
+   surface: a number, never a person. Hidden (or a viewer the audience shuts
+   out) answers 0. The count matches the list GET /attendees would show —
+   the viewer themself is not counted, as in the list. */
+router.get("/attendees/count", async (req, res) => {
+  const vis = await resolveVisibility({ user: req.user, targetEventKey: req.query.eventKey });
+  if (vis.visibleMode === "hidden") return res.json({ eventKey: vis.eventKey, count: 0 });
+  const { people } = await eventDirectoryPeople(req, vis);
+  res.json({ eventKey: vis.eventKey, count: people.length });
 });
 
 /* Every ticket holder (app users + guest purchases), one entry per person,
    their most recent ticket as the pass. Guests not on the app yet can be
-   seen but not messaged. Never returns email. */
+   seen but not messaged. Never returns email.
+   Per-event visibility: the event is ?eventKey= or the 2026 main event, whose
+   policy (profiles + own-event) is what this list has always done. A viewer
+   the event's policy shuts out gets the same array, empty; `names` mode gets
+   name + company + title only. */
 router.get("/attendees", async (req, res) => {
+  const vis = await resolveVisibility({ user: req.user, targetEventKey: req.query.eventKey });
+  if (!canSeePeople(vis)) return res.json([]);
   const q = String(req.query.q || "").trim().toLowerCase();
-  // Shared for a few seconds and between requests in flight together (services/directoryCache.js); read only.
-  const { users, guests } = await directoryRows();
-  const { exhibitors, matrix } = req.ctx;
-  // Hidden people (and their passes not on the app yet) aren't in anyone else's directory.
-  const listed = req.shadow.size ? users.filter((u) => !req.shadow.has(String(u._id))) : users;
-  const passes = req.hide.passes.size || req.hide.emails.size ? guests.filter((g) => !isHiddenGuest(g, req.hide)) : guests;
-  let people = buildDirectory(listed, passes, { excludeUserId: req.user._id, excludeEmail: req.user.email, exhibitors, matrix, avatarOf: avatarFor });
+  const { people: scoped, users } = await eventDirectoryPeople(req, vis);
+  let people = scoped;
   if (q) people = people.filter((p) => [p.name, p.organization, p.jobTitle].some((s) => String(s || "").toLowerCase().includes(q)));
-  people = people.filter((p) => !req.unseen.has(p.id));
+  if (vis.visibleMode === "names") return res.json(people.map(namesShape));
   const shown = new Set(people.map((p) => p.id));
   const [access, orgKeyOf] = await Promise.all([
     contactAccess(req.user, users.filter((u) => shown.has(String(u._id))), req.ctx),
@@ -241,6 +297,17 @@ router.get("/users/:id", async (req, res) => {
       SocialMessage.exists({ threadKey: threadKey(req.user._id, u._id) }),
     ]);
     if (!connected && !chatted) return res.status(404).json({ error: "Not found" });
+  }
+  // Per-event visibility (services/attendeeVisibility.js): the event is ?eventKey= or
+  // the 2026 main event. A viewer the policy shuts out, a person who holds no pass for
+  // the event, and a person whose pass for the event is flagged directoryHidden all
+  // answer like someone who isn't there; `names` mode answers name + company + title.
+  const vis = await resolveVisibility({ user: req.user, targetEventKey: req.query.eventKey });
+  if (!self && !vis.staff) {
+    if (!canSeePeople(vis) || !userBelongsToEvent(u, vis.eventKey)) return res.status(404).json({ error: "Not found" });
+    const hiddenPeople = await directoryHiddenPeople(vis.eventKey);
+    if (hiddenPeople.userIds.has(id)) return res.status(404).json({ error: "Not found" });
+    if (vis.visibleMode === "names") return res.json(namesShape({ ...u, id }));
   }
   const [access, conn, orgKeyOf] = await Promise.all([
     contactAccess(req.user, [u], req.ctx),
@@ -979,7 +1046,21 @@ router.get("/points/leaderboard", async (req, res) => {
   // switched "Show me on the leaderboard" back on sees themself at once too (others on the next rebuild, ≤ 60 s).
   // standingFor loads the cached board first, so leaderboard() reuses it.
   const st = await standingFor(req.user);
-  const entries = await leaderboard(limit, { exclude: req.unseen, self: { user: req.user, points: st.score.total, level: st.score.level } });
+  // Per-event visibility (services/attendeeVisibility.js): the event is ?eventKey= or the
+  // 2026 main event. A viewer the policy shuts out gets an empty board (their own `me`
+  // still answers); otherwise the board keeps only the event's pass holders — the
+  // viewer's own row always stays, as it does for hidden people above. The board is
+  // built globally and filtered here, so a board can show fewer than `limit` rows.
+  const vis = await resolveVisibility({ user: req.user, targetEventKey: req.query.eventKey });
+  if (!canSeePeople(vis)) return res.json({ entries: [], me: { rank: st.rank, points: st.score.total } });
+  let entries = await leaderboard(limit, { exclude: req.unseen, self: { user: req.user, points: st.score.total, level: st.score.level } });
+  if (entries.length) {
+    const ids = [...new Set(entries.map((e) => String(e.user?.id || "")).filter(Boolean))];
+    const holders = await User.find({ _id: { $in: ids } }).select("tickets").lean();
+    const member = new Set(holders.filter((u) => userBelongsToEvent(u, vis.eventKey)).map((u) => String(u._id)));
+    const selfId = String(req.user._id);
+    entries = entries.filter((e) => member.has(String(e.user?.id)) || String(e.user?.id) === selfId);
+  }
   res.json({ entries, me: { rank: st.rank, points: st.score.total } });
 });
 

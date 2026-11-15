@@ -1,6 +1,8 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import Attendee from "../models/Attendee.js";
+import { forgetDirectory } from "../services/directoryCache.js";
 import { AppEvent, AppContent, Report, Block } from "../models/Admin.js";
 import AppNotification from "../models/AppNotification.js";
 import { pushToUsers } from "../services/push.js";
@@ -35,6 +37,12 @@ const webPushLimiter = makeLimiter({ max: 30, windowMs: 10 * 60 * 1000 });   // 
    POST   /block         block a user;  DELETE /block/:userId unblock
    GET    /blocks        my blocked user ids
    DELETE /account       delete my account (Apple 5.1.1(v))
+   PATCH  /me/directory-hidden  show/hide my own passes in the attendee
+                         directory: { directoryHidden: true|false } sets
+                         Attendee.directoryHidden on every pass of mine
+                         (claimed by me, or carrying my email); the
+                         directory reads it per event and it always wins
+                         over the event's visibility mode (Phase 2)
    POST   /push-token    register this phone for push
                          iOS { token, env } · Android { token, platform: "android" }
    DELETE /push-token    stop pushing to this phone { token } (sign out)
@@ -222,6 +230,26 @@ router.delete("/account", async (req, res) => {
   const me = await requireUser(req, res); if (!me) return;
   await deleteAccount(me._id);
   res.json({ deleted: true });
+});
+
+/* "Show me in the attendee list" for passes (Phase 2): the per-person half of
+   attendee visibility. Sets Attendee.directoryHidden on the signed-in person's
+   own passes only — the ones they claimed and the guest passes carrying their
+   email (the directory's own "same person" rule). The account-level
+   User.directoryHidden stays staff-only (routes/profile.js); this switch is
+   per pass, and the directory endpoints honour it per event ahead of the
+   event's visibility mode (services/attendeeVisibility.js). */
+router.patch("/me/directory-hidden", async (req, res) => {
+  const me = await requireUser(req, res); if (!me) return;
+  const hidden = req.body?.directoryHidden;
+  if (typeof hidden !== "boolean") return res.status(400).json({ error: "directoryHidden must be true or false" });
+  const account = await User.findById(me._id).select("email").lean();
+  const email = String(account?.email || "").trim().toLowerCase();
+  const clauses = [{ claimedBy: me._id }];
+  if (email) clauses.push({ email });
+  const r = await Attendee.updateMany({ $or: clauses }, { $set: { directoryHidden: hidden } });
+  forgetDirectory();
+  res.json({ ok: true, directoryHidden: hidden, updated: r.modifiedCount ?? 0 });
 });
 
 export default router;
