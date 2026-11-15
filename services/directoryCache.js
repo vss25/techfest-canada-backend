@@ -64,7 +64,7 @@ const rows = makeDirectoryCache({
       User.find({ $or: [{ "tickets.0": { $exists: true } }, { appOnboarded: true }, { lastActiveAt: { $exists: true } }] })
         .select(USER_SELECT).lean(),
       Attendee.find({ claimedBy: { $exists: false }, directoryHidden: { $ne: true } })
-        .select(`name email ticketId ticketType purchaseDate promoCode exhibitor vip issuedPass.booth ${GUEST_DETAILS_SELECT}`).lean(),
+        .select(`name email ticketId ticketType purchaseDate promoCode exhibitor vip issuedPass.booth eventKey ${GUEST_DETAILS_SELECT}`).lean(),
     ]);
     return { users, guests };
   },

@@ -72,6 +72,17 @@ function applyGraceDays(event, settings) {
   return null;
 }
 
+// Returns an error message, or null. Sets the field on the event when valid.
+// (The field has been on the model since Phase 1; this makes it settable here.)
+function applyPricingAnnounced(event, settings) {
+  if (settings?.pricingAnnounced === undefined) return null;
+  if (typeof settings.pricingAnnounced !== "boolean") {
+    return "settings.pricingAnnounced must be true or false";
+  }
+  event.set("settings.pricingAnnounced", settings.pricingAnnounced);
+  return null;
+}
+
 // ================= LIST EVENTS =================
 router.get("/", authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -174,6 +185,8 @@ router.patch("/:eventKey", authMiddleware, adminMiddleware, async (req, res) => 
     if (body.attendeeVisibility !== undefined) applyVisibility(event, body.attendeeVisibility);
     const gErr = applyGraceDays(event, body.settings);
     if (gErr) return res.status(400).json({ error: gErr });
+    const pErr = applyPricingAnnounced(event, body.settings);
+    if (pErr) return res.status(400).json({ error: pErr });
 
     await event.save();
     recordAudit(req, "update", "event", event.eventKey,
