@@ -35,6 +35,7 @@ import checkinRoutes from "./routes/checkin.js";
 import checkinDeskRoutes from "./routes/checkinDesk.js"; // TTFC Check-in desk app (lobby, pass desk, meals, media, AV, exhibitors)
 import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
+import adminEventsRoutes from "./routes/adminEvents.js"; // Admin › Events: event configs + attendee visibility (the event spine)
 import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
 import formsRoutes from "./routes/forms.js";
@@ -176,6 +177,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/checkin/desk", checkinDeskRoutes); // the check-in desk app (next to the door scanner)
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/admin/events", adminEventsRoutes); // event spine: GET/POST/PATCH events, GET visibility-matrix (staff only)
 app.use("/api/leads", leadsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
