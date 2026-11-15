@@ -73,4 +73,60 @@ router.post("/quote", async (req, res) => {
   }
 });
 
+/* GET /api/tickets/types?eventKey=... — the event's ticket types for the
+   public ticket page (the sibling of POST /quote above, same router, same
+   pricingAnnounced gate). Public and read-only.
+
+   While the event's pricing is still "to be announced" (its EventConfig
+   exists and the switch is not on), the answer is
+   { announced: false, types: [] } — no prices, no tier names, nothing.
+   An event with no EventConfig row yet has no switch to honour and is
+   listed normally, exactly as /quote treats it. Only ACTIVE types are
+   listed, in staff's sortOrder; sales windows are exposed as fields (the
+   page greys types out) rather than used to hide types, matching /quote
+   and checkout, which only enforce windows at purchase time.
+
+   No per-type soldOut flag: the capacity count (issued passes + live
+   orders) exists only as a private helper inside routes/orders.js —
+   there is no shared service to reuse, and checkout enforces capacity
+   itself (409) regardless of what this list shows. */
+router.get("/types", async (req, res) => {
+  try {
+    const eventKey = typeof req.query.eventKey === "string" ? req.query.eventKey.trim() : "";
+    if (!eventKey) {
+      return res.status(400).json({ error: "eventKey is required" });
+    }
+
+    const event = await EventConfig.findOne({ eventKey }).lean();
+    if (event && event.settings?.pricingAnnounced !== true) {
+      return res.json({ announced: false, types: [] });
+    }
+
+    const types = await TicketType.find({ eventKey, active: true })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .lean();
+
+    res.json({
+      announced: true,
+      eventKey,
+      types: types.map((t) => ({
+        id: String(t._id),
+        name: t.name,
+        slug: t.slug,
+        description: t.description || "",
+        inclusions: t.inclusions || [],
+        exclusions: t.exclusions || [],
+        priceCents: t.priceCents,
+        currency: t.currency || "CAD",
+        capacity: t.capacity ?? null,
+        salesStart: t.salesStart ? new Date(t.salesStart).toISOString() : null,
+        salesEnd: t.salesEnd ? new Date(t.salesEnd).toISOString() : null
+      }))
+    });
+  } catch (err) {
+    console.error("GET tickets types error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 export default router;
