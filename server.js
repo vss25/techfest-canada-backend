@@ -93,6 +93,7 @@ import { installGracefulShutdown } from "./services/gracefulShutdown.js";
 import { endStreams } from "./services/checkinDeskLog.js";
 import path from "path";
 import { fileURLToPath } from "url";
+import { publicCache } from "./middleware/publicCache.js"; // Phase 5: stale-while-revalidate on public GET reads (allowlisted mounts only)
 
 const app = express();
 // Render terminates TLS in front of us: trust one proxy hop so req.ip is the
@@ -192,7 +193,7 @@ app.use("/api/leads", leadsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
 app.use("/api/forms", formsRoutes);         // POST /:form (volunteer, speaker, exhibit, sponsor, partnership, inquiry)
-app.use("/api/rsvp", rsvpRoutes);           // GET /options, POST /lookup, POST /
+app.use("/api/rsvp", publicCache(60), rsvpRoutes);           // GET /options, POST /lookup, POST /
 app.use("/api/stay-updated", stayUpdatedRouter); // POST / : join the TTFC 2027 waitlist (website /stay-updated, the web app, the apps)
 app.use("/api/agenda", agendaRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
@@ -202,21 +203,21 @@ app.use("/api/campaigns/automation", campaignAutomationRoutes);
 app.use("/api/media", mediaRouter); // 👈 NEW → POST /api/media/apply
 app.use("/api/profile", profileRouter);   // GET/PATCH /api/profile
 app.use("/api/moderate", moderateRouter); // POST /api/moderate
-app.use("/api/intel", intelRouter);       // GET /api/intel?topics=
+app.use("/api/intel", publicCache({ "/": 900 }), intelRouter);       // GET /api/intel?topics= (the cards only; /status stays uncached)
 app.use("/api/social", socialRouter);     // see routes/social.js
 app.use("/api/community", communityRouter); // see routes/community.js
 app.use("/api/wallet", walletRouter);       // GET /api/wallet/pass/:ticketId, /link/:ticketId
-app.use("/api/app/swag", swagPublicRouter);   // the swag kit contest's settings and rules (no sign-in)
-app.use("/api/survey", surveyPublicRouter);     // the post-event survey: questions, answers (no sign-in; website /survey)
+app.use("/api/app/swag", publicCache(60), swagPublicRouter);   // the swag kit contest's settings and rules (no sign-in)
+app.use("/api/survey", publicCache(300), surveyPublicRouter);     // the post-event survey: questions, answers (no sign-in; website /survey) — GET / sets its own no-store (personalized), which publicCache never overrides
 app.use("/api/app/survey", surveyAppRouter);    // the post-event survey's card in the apps (signed in)
 app.use("/api/app/sos", sosAttendeeRouter);   // Help & SOS: attendees' urgent messages to staff (signed in)
 app.use("/api/app/digest", digestPublicRouter); // "What you missed" email: one-click unsubscribe (no sign-in)
 app.use("/api/app", linkedinAppRouter);       // GET /attending-link, POST /linkedin/share (signed in)
 app.use("/api/linkedin-share", linkedinSharePageRouter); // the website's /share/linkedin page (the link's token)
-app.use("/api/app", appOrganisationsRouter); // GET /organisations (no sign-in)
-app.use("/api/app", appAwardsRouter);        // GET /awards/summary (no sign-in), /awards/applications (pass holders)
-app.use("/api/app", appExhibitorsRouter);    // GET /exhibitors (no sign-in): companies, booths, zones, logos, websites
-app.use("/api/app", appApiRouter);          // /events, /content, /report, /block, /account
+app.use("/api/app", publicCache({ "/organisations": 120 }), appOrganisationsRouter); // GET /organisations (no sign-in)
+app.use("/api/app", publicCache({ "/awards/summary": 60 }), appAwardsRouter);        // GET /awards/summary (no sign-in), /awards/applications (pass holders)
+app.use("/api/app", publicCache({ "/exhibitors": 120 }), appExhibitorsRouter);    // GET /exhibitors (no sign-in): companies, booths, zones, logos, websites
+app.use("/api/app", publicCache({ "/content": 60, "/webpush-key": 300 }), appApiRouter);          // /events, /content, /report, /block, /account — only the two public reads are allowlisted
 app.use("/api/attending", attendingRouter);  // GET /linkedin, /photo?u= (website /attending)
 app.use("/api/console/attending-campaign", attendingCampaignRouter); // "I'm attending" email (before the console router)
 app.use("/api/console/app-invite", appInviteRouter);
@@ -241,7 +242,7 @@ app.use("/api/complete-profile", completeProfileRouter); // GET/POST ?t=&s= (no 
 // The admin console website: https://<backend>/console
 app.use("/console", express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "console"), { index: "index.html", maxAge: "5m" }));
 app.use("/api", promosRouter);
-app.use("/api/awards", awardsRouter);    // GET /winners, /winners/:id, /linkedin/post (no sign-in)
+app.use("/api/awards", publicCache(60), awardsRouter);    // GET /winners, /winners/:id, /linkedin/post (no sign-in) — /linkedin/post sets its own no-store, which publicCache never overrides
 app.use("/api", nominationsRouter);
 app.use("/api", pavilionRouter);
 app.use("/api", linkedinRouter);
