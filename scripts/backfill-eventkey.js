@@ -61,6 +61,9 @@ async function main() {
         startDate: new Date("2026-10-26"),
         endDate: new Date("2026-10-27"),
         status: "past",
+        // 2026 pricing was public (it is historical now), so its flag is on;
+        // every later event starts with pricingAnnounced off ("to be announced").
+        settings: { lifecycleGraceDays: 7, pricingAnnounced: true },
         attendeeVisibility: { mode: "profiles", audience: "own-event", sharedWith: [] }
       }
     },

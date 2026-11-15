@@ -65,7 +65,10 @@ const eventConfigSchema = new mongoose.Schema(
     settings: {
       // Days after endDate the event still counts as "just ended" (full
       // programme stays up, tickets off) before it becomes a past event.
-      lifecycleGraceDays: { type: Number, default: 7 }
+      lifecycleGraceDays: { type: Number, default: 7 },
+      // Pricing stays "to be announced" until staff announce it: while this
+      // is false, no prices for the event are shown anywhere.
+      pricingAnnounced: { type: Boolean, default: false }
     }
   },
   {
