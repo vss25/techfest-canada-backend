@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import TicketType from "../models/TicketType.js";
 import { requireAdmin } from "../middleware/adminAuth.js";
+import { recordAudit } from "../services/auditLog.js";
 
 const router = express.Router();
 
@@ -124,6 +125,8 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
     const ticketType = new TicketType({ eventKey: String(body.eventKey).trim() });
     applyEditable(ticketType, body);
     await ticketType.save();
+    recordAudit(req, "create", "ticket-type", String(ticketType._id),
+      `Created ticket type "${ticketType.name}" for ${ticketType.eventKey}`);
     res.status(201).json({ ticketType });
   } catch (err) {
     if (err?.code === 11000) {
@@ -149,6 +152,9 @@ router.patch("/:id", authMiddleware, adminMiddleware, async (req, res) => {
 
     applyEditable(ticketType, body);
     await ticketType.save();
+    recordAudit(req, "update", "ticket-type", String(ticketType._id),
+      `Updated ticket type "${ticketType.name}" for ${ticketType.eventKey}`,
+      { fields: Object.keys(body) });
     res.json({ ticketType });
   } catch (err) {
     if (err?.code === 11000) {
@@ -170,6 +176,8 @@ router.delete("/:id", authMiddleware, adminMiddleware, async (req, res) => {
     }
     const ticketType = await TicketType.findByIdAndDelete(req.params.id);
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });
+    recordAudit(req, "delete", "ticket-type", String(ticketType._id),
+      `Deleted ticket type "${ticketType.name}" for ${ticketType.eventKey}`);
     res.json({ deleted: true });
   } catch (err) {
     console.error("DELETE admin ticket type error:", err);
