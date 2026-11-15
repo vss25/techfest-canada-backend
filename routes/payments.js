@@ -429,7 +429,12 @@ router.post("/create-checkout", async (req, res) => {
       const code = String(promoCode).trim().toUpperCase();
       const promo = await Promo.findOne({ code, active: true });
 
-      if (promo && !promoExpired(promo)) {
+      // Only "percent" codes apply in this checkout (the original kind):
+      // BOGO, group and fixed codes belong to the multi-attendee checkout
+      // (routes/orders.js), which prices them with services/pricingEngine.js.
+      // Every code created before Promo.kind existed is "percent" by
+      // default, so nothing changes for them.
+      if (promo && !promoExpired(promo) && (promo.kind || "percent") === "percent") {
         // Per-tier scoping: empty tiers array = valid for all passes AND booths
         const tiersOk = !Array.isArray(promo.tiers) || promo.tiers.length === 0
           || promo.tiers.includes(String(tier).toLowerCase());
@@ -548,3 +553,4 @@ router.post("/create-checkout", async (req, res) => {
 });
 
 export default router;
+

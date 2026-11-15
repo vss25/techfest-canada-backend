@@ -32,6 +32,34 @@ const promoSchema = new mongoose.Schema({
   // The code stops working after this moment (checkout and validation refuse it).
   // null = no end date. See services/promoLimits.js promoExpired().
   expiresAt: { type: Date, default: null },
+
+  // What kind of discount this code is (commerce build-out, plan §9.4;
+  // priced by services/pricingEngine.js). "percent" is the original
+  // behaviour — `discount` % off — and stays the default, so every code
+  // created before this field existed keeps working exactly as it did.
+  // The other kinds are honoured by the multi-attendee checkout
+  // (routes/orders.js) and the quote endpoint (routes/ticketsQuote.js);
+  // the single-ticket checkout (routes/payments.js) applies "percent"
+  // codes only:
+  //   "fixed"         amountCents off the order
+  //   "bogo"          buy buyQuantity, get getQuantity free
+  //   "group-percent" `discount` % off when the order reaches minQuantity tickets
+  //   "group-fixed"   amountCents off when the order reaches minQuantity tickets
+  kind: {
+    type: String,
+    enum: ["percent", "fixed", "bogo", "group-percent", "group-fixed"],
+    default: "percent",
+  },
+  // Fixed amount off, in cents (kind "fixed" / "group-fixed").
+  amountCents: { type: Number, min: 0, default: null },
+  // BOGO shape (kind "bogo"): in every complete group of
+  // buyQuantity + getQuantity tickets, getQuantity are free.
+  buyQuantity: { type: Number, min: 1, default: null },
+  getQuantity: { type: Number, min: 1, default: null },
+  // Group threshold (kind "group-percent" / "group-fixed"): the discount
+  // applies at this many tickets or more.
+  minQuantity: { type: Number, min: 1, default: null },
+
   createdAt: { type: Date, default: Date.now },
 });
 

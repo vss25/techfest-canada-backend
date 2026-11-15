@@ -36,6 +36,9 @@ import checkinDeskRoutes from "./routes/checkinDesk.js"; // TTFC Check-in desk a
 import adminRoutes, { repairStripeSyncOnce } from "./routes/admin.js";
 import leadsRoutes from "./routes/leads.js";
 import adminEventsRoutes from "./routes/adminEvents.js"; // Admin › Events: event configs + attendee visibility (the event spine)
+import adminTicketTypesRoutes from "./routes/adminTicketTypes.js"; // Admin › Ticket types: per-event ticket types (commerce, plan §9)
+import ticketsQuoteRoutes from "./routes/ticketsQuote.js"; // POST /api/tickets/quote: the price breakdown before payment
+import ordersRoutes from "./routes/orders.js"; // POST /api/orders/multi-checkout: one booker, N named attendees
 import kycRoutes from "./routes/kyc.js";
 import brochureRoutes from "./routes/brochure.js";
 import formsRoutes from "./routes/forms.js";
@@ -178,6 +181,9 @@ app.use("/api/checkin/desk", checkinDeskRoutes); // the check-in desk app (next 
 app.use("/api/checkin", checkinRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/events", adminEventsRoutes); // event spine: GET/POST/PATCH events, GET visibility-matrix (staff only)
+app.use("/api/admin/ticket-types", adminTicketTypesRoutes); // ticket types: GET/POST/PATCH/DELETE (staff only)
+app.use("/api/tickets", ticketsQuoteRoutes); // POST /quote: public price breakdown (read-only; honours pricingAnnounced)
+app.use("/api/orders", ordersRoutes); // POST /multi-checkout: multi-attendee orders
 app.use("/api/leads", leadsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/brochure", brochureRoutes);
@@ -295,3 +301,4 @@ if (!IMPORT_ONLY) {
 
 // The app itself, for the tests' route sweep (IMPORT_ONLY).
 export default app;
+
