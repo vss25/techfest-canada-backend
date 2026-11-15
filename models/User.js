@@ -11,6 +11,12 @@ const ticketSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // Which event this pass belongs to (models/EventConfig.js). Passes from before the
+  // event spine are the 2026 main event; scripts/backfill-eventkey.js sets it on old rows.
+  eventKey: {
+    type: String,
+    default: "ttfc-2026-main"
+  },
   purchaseDate: {
     type: Date,
     default: Date.now

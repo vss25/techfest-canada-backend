@@ -14,6 +14,7 @@ const str = { type: String, default: "" };
 
 const rsvpSchema = new mongoose.Schema({
   key: { type: String, required: true },
+  eventKey: { type: String, default: "ttfc-2026-main", index: true }, // the event this RSVP is for (models/EventConfig.js); pre-spine rows are the 2026 main event
 
   // Who
   firstName: str, lastName: str, name: str,
