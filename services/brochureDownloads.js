@@ -29,6 +29,13 @@ export const BROCHURES = {
     filename: "TechFestivalCanada_2026_Brochure.pdf",
     pages: 14,
   },
+  report2026: {
+    id: "report2026",
+    title: "TTFC 2026 Post-Show Report & 2027 Prospectus",
+    path: "/TTFC-2026-Post-Show-Report-2027-Prospectus.pdf",
+    filename: "TTFC_2026_Post_Show_Report_2027_Prospectus.pdf",
+    pages: 25,
+  },
 };
 export const DEFAULT_BROCHURE = "sponsorship";
 

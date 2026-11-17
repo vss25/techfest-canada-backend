@@ -2,10 +2,12 @@ import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireManagement } from "../middleware/adminAuth.js";
-import { draftId, draftFromPublished, publishedFromDraft, overlayDrafts, previewQueryError, eventKeyFor, eventConfigFields } from "../services/cmsDrafts.js";
+import { draftId, publishedId, publishedFromDraft, previewQueryError, eventKeyFor, eventConfigFields } from "../services/cmsDrafts.js";
 import EventConfig from "../models/EventConfig.js";
 import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc, auditCreateDetail, auditEditDetail } from "../services/cmsSchema.js";
 import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
+import CmsChange from "../models/CmsChange.js";
+import { applyPatch, changeTitle, changedFields, cleanDoc, newDocId, overlayChanges, pickIds, publishOrder, strongRefs, weakRefs, withAssetUrls, TYPE_LABELS } from "../services/cmsWorkflow.js";
 import { SITE_FILE_MAX_BYTES, SITE_FILE_TOO_BIG, SITE_FILE_TYPES, checkSiteFile, siteFileAuditDetail } from "../services/siteFiles.js";
 
 /* =========================================================
@@ -13,8 +15,9 @@ import { SITE_FILE_MAX_BYTES, SITE_FILE_TOO_BIG, SITE_FILE_TYPES, checkSiteFile,
    partners (incl. sponsors = the "featured" row), the alumni
    strip, marquee, home sponsors, site settings)
    from the admin panel. The website and the iOS app both read
-   Sanity directly, so a change here shows up on both within a
-   minute, with no deploy.
+   Sanity directly. Since Nov 2026 the panel's edits go save →
+   staging → publish (see "The admin-first workflow" below); a
+   published change shows up on both within a minute, no deploy.
 
    Needs SANITY_WRITE_TOKEN on the server (sanity.io/manage →
    project 021qtoci → API → Tokens → "Editor"). Without it the
@@ -66,23 +69,6 @@ async function sameType(res, type, id) {
     return false;
   }
   return true;
-}
-
-/* The published document and its draft, either of which may be missing (an event created
-   as a draft has no published one yet). 404 unless at least one exists with this type. */
-async function docAndDraft(res, type, id) {
-  if (!/^[A-Za-z0-9._-]{1,128}$/.test(String(id || "")) || String(id).startsWith("drafts.")) {
-    res.status(404).json({ error: "Not found" });
-    return null;
-  }
-  const out = await query(`{ "published": *[_id == $id][0], "draft": *[_id == $d][0] }`, { id, d: draftId(id) });
-  const published = out?.result?.published || null;
-  const draft = out?.result?.draft || null;
-  if ((published && published._type !== type) || (draft && draft._type !== type) || (!published && !draft)) {
-    res.status(404).json({ error: "Not found" });
-    return null;
-  }
-  return { published, draft };
 }
 
 function needToken(res) {
@@ -234,10 +220,139 @@ router.post("/preview", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+
 const LIST_FIELDS = `..., "imageUrl": image.asset->url, "logoUrl": logo.asset->url, "heroImageUrl": heroImage.asset->url, "citySkylineUrl": citySkyline.asset->url,
       "imageDims": image.asset->metadata.dimensions, "logoDims": logo.asset->metadata.dimensions`;
 
-/* ?drafts=1 (the event editor): each row is the draft's content where there is one, with hasDraft. */
+/* =========================================================
+   The admin-first workflow (Nov 2026): save → send to staging → publish to live.
+   • Save (?draft=1, any staff): the edited document is kept in MongoDB (CmsChange.wip).
+     Nothing on the website or on staging changes.
+   • Send to staging (any staff): it becomes the Sanity draft (drafts.<id>), which the
+     staging site shows to signed-in staff (POST /api/cms/preview, previewDrafts).
+   • Publish to live (any staff; management only until Nov 17 2026): the draft becomes the
+     published document. Only what's on staging can be published, so what goes live is what was reviewed.
+   The live site only ever reads published documents.
+========================================================= */
+
+const who = (req) => ({ id: String(req.user?._id || ""), name: String(req.user?.name || "") });
+const validId = (id) => /^[A-Za-z0-9._-]{1,128}$/.test(String(id || "")) && !String(id).startsWith("drafts.");
+
+/** Published, staged (Sanity draft) and work in progress for one document; null (and 404 sent)
+    unless at least one exists with this type. */
+async function loadState(res, type, id) {
+  if (!validId(id)) { res.status(404).json({ error: "Not found" }); return null; }
+  const out = await query(`{ "published": *[_id == $id][0], "draft": *[_id == $d][0] }`, { id, d: draftId(id) });
+  const published = out?.result?.published || null;
+  const draft = out?.result?.draft || null;
+  const change = await CmsChange.findOne({ docId: id }).lean();
+  const wip = change?.wip || null;
+  const bad = [published, draft, wip].some((d) => d && d._type !== type);
+  if (bad || (!published && !draft && !wip)) { res.status(404).json({ error: "Not found" }); return null; }
+  return { published, draft, change, wip };
+}
+
+/** Write work in progress for these CmsChange rows to Sanity as drafts, in one transaction. */
+async function stageRows(req, rows) {
+  if (!rows.length) return [];
+  await mutate(rows.map((r) => ({ createOrReplace: { ...weakRefs(r.wip), _id: draftId(r.docId), _type: r.type } })));
+  const now = new Date();
+  await CmsChange.updateMany({ docId: { $in: rows.map((r) => r.docId) } }, { $set: { wip: null, stagedAt: now, stagedBy: who(req) }, $unset: { wipAt: 1, wipBy: 1 } });
+  for (const r of rows) await audit(req, "cms_stage", r.type, r.docId, changeTitle(r.type, r.wip));
+  return rows.map((r) => r.docId);
+}
+
+/** Publish these staged documents (Sanity drafts) in one transaction. */
+async function publishDrafts(req, drafts) {
+  if (!drafts.length) return [];
+  const docs = publishOrder(drafts.map(publishedFromDraft).filter(Boolean));
+  const ids = docs.map((d) => d._id);
+  const refs = new Set();
+  JSON.stringify(docs, (k, v) => { if (k === "_ref" && typeof v === "string" && !/^(image|file)-/.test(v)) refs.add(v); return v; });
+  const live = refs.size ? (await query(`*[_id in $ids]._id`, { ids: [...refs] })).result || [] : [];
+  const exists = new Set([...live, ...ids]);
+  const mutations = [];
+  for (const d of docs) mutations.push({ createOrReplace: strongRefs(d, (r) => exists.has(r)) }, { delete: { id: draftId(d._id) } });
+  await mutate(mutations);
+  for (const d of docs) {
+    if (d._type === "event" && d.eventKey?.current) {
+      await EventConfig.updateOne({ eventKey: d.eventKey.current }, {
+        $setOnInsert: { eventKey: d.eventKey.current, status: "announced" },
+        $set: eventConfigFields(d),
+      }, { upsert: true });
+    }
+  }
+  // Rows with newer unsent work stay (only their staging marks go); the rest are done.
+  await CmsChange.updateMany({ docId: { $in: ids }, wip: { $ne: null } }, { $unset: { stagedAt: 1, stagedBy: 1 } });
+  await CmsChange.deleteMany({ docId: { $in: ids }, wip: null });
+  for (const d of docs) await audit(req, "cms_publish", d._type, d._id, changeTitle(d._type, d));
+  return docs;
+}
+
+/* Everything on its way to the website: Admin › Website content › Changes.
+   → { items: [{ id, type, typeLabel, title, unsent, staged, isNew, fields, stagedFields, wipAt, wipBy, stagedAt, stagedBy }],
+       counts: { unsent, staged }, canPublish } */
+router.get("/changes", async (req, res) => {
+  try {
+    const rows = await CmsChange.find({}).lean();
+    const out = await query(`*[_id in path("drafts.**") && _type in $types]`, { types: CMS_TYPES });
+    const drafts = new Map((out.result || []).map((d) => [publishedId(d._id), d]));
+    const ids = [...new Set([...drafts.keys(), ...rows.filter((r) => r.wip).map((r) => r.docId)])];
+    const pub = ids.length ? (await query(`*[_id in $ids]`, { ids })).result || [] : [];
+    const live = new Map(pub.map((d) => [d._id, d]));
+    const rowOf = new Map(rows.map((r) => [r.docId, r]));
+    const items = ids.map((id) => {
+      const r = rowOf.get(id), d = drafts.get(id), p = live.get(id) || null;
+      const wip = r?.wip || null;
+      const type = (wip || d || p)._type;
+      return {
+        id, type, typeLabel: TYPE_LABELS[type] || type, title: changeTitle(type, wip || d || p),
+        unsent: !!wip, staged: !!d, isNew: !p,
+        fields: wip ? changedFields(wip, d || p) : [],
+        stagedFields: d ? changedFields(d, p) : [],
+        wipAt: wip ? r.wipAt || null : null, wipBy: wip ? r.wipBy?.name || "" : "",
+        stagedAt: d ? r?.stagedAt || d._updatedAt || null : null, stagedBy: d ? r?.stagedBy?.name || "" : "",
+      };
+    }).sort((a, b) => String(b.wipAt || b.stagedAt || "").localeCompare(String(a.wipAt || a.stagedAt || "")));
+    res.json({
+      items,
+      counts: { unsent: items.filter((i) => i.unsent).length, staged: items.filter((i) => i.staged).length },
+      canPublish: true,
+    });
+  } catch (err) { fail(res, err); }
+});
+
+/* Send saved changes to staging (any staff). Body { ids? }: every unsent change when missing. */
+router.post("/changes/stage", async (req, res) => {
+  if (needToken(res)) return;
+  try {
+    const rows = (await CmsChange.find({ wip: { $ne: null } }).lean()).filter((r) => CMS_TYPES.includes(r.type));
+    const pick = pickIds(rows.map((r) => r.docId), req.body?.ids);
+    if (pick.error) return res.status(400).json({ error: pick.error });
+    if (!pick.ids.length) return res.status(409).json({ error: "There are no saved changes to send to staging." });
+    const want = new Set(pick.ids);
+    const staged = await stageRows(req, rows.filter((r) => want.has(r.docId)));
+    res.json({ ok: true, staged });
+  } catch (err) { fail(res, err); }
+});
+
+/* Publish what's on staging to the live site (any staff, since Nov 17 2026: "Allow staff to publish to prod from staging"). Body { ids? }: everything on staging when missing. */
+router.post("/changes/publish", async (req, res) => {
+  if (needToken(res)) return;
+  try {
+    const out = await query(`*[_id in path("drafts.**") && _type in $types]`, { types: CMS_TYPES });
+    const drafts = out.result || [];
+    const pick = pickIds(drafts.map((d) => publishedId(d._id)), req.body?.ids);
+    if (pick.error) return res.status(400).json({ error: pick.error });
+    if (!pick.ids.length) return res.status(409).json({ error: "Nothing is on staging waiting to be published." });
+    const want = new Set(pick.ids);
+    const docs = await publishDrafts(req, drafts.filter((d) => want.has(publishedId(d._id))));
+    res.json({ ok: true, published: docs.map((d) => d._id) });
+  } catch (err) { fail(res, err); }
+});
+
+/* ?drafts=1 (the editors): each row is its newest content (unsent > staged > live), with
+   hasDraft (unsent changes), staged and unpublished. Without it: the live documents only. */
 router.get("/:type", async (req, res) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
@@ -247,38 +362,45 @@ router.get("/:type", async (req, res) => {
     const out = await query(`*[_type == $type && !(_id in path("drafts.**"))] | ${order} { ${LIST_FIELDS} }`, { type });
     if (req.query.drafts !== "1") return res.json(out.result || []);
     const drafts = await query(`*[_type == $type && _id in path("drafts.**")] { ${LIST_FIELDS} }`, { type });
-    res.json(overlayDrafts(out.result || [], drafts.result || []));
+    const wips = (await CmsChange.find({ type, wip: { $ne: null } }).lean())
+      .map((w) => ({ docId: w.docId, wip: withAssetUrls(w.wip, PROJECT, DATASET) }));
+    res.json(overlayChanges(out.result || [], drafts.result || [], wips));
   } catch (err) { fail(res, err); }
 });
 
-/* Events are created as drafts (redesign step 1): staff see them in preview, and they go
-   on the website only when a manager publishes them (which also makes the event's server
-   record, models/EventConfig.js). Every other type is created live, as before. */
-router.post("/:type", async (req, res) => {
+/* Create. ?draft=1 (the panel), and always for events and the home page: saved as unsent work,
+   on no website until it's sent to staging and published. Without it the document goes
+   straight to the live site, management only. */
+router.post("/:type", async (req, res, next) => {
+  const live = req.query.draft !== "1" && req.params.type !== "event" && req.params.type !== "homePage";
+  return live ? requireManagement(req, res, next) : next();
+}, async (req, res) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   const { set, error } = toSanityPatch(type, req.body || {}, { creating: true });
   if (error) return res.status(400).json({ error });
   try {
-    if (type === "event") {
-      const key = eventKeyFor(set);
-      if (!key) return res.status(400).json({ error: "An event needs a city, a year and a type" });
-      const id = `event-${key}`;
-      const taken = await query(`count(*[_id in [$id, $d] || eventKey.current == $key])`, { id, d: draftId(id), key });
-      if (taken?.result) return res.status(409).json({ error: "There is already an event for that city, year and type." });
-      const out = await mutate([{ create: { _id: draftId(id), _type: "event", eventKey: { _type: "slug", current: key }, ...set } }]);
-      await audit(req, "cms_create", type, id, `${auditCreateDetail(set)} (draft)`);
-      return res.status(201).json({ ...(out.results?.[0]?.document || {}), _id: id, hasDraft: true, unpublished: true });
-    }
-    if (type === "homePage") {
-      // One home page: created once, as a draft, under a fixed id.
-      const id = "homePage";
-      const taken = await query(`count(*[_id in [$id, $d]])`, { id, d: draftId(id) });
-      if (taken?.result) return res.status(409).json({ error: "The home page already exists. Edit it instead." });
-      const out = await mutate([{ create: { _id: draftId(id), _type: "homePage", ...set } }]);
-      await audit(req, "cms_create", type, id, `${auditCreateDetail(set)} (draft)`);
-      return res.status(201).json({ ...(out.results?.[0]?.document || {}), _id: id, hasDraft: true, unpublished: true });
+    if (req.query.draft === "1" || type === "event" || type === "homePage") {
+      let id, extra = {};
+      if (type === "event") {
+        const key = eventKeyFor(set);
+        if (!key) return res.status(400).json({ error: "An event needs a city, a year and a type" });
+        id = `event-${key}`;
+        extra = { eventKey: { _type: "slug", current: key } };
+        const taken = await query(`count(*[_id in [$id, $d] || eventKey.current == $key])`, { id, d: draftId(id), key });
+        if (taken?.result || await CmsChange.exists({ docId: id })) return res.status(409).json({ error: "There is already an event for that city, year and type." });
+      } else if (type === "homePage") {
+        id = "homePage";
+        const taken = await query(`count(*[_id in [$id, $d]])`, { id, d: draftId(id) });
+        if (taken?.result || await CmsChange.exists({ docId: id })) return res.status(409).json({ error: "The home page already exists. Edit it instead." });
+      } else {
+        id = newDocId(type);
+      }
+      const doc = { _id: id, _type: type, ...extra, ...set };
+      await CmsChange.create({ docId: id, type, wip: doc, wipAt: new Date(), wipBy: who(req) });
+      await audit(req, "cms_create", type, id, `${auditCreateDetail(set)} (saved, not sent)`);
+      return res.status(201).json({ ...withAssetUrls(doc, PROJECT, DATASET), hasDraft: true, staged: false, unpublished: true });
     }
     const out = await mutate([{ create: { _type: type, ...set } }]);
     const doc = out.results?.[0]?.document;
@@ -287,84 +409,104 @@ router.post("/:type", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/* Edit. ?draft=1 (the panel): saved as unsent work on top of the newest version (unsent >
+   staged > live). Without it the live document changes at once: the agenda's event-day
+   switches and any older caller. */
 router.patch("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   const { set, unset, error } = toSanityPatch(type, req.body || {}, { creating: false });
   if (error) return res.status(400).json({ error });
-  const patch = { id };
-  if (Object.keys(set).length) patch.set = set;
-  if (unset.length) patch.unset = unset;
-  if (!patch.set && !patch.unset) return res.status(400).json({ error: "Nothing to change" });
+  if (!Object.keys(set).length && !unset.length) return res.status(400).json({ error: "Nothing to change" });
   try {
     if (req.query.draft === "1") {
-      // Save to the draft, starting it from the published document if there isn't one yet.
-      const found = await docAndDraft(res, type, id);
-      if (!found) return;
-      const base = found.draft ? null : draftFromPublished(found.published);
-      const mutations = base ? [{ createIfNotExists: base }] : [];
-      mutations.push({ patch: { ...patch, id: draftId(id) } });
-      const out = await mutate(mutations);
+      const st = await loadState(res, type, id);
+      if (!st) return;
+      const base = cleanDoc(st.wip || st.draft || st.published);
+      const doc = applyPatch({ ...base, _id: id, _type: type }, set, unset);
+      await CmsChange.updateOne({ docId: id }, { $set: { type, wip: doc, wipAt: new Date(), wipBy: who(req) }, $setOnInsert: { docId: id } }, { upsert: true });
       await audit(req, "cms_draft", type, id, auditEditDetail(set, unset));
-      const doc = out.results?.[mutations.length - 1]?.document || {};
-      return res.json({ ...doc, _id: id, hasDraft: true, unpublished: !found.published });
+      return res.json({ ...withAssetUrls(doc, PROJECT, DATASET), hasDraft: true, staged: !!st.draft, unpublished: !st.published });
     }
     if (!(await sameType(res, type, id))) return;
+    const patch = { id };
+    if (Object.keys(set).length) patch.set = set;
+    if (unset.length) patch.unset = unset;
     const out = await mutate([{ patch }]);
     await audit(req, "cms_edit", type, id, auditEditDetail(set, unset));
     res.json(out.results?.[0]?.document || { _id: id });
   } catch (err) { fail(res, err); }
 });
 
-/* Deleting an event takes it off the website for good: management only. */
+/* Delete from the website, staging and unsent work. Events: management only. */
 router.delete("/:type/:id", (req, res, next) => (req.params.type === "event" ? requireManagement(req, res, next) : next()), async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   try {
-    if (!(await docAndDraft(res, type, id))) return;
+    if (!(await loadState(res, type, id))) return;
     await mutate([{ delete: { id } }, { delete: { id: draftId(id) } }]);
+    await CmsChange.deleteOne({ docId: id });
     await audit(req, "cms_delete", type, id);
     res.json({ ok: true });
   } catch (err) { fail(res, err); }
 });
 
-/* Publish a draft: management only (staff save drafts and preview them; a manager puts
-   them live). The published document becomes the draft's content, then the draft goes.
-   A newly published event also gets its server record (EventConfig, status "announced"). */
-router.post("/:type/:id/publish", requireManagement, async (req, res) => {
+/* Send one document's saved changes to staging (any staff). */
+router.post("/:type/:id/stage", async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   try {
-    const found = await docAndDraft(res, type, id);
-    if (!found) return;
-    const doc = publishedFromDraft(found.draft);
-    if (!doc) return res.status(409).json({ error: "There are no unpublished changes to publish." });
-    const out = await mutate([{ createOrReplace: doc }, { delete: { id: draftId(id) } }]);
-    if (type === "event" && doc.eventKey?.current) {
-      await EventConfig.updateOne({ eventKey: doc.eventKey.current }, {
-        $setOnInsert: { eventKey: doc.eventKey.current, status: "announced" },
-        $set: eventConfigFields(doc),
-      }, { upsert: true });
-    }
-    await audit(req, "cms_publish", type, id, found.published ? "" : "first publish");
-    res.json({ ...(out.results?.[0]?.document || doc), hasDraft: false, unpublished: false });
+    const st = await loadState(res, type, id);
+    if (!st) return;
+    if (!st.wip) return res.status(409).json({ error: "There are no saved changes to send to staging." });
+    await stageRows(req, [{ ...st.change, type }]);
+    res.json({ ...withAssetUrls(st.wip, PROJECT, DATASET), _id: id, hasDraft: false, staged: true, unpublished: !st.published });
   } catch (err) { fail(res, err); }
 });
 
-/* Throw away unpublished changes (for a never-published event: the event itself). */
+/* Publish one document's staged version (any staff). Unsent changes aren't published:
+   they go to staging first, so what goes live is what was reviewed. */
+router.post("/:type/:id/publish", async (req, res) => {
+  const { type, id } = req.params;
+  if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
+  if (needToken(res)) return;
+  try {
+    const st = await loadState(res, type, id);
+    if (!st) return;
+    if (!st.draft) {
+      return res.status(409).json({ error: st.wip ? "Send these changes to staging and check them there before publishing." : "Nothing is on staging waiting to be published." });
+    }
+    const [doc] = await publishDrafts(req, [st.draft]);
+    const row = st.wip ? { ...withAssetUrls(st.wip, PROJECT, DATASET), hasDraft: true } : { ...doc, hasDraft: false };
+    res.json({ ...row, _id: id, staged: false, unpublished: false });
+  } catch (err) { fail(res, err); }
+});
+
+/* Throw away changes. ?which=unsent (saved work in progress) | staged (the staging version) |
+   all; default: the unsent work if there is any, else the staging version. A document that was
+   never published and has nothing left is gone: { deleted: true }. */
 router.delete("/:type/:id/draft", async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
+  const which = req.query.which || "";
+  if (which && !["unsent", "staged", "all"].includes(which)) return res.status(400).json({ error: "which must be unsent, staged or all" });
   try {
-    const found = await docAndDraft(res, type, id);
-    if (!found) return;
-    await mutate([{ delete: { id: draftId(id) } }]);
-    await audit(req, "cms_discard_draft", type, id);
-    res.json({ ok: true, deleted: !found.published });
+    const st = await loadState(res, type, id);
+    if (!st) return;
+    const dropWip = which === "unsent" || which === "all" || (!which && !!st.wip);
+    const dropStaged = which === "staged" || which === "all" || (!which && !st.wip);
+    if (dropStaged && st.draft) await mutate([{ delete: { id: draftId(id) } }]);
+    if (dropWip) await CmsChange.updateOne({ docId: id }, { $set: { wip: null }, $unset: { wipAt: 1, wipBy: 1 } });
+    if (dropStaged) await CmsChange.updateOne({ docId: id }, { $unset: { stagedAt: 1, stagedBy: 1 } });
+    await CmsChange.deleteOne({ docId: id, wip: null, stagedAt: { $exists: false } });
+    await audit(req, "cms_discard_draft", type, id, dropWip && dropStaged ? "unsent and staged" : dropWip ? "unsent" : "staged");
+    const left = (dropWip ? null : st.wip) || (dropStaged ? null : st.draft) || st.published;
+    res.json({ ok: true, deleted: !left, row: left ? { ...(left === st.wip ? withAssetUrls(st.wip, PROJECT, DATASET) : left), _id: id,
+      hasDraft: left === st.wip, staged: !dropStaged && !!st.draft, unpublished: !st.published } : null });
   } catch (err) { fail(res, err); }
 });
 
