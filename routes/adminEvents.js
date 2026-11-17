@@ -1,7 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import EventConfig from "../models/EventConfig.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin, isManagement } from "../middleware/adminAuth.js";
 import { recordAudit } from "../services/auditLog.js";
 
 const router = express.Router();
@@ -117,10 +117,50 @@ router.get("/visibility-matrix", authMiddleware, adminMiddleware, async (req, re
   }
 });
 
+// Who may change what (Nov 2026, the organiser: "everything configurable from
+// the admin panel depending on the access level"). Management: creating events
+// and everything that sets what is sold and when (name, city, type, year,
+// dates, status, grace days, pricing announced, quantity discount). Staff:
+// attendee visibility only. Volunteers never reach this router (requireAdmin).
+const STAFF_FIELDS = new Set(["attendeeVisibility"]);
+function managementOnly(req, res, body) {
+  if (isManagement(req.user)) return false;
+  const others = Object.keys(body || {}).filter((k) => !STAFF_FIELDS.has(k));
+  if (others.length === 0) return false;
+  res.status(403).json({ error: "Only management can change this.", code: "management_only", fields: others });
+  return true;
+}
+
+// Returns an error message, or null. Sets the event's automatic quantity
+// discount (models/EventConfig.js settings.quantityDiscount) when valid.
+function applyQuantityDiscount(event, settings) {
+  const q = settings?.quantityDiscount;
+  if (q === undefined) return null;
+  if (q === null || typeof q !== "object" || Array.isArray(q)) return "settings.quantityDiscount must be an object";
+  if (q.enabled !== undefined) {
+    if (typeof q.enabled !== "boolean") return "settings.quantityDiscount.enabled must be true or false";
+    event.set("settings.quantityDiscount.enabled", q.enabled);
+  }
+  if (q.minQuantity !== undefined) {
+    const n = Number(q.minQuantity);
+    if (!Number.isInteger(n) || n < 2 || n > 100) return "settings.quantityDiscount.minQuantity must be a whole number from 2 to 100";
+    event.set("settings.quantityDiscount.minQuantity", n);
+  }
+  if (q.percent !== undefined) {
+    const p = Number(q.percent);
+    if (!Number.isFinite(p) || p <= 0 || p > 100) return "settings.quantityDiscount.percent must be more than 0 and at most 100";
+    event.set("settings.quantityDiscount.percent", Math.round(p * 100) / 100);
+  }
+  return null;
+}
+
 // ================= CREATE EVENT =================
 router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const body = req.body || {};
+    if (!isManagement(req.user)) {
+      return res.status(403).json({ error: "Only management can create events.", code: "management_only" });
+    }
 
     const eventKey = typeof body.eventKey === "string" ? body.eventKey.trim() : "";
     if (!eventKey) {
@@ -147,6 +187,10 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
     if (body.attendeeVisibility !== undefined) applyVisibility(event, body.attendeeVisibility);
     const gErr = applyGraceDays(event, body.settings);
     if (gErr) return res.status(400).json({ error: gErr });
+    const pErr = applyPricingAnnounced(event, body.settings);
+    if (pErr) return res.status(400).json({ error: pErr });
+    const qErr = applyQuantityDiscount(event, body.settings);
+    if (qErr) return res.status(400).json({ error: qErr });
 
     await event.save();
     recordAudit(req, "create", "event", event.eventKey,
@@ -170,6 +214,7 @@ router.patch("/:eventKey", authMiddleware, adminMiddleware, async (req, res) => 
     }
 
     const body = req.body || {};
+    if (managementOnly(req, res, body)) return;
     if (body.type !== undefined && !EVENT_TYPES.includes(body.type)) {
       return res.status(400).json({ error: `type must be one of: ${EVENT_TYPES.join(", ")}` });
     }
@@ -187,6 +232,8 @@ router.patch("/:eventKey", authMiddleware, adminMiddleware, async (req, res) => 
     if (gErr) return res.status(400).json({ error: gErr });
     const pErr = applyPricingAnnounced(event, body.settings);
     if (pErr) return res.status(400).json({ error: pErr });
+    const qErr = applyQuantityDiscount(event, body.settings);
+    if (qErr) return res.status(400).json({ error: qErr });
 
     await event.save();
     recordAudit(req, "update", "event", event.eventKey,

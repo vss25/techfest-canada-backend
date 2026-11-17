@@ -39,7 +39,8 @@ async function deliverBrochure(doc) {
   const brochure = BROCHURES[doc.brochure];
   const base = websiteBase();
   // The PDF uploaded in Admin › Site settings › Large site files (Sanity CDN), else the website's copy.
-  const uploaded = await savedSiteFileUrl(BROCHURE_URL_KEY, { AppContent });
+  // The uploaded copy replaces the sponsorship brochure only; other PDFs are the website's own.
+  const uploaded = brochure.id === "sponsorship" ? await savedSiteFileUrl(BROCHURE_URL_KEY, { AppContent }) : "";
   const link = brochureUrl(brochure, base, uploaded);
   let delivery = "failed";
   let emailError = "";

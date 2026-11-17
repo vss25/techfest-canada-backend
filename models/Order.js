@@ -54,6 +54,7 @@ const orderAmountsSchema = new mongoose.Schema(
   {
     subtotalCents: { type: Number, default: 0 },
     bogoDiscountCents: { type: Number, default: 0 },
+    eventDiscountCents: { type: Number, default: 0 }, // the event's automatic quantity discount
     groupDiscountCents: { type: Number, default: 0 },
     codeDiscountCents: { type: Number, default: 0 },
     totalCents: { type: Number, default: 0 },

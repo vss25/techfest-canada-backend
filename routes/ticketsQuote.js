@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import EventConfig from "../models/EventConfig.js";
 import TicketType from "../models/TicketType.js";
-import { priceOrder } from "../services/pricingEngine.js";
+import { priceBasket, cleanEventDiscount } from "../services/pricingEngine.js";
 import { resolveOrderPromo } from "../services/orderPromo.js";
 
 const router = express.Router();
@@ -12,11 +12,10 @@ const router = express.Router();
    buyer sees exactly what each rule saved. Public and read-only.
 
    Pricing never leaks for an event whose pricing is still "to be
-   announced": when the event's EventConfig exists and its
+   announced": when the event has no EventConfig row or its
    pricingAnnounced switch is not on, the whole answer is
-   { announced: false } — no prices, no inclusions, nothing. (An event
-   with no EventConfig row yet has no switch to honour and is quoted
-   normally.) Amounts are integer cents before HST — Stripe adds HST on
+   { announced: false } — no prices, no inclusions, nothing (fails
+   closed since Nov 2026). Amounts are integer cents before HST — Stripe adds HST on
    top at checkout, as in the single-ticket flow (routes/payments.js). */
 router.post("/quote", async (req, res) => {
   try {
@@ -36,7 +35,8 @@ router.post("/quote", async (req, res) => {
     }
 
     const event = await EventConfig.findOne({ eventKey }).lean();
-    if (event && event.settings?.pricingAnnounced !== true) {
+    // Fails closed (Nov 2026): no EventConfig row = nothing announced.
+    if (!event || event.settings?.pricingAnnounced !== true) {
       return res.json({ announced: false });
     }
 
@@ -48,7 +48,14 @@ router.post("/quote", async (req, res) => {
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });
 
     const { promo, code, invalid } = await resolveOrderPromo(body.promoCode, ticketType);
-    const quote = priceOrder({ ticketType, quantity, promo });
+    // The same maths as checkout (routes/orders.js): the event's automatic
+    // quantity discount and order-level codes included.
+    const { lines, ...quote } = priceBasket({
+      lines: [{ ticketType, quantity }],
+      promo,
+      eventDiscount: event.settings?.quantityDiscount
+    });
+    quote.unitPriceCents = lines[0].unitPriceCents;
 
     res.json({
       announced: true,
@@ -63,6 +70,7 @@ router.post("/quote", async (req, res) => {
       currency: ticketType.currency || "CAD",
       promoCode: promo ? code : undefined,
       promoApplied: Boolean(promo),
+      quantityDiscount: cleanEventDiscount(event.settings?.quantityDiscount),
       ...(invalid ? { promoInvalid: true } : {}),
       ...quote,
       taxNote: "HST is added on top at checkout."
@@ -80,8 +88,8 @@ router.post("/quote", async (req, res) => {
    While the event's pricing is still "to be announced" (its EventConfig
    exists and the switch is not on), the answer is
    { announced: false, types: [] } — no prices, no tier names, nothing.
-   An event with no EventConfig row yet has no switch to honour and is
-   listed normally, exactly as /quote treats it. Only ACTIVE types are
+   An event with no EventConfig row is treated as unannounced, exactly
+   as /quote treats it. Only ACTIVE types are
    listed, in staff's sortOrder; sales windows are exposed as fields (the
    page greys types out) rather than used to hide types, matching /quote
    and checkout, which only enforce windows at purchase time.
@@ -98,7 +106,7 @@ router.get("/types", async (req, res) => {
     }
 
     const event = await EventConfig.findOne({ eventKey }).lean();
-    if (event && event.settings?.pricingAnnounced !== true) {
+    if (!event || event.settings?.pricingAnnounced !== true) {
       return res.json({ announced: false, types: [] });
     }
 
@@ -109,6 +117,7 @@ router.get("/types", async (req, res) => {
     res.json({
       announced: true,
       eventKey,
+      quantityDiscount: cleanEventDiscount(event.settings?.quantityDiscount),
       types: types.map((t) => ({
         id: String(t._id),
         name: t.name,

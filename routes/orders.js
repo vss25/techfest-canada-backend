@@ -6,7 +6,8 @@ import EventConfig from "../models/EventConfig.js";
 import Order from "../models/Order.js";
 import TicketType from "../models/TicketType.js";
 import User from "../models/User.js";
-import { priceOrder } from "../services/pricingEngine.js";
+import { priceBasket } from "../services/pricingEngine.js";
+import { makeLimiter } from "../services/ticketAccess.js";
 import { resolveOrderPromo } from "../services/orderPromo.js";
 import { fulfilOrder } from "../services/orderFulfilment.js";
 import { getStripe, buildTaxConfig } from "../services/stripeCheckout.js";
@@ -52,6 +53,20 @@ async function getUserFromReq(req) {
 
 const EMAIL_RE = /\S+@\S+\.\S+/;
 const MAX_TICKETS = 100;
+
+/* Abuse limits (Nov 2026). Checkout creates an Order and, for a $0 order,
+   issues passes and sends ticket emails at once, so it is limited per address
+   and, for $0 orders, per account. Several buyers share a venue / office
+   address, so the address limit is generous. */
+const checkoutIpLimiter = makeLimiter({ max: 60, windowMs: 15 * 60 * 1000 });
+const freeOrderLimiter = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 });
+const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
+
+/** $0 orders with this code already fulfilled (no Stripe session to count). */
+async function freeOrderUses(code) {
+  if (!code) return 0;
+  return Order.countDocuments({ promoCode: code, "amounts.totalCents": 0, status: { $in: ["paid", "fulfilled"] } });
+}
 
 /** The order's lines from the request: `items` (a list), or the
     single-type shorthand `ticketTypeId` + `quantity`. */
@@ -105,6 +120,9 @@ router.post("/multi-checkout", async (req, res) => {
     const body = req.body || {};
     const eventKey = typeof body.eventKey === "string" ? body.eventKey.trim() : "";
     if (!eventKey) return res.status(400).json({ error: "eventKey is required" });
+    if (!checkoutIpLimiter.hit(clientIp(req))) {
+      return res.status(429).json({ error: "Too many checkouts from this connection. Please try again in a few minutes." });
+    }
 
     // ---- Booker (the invoice goes to this person, and only them) ----
     let buyer = null;
@@ -120,8 +138,9 @@ router.post("/multi-checkout", async (req, res) => {
     }
 
     // ---- Pricing gate: nothing sells while pricing is "to be announced" ----
+    // Fails closed: an event with no EventConfig row (Admin › Events) sells nothing.
     const event = await EventConfig.findOne({ eventKey }).lean();
-    if (event && event.settings?.pricingAnnounced !== true) {
+    if (!event || event.settings?.pricingAnnounced !== true) {
       return res.status(409).json({
         error: "Pricing for this event hasn't been announced yet.",
         announced: false
@@ -217,31 +236,40 @@ router.post("/multi-checkout", async (req, res) => {
       return res.status(400).json({ error: "That promo code isn't valid for these tickets" });
     }
 
-    let amounts = {
-      subtotalCents: 0,
-      bogoDiscountCents: 0,
-      groupDiscountCents: 0,
-      codeDiscountCents: 0,
-      totalCents: 0,
+    const basket = priceBasket({
+      lines: items.map((i) => ({ ticketType: typeOf.get(i.ticketTypeId), quantity: i.quantity })),
+      promo,
+      eventDiscount: event.settings?.quantityDiscount
+    });
+    const amounts = {
+      subtotalCents: basket.subtotalCents,
+      bogoDiscountCents: basket.bogoDiscountCents,
+      eventDiscountCents: basket.eventDiscountCents,
+      groupDiscountCents: basket.groupDiscountCents,
+      codeDiscountCents: basket.codeDiscountCents,
+      totalCents: basket.totalCents,
       currency: [...currencies][0] || "CAD"
     };
-    const orderItems = [];
-    for (const item of items) {
+    const orderItems = items.map((item, i) => {
       const type = typeOf.get(item.ticketTypeId);
-      const priced = priceOrder({ ticketType: type, quantity: item.quantity, promo });
-      amounts.subtotalCents += priced.subtotalCents;
-      amounts.bogoDiscountCents += priced.bogoDiscountCents;
-      amounts.groupDiscountCents += priced.groupDiscountCents;
-      amounts.codeDiscountCents += priced.codeDiscountCents;
-      amounts.totalCents += priced.totalCents;
-      orderItems.push({
+      return {
         ticketTypeId: type._id,
         name: type.name,
         slug: type.slug,
         unitPriceCents: type.priceCents,
         quantity: item.quantity,
-        totalCents: priced.totalCents // per-line total after this line's discounts (not stored; used below)
-      });
+        totalCents: basket.lines[i].totalCents // this line's share after every discount (not stored; Stripe line amount)
+      };
+    });
+
+    // ---- $0 orders issue passes and send emails at once: a signed-in buyer only ----
+    if (amounts.totalCents === 0) {
+      if (!buyer) {
+        return res.status(401).json({ error: "Please sign in to claim free tickets.", code: "sign_in_required" });
+      }
+      if (!freeOrderLimiter.hit(String(buyer._id))) {
+        return res.status(429).json({ error: "Too many free orders. Please contact enquire@thetechfestival.com." });
+      }
     }
 
     // ---- Promo usage limit (mirrors routes/payments.js) ----
@@ -253,6 +281,7 @@ router.post("/multi-checkout", async (req, res) => {
       let usage;
       try {
         usage = await promoUsageNow(stripe, promo.code);
+        usage = { ...usage, total: usage.total + (await freeOrderUses(promo.code)) };
       } catch (e) {
         console.error("Promo usage check failed:", e.message);
         return res.status(503).json({ error: "We couldn't check this code right now. Please try again in a minute." });
@@ -276,6 +305,18 @@ router.post("/multi-checkout", async (req, res) => {
       promoCode: promo ? code : "",
       status: "pending"
     });
+
+    // ---- Capacity, checked again now the order holds its seats (two buyers at
+    //      once could both pass the first check): the later order gives way ----
+    for (const item of items) {
+      const type = typeOf.get(item.ticketTypeId);
+      if (type.capacity === undefined || type.capacity === null) continue;
+      const taken = await soldOrReserved(eventKey, type);
+      if (taken > type.capacity) {
+        await Order.updateOne({ _id: order._id }, { $set: { status: "failed" } });
+        return res.status(409).json({ error: `${type.name} is sold out.` });
+      }
+    }
 
     // ---- $0 orders: no payment to take, fulfil now ----
     if (amounts.totalCents === 0) {
@@ -335,7 +376,7 @@ router.post("/multi-checkout", async (req, res) => {
     res.json({ url: session.url, orderId: String(order._id) });
   } catch (err) {
     console.error("Multi-checkout error:", err);
-    res.status(500).json({ error: err.message || "Checkout failed" });
+    res.status(500).json({ error: "Checkout failed. Please try again." });
   } finally {
     releasePromo();
   }

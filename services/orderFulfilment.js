@@ -124,26 +124,36 @@ export async function fulfilOrder(order, session = null) {
 
   // ================= EMAILS =================
   // A ticket to each attendee (their own pass, their own inbox)…
+  // One failed email never stops the others (the order is already fulfilled,
+  // so a webhook retry would not resend them).
   for (const { person, slug } of issued) {
     const extras = effectiveExtras({ ticketType: slug });
-    await sendTicketEmail({
-      email: person.email,
-      name: `${person.firstName} ${person.lastName}`.trim(),
-      firstName: person.firstName,
-      ticketId: person.ticketId,
-      tier: slug,
-      cxoBreakfast: extras.cxo,
-      extras
-    });
-    console.log("📧 Ticket email sent to attendee:", person.email);
+    try {
+      await sendTicketEmail({
+        email: person.email,
+        name: `${person.firstName} ${person.lastName}`.trim(),
+        firstName: person.firstName,
+        ticketId: person.ticketId,
+        tier: slug,
+        cxoBreakfast: extras.cxo,
+        extras
+      });
+      console.log("📧 Ticket email sent for order", String(doc._id));
+    } catch (e) {
+      console.error("❌ Ticket email failed for order", String(doc._id), e.message);
+    }
   }
 
   // …and ONE invoice to the booker, itemizing the whole order.
-  await sendOrderInvoiceEmail({
-    order: doc,
-    chargedTotalCents:
-      typeof session?.amount_total === "number" ? session.amount_total : null
-  });
+  try {
+    await sendOrderInvoiceEmail({
+      order: doc,
+      chargedTotalCents:
+        typeof session?.amount_total === "number" ? session.amount_total : null
+    });
+  } catch (e) {
+    console.error("❌ Invoice email failed for order", String(doc._id), e.message);
+  }
 
   return { fulfilled: true, tickets: issued.length };
 }

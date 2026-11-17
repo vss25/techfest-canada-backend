@@ -230,7 +230,10 @@ test("only the Stripe webhook sends it: no staff route or pass service imports t
   assert.equal(calls.length, 2);
   assert.ok(calls[0] > hook.indexOf('console.log("✅ Ticket created:"'), "ticket alert after the ticket is saved");
   assert.ok(calls[1] > hook.indexOf('console.log("✅ Booth purchase confirmed:"'), "booth alert after the confirmation");
-  assert.ok(hook.indexOf('"pavilion-deposit"') < hook.indexOf("return res.json({ received: true });"), "deposits answer before any alert");
+  // The deposit branch returns before the first alert call (Nov 2026: an order branch for
+  // delayed payments now sits earlier in the file, so look for the deposit's own return).
+  const depositReturn = hook.indexOf("return res.json({ received: true });", hook.indexOf('"pavilion-deposit"'));
+  assert.ok(hook.indexOf('"pavilion-deposit"') > 0 && depositReturn < calls[0], "deposits answer before any alert");
 });
 
 /* ---------- sending: once per session, never throws ---------- */

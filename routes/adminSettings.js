@@ -1,7 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import AdminSetting from "../models/AdminSetting.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import { CONTENT_KEYS, CONTENT_LABELS } from "../services/adminHelpers.js";
 import { recordAudit } from "../services/auditLog.js";
 
@@ -167,7 +167,8 @@ router.get("/:key", authMiddleware, adminMiddleware, async (req, res) => {
 // ================= SET A SETTING =================
 // Upsert. Unknown keys are refused (400) and values are type-checked
 // against the registry (400) — staff can only set what the code reads.
-router.put("/:key", authMiddleware, adminMiddleware, async (req, res) => {
+// Management only (Nov 2026): the registry holds selling switches too.
+router.put("/:key", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
   try {
     const key = req.params.key;
     const spec = KNOWN_KEYS[key];

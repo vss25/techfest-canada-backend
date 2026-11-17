@@ -13,6 +13,11 @@ const people = { kind: "people" };
 const person = { kind: "person" };
 const scale = { kind: "number", min: 30, max: 250 };   // logo size, % of the default
 const stats = { kind: "stats" };                        // About page numbers: [{ value, suffix?, label, iconName? }]
+const date = { kind: "date" };                          // "YYYY-MM-DD"
+const images = { kind: "images" };                      // photo gallery: [image] (asset ids), at most 24
+const refs = { kind: "refs" };                          // event ids → [{ _type: "reference", _ref }]
+const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
+const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
@@ -42,6 +47,7 @@ export const CMS_FIELDS = {
     techPillar: oneOf("ai", "cybersecurity", "cloud-data", "emerging-tech"),
     sector: oneOf("healthcare-life-sci", "manufacturing-supply", "government", "financial-services", "energy", "media"),
     linkedin: url, twitter: url, github: url, website: url,
+    events: refs,                             // which events this speaker appears on (empty = every event)
   },
   partner: {
     name: { ...str(120), required: true },
@@ -84,6 +90,60 @@ export const CMS_FIELDS = {
     // "auto" (on when there's a moderator, never keynotes or breaks) | "on" | "off"; missing = "auto"
     polls: liveMode,
     qa: liveMode,
+    events: refs,                             // which events this session belongs to (empty = every event)
+  },
+  // One TTFC event's public page (website src/lib/events.js + src/redesign). Edited as a draft,
+  // previewed on the website, then published (routes/cms.js: ?draft=1, /publish).
+  event: {
+    name: { ...str(120), required: true },
+    city: { ...str(60), required: true },
+    type: { ...oneOf("briefing", "main-event"), required: true },
+    year: { ...num, required: true },
+    startDate: date,
+    endDate: date,
+    statusNote: str(120),                     // "February 2027 · One day" while the day isn't fixed
+    venueName: str(160),
+    venueAddress: str(300),
+    description: str(3000),
+    heroImage: img,                           // the previous design's top photo (still read by the old pages)
+    citySkyline: img,                         // "City photo" on the approved design (redesign step 2)
+    heroVideoUrl: url,
+    photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
+    theme: str(120),                          // "Energy & Critical Infrastructure"
+    tagline: str(240),                        // one line under the event name
+    formatLine: str(120),                     // "One day · 8 sessions"
+    audience: str(160),                       // "150 senior delegates"
+    pageMode: { ...oneOf("auto", "coming-soon", "full"), default: "auto" },
+    knownSoFar: facts,
+    comingNext: steps,
+    notifyHeading: str(120),
+    showReport: { ...bool, default: true },   // the Toronto 2026 post-show report card
+    gallery: images,                          // photo strip on the event page (redesign step 2)
+  },
+  // The home page (redesign step 2): one document, id "homePage". Edited as a draft, previewed, then published.
+  homePage: {
+    heroEyebrow: str(120),
+    heroHeadline: str(160),
+    heroText: str(400),
+    heroImage: img,
+    heroVideoUrl: url,
+    primaryCtaLabel: str(40),
+    primaryCtaUrl: str(300),
+    secondaryCtaLabel: str(40),
+    secondaryCtaUrl: str(300),
+    eventsHeading: str(120),
+    eventsText: str(300),
+    highlightsHeading: str(120),
+    highlightsText: str(600),
+    stats,                                    // [{ value, suffix?, label }], at most 8
+    highlightPhotos: images,
+    recapVideoUrl: url,
+    reportTitle: str(120),
+    reportText: str(300),
+    reportUrl: str(300),
+    partnersHeading: str(120),
+    partnerCtaHeading: str(120),
+    partnerCtaText: str(300),
   },
 };
 
@@ -159,6 +219,40 @@ export function sessionDoc(s) {
   return error ? { error } : { doc: { _id: `session-${id}`, _type: "session", ...set } };
 }
 
+const keyFor2 = (s, i) => `k${i}${String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12)}`;
+
+/** [{label, value}] for "What we know so far": both required, at most 8. Pure. */
+export function cleanFacts(v) {
+  if (!Array.isArray(v)) return { error: "must be a list" };
+  if (v.length > 8) return { error: "at most 8 rows" };
+  const rows = [];
+  for (const [i, f] of v.entries()) {
+    const label = String(f?.label || "").trim().slice(0, 60);
+    const value = String(f?.value || "").trim().slice(0, 160);
+    if (!label && !value) continue;
+    if (!label || !value) return { error: "every row needs a label and a value" };
+    rows.push({ _key: keyFor2(label, i), label, value });
+  }
+  return { rows };
+}
+
+/** [{label, when?, done?}] for "Coming next": label required, at most 8. Pure. */
+export function cleanSteps(v) {
+  if (!Array.isArray(v)) return { error: "must be a list" };
+  if (v.length > 8) return { error: "at most 8 steps" };
+  const rows = [];
+  for (const [i, st] of v.entries()) {
+    const label = String(st?.label || "").trim().slice(0, 120);
+    if (!label) continue;
+    const row = { _key: keyFor2(label, i), label };
+    const when = String(st?.when || "").trim().slice(0, 60);
+    if (when) row.when = when;
+    if (st?.done === true) row.done = true;
+    rows.push(row);
+  }
+  return { rows };
+}
+
 /** Body → { set, unset, error }. Images arrive as asset ids (`image: "image-abc…-png"`). */
 export function toSanityPatch(type, body, { creating }) {
   const fields = CMS_FIELDS[type];
@@ -209,6 +303,41 @@ export function toSanityPatch(type, body, { creating }) {
         set[key] = rows; break;
       }
       case "boolean": set[key] = v === true || v === "true"; break;
+      case "images": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        if (v.length > 24) return { set, unset, error: `${key}: at most 24 photos` };
+        const out = [];
+        for (const [i, item] of v.entries()) {
+          const id = typeof item === "object" ? String(item?.asset?._ref || item?.asset || "") : String(item || "");
+          if (!/^image-[A-Za-z0-9]+-\d+x\d+-[a-z0-9]+$/.test(id)) return { set, unset, error: `${key}: upload each photo first` };
+          const alt = typeof item === "object" ? String(item.alt || "").trim().slice(0, 200) : "";
+          out.push({ _key: `g${i}${id.slice(6, 14)}`, _type: "image", asset: { _type: "reference", _ref: id }, ...(alt ? { alt } : {}) });
+        }
+        if (!out.length) { unset.push(key); break; }
+        set[key] = out; break;
+      }
+      case "date": {
+        const d = String(v).trim();
+        const real = /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(new Date(`${d}T12:00:00Z`).getTime())
+          && new Date(`${d}T12:00:00Z`).toISOString().slice(0, 10) === d;
+        if (!real) return { set, unset, error: `${key} must be a date like 2027-02-18` };
+        set[key] = d; break;
+      }
+      case "refs": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        const ids = [...new Set(v.map((x) => String(x || "").trim()).filter(Boolean))];
+        if (ids.some((x) => !/^[A-Za-z0-9._-]{1,128}$/.test(x) || x.startsWith("drafts."))) return { set, unset, error: `${key}: unknown event` };
+        if (!ids.length) { unset.push(key); break; }
+        set[key] = ids.slice(0, 20).map((x, i) => ({ _key: `e${i}${x.replace(/[^A-Za-z0-9]/g, "").slice(-10)}`, _type: "reference", _ref: x }));
+        break;
+      }
+      case "facts":
+      case "steps": {
+        const out = rule.kind === "facts" ? cleanFacts(v) : cleanSteps(v);
+        if (out.error) return { set, unset, error: `${key}: ${out.error}` };
+        if (!out.rows.length) { unset.push(key); break; }
+        set[key] = out.rows; break;
+      }
       case "enum": {
         const val = rule.values.includes(v) ? v : rule.values.find((x) => String(x) === String(v));
         if (val === undefined) return { set, unset, error: `${key} must be one of: ${rule.values.join(", ")}` };

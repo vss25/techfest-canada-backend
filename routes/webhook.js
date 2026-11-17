@@ -88,6 +88,21 @@ router.post("/stripe", async (req, res) => {
   // ====================================================
   // PAYMENT SUCCESS
   // ====================================================
+  // Multi-attendee orders paid later (bank debits and other delayed methods):
+  // fulfilled when the money actually arrives (Nov 2026).
+  if (event.type === "checkout.session.async_payment_succeeded" && event.data?.object?.metadata?.orderId) {
+    try {
+      const order = await Order.findById(event.data.object.metadata.orderId);
+      if (!order) return res.json({ received: true });
+      const r = await fulfilOrder(order, event.data.object);
+      if (r?.inProgress) return res.status(503).json({ retry: true });
+      return res.json({ received: true });
+    } catch (err) {
+      console.error("❌ Order fulfilment failed (async payment):", err);
+      return res.status(500).json({ retry: true });
+    }
+  }
+
   if (event.type === "checkout.session.completed") {
 
     try {
@@ -115,9 +130,19 @@ router.post("/stripe", async (req, res) => {
       // idempotent) and stop: nothing below applies — there is no single
       // tier, no TicketInventory row and no legacy ticket for an order.
       if (session.metadata?.orderId) {
+        // Not paid yet (a delayed payment method): wait for
+        // checkout.session.async_payment_succeeded above.
+        if (session.payment_status && session.payment_status !== "paid" && session.payment_status !== "no_payment_required") {
+          console.log("⏳ Order awaiting payment:", session.metadata.orderId);
+          return res.json({ received: true });
+        }
         const order = await Order.findById(session.metadata.orderId);
         if (order) {
-          await fulfilOrder(order, session);
+          const r = await fulfilOrder(order, session);
+          // Another delivery is fulfilling it right now: ask Stripe to try
+          // again later, so a delivery that dies midway is resumed (Nov 2026;
+          // this used to answer 200 and nothing ever retried).
+          if (r?.inProgress) return res.status(503).json({ retry: true });
           console.log("✅ Multi-attendee order fulfilled:", session.metadata.orderId);
         } else {
           console.error("❌ Webhook orderId not found:", session.metadata.orderId);
@@ -338,6 +363,10 @@ router.post("/stripe", async (req, res) => {
     } catch (err) {
 
       console.error("❌ Webhook processing failed:", err);
+      // Ask Stripe to deliver it again (Nov 2026; this answered 200 and the
+      // event was lost). Every branch above is safe to re-run: orders resume,
+      // tickets / booths / upgrades are once per session.
+      return res.status(500).json({ retry: true });
 
     }
 
