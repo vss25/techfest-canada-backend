@@ -235,6 +235,8 @@ const LIST_FIELDS = `..., "imageUrl": image.asset->url, "logoUrl": logo.asset->u
    The live site only ever reads published documents.
 ========================================================= */
 
+const OLDER_ONLY = "This item only exists as an older draft made outside the admin. Throw it away from Changes, or add it again.";
+const isStaged = (row) => !!row?.stagedAt;
 const who = (req) => ({ id: String(req.user?._id || ""), name: String(req.user?.name || "") });
 const validId = (id) => /^[A-Za-z0-9._-]{1,128}$/.test(String(id || "")) && !String(id).startsWith("drafts.");
 
@@ -249,7 +251,12 @@ async function loadState(res, type, id) {
   const wip = change?.wip || null;
   const bad = [published, draft, wip].some((d) => d && d._type !== type);
   if (bad || (!published && !draft && !wip)) { res.status(404).json({ error: "Not found" }); return null; }
-  return { published, draft, change, wip };
+  // A Sanity draft is "on staging" only when it was sent there from the admin (CmsChange.stagedAt).
+  // Any other draft (left in Sanity Studio, or by a script) is `older`: never shown as staged,
+  // never published by the workflow, only thrown away (Nov 17 2026: 30 such drafts existed).
+  const staged = draft && change?.stagedAt ? draft : null;
+  const older = draft && !change?.stagedAt ? draft : null;
+  return { published, draft: staged, older, change, wip };
 }
 
 /** Write work in progress for these CmsChange rows to Sanity as drafts, in one transaction. */
@@ -291,7 +298,8 @@ async function publishDrafts(req, drafts) {
 
 /* Everything on its way to the website: Admin › Website content › Changes.
    → { items: [{ id, type, typeLabel, title, unsent, staged, isNew, fields, stagedFields, wipAt, wipBy, stagedAt, stagedBy }],
-       counts: { unsent, staged }, canPublish } */
+       older: [{ id, type, typeLabel, title, isNew, fields, updatedAt }] (Sanity drafts not sent from the admin),
+       counts: { unsent, staged, older }, canPublish } */
 router.get("/changes", async (req, res) => {
   try {
     const rows = await CmsChange.find({}).lean();
@@ -301,9 +309,16 @@ router.get("/changes", async (req, res) => {
     const pub = ids.length ? (await query(`*[_id in $ids]`, { ids })).result || [] : [];
     const live = new Map(pub.map((d) => [d._id, d]));
     const rowOf = new Map(rows.map((r) => [r.docId, r]));
+    const older = [];
     const items = ids.map((id) => {
-      const r = rowOf.get(id), d = drafts.get(id), p = live.get(id) || null;
+      const r = rowOf.get(id), raw = drafts.get(id), p = live.get(id) || null;
       const wip = r?.wip || null;
+      const d = isStaged(r) ? raw : null;
+      if (raw && !d) {
+        older.push({ id, type: raw._type, typeLabel: TYPE_LABELS[raw._type] || raw._type, title: changeTitle(raw._type, raw),
+          isNew: !p, fields: changedFields(raw, p), updatedAt: raw._updatedAt || null });
+      }
+      if (!wip && !d) return null;
       const type = (wip || d || p)._type;
       return {
         id, type, typeLabel: TYPE_LABELS[type] || type, title: changeTitle(type, wip || d || p),
@@ -313,10 +328,11 @@ router.get("/changes", async (req, res) => {
         wipAt: wip ? r.wipAt || null : null, wipBy: wip ? r.wipBy?.name || "" : "",
         stagedAt: d ? r?.stagedAt || d._updatedAt || null : null, stagedBy: d ? r?.stagedBy?.name || "" : "",
       };
-    }).sort((a, b) => String(b.wipAt || b.stagedAt || "").localeCompare(String(a.wipAt || a.stagedAt || "")));
+    }).filter(Boolean).sort((a, b) => String(b.wipAt || b.stagedAt || "").localeCompare(String(a.wipAt || a.stagedAt || "")));
     res.json({
       items,
-      counts: { unsent: items.filter((i) => i.unsent).length, staged: items.filter((i) => i.staged).length },
+      older: older.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+      counts: { unsent: items.filter((i) => i.unsent).length, staged: items.filter((i) => i.staged).length, older: older.length },
       canPublish: true,
     });
   } catch (err) { fail(res, err); }
@@ -341,7 +357,8 @@ router.post("/changes/publish", async (req, res) => {
   if (needToken(res)) return;
   try {
     const out = await query(`*[_id in path("drafts.**") && _type in $types]`, { types: CMS_TYPES });
-    const drafts = out.result || [];
+    const stagedIds = new Set((await CmsChange.find({ stagedAt: { $exists: true } }, { docId: 1 }).lean()).map((r) => r.docId));
+    const drafts = (out.result || []).filter((d) => stagedIds.has(publishedId(d._id)));
     const pick = pickIds(drafts.map((d) => publishedId(d._id)), req.body?.ids);
     if (pick.error) return res.status(400).json({ error: pick.error });
     if (!pick.ids.length) return res.status(409).json({ error: "Nothing is on staging waiting to be published." });
@@ -362,9 +379,10 @@ router.get("/:type", async (req, res) => {
     const out = await query(`*[_type == $type && !(_id in path("drafts.**"))] | ${order} { ${LIST_FIELDS} }`, { type });
     if (req.query.drafts !== "1") return res.json(out.result || []);
     const drafts = await query(`*[_type == $type && _id in path("drafts.**")] { ${LIST_FIELDS} }`, { type });
-    const wips = (await CmsChange.find({ type, wip: { $ne: null } }).lean())
-      .map((w) => ({ docId: w.docId, wip: withAssetUrls(w.wip, PROJECT, DATASET) }));
-    res.json(overlayChanges(out.result || [], drafts.result || [], wips));
+    const rows = await CmsChange.find({ type }).lean();
+    const stagedIds = new Set(rows.filter(isStaged).map((r) => r.docId));
+    const wips = rows.filter((w) => w.wip).map((w) => ({ docId: w.docId, wip: withAssetUrls(w.wip, PROJECT, DATASET) }));
+    res.json(overlayChanges(out.result || [], (drafts.result || []).filter((d) => stagedIds.has(publishedId(d._id))), wips));
   } catch (err) { fail(res, err); }
 });
 
@@ -423,6 +441,7 @@ router.patch("/:type/:id", async (req, res) => {
     if (req.query.draft === "1") {
       const st = await loadState(res, type, id);
       if (!st) return;
+      if (!st.wip && !st.draft && !st.published) return res.status(409).json({ error: OLDER_ONLY });
       const base = cleanDoc(st.wip || st.draft || st.published);
       const doc = applyPatch({ ...base, _id: id, _type: type }, set, unset);
       await CmsChange.updateOne({ docId: id }, { $set: { type, wip: doc, wipAt: new Date(), wipBy: who(req) }, $setOnInsert: { docId: id } }, { upsert: true });
@@ -477,7 +496,9 @@ router.post("/:type/:id/publish", async (req, res) => {
     const st = await loadState(res, type, id);
     if (!st) return;
     if (!st.draft) {
-      return res.status(409).json({ error: st.wip ? "Send these changes to staging and check them there before publishing." : "Nothing is on staging waiting to be published." });
+      return res.status(409).json({ error: st.wip ? "Send these changes to staging and check them there before publishing."
+        : st.older ? "This is an older draft made outside the admin, so it can't be published from here. Edit the item and send it to staging instead."
+          : "Nothing is on staging waiting to be published." });
     }
     const [doc] = await publishDrafts(req, [st.draft]);
     const row = st.wip ? { ...withAssetUrls(st.wip, PROJECT, DATASET), hasDraft: true } : { ...doc, hasDraft: false };
@@ -493,17 +514,18 @@ router.delete("/:type/:id/draft", async (req, res) => {
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   const which = req.query.which || "";
-  if (which && !["unsent", "staged", "all"].includes(which)) return res.status(400).json({ error: "which must be unsent, staged or all" });
+  if (which && !["unsent", "staged", "older", "all"].includes(which)) return res.status(400).json({ error: "which must be unsent, staged, older or all" });
   try {
     const st = await loadState(res, type, id);
     if (!st) return;
     const dropWip = which === "unsent" || which === "all" || (!which && !!st.wip);
-    const dropStaged = which === "staged" || which === "all" || (!which && !st.wip);
-    if (dropStaged && st.draft) await mutate([{ delete: { id: draftId(id) } }]);
+    const dropStaged = which === "staged" || which === "all" || (!which && !st.wip && !!st.draft);
+    const dropOlder = which === "older" || which === "all" || (!which && !st.wip && !st.draft && !!st.older);
+    if ((dropStaged && st.draft) || (dropOlder && st.older)) await mutate([{ delete: { id: draftId(id) } }]);
     if (dropWip) await CmsChange.updateOne({ docId: id }, { $set: { wip: null }, $unset: { wipAt: 1, wipBy: 1 } });
     if (dropStaged) await CmsChange.updateOne({ docId: id }, { $unset: { stagedAt: 1, stagedBy: 1 } });
     await CmsChange.deleteOne({ docId: id, wip: null, stagedAt: { $exists: false } });
-    await audit(req, "cms_discard_draft", type, id, dropWip && dropStaged ? "unsent and staged" : dropWip ? "unsent" : "staged");
+    await audit(req, "cms_discard_draft", type, id, [dropWip && "unsent", dropStaged && "staged", dropOlder && st.older && "older draft"].filter(Boolean).join(" and "));
     const left = (dropWip ? null : st.wip) || (dropStaged ? null : st.draft) || st.published;
     res.json({ ok: true, deleted: !left, row: left ? { ...(left === st.wip ? withAssetUrls(st.wip, PROJECT, DATASET) : left), _id: id,
       hasDraft: left === st.wip, staged: !dropStaged && !!st.draft, unpublished: !st.published } : null });
