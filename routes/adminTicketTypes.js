@@ -2,7 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import TicketType from "../models/TicketType.js";
-import { requireAdmin } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import { recordAudit } from "../services/auditLog.js";
 
 const router = express.Router();
@@ -26,6 +26,8 @@ const authMiddleware = (req, res, next) => {
 // sales CRM (routes/leads.js). Routes check the database, not the token's
 // "role" claim, so removing someone's staff access takes effect immediately.
 const adminMiddleware = (req, res, next) => requireAdmin(req, res, next);
+// Reading the list is any staff; creating, changing and removing ticket types
+// (prices, capacity, sales windows) is management only (Nov 2026).
 
 // Fields a create/update may set. eventKey is set at create and never changes.
 const EDITABLE = [
@@ -116,7 +118,7 @@ router.get("/", authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // ================= CREATE TICKET TYPE =================
-router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
+router.post("/", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
   try {
     const body = req.body || {};
     const err = ticketTypeError(body, { creating: true });
@@ -138,7 +140,7 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // ================= UPDATE TICKET TYPE =================
-router.patch("/:id", authMiddleware, adminMiddleware, async (req, res) => {
+router.patch("/:id", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(404).json({ error: "Ticket type not found" });
@@ -169,7 +171,7 @@ router.patch("/:id", authMiddleware, adminMiddleware, async (req, res) => {
 // Hard delete, like the promo codes (routes/promos.js). Deactivating
 // (PATCH active=false) is the softer option: the type disappears from
 // sale but its orders and passes keep their snapshots.
-router.delete("/:id", authMiddleware, adminMiddleware, async (req, res) => {
+router.delete("/:id", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(404).json({ error: "Ticket type not found" });

@@ -68,7 +68,15 @@ const eventConfigSchema = new mongoose.Schema(
       lifecycleGraceDays: { type: Number, default: 7 },
       // Pricing stays "to be announced" until staff announce it: while this
       // is false, no prices for the event are shown anywhere.
-      pricingAnnounced: { type: Boolean, default: false }
+      pricingAnnounced: { type: Boolean, default: false },
+      // The event's automatic quantity discount (Nov 2026; management only,
+      // Admin › Events): an order of at least minQuantity tickets gets
+      // percent off, no code needed (services/pricingEngine.js priceBasket).
+      quantityDiscount: {
+        enabled: { type: Boolean, default: false },
+        minQuantity: { type: Number, min: 2, max: 100, default: 5 },
+        percent: { type: Number, min: 0, max: 100, default: 0 }
+      }
     }
   },
   {

@@ -28,6 +28,7 @@ import { clearExhibitorCache } from "./services/exhibitorCache.js";
 import UserModel from "./models/User.js";
 import { AdminAudit, AppContent } from "./models/Admin.js";
 import cors from "cors";
+import { corsOrigin } from "./services/corsOrigins.js";
 import authRoutes from "./routes/auth.js";
 import paymentRoutes from "./routes/payments.js";
 import webhookRoutes from "./routes/webhook.js";
@@ -103,23 +104,9 @@ app.set("trust proxy", 1);
 /* ==========================================
    CORS CONFIG (DEV + PROD)
 ========================================== */
-const allowedOrigins = [
-   "https://www.thetechfestival.com",
-  "https://thetechfestival.com",
-  "http://localhost:5173",
-  "https://techfest-canada-frontend.vercel.app",
-  "https://techfest-canada-backend.onrender.com",
-  "https://techfest-api.onrender.com"
-];
-
+// Allowed origins and why: services/corsOrigins.js (Nov 2026).
 app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error("CORS not allowed"), false);
-  },
+  origin: corsOrigin,
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 }));
