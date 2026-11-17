@@ -167,7 +167,7 @@ test("the panel can't skip the workflow: live creation is management only, publi
 test("the Changes list says what's unsent and which fields changed", { skip }, async () => {
   const c = await call("sam", "GET", "/changes");
   assert.equal(c.status, 200);
-  assert.deepEqual(c.body.counts, { unsent: 2, staged: 0 });
+  assert.deepEqual(c.body.counts, { unsent: 2, staged: 0, older: 0 });
   assert.equal(c.body.canPublish, true);   // any staff publishes from staging
   const ada = c.body.items.find((i) => i.id === "speaker-ada");
   assert.deepEqual([ada.typeLabel, ada.title, ada.unsent, ada.staged, ada.isNew, ada.fields, ada.wipBy], ["Speaker", "Ada Example", true, false, false, ["bio"], "Sam Staff"]);
@@ -189,7 +189,7 @@ test("send to staging: Sanity drafts with weak references; the live documents do
   assert.equal((await call("sam", "POST", "/changes/stage")).status, 409);
 
   const c = (await call("sam", "GET", "/changes")).body;
-  assert.deepEqual(c.counts, { unsent: 0, staged: 2 });
+  assert.deepEqual(c.counts, { unsent: 0, staged: 2, older: 0 });
   assert.deepEqual(c.items.find((i) => i.id === "speaker-ada").stagedFields, ["bio"]);
   assert.equal(c.items.find((i) => i.id === "speaker-ada").stagedBy, "Sam Staff");
 });
@@ -220,7 +220,7 @@ test("throw away unsent work: back to the live version", { skip }, async () => {
   assert.equal(d.status, 200);
   assert.deepEqual([d.body.deleted, d.body.row.title, d.body.row.hasDraft], [false, "CTO", false]);
   assert.equal(await CmsChange.countDocuments({ docId: "speaker-ada" }), 0);
-  assert.deepEqual((await call("sam", "GET", "/changes")).body.counts, { unsent: 0, staged: 0 });
+  assert.deepEqual((await call("sam", "GET", "/changes")).body.counts, { unsent: 0, staged: 0, older: 0 });
 });
 
 test("events: always saved first, one per city/year/type, and publishing makes the event record", { skip }, async () => {
@@ -245,4 +245,30 @@ test("a never-published item thrown away from staging is gone", { skip }, async 
   assert.deepEqual([d.status, d.body.deleted], [200, true]);
   assert.equal(docs.has(`drafts.${s.body._id}`), false);
   assert.equal((await call("sam", "GET", `/speaker?drafts=1`)).body.some((r) => r._id === s.body._id), false);
+});
+
+test("older drafts (left in Sanity Studio): listed apart, never staged or published, only thrown away", { skip }, async () => {
+  docs.set("drafts.speaker-old", { _id: "drafts.speaker-old", _type: "speaker", name: "Old Draft", title: "X", company: "Y", order: 9 });
+  docs.set("drafts.speaker-ada", { _id: "drafts.speaker-ada", _type: "speaker", name: "Ada Example", title: "CTO", company: "Example Co", order: 1, bio: "Studio edit" });
+  const c = (await call("sam", "GET", "/changes")).body;
+  assert.equal(c.counts.staged, 0);
+  assert.equal(c.counts.older, 2);
+  assert.deepEqual(c.older.map((o) => [o.id, o.isNew]).sort(), [["speaker-ada", false], ["speaker-old", true]]);
+  // Publish-all ignores them; so does publishing one.
+  assert.equal((await call("sam", "POST", "/changes/publish")).status, 409);
+  assert.equal((await call("sam", "POST", "/speaker/speaker-old/publish")).status, 409);
+  assert.equal(docs.has("speaker-old"), false);
+  // Editors show the live version, and edits start from it, not from the older draft.
+  const list = (await call("sam", "GET", "/speaker?drafts=1")).body;
+  assert.equal(list.some((r) => r._id === "speaker-old"), false);
+  assert.equal(list.find((r) => r._id === "speaker-ada").staged, false);
+  const e = await call("sam", "PATCH", "/speaker/speaker-ada?draft=1", { title: "CEO" });
+  assert.equal(e.body.bio, "New bio");
+  await call("sam", "DELETE", "/speaker/speaker-ada/draft?which=unsent");
+  // Thrown away: the older draft is gone, the live document stays.
+  const d = await call("sam", "DELETE", "/speaker/speaker-old/draft?which=older");
+  assert.deepEqual([d.status, d.body.deleted], [200, true]);
+  assert.equal(docs.has("drafts.speaker-old"), false);
+  assert.equal((await call("sam", "DELETE", "/speaker/speaker-ada/draft?which=older")).body.deleted, false);
+  assert.equal(docs.get("speaker-ada").bio, "New bio");
 });
