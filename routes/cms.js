@@ -234,7 +234,7 @@ router.post("/preview", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
-const LIST_FIELDS = `..., "imageUrl": image.asset->url, "logoUrl": logo.asset->url, "heroImageUrl": heroImage.asset->url,
+const LIST_FIELDS = `..., "imageUrl": image.asset->url, "logoUrl": logo.asset->url, "heroImageUrl": heroImage.asset->url, "citySkylineUrl": citySkyline.asset->url,
       "imageDims": image.asset->metadata.dimensions, "logoDims": logo.asset->metadata.dimensions`;
 
 /* ?drafts=1 (the event editor): each row is the draft's content where there is one, with hasDraft. */
@@ -268,6 +268,15 @@ router.post("/:type", async (req, res) => {
       const taken = await query(`count(*[_id in [$id, $d] || eventKey.current == $key])`, { id, d: draftId(id), key });
       if (taken?.result) return res.status(409).json({ error: "There is already an event for that city, year and type." });
       const out = await mutate([{ create: { _id: draftId(id), _type: "event", eventKey: { _type: "slug", current: key }, ...set } }]);
+      await audit(req, "cms_create", type, id, `${auditCreateDetail(set)} (draft)`);
+      return res.status(201).json({ ...(out.results?.[0]?.document || {}), _id: id, hasDraft: true, unpublished: true });
+    }
+    if (type === "homePage") {
+      // One home page: created once, as a draft, under a fixed id.
+      const id = "homePage";
+      const taken = await query(`count(*[_id in [$id, $d]])`, { id, d: draftId(id) });
+      if (taken?.result) return res.status(409).json({ error: "The home page already exists. Edit it instead." });
+      const out = await mutate([{ create: { _id: draftId(id), _type: "homePage", ...set } }]);
       await audit(req, "cms_create", type, id, `${auditCreateDetail(set)} (draft)`);
       return res.status(201).json({ ...(out.results?.[0]?.document || {}), _id: id, hasDraft: true, unpublished: true });
     }

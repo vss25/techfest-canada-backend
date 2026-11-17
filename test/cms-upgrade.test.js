@@ -6,7 +6,7 @@ import { sanitizeProfilePatch } from "../routes/profile.js";
 import { upgradeQuote } from "../routes/payments.js";
 
 test("CMS types mirror the website schema", () => {
-  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings", "aboutContent", "session", "event"]);
+  assert.deepEqual(CMS_TYPES, ["speaker", "partner", "sponsor", "sponsorMarquee", "homeSponsor", "siteSettings", "aboutContent", "session", "event", "homePage"]);
 });
 
 test("speaker create needs the required fields", () => {

@@ -14,6 +14,7 @@ const person = { kind: "person" };
 const scale = { kind: "number", min: 30, max: 250 };   // logo size, % of the default
 const stats = { kind: "stats" };                        // About page numbers: [{ value, suffix?, label, iconName? }]
 const date = { kind: "date" };                          // "YYYY-MM-DD"
+const images = { kind: "images" };                      // photo gallery: [image] (asset ids), at most 24
 const refs = { kind: "refs" };                          // event ids → [{ _type: "reference", _ref }]
 const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
@@ -104,7 +105,8 @@ export const CMS_FIELDS = {
     venueName: str(160),
     venueAddress: str(300),
     description: str(3000),
-    heroImage: img,
+    heroImage: img,                           // the previous design's top photo (still read by the old pages)
+    citySkyline: img,                         // "City photo" on the approved design (redesign step 2)
     heroVideoUrl: url,
     photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
     theme: str(120),                          // "Energy & Critical Infrastructure"
@@ -116,6 +118,32 @@ export const CMS_FIELDS = {
     comingNext: steps,
     notifyHeading: str(120),
     showReport: { ...bool, default: true },   // the Toronto 2026 post-show report card
+    gallery: images,                          // photo strip on the event page (redesign step 2)
+  },
+  // The home page (redesign step 2): one document, id "homePage". Edited as a draft, previewed, then published.
+  homePage: {
+    heroEyebrow: str(120),
+    heroHeadline: str(160),
+    heroText: str(400),
+    heroImage: img,
+    heroVideoUrl: url,
+    primaryCtaLabel: str(40),
+    primaryCtaUrl: str(300),
+    secondaryCtaLabel: str(40),
+    secondaryCtaUrl: str(300),
+    eventsHeading: str(120),
+    eventsText: str(300),
+    highlightsHeading: str(120),
+    highlightsText: str(600),
+    stats,                                    // [{ value, suffix?, label }], at most 8
+    highlightPhotos: images,
+    recapVideoUrl: url,
+    reportTitle: str(120),
+    reportText: str(300),
+    reportUrl: str(300),
+    partnersHeading: str(120),
+    partnerCtaHeading: str(120),
+    partnerCtaText: str(300),
   },
 };
 
@@ -275,6 +303,19 @@ export function toSanityPatch(type, body, { creating }) {
         set[key] = rows; break;
       }
       case "boolean": set[key] = v === true || v === "true"; break;
+      case "images": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        if (v.length > 24) return { set, unset, error: `${key}: at most 24 photos` };
+        const out = [];
+        for (const [i, item] of v.entries()) {
+          const id = typeof item === "object" ? String(item?.asset?._ref || item?.asset || "") : String(item || "");
+          if (!/^image-[A-Za-z0-9]+-\d+x\d+-[a-z0-9]+$/.test(id)) return { set, unset, error: `${key}: upload each photo first` };
+          const alt = typeof item === "object" ? String(item.alt || "").trim().slice(0, 200) : "";
+          out.push({ _key: `g${i}${id.slice(6, 14)}`, _type: "image", asset: { _type: "reference", _ref: id }, ...(alt ? { alt } : {}) });
+        }
+        if (!out.length) { unset.push(key); break; }
+        set[key] = out; break;
+      }
       case "date": {
         const d = String(v).trim();
         const real = /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(new Date(`${d}T12:00:00Z`).getTime())

@@ -81,3 +81,26 @@ test("sessions and speakers can be tied to events", () => {
   assert.deepEqual(cleared.unset, ["events"]);
   assert.match(toSanityPatch("session", { events: ["drafts.x"] }, { creating: false }).error, /unknown event/);
 });
+
+test("photo galleries take uploaded images only, at most 24", () => {
+  const id = "image-abc123def456-1200x800-jpg";
+  const { set, error } = toSanityPatch("event", { gallery: [id, { asset: id, alt: "Expo floor" }] }, { creating: false });
+  assert.equal(error, null);
+  assert.equal(set.gallery.length, 2);
+  assert.equal(set.gallery[1].alt, "Expo floor");
+  assert.equal(set.gallery[0].asset._ref, id);
+  assert.match(toSanityPatch("event", { gallery: ["not-an-image"] }, { creating: false }).error, /upload each photo/);
+  assert.match(toSanityPatch("homePage", { highlightPhotos: new Array(25).fill(id) }, { creating: false }).error, /at most 24/);
+  assert.deepEqual(toSanityPatch("homePage", { highlightPhotos: [] }, { creating: false }).unset, ["highlightPhotos"]);
+});
+
+test("the home page has its hero, highlights and partner fields", () => {
+  const { set, error } = toSanityPatch("homePage", {
+    heroHeadline: "Canada's technology decision-makers, in one room",
+    primaryCtaLabel: "Get tickets", primaryCtaUrl: "/vancouver/2027/briefing",
+    stats: [{ value: 1000, suffix: "+", label: "attendees" }],
+  }, { creating: true });
+  assert.equal(error, null);
+  assert.equal(set.primaryCtaUrl, "/vancouver/2027/briefing");
+  assert.equal(set.stats.length, 1);
+});
