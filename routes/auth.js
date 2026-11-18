@@ -17,7 +17,7 @@ import { spotsOf } from "../services/availability.js";
 import { avatarFor } from "../services/socialHelpers.js";
 import { tokenClaims, VIA_GOOGLE, VIA_LINKEDIN } from "../services/signInMethod.js";
 import { autoLinkPasses } from "../services/passAutoLink.js";
-import { RESET_MS, RESET_SENT, newResetToken, hashResetToken, isResetToken, isStaffAccount, resetLinkFor, passwordProblem } from "../services/passwordReset.js";
+import { RESET_MS, RESET_SENT, newResetToken, hashResetToken, isResetToken, isStaffAccount, mayResetFrom, resetLinkFor, passwordProblem } from "../services/passwordReset.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -461,15 +461,18 @@ router.post("/forgot-password", async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user || user.banned) return res.json({ message: RESET_SENT });
+    // From the admin sign-in, only accounts added in the panel (staff, management, volunteers) get a
+    // link (Nov 18 2026: "only approved people"). Anyone else gets the same answer and no email.
+    const admin = req.body?.admin === true;
+    if (!mayResetFrom(user, { admin })) return res.json({ message: RESET_SENT });
 
     const token = newResetToken();
     user.resetPasswordToken = hashResetToken(token);
     user.resetPasswordExpires = new Date(Date.now() + RESET_MS);
     await user.save();
 
-    const admin = req.body?.admin === true;
     const link = resetLinkFor(user, token, { base: process.env.FRONTEND_URL, admin });
-    await sendResetPasswordEmail(user.email, link, { staff: admin && isStaffAccount(user) });
+    await sendResetPasswordEmail(user.email, link, { staff: admin });
 
     res.json({ message: RESET_SENT });
   } catch (err) {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hashResetToken, isResetToken, newResetToken, passwordProblem, resetLinkFor } from "../services/passwordReset.js";
+import { mayResetFrom, hashResetToken, isResetToken, newResetToken, passwordProblem, resetLinkFor } from "../services/passwordReset.js";
 
 test("reset tokens: 64 hex characters, stored only as a hash", () => {
   const t = newResetToken();
@@ -24,4 +24,12 @@ test("new passwords need 8 characters", () => {
   assert.match(passwordProblem("short"), /8 characters/);
   assert.match(passwordProblem(undefined), /8 characters/);
   assert.equal(passwordProblem("long enough"), "");
+});
+
+test("from the admin sign-in, only accounts added in the panel get a link", () => {
+  for (const role of ["admin", "volunteer"]) assert.equal(mayResetFrom({ role }, { admin: true }), true);
+  for (const role of ["user", undefined]) assert.equal(mayResetFrom({ role }, { admin: true }), false);
+  assert.equal(mayResetFrom({ role: "admin", banned: true }, { admin: true }), false);
+  assert.equal(mayResetFrom(null, { admin: true }), false);
+  assert.equal(mayResetFrom({ role: "user" }), true); // the website's own form
 });
