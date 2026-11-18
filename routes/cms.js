@@ -8,6 +8,7 @@ import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc, auditCreateDetail, 
 import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
 import CmsChange from "../models/CmsChange.js";
 import { applyPatch, changeTitle, changedFields, cleanDoc, newDocId, overlayChanges, pickIds, publishOrder, strongRefs, weakRefs, withAssetUrls, TYPE_LABELS } from "../services/cmsWorkflow.js";
+import { publishingState, refuseWhilePaused, setPublishingPaused } from "../services/cmsPublishing.js";
 import { SITE_FILE_MAX_BYTES, SITE_FILE_TOO_BIG, SITE_FILE_TYPES, checkSiteFile, siteFileAuditDetail } from "../services/siteFiles.js";
 
 /* =========================================================
@@ -146,6 +147,7 @@ export async function uploadSiteFile(req, res) {
    sessions that already exist in Sanity (same id) are left as they are. */
 router.post("/session/import", async (req, res) => {
   if (needToken(res)) return;
+  if (await refuseWhilePaused(res)) return;
   const list = Array.isArray(req.body?.sessions) ? req.body.sessions.slice(0, 300) : [];
   if (!list.length) return res.status(400).json({ error: "No sessions sent" });
   const docs = [], errors = [];
@@ -296,6 +298,21 @@ async function publishDrafts(req, drafts) {
   return docs;
 }
 
+/* The publishing switch (services/cmsPublishing.js): GET for any staff, PUT management only. */
+router.get("/publishing", async (req, res) => {
+  try { res.json(await publishingState()); } catch (err) { fail(res, err); }
+});
+router.put("/publishing", requireManagement, async (req, res) => {
+  if (typeof req.body?.paused !== "boolean") return res.status(400).json({ error: "paused must be true or false" });
+  try {
+    const by = req.user?.name || req.user?.email || "";
+    const state = await setPublishingPaused(req.body.paused, by);
+    await audit(req, req.body.paused ? "cms_publishing_paused" : "cms_publishing_on", "settings", "publishing",
+      req.body.paused ? "publishing to the live website paused" : "publishing to the live website turned on");
+    res.json(state);
+  } catch (err) { fail(res, err); }
+});
+
 /* Everything on its way to the website: Admin › Website content › Changes.
    → { items: [{ id, type, typeLabel, title, unsent, staged, isNew, fields, stagedFields, wipAt, wipBy, stagedAt, stagedBy }],
        older: [{ id, type, typeLabel, title, isNew, fields, updatedAt }] (Sanity drafts not sent from the admin),
@@ -329,11 +346,13 @@ router.get("/changes", async (req, res) => {
         stagedAt: d ? r?.stagedAt || d._updatedAt || null : null, stagedBy: d ? r?.stagedBy?.name || "" : "",
       };
     }).filter(Boolean).sort((a, b) => String(b.wipAt || b.stagedAt || "").localeCompare(String(a.wipAt || a.stagedAt || "")));
+    const { paused } = await publishingState();
     res.json({
       items,
       older: older.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
       counts: { unsent: items.filter((i) => i.unsent).length, staged: items.filter((i) => i.staged).length, older: older.length },
-      canPublish: true,
+      canPublish: !paused,
+      publishingPaused: paused,
     });
   } catch (err) { fail(res, err); }
 });
@@ -355,6 +374,7 @@ router.post("/changes/stage", async (req, res) => {
 /* Publish what's on staging to the live site (any staff, since Nov 17 2026: "Allow staff to publish to prod from staging"). Body { ids? }: everything on staging when missing. */
 router.post("/changes/publish", async (req, res) => {
   if (needToken(res)) return;
+  if (await refuseWhilePaused(res)) return;
   try {
     const out = await query(`*[_id in path("drafts.**") && _type in $types]`, { types: CMS_TYPES });
     const stagedIds = new Set((await CmsChange.find({ stagedAt: { $exists: true } }, { docId: 1 }).lean()).map((r) => r.docId));
@@ -399,6 +419,7 @@ router.post("/:type", async (req, res, next) => {
   const { set, error } = toSanityPatch(type, req.body || {}, { creating: true });
   if (error) return res.status(400).json({ error });
   try {
+    if (!(req.query.draft === "1" || type === "event" || type === "homePage") && await refuseWhilePaused(res)) return;
     if (req.query.draft === "1" || type === "event" || type === "homePage") {
       let id, extra = {};
       if (type === "event") {
@@ -448,6 +469,7 @@ router.patch("/:type/:id", async (req, res) => {
       await audit(req, "cms_draft", type, id, auditEditDetail(set, unset));
       return res.json({ ...withAssetUrls(doc, PROJECT, DATASET), hasDraft: true, staged: !!st.draft, unpublished: !st.published });
     }
+    if (await refuseWhilePaused(res)) return;
     if (!(await sameType(res, type, id))) return;
     const patch = { id };
     if (Object.keys(set).length) patch.set = set;
@@ -464,7 +486,9 @@ router.delete("/:type/:id", (req, res, next) => (req.params.type === "event" ? r
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
   try {
-    if (!(await loadState(res, type, id))) return;
+    const st = await loadState(res, type, id);
+    if (!st) return;
+    if (st.published && await refuseWhilePaused(res)) return;
     await mutate([{ delete: { id } }, { delete: { id: draftId(id) } }]);
     await CmsChange.deleteOne({ docId: id });
     await audit(req, "cms_delete", type, id);
@@ -492,6 +516,7 @@ router.post("/:type/:id/publish", async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
+  if (await refuseWhilePaused(res)) return;
   try {
     const st = await loadState(res, type, id);
     if (!st) return;

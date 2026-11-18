@@ -103,6 +103,8 @@ before(async () => {
   const User = (await import("../models/User.js")).default;
   CmsChange = (await import("../models/CmsChange.js")).default;
   EventConfig = (await import("../models/EventConfig.js")).default;
+  // Publishing is paused by default (services/cmsPublishing.js); these tests are about the workflow with it on.
+  await (await import("../services/cmsPublishing.js")).setPublishingPaused(false, "test");
   U.mia = await User.create({ name: "Mia Manager", email: "mia.manager@example.com", password: "x".repeat(20), role: "admin", staffRole: "management" });
   U.sam = await User.create({ name: "Sam Staff", email: "sam.staff@example.com", password: "x".repeat(20), role: "admin", staffRole: "staff" });
   const { default: express } = await import("express");
@@ -271,4 +273,46 @@ test("older drafts (left in Sanity Studio): listed apart, never staged or publis
   assert.equal(docs.has("drafts.speaker-old"), false);
   assert.equal((await call("sam", "DELETE", "/speaker/speaker-ada/draft?which=older")).body.deleted, false);
   assert.equal(docs.get("speaker-ada").bio, "New bio");
+});
+
+test("publishing paused (the default until launch): nothing reaches the live site, staging still works", { skip }, async () => {
+  // Staff can't flip the switch; management can.
+  assert.equal((await call("sam", "PUT", "/publishing", { paused: true })).status, 403);
+  assert.equal((await call("mia", "PUT", "/publishing", { paused: "yes" })).status, 400);
+  const on = await call("mia", "PUT", "/publishing", { paused: true });
+  assert.deepEqual([on.status, on.body.paused, on.body.updatedBy], [200, true, "Mia Manager"]);
+  assert.equal((await call("sam", "GET", "/publishing")).body.paused, true);
+
+  const liveBefore = JSON.stringify([...docs.entries()].filter(([k]) => !k.startsWith("drafts.")));
+  // Save and send to staging still work.
+  const made = await call("sam", "POST", "/speaker?draft=1", { name: "Cy Example", title: "VP", company: "Cy Co", order: 5, image: IMG });
+  assert.equal(made.status, 201);
+  const cy = made.body._id;
+  assert.equal((await call("sam", "POST", "/changes/stage", { ids: [cy] })).status, 200);
+  const list = (await call("sam", "GET", "/changes")).body;
+  assert.deepEqual([list.publishingPaused, list.canPublish], [true, false]);
+
+  // Everything that would change the live site is refused with one explanation.
+  const refused = [
+    await call("sam", "POST", "/changes/publish"),
+    await call("mia", "POST", "/changes/publish", { ids: [cy] }),
+    await call("sam", "POST", `/speaker/${cy}/publish`),
+    await call("mia", "POST", "/speaker", { name: "Live X", title: "Y", company: "Z", order: 6, image: IMG }),
+    await call("mia", "PATCH", "/speaker/speaker-ada", { bio: "Straight to live" }),
+    await call("sam", "DELETE", "/speaker/speaker-ada"),
+    await call("sam", "POST", "/session/import", { sessions: [{ id: "d1-x", title: "T", day: 1, time: "09:00", endTime: "09:30" }] }),
+  ];
+  for (const r of refused) {
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.publishingPaused, true);
+    assert.match(r.body.error, /paused until the new website launches/);
+  }
+  // Deleting something that was never live is fine (it only leaves staging).
+  assert.equal((await call("sam", "DELETE", `/speaker/${cy}`)).status, 200);
+  assert.equal(JSON.stringify([...docs.entries()].filter(([k]) => !k.startsWith("drafts."))), liveBefore, "the live documents didn't change");
+
+  // Turned on again: publishing works.
+  const off = await call("mia", "PUT", "/publishing", { paused: false });
+  assert.equal(off.body.paused, false);
+  assert.equal((await call("sam", "GET", "/changes")).body.canPublish, true);
 });
