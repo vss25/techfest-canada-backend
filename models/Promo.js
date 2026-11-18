@@ -60,6 +60,17 @@ const promoSchema = new mongoose.Schema({
   // applies at this many tickets or more.
   minQuantity: { type: Number, min: 1, default: null },
 
+  // Staff-made codes past the safeguard (services/promoApproval.js) wait for a manager, switched off.
+  createdBy: { type: String, default: "" },
+  approval: {
+    needed: { type: Boolean, default: false },
+    reasons: { type: [String], default: [] },
+    requestedBy: { type: String, default: "" },
+    requestedAt: { type: Date, default: null },
+    by: { type: String, default: "" },
+    at: { type: Date, default: null },
+  },
+
   createdAt: { type: Date, default: Date.now },
 });
 

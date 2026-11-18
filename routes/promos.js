@@ -1,11 +1,21 @@
 import express from "express";
 import Promo from "../models/Promo.js";
-import { requireManagementAdmin as requireAdmin } from "../middleware/adminAuth.js";   // promo codes = pricing → management only
+import { requireAdmin, isManagement } from "../middleware/adminAuth.js";   // staff add codes; past the safeguard they wait for a manager (services/promoApproval.js)
+import { AdminAudit } from "../models/Admin.js";
+import { managerReasons, forStaff } from "../services/promoApproval.js";
 import Stripe from "stripe";
 import { stripeRows, promoUsage } from "../services/stripeSales.js";
 import { LIMIT_REACHED, EXPIRED, isFull, parseMaxUses, parseExpiresAt, promoExpired, promoUsageNow } from "../services/promoLimits.js";
 
 const router = express.Router();
+
+const who = (req) => String(req.user?.name || req.user?.email || "Staff").slice(0, 120);
+const audit = (req, action, promo, detail) =>
+  AdminAudit.create({ adminId: req.user._id, adminName: req.user.name, action, targetType: "promo",
+                      targetId: String(promo?._id || ""), detail: `${promo?.code || ""}: ${detail}`.slice(0, 500) }).catch(() => {});
+const plain = (d) => (d?.toObject ? d.toObject() : d);
+const managementOnly = (req, res, next) =>
+  isManagement(req.user) ? next() : res.status(403).json({ error: "Management only", code: "management_only" });
 
 // Swappable in tests (test/promo-limits.test.js); null when Stripe isn't configured.
 export const promoDeps = {
@@ -89,7 +99,7 @@ router.post("/promos/validate", async (req, res) => {
 /* ============ ADMIN: list ============
    Full URL: GET /api/admin/promos
 ============================================================ */
-router.get("/admin/promos", requireAdmin, async (_req, res) => {
+router.get("/admin/promos", requireAdmin, async (req, res) => {
   try {
     const promos = await Promo.find().sort({ createdAt: -1 }).lean();
     // Paid uses come from Stripe (a checkout that was never paid isn't a use).
@@ -98,13 +108,16 @@ router.get("/admin/promos", requireAdmin, async (_req, res) => {
       if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY isn't set");
       usage = promoUsage(await stripeRows(new Stripe(process.env.STRIPE_SECRET_KEY)));
     } catch (e) { usageError = e.message; }
+    const mgmt = isManagement(req.user);
     res.json(promos.map((p) => {
       const u = usage?.[String(p.code).toUpperCase()];
       // "Used" in the admin = paidUses (paid Stripe sessions, cached up to 5 min).
       const paidUses = usage ? (u?.paidUses || 0) : null;
-      return { ...p, maxUses: p.maxUses ?? null, expiresAt: p.expiresAt ?? null, expired: promoExpired(p), full: paidUses != null && isFull(paidUses, p.maxUses),
+      const row = { ...p, maxUses: p.maxUses ?? null, expiresAt: p.expiresAt ?? null, expired: promoExpired(p), full: paidUses != null && isFull(paidUses, p.maxUses),
                paidUses, revenue: u?.revenue || 0,
-               discountGiven: u?.discountGiven || 0, lastUsedAt: u?.lastUsedAt || null, usageError };
+               discountGiven: u?.discountGiven || 0, lastUsedAt: u?.lastUsedAt || null, usageError,
+               waiting: !!p.approval?.needed, canApprove: mgmt && !!p.approval?.needed };
+      return mgmt ? row : forStaff(row);
     }));
   } catch (err) {
     res.status(500).json({ error: "Failed to load promos" });
@@ -130,8 +143,13 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
     const existing = await Promo.findOne({ code });
     if (existing) return res.status(409).json({ error: "Code already exists" });
 
-    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, expiresAt: ends.value, active: true });
-    res.json(promo);
+    // Staff: past the safeguard, the code is saved switched off until a manager approves it.
+    const reasons = isManagement(req.user) ? [] : managerReasons({ discount, maxUses: limit.value });
+    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, expiresAt: ends.value, active: !reasons.length,
+      createdBy: who(req), approval: reasons.length ? { needed: true, reasons, requestedBy: who(req), requestedAt: new Date() } : undefined });
+    audit(req, "promo_create", promo, `${discount}% off${limit.value ? `, ${limit.value} uses` : ", unlimited"}${reasons.length ? ` (waits for a manager: ${reasons.join(", ")})` : ""}`);
+    res.json({ ...plain(promo), waiting: reasons.length > 0,
+      notice: reasons.length ? `Saved. It's ${reasons.join(" and ")}, so a manager approves it before it works.` : "" });
   } catch (err) {
     console.error("Promo create error:", err);
     res.status(500).json({ error: "Create failed" });
@@ -159,19 +177,50 @@ router.put("/admin/promos/:id", requireAdmin, async (req, res) => {
       update.expiresAt = ends.value;
     }
 
+    const current = await Promo.findById(req.params.id).lean();
+    if (!current) return res.status(404).json({ error: "Not found" });
+    if (isManagement(req.user)) {
+      // A manager's change counts as approving what they leave in place.
+      if (current.approval?.needed && (update.active === true || "discount" in update || "maxUses" in update)) {
+        update.approval = { ...(current.approval || {}), needed: false, by: who(req), at: new Date() };
+      }
+    } else {
+      const next = { discount: update.discount ?? current.discount, maxUses: "maxUses" in update ? update.maxUses : current.maxUses };
+      const reasons = managerReasons(next);
+      const termsChanged = "discount" in update || "maxUses" in update;
+      if (reasons.length && (termsChanged || current.approval?.needed)) {
+        if (update.active === true) return res.status(403).json({ error: `A manager approves this code first (it's ${reasons.join(" and ")}).`, code: "needs_manager" });
+        if (termsChanged) Object.assign(update, { active: false, approval: { needed: true, reasons, requestedBy: who(req), requestedAt: new Date() } });
+      }
+    }
     const promo = await Promo.findByIdAndUpdate(req.params.id, update, { new: true });
-    if (!promo) return res.status(404).json({ error: "Not found" });
-    res.json(promo);
+    audit(req, "promo_edit", promo, Object.keys(update).filter((k) => k !== "approval").join(", ") + (promo.approval?.needed ? " (waits for a manager)" : ""));
+    res.json({ ...plain(promo), waiting: !!promo.approval?.needed });
   } catch (err) {
     res.status(500).json({ error: "Update failed" });
   }
 });
 
 /* ============ ADMIN: delete ============ */
-router.delete("/admin/promos/:id", requireAdmin, async (req, res) => {
+/* ============ ADMIN: approve a staff-made code (management) ============ */
+router.post("/admin/promos/:id/approve", requireAdmin, managementOnly, async (req, res) => {
+  try {
+    const promo = await Promo.findByIdAndUpdate(req.params.id,
+      { active: true, "approval.needed": false, "approval.by": who(req), "approval.at": new Date() }, { new: true });
+    if (!promo) return res.status(404).json({ error: "Not found" });
+    audit(req, "promo_approve", promo, "approved and switched on");
+    res.json({ ...plain(promo), waiting: false });
+  } catch (err) {
+    res.status(500).json({ error: "Approve failed" });
+  }
+});
+
+/* ============ ADMIN: delete (management) ============ */
+router.delete("/admin/promos/:id", requireAdmin, managementOnly, async (req, res) => {
   try {
     const promo = await Promo.findByIdAndDelete(req.params.id);
     if (!promo) return res.status(404).json({ error: "Not found" });
+    audit(req, "promo_delete", promo, "deleted");
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Delete failed" });
