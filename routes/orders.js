@@ -5,6 +5,7 @@ import Attendee from "../models/Attendee.js";
 import EventConfig from "../models/EventConfig.js";
 import Order from "../models/Order.js";
 import TicketType from "../models/TicketType.js";
+import { ticketTypeKey } from "../services/ticketTypeDefaults.js";
 import User from "../models/User.js";
 import { priceBasket } from "../services/pricingEngine.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -159,9 +160,11 @@ router.post("/multi-checkout", async (req, res) => {
     }
 
     const typeIds = [...new Set(items.map((i) => i.ticketTypeId))];
+    // A Briefing without its own ticket types sells the default Briefing set; the order and its
+    // passes keep the event's own eventKey, so capacity and sales count per event.
     const types = await TicketType.find({
       _id: { $in: typeIds },
-      eventKey,
+      eventKey: await ticketTypeKey(eventKey),
       active: true
     });
     if (types.length !== typeIds.length) {

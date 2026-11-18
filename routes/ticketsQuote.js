@@ -2,6 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import EventConfig from "../models/EventConfig.js";
 import TicketType from "../models/TicketType.js";
+import { ticketTypeKey } from "../services/ticketTypeDefaults.js";
 import { priceBasket, cleanEventDiscount } from "../services/pricingEngine.js";
 import { resolveOrderPromo } from "../services/orderPromo.js";
 
@@ -40,9 +41,10 @@ router.post("/quote", async (req, res) => {
       return res.json({ announced: false });
     }
 
+    // A Briefing without its own ticket types sells the default Briefing set (services/ticketTypeDefaults.js).
     const ticketType = await TicketType.findOne({
       _id: ticketTypeId,
-      eventKey,
+      eventKey: await ticketTypeKey(eventKey),
       active: true
     });
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });
@@ -110,13 +112,15 @@ router.get("/types", async (req, res) => {
       return res.json({ announced: false, types: [] });
     }
 
-    const types = await TicketType.find({ eventKey, active: true })
+    const typesKey = await ticketTypeKey(eventKey);
+    const types = await TicketType.find({ eventKey: typesKey, active: true })
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
 
     res.json({
       announced: true,
       eventKey,
+      defaults: typesKey !== eventKey,   // the default Briefing tickets
       quantityDiscount: cleanEventDiscount(event.settings?.quantityDiscount),
       types: types.map((t) => ({
         id: String(t._id),
