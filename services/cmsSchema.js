@@ -1,3 +1,4 @@
+import { parseVideoUrl } from "./videoLinks.js";
 /* Field rules for the Sanity types the admin panel edits — mirrors
    techfest-canada/schemaTypes in the website repo. Pure, unit-tested. */
 
@@ -18,6 +19,7 @@ const images = { kind: "images" };                      // photo gallery: [image
 const refs = { kind: "refs" };                          // event ids → [{ _type: "reference", _ref }]
 const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
+const video = { kind: "video" };                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
@@ -119,6 +121,23 @@ export const CMS_FIELDS = {
     notifyHeading: str(120),
     showReport: { ...bool, default: true },   // the Toronto 2026 post-show report card
     gallery: images,                          // photo strip on the event page (redesign step 2)
+  },
+  // A YouTube or Vimeo video shown on the website (Nov 18 2026). Only the link is stored; the
+  // provider streams it. Where it shows: the home page, the Media page, chosen events, chosen speakers.
+  video: {
+    title: { ...str(160), required: true },
+    url: { ...video, required: true },
+    provider: oneOf("youtube", "vimeo"),      // set from the link
+    videoId: str(40),                         // set from the link
+    thumbnailUrl: url,
+    description: str(500),
+    recordedOn: date,
+    showOnHome: bool,
+    showOnMedia: { ...bool, default: true },
+    events: refs,                             // event pages it shows on
+    speakers: refs,                           // speakers' talks
+    order: num,
+    active: { ...bool, default: true },
   },
   // The home page (redesign step 2): one document, id "homePage". Edited as a draft, previewed, then published.
   homePage: {
@@ -268,6 +287,14 @@ export function toSanityPatch(type, body, { creating }) {
     }
     switch (rule.kind) {
       case "string": set[key] = String(v).trim().slice(0, rule.max); break;
+      case "video": {
+        const parsed = parseVideoUrl(v);
+        if (!parsed) return { set, unset, error: "Paste a YouTube or Vimeo link" };
+        set[key] = parsed.url;
+        set.provider = parsed.provider;
+        set.videoId = parsed.videoId;
+        break;
+      }
       case "url": {
         let u = String(v).trim();
         if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
@@ -359,6 +386,12 @@ export function toSanityPatch(type, body, { creating }) {
       }
       default: break;
     }
+  }
+  // A video's provider and id always come from its link, whatever else was sent.
+  if (fields.url?.kind === "video" && set.url) {
+    const parsed = parseVideoUrl(set.url);
+    Object.assign(set, { provider: parsed.provider, videoId: parsed.videoId });
+    for (const k of ["provider", "videoId"]) { const i = unset.indexOf(k); if (i >= 0) unset.splice(i, 1); }
   }
   if (creating) {
     for (const [key, rule] of Object.entries(fields)) {
