@@ -104,7 +104,7 @@ export const requireTeam = requireCheckIn;
 
 /* Staff the owner said aren't management. They stay staff until management
    explicitly switches them to management in Staff accounts. */
-const DEFAULT_STAFF_EMAILS = ["nicole@thetechfestival.com", "nicole@thetechfestival..com"];
+const DEFAULT_STAFF_EMAILS = ["nicole@thetechfestival.com", "nicole@thetechfestival..com", "kian@thetechfestival.com"]; // Kian: Nov 18 2026
 
 /** Management (vs. regular staff): sees sales, revenue and pricing, manages staff. */
 export function isManagement(user) {
