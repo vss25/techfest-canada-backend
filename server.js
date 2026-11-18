@@ -74,6 +74,7 @@ import appAwardsRouter from "./routes/appAwards.js";   // Catalyst Awards number
 import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhibitor list (website /programme)
 import consoleRouter from "./routes/console.js";       // admin console API
 import { offeringsRouter, contractsRouter } from "./routes/contracts.js"; // sales contracts + offerings catalogue
+import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
 import cmsRouter, { siteFileBody, uploadSiteFile } from "./routes/cms.js"; // edit Sanity speakers/partners from the admin panel
 import { requireManagementAdmin } from "./middleware/adminAuth.js";
 import filesRouter from "./routes/files.js";           // post photos + profile photos
@@ -221,6 +222,7 @@ app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and mo
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
 app.use("/api/console/waitlist", waitlistAdminRouter); // 2027 waitlist: the list, counts, CSV (before the console router)
+app.use("/api/console/social", socialPostsRouter); // Marketing › Social posts, Claude writing, calendar (before the console router)
 app.use("/api/console/offerings", offeringsRouter); // Sales contracts: the offerings catalogue (super admin edits; before the console router)
 app.use("/api/console/contracts", contractsRouter); // Sales contracts: build, approve, send, sign, tasks, PDF (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
