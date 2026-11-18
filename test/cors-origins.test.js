@@ -39,3 +39,8 @@ test("a refused origin never throws (it used to become a 500)", () => {
   corsOrigin("https://example.org", (...a) => { args = a; });
   assert.deepEqual(args, [null, false]);
 });
+
+test("the staging website's own address is allowed (Nov 2026)", () => {
+  assert.ok(originAllowed("https://staging.thetechfestival.com", env));
+  assert.ok(!originAllowed("https://staging.thetechfestival.com.evil.com", env));
+});

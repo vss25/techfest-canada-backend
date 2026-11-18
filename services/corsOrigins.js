@@ -10,7 +10,8 @@
    Now, allowed:
      - the live site, its Vercel project address and our API hosts
      - this project's Vercel previews and branch addresses only
-       (techfest-canada-frontend-…-ttfc-projects.vercel.app)
+       (techfest-canada-frontend-…-ttfc-projects.vercel.app) and the
+       staging website's own address (staging.thetechfestival.com)
      - local development on the usual Vite ports
      - anything in CORS_EXTRA_ORIGINS (comma-separated exact
        origins, e.g. a staging domain or a Cloudflare Pages
@@ -23,6 +24,7 @@
 export const FIXED_ORIGINS = [
   "https://www.thetechfestival.com",
   "https://thetechfestival.com",
+  "https://staging.thetechfestival.com",   // the staging website, where staff check content before it goes live
   "https://techfest-canada-frontend.vercel.app",
   "https://techfest-canada-backend.onrender.com",
   "https://techfest-api.onrender.com"
