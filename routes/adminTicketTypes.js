@@ -4,6 +4,8 @@ import mongoose from "mongoose";
 import TicketType from "../models/TicketType.js";
 import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import { recordAudit } from "../services/auditLog.js";
+import Order from "../models/Order.js";
+import { DEFAULT_BRIEFING_KEY, copyOf, ticketTypeKey, usesBriefingDefaults } from "../services/ticketTypeDefaults.js";
 
 const router = express.Router();
 
@@ -113,6 +115,59 @@ router.get("/", authMiddleware, adminMiddleware, async (req, res) => {
     res.json({ ticketTypes });
   } catch (err) {
     console.error("GET admin ticket types error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ================= ONE EVENT'S TICKETS (defaults or its own) =================
+// → { eventKey, usesDefaults (a Briefing), source: "event" | "default", defaultKey, ticketTypes }
+router.get("/for-event", authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const eventKey = String(req.query.eventKey || "").trim();
+    if (!eventKey) return res.status(400).json({ error: "eventKey is required" });
+    const key = await ticketTypeKey(eventKey);
+    const ticketTypes = await TicketType.find({ eventKey: key }).sort({ sortOrder: 1, name: 1 });
+    res.json({
+      eventKey, usesDefaults: usesBriefingDefaults(eventKey), defaultKey: DEFAULT_BRIEFING_KEY,
+      source: key === eventKey ? "event" : "default", ticketTypes,
+    });
+  } catch (err) {
+    console.error("GET admin ticket types for event error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ================= CUSTOMISE: copy the default Briefing tickets onto this event =================
+router.post("/customise", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
+  try {
+    const eventKey = String(req.body?.eventKey || "").trim();
+    if (!usesBriefingDefaults(eventKey)) return res.status(400).json({ error: "Only a Briefing uses the default tickets." });
+    if (await TicketType.exists({ eventKey })) return res.status(409).json({ error: "This event already has its own tickets." });
+    const defaults = await TicketType.find({ eventKey: DEFAULT_BRIEFING_KEY }).lean();
+    const created = defaults.length ? await TicketType.insertMany(defaults.map((t) => copyOf(t, eventKey))) : [];
+    recordAudit(req, "create", "ticket-type", eventKey, `Customised tickets for ${eventKey} (${created.length} copied from the defaults)`);
+    res.status(201).json({ eventKey, source: "event", ticketTypes: created });
+  } catch (err) {
+    console.error("POST admin ticket types customise error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ================= BACK TO DEFAULTS: remove this event's own tickets =================
+// Refused once any order uses them (their orders and passes keep pointing at them).
+router.post("/use-defaults", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
+  try {
+    const eventKey = String(req.body?.eventKey || "").trim();
+    if (!usesBriefingDefaults(eventKey)) return res.status(400).json({ error: "Only a Briefing uses the default tickets." });
+    const own = await TicketType.find({ eventKey }, { _id: 1 }).lean();
+    if (own.length && await Order.exists({ "items.ticketTypeId": { $in: own.map((t) => t._id) } })) {
+      return res.status(409).json({ error: "People have already ordered these tickets, so they can't be removed. Edit them instead." });
+    }
+    const out = await TicketType.deleteMany({ eventKey });
+    recordAudit(req, "delete", "ticket-type", eventKey, `Back to the default tickets for ${eventKey} (${out.deletedCount} removed)`);
+    res.json({ eventKey, source: "default", removed: out.deletedCount });
+  } catch (err) {
+    console.error("POST admin ticket types use-defaults error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
