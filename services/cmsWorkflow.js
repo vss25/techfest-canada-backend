@@ -101,7 +101,7 @@ export function changeTitle(type, doc = {}) {
 export const TYPE_LABELS = {
   speaker: "Speaker", partner: "Partner", sponsor: "Alumni logo", sponsorMarquee: "Marquee logo", homeSponsor: "Home page logo",
   siteSettings: "Site settings", aboutContent: "About page", session: "Agenda session", event: "Event page", homePage: "Home page",
-  faq: "FAQ", exhibitor: "Exhibitor",
+  faq: "FAQ", exhibitor: "Exhibitor", video: "Video",
 };
 
 /**

@@ -1,3 +1,4 @@
+import { videoInfo } from "../services/videoLinks.js";
 import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { AdminAudit } from "../models/Admin.js";
@@ -390,12 +391,21 @@ router.post("/changes/publish", async (req, res) => {
 
 /* ?drafts=1 (the editors): each row is its newest content (unsent > staged > live), with
    hasDraft (unsent changes), staged and unpublished. Without it: the live documents only. */
+/* A YouTube / Vimeo link → { provider, videoId, url, title, thumbnailUrl } for the Videos editor
+   (Nov 18 2026). Asks the provider's public oEmbed for the title and picture; 400 when it isn't one. */
+router.get("/video-info", async (req, res) => {
+  const info = await videoInfo(String(req.query.url || "").slice(0, 500));
+  if (!info) return res.status(400).json({ error: "Paste a YouTube or Vimeo link" });
+  res.json(info);
+});
+
 router.get("/:type", async (req, res) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   try {
     const order = type === "session" ? "order(day asc, time asc)"
-      : type === "event" ? "order(year asc, startDate asc)" : "order(coalesce(order, 9999) asc, name asc)";
+      : type === "event" ? "order(year asc, startDate asc)"
+      : type === "video" ? "order(coalesce(order, 9999) asc, recordedOn desc, title asc)" : "order(coalesce(order, 9999) asc, name asc)";
     const out = await query(`*[_type == $type && !(_id in path("drafts.**"))] | ${order} { ${LIST_FIELDS} }`, { type });
     if (req.query.drafts !== "1") return res.json(out.result || []);
     const drafts = await query(`*[_type == $type && _id in path("drafts.**")] { ${LIST_FIELDS} }`, { type });
