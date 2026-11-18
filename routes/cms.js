@@ -5,7 +5,7 @@ import { AdminAudit } from "../models/Admin.js";
 import { requireManagement } from "../middleware/adminAuth.js";
 import { draftId, publishedId, publishedFromDraft, previewQueryError, eventKeyFor, eventConfigFields } from "../services/cmsDrafts.js";
 import EventConfig from "../models/EventConfig.js";
-import { cmsFieldsFor, CMS_TYPES, toSanityPatch, sessionDoc, auditCreateDetail, auditEditDetail } from "../services/cmsSchema.js";
+import { cmsFieldsFor, CMS_TYPES, missingRequired, toSanityPatch, sessionDoc, auditCreateDetail, auditEditDetail } from "../services/cmsSchema.js";
 import { planShift, readShift, shiftSummary } from "../services/agendaShift.js";
 import CmsChange from "../models/CmsChange.js";
 import { applyPatch, changeTitle, changedFields, cleanDoc, newDocId, overlayChanges, pickIds, publishOrder, strongRefs, weakRefs, withAssetUrls, TYPE_LABELS } from "../services/cmsWorkflow.js";
@@ -262,6 +262,10 @@ async function loadState(res, type, id) {
   return { published, draft: staged, older, change, wip };
 }
 
+/* Saved drafts may lack required fields (autosave keeps whatever was typed); they go to
+   staging only once complete. "Speaker “Ada”: add photo and job title first." */
+const incompleteNote = (r, missing) => `${TYPE_LABELS[r.type] || r.type} “${changeTitle(r.type, r.wip) || "Untitled"}”: add ${missing.join(", ").replace(/, ([^,]*)$/, " and $1")} first.`;
+
 /** Write work in progress for these CmsChange rows to Sanity as drafts, in one transaction. */
 async function stageRows(req, rows) {
   if (!rows.length) return [];
@@ -345,6 +349,7 @@ router.get("/changes", async (req, res) => {
         stagedFields: d ? changedFields(d, p) : [],
         wipAt: wip ? r.wipAt || null : null, wipBy: wip ? r.wipBy?.name || "" : "",
         stagedAt: d ? r?.stagedAt || d._updatedAt || null : null, stagedBy: d ? r?.stagedBy?.name || "" : "",
+        missing: wip ? missingRequired(type, wip) : [], // still to add before it can go to staging
       };
     }).filter(Boolean).sort((a, b) => String(b.wipAt || b.stagedAt || "").localeCompare(String(a.wipAt || a.stagedAt || "")));
     const { paused } = await publishingState();
@@ -367,8 +372,13 @@ router.post("/changes/stage", async (req, res) => {
     if (pick.error) return res.status(400).json({ error: pick.error });
     if (!pick.ids.length) return res.status(409).json({ error: "There are no saved changes to send to staging." });
     const want = new Set(pick.ids);
-    const staged = await stageRows(req, rows.filter((r) => want.has(r.docId)));
-    res.json({ ok: true, staged });
+    const chosen = rows.filter((r) => want.has(r.docId));
+    const skipped = chosen.map((r) => ({ id: r.docId, missing: missingRequired(r.type, r.wip), note: "" }))
+      .filter((x) => x.missing.length).map((x) => ({ ...x, note: incompleteNote(chosen.find((r) => r.docId === x.id), x.missing) }));
+    const skip = new Set(skipped.map((x) => x.id));
+    if (skipped.length === chosen.length) return res.status(409).json({ error: skipped[0].note, skipped });
+    const staged = await stageRows(req, chosen.filter((r) => !skip.has(r.docId)));
+    res.json({ ok: true, staged, skipped });
   } catch (err) { fail(res, err); }
 });
 
@@ -426,7 +436,7 @@ router.post("/:type", async (req, res, next) => {
   const { type } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
-  const { set, error } = toSanityPatch(type, req.body || {}, { creating: true });
+  const { set, error } = toSanityPatch(type, req.body || {}, { creating: true, draft: req.query.draft === "1" });
   if (error) return res.status(400).json({ error });
   try {
     if (!(req.query.draft === "1" || type === "event" || type === "homePage") && await refuseWhilePaused(res)) return;
@@ -465,7 +475,7 @@ router.patch("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   if (!CMS_TYPES.includes(type)) return res.status(404).json({ error: "Unknown content type" });
   if (needToken(res)) return;
-  const { set, unset, error } = toSanityPatch(type, req.body || {}, { creating: false });
+  const { set, unset, error } = toSanityPatch(type, req.body || {}, { creating: false, draft: req.query.draft === "1" });
   if (error) return res.status(400).json({ error });
   if (!Object.keys(set).length && !unset.length) return res.status(400).json({ error: "Nothing to change" });
   try {
@@ -515,6 +525,8 @@ router.post("/:type/:id/stage", async (req, res) => {
     const st = await loadState(res, type, id);
     if (!st) return;
     if (!st.wip) return res.status(409).json({ error: "There are no saved changes to send to staging." });
+    const missing = missingRequired(type, st.wip);
+    if (missing.length) return res.status(409).json({ error: incompleteNote({ type, wip: st.wip }, missing), missing });
     await stageRows(req, [{ ...st.change, type }]);
     res.json({ ...withAssetUrls(st.wip, PROJECT, DATASET), _id: id, hasDraft: false, staged: true, unpublished: !st.published });
   } catch (err) { fail(res, err); }

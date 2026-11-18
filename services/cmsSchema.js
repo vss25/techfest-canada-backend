@@ -272,8 +272,10 @@ export function cleanSteps(v) {
   return { rows };
 }
 
-/** Body → { set, unset, error }. Images arrive as asset ids (`image: "image-abc…-png"`). */
-export function toSanityPatch(type, body, { creating }) {
+/** Body → { set, unset, error }. Images arrive as asset ids (`image: "image-abc…-png"`).
+    `draft: true` (the panel's saves, autosave included, Nov 18 2026): required fields may be
+    empty or missing; they're checked when the item is sent to staging (missingRequired). */
+export function toSanityPatch(type, body, { creating, draft = false }) {
   const fields = CMS_FIELDS[type];
   if (!fields) return { set: {}, unset: [], error: "Unknown content type" };
   const set = {};
@@ -282,7 +284,7 @@ export function toSanityPatch(type, body, { creating }) {
     if (!(key in body) || body[key] === undefined) continue;
     const v = body[key];
     if (v === null || v === "") {
-      if (rule.required) return { set, unset, error: `${key} is required` };
+      if (rule.required && !draft) return { set, unset, error: `${key} is required` };
       unset.push(key); continue;
     }
     switch (rule.kind) {
@@ -395,7 +397,7 @@ export function toSanityPatch(type, body, { creating }) {
   }
   if (creating) {
     for (const [key, rule] of Object.entries(fields)) {
-      if (rule.required && set[key] === undefined) return { set, unset, error: `${key} is required` };
+      if (rule.required && !draft && set[key] === undefined) return { set, unset, error: `${key} is required` };
     }
     if ("active" in fields && set.active === undefined) set.active = true;
     for (const [key, rule] of Object.entries(fields)) {
@@ -403,4 +405,22 @@ export function toSanityPatch(type, body, { creating }) {
     }
   }
   return { set, unset, error: null };
+}
+
+/* The required fields a saved document still lacks, in words ("photo", "job title"), so
+   "Send to staging" can say what to add. Pure. */
+const REQUIRED_WORDS = { image: "photo", logo: "logo", title: "title", endTime: "end time", time: "start time", url: "link", order: "order number", day: "day", company: "company", name: "name", city: "city", type: "type", year: "year", category: "category" };
+const REQUIRED_WORDS_BY_TYPE = { speaker: { title: "job title", name: "full name" } };
+export function missingRequired(type, doc = {}) {
+  const fields = CMS_FIELDS[type];
+  if (!fields) return [];
+  const out = [];
+  for (const [key, rule] of Object.entries(fields)) {
+    if (!rule.required) continue;
+    const v = doc?.[key];
+    const empty = rule.kind === "image" ? !(v?.asset?._ref || (typeof v === "string" && v))
+      : v === undefined || v === null || (typeof v === "string" && !v.trim());
+    if (empty) out.push(REQUIRED_WORDS_BY_TYPE[type]?.[key] || REQUIRED_WORDS[key] || key);
+  }
+  return out;
 }

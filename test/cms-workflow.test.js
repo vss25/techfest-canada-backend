@@ -82,3 +82,16 @@ test("events and the home page publish first; titles and changed fields for the 
     ["bio", "image", "linkedin"]);
   assert.deepEqual(changedFields({ name: "A" }, null), ["name"]);
 });
+
+/* Nov 18 2026: autosave keeps incomplete drafts; required fields are checked at staging. */
+import { missingRequired, toSanityPatch as patchFor } from "../services/cmsSchema.js";
+test("drafts may leave required fields empty; staging names what's missing", () => {
+  assert.equal(patchFor("speaker", { name: "Ada" }, { creating: true }).error, "title is required");
+  const d = patchFor("speaker", { name: "Ada" }, { creating: true, draft: true });
+  assert.equal(d.error, null);
+  assert.equal(patchFor("speaker", { title: "" }, { creating: false }).error, "title is required");
+  assert.deepEqual(patchFor("speaker", { title: "" }, { creating: false, draft: true }).unset, ["title"]);
+  assert.deepEqual(missingRequired("speaker", { name: "Ada" }), ["job title", "company", "photo", "order number"]);
+  assert.deepEqual(missingRequired("speaker", { name: "Ada", title: "CTO", company: "X", order: 1, image: { asset: { _ref: "image-a-1x1-png" } } }), []);
+  assert.deepEqual(missingRequired("speaker", { name: "  " , title: "CTO", company: "X", order: 0, image: { asset: { _ref: "image-a-1x1-png" } } }), ["full name"]);
+});
