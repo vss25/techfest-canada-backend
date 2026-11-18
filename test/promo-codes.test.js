@@ -143,3 +143,13 @@ test("codesForTickets: one query per collection, account copy first, normalised 
   assert.equal((await codesForTickets([], { User, Attendee, Promo })).size, 0);
   assert.equal(calls.length, 3); // nothing to look up: no queries
 });
+
+import { managerReasons, forStaff } from "../services/promoApproval.js";
+
+test("staff codes past the safeguard wait for a manager", () => {
+  assert.deepEqual(managerReasons({ discount: 20, maxUses: 50 }), []);
+  assert.deepEqual(managerReasons({ discount: 60, maxUses: 50 }), ["more than 50% off"]);
+  assert.deepEqual(managerReasons({ discount: 100, maxUses: 5 }), ["free tickets"]);
+  assert.deepEqual(managerReasons({ discount: 10, maxUses: null }), ["no usage limit"]);
+  assert.deepEqual(Object.keys(forStaff({ code: "A", revenue: 5, discountGiven: 2, paidUses: 1 })), ["code", "paidUses"]);
+});

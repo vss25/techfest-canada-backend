@@ -109,6 +109,7 @@ Promo.findOne = async ({ code }) => promos.get(code) || null;
 Promo.create = async (doc) => { created = doc; return { _id: "p_new", ...doc }; };
 Promo.findByIdAndUpdate = async (id, update) => { updated = update; return { _id: id, code: "X", ...update }; };
 User.findById = async () => ({ _id: "u1", role: "admin", staffRole: "management", email: "boss@x.com" });
+Promo.findById = (id) => ({ lean: async () => ({ _id: id, code: "X", discount: 10, maxUses: null }) });
 process.env.JWT_SECRET = "test-secret";
 const auth = { Authorization: `Bearer ${jwt.sign({ id: "u1" }, "test-secret")}`, "Content-Type": "application/json" };
 
