@@ -114,6 +114,14 @@ export function isManagement(user) {
   return !DEFAULT_STAFF_EMAILS.includes(String(user.email || "").toLowerCase());
 }
 
+/** The super admin (Nov 18 2026: "I should be able to create as a super admin other offerings"): management,
+    and, when SUPER_ADMIN_EMAILS (comma-separated) is set, only those addresses. */
+export function isSuperAdmin(user) {
+  if (!isManagement(user)) return false;
+  const list = String(process.env.SUPER_ADMIN_EMAILS || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return !list.length || list.includes(String(user.email || "").toLowerCase());
+}
+
 /** Use after requireAdmin: blocks staff who aren't management from money and staff settings. */
 export function requireManagement(req, res, next) {
   if (!isManagement(req.user)) return res.status(403).json({ error: "Management only" });
