@@ -17,6 +17,7 @@ import { spotsOf } from "../services/availability.js";
 import { avatarFor } from "../services/socialHelpers.js";
 import { tokenClaims, VIA_GOOGLE, VIA_LINKEDIN } from "../services/signInMethod.js";
 import { autoLinkPasses } from "../services/passAutoLink.js";
+import { RESET_MS, RESET_SENT, newResetToken, hashResetToken, isResetToken, isStaffAccount, resetLinkFor, passwordProblem } from "../services/passwordReset.js";
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -444,79 +445,71 @@ router.put("/change-password", async (req, res) => {
 });
 
 /* ================= FORGOT PASSWORD ================= */
+// services/passwordReset.js has the rules. Same answer whether or not the email has an account.
+
+const resetPerIp = makeLimiter({ max: 20, windowMs: 15 * 60 * 1000 });
+const resetPerEmail = makeLimiter({ max: 3, windowMs: 15 * 60 * 1000 });
+const resetTries = makeLimiter({ max: 20, windowMs: 15 * 60 * 1000 });
 
 router.post("/forgot-password", async (req, res) => {
-
   try {
-
     const email = cleanEmail(req.body?.email);
-
-    const user = email ? await User.findOne({ email }) : null;
-
-    if (!user) {
-      return res.json({
-        message: "If that email exists, a reset link has been sent."
-      });
+    if (!resetPerIp.hit(`i:${req.ip}`)) {
+      return res.status(429).json({ error: "Too many requests. Try again in 15 minutes." });
     }
+    if (!email || !resetPerEmail.hit(`e:${email}`)) return res.json({ message: RESET_SENT });
 
-    const token = crypto.randomBytes(32).toString("hex");
+    const user = await User.findOne({ email });
+    if (!user || user.banned) return res.json({ message: RESET_SENT });
 
-    user.resetPasswordToken = token;
-    user.resetPasswordExpires = Date.now() + 3600000;
-
+    const token = newResetToken();
+    user.resetPasswordToken = hashResetToken(token);
+    user.resetPasswordExpires = new Date(Date.now() + RESET_MS);
     await user.save();
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
+    const admin = req.body?.admin === true;
+    const link = resetLinkFor(user, token, { base: process.env.FRONTEND_URL, admin });
+    await sendResetPasswordEmail(user.email, link, { staff: admin && isStaffAccount(user) });
 
-    await sendResetPasswordEmail(user.email, resetLink);
-
-    res.json({ message: "If that email exists, a reset link has been sent." });
-
+    res.json({ message: RESET_SENT });
   } catch (err) {
-
-    console.error("FORGOT PASSWORD ERROR:", err);
+    console.error("FORGOT PASSWORD ERROR:", err?.message || err);
     res.status(500).json({ error: "Server error" });
-
   }
-
 });
 
 
 /* ================= RESET PASSWORD ================= */
 
 router.post("/reset-password/:token", async (req, res) => {
-
   try {
-
     const { token } = req.params;
-    const { password } = req.body;
-
-    const user = await User.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: Date.now() }
-    });
-
-    if (!user) {
-      return res.status(400).json({ error: "Invalid or expired token" });
+    const { password } = req.body || {};
+    if (!resetTries.hit(`i:${req.ip}`)) {
+      return res.status(429).json({ error: "Too many tries. Try again in 15 minutes." });
     }
+    const problem = passwordProblem(password);
+    if (problem) return res.status(400).json({ error: problem });
+    if (!isResetToken(token)) return res.status(400).json({ error: "This reset link is invalid or has expired. Ask for a new one." });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Links sent before Nov 18 2026 stored the token itself; they expire within the hour.
+    const user = await User.findOne({
+      resetPasswordToken: { $in: [hashResetToken(token), token] },
+      resetPasswordExpires: { $gt: new Date() },
+    });
+    if (!user) return res.status(400).json({ error: "This reset link is invalid or has expired. Ask for a new one." });
 
-    user.password = hashedPassword;
+    user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
-
     await user.save();
+    loginPerEmail.reset(`e:${user.email}`);
 
-    res.json({ message: "Password reset successful" });
-
+    res.json({ message: "Password reset successful", staff: isStaffAccount(user) });
   } catch (err) {
-
-    console.error("RESET PASSWORD ERROR:", err);
+    console.error("RESET PASSWORD ERROR:", err?.message || err);
     res.status(500).json({ error: "Server error" });
-
   }
-
 });
 
 /* (The temporary PUT /set-role route was removed: it let any token that claimed

@@ -77,43 +77,36 @@ export async function sendWelcomeEmail(email, name) {
 ========================================================= */
 
 /** The password reset email's HTML; under the button, the compact "Get the TTFC app" block (services/appStoreBlock.js). */
-export function buildResetPasswordEmailHtml(resetLink) {
+export function buildResetPasswordEmailHtml(resetLink, { staff = false } = {}) {
+  const what = staff ? "your TTFC staff panel password" : "your password";
   return `
-      <h2>Password Reset Request</h2>
+      <h2>${staff ? "Reset your staff panel password" : "Password Reset Request"}</h2>
 
-      <p>Click below to reset your password.</p>
+      <p>Click below to reset ${what}. The link works for 1 hour and only once.</p>
 
       <a href="${resetLink}"
-      style="padding:12px 20px;background:#f97316;color:white;border-radius:6px;text-decoration:none;">
+      style="padding:12px 20px;background:${staff ? "#151035" : "#f97316"};color:white;border-radius:6px;text-decoration:none;">
       Reset Password
       </a>
+
+      <p style="color:#52525B;font-size:13px;">Didn't ask for this? Ignore this email: your password stays the same.</p>
       <div style="max-width:560px;margin:28px 0 0;">
 ${appStoreBlockHtml({ compact: true, theme: "light" })}
       </div>
       `;
 }
 
-export async function sendResetPasswordEmail(email, resetLink) {
-
+export async function sendResetPasswordEmail(email, resetLink, { staff = false } = {}) {
   try {
-
     await resend.emails.send({
-
       from: "TechFest Canada <enquire@thetechfestival.com>",
-
       to: email,
-
-      subject: "Reset your password",
-
-      html: buildResetPasswordEmailHtml(resetLink)
+      subject: staff ? "Reset your TTFC staff panel password" : "Reset your password",
+      html: buildResetPasswordEmailHtml(resetLink, { staff }),
     });
-
     console.log("Reset email sent");
-
   } catch (err) {
-
-    console.error("RESET EMAIL ERROR:", err);
-
+    console.error("RESET EMAIL ERROR:", err?.message || err);
   }
 }
 
