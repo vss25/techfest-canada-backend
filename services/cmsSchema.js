@@ -17,6 +17,7 @@ const stats = { kind: "stats" };                        // About page numbers: [
 const date = { kind: "date" };                          // "YYYY-MM-DD"
 const images = { kind: "images" };                      // photo gallery: [image] (asset ids), at most 24
 const refs = { kind: "refs" };                          // event ids → [{ _type: "reference", _ref }]
+const eventRows = { kind: "eventRows" };                // a partner's Partners page row for each event: [{ event, row }]
 const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
 const video = { kind: "video" };                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
@@ -34,6 +35,9 @@ export const LIVE_MODES = ["auto", "on", "off"];
 const liveMode = { ...oneOf(...LIVE_MODES), default: "auto" };
 
 export const SESSION_FORMATS = ["opening", "keynote", "fireside", "panel", "briefing", "provocation", "dialogue", "networking", "break", "awards", "closing", "Performance"];
+
+export const PARTNER_ROWS = ["featured", "ai", "quantum", "cyber", "robotics", "cleantech",
+  "health", "bfsi", "supply", "defence", "energy", "ecosystem"];
 
 export const CMS_FIELDS = {
   speaker: {
@@ -58,8 +62,11 @@ export const CMS_FIELDS = {
     logo: { ...img, required: true },
     url, order: num, active: bool, logoScale: scale,
     // Partners page row (website src/data/partnerMatrix.js): paid partners, 5 tech pillars, 5 applied sectors, ecosystem
-    matrixGroup: oneOf("featured", "ai", "quantum", "cyber", "robotics", "cleantech",
-      "health", "bfsi", "supply", "defence", "energy", "ecosystem"),
+    matrixGroup: oneOf(...PARTNER_ROWS),
+    // Nov 18 2026: a partner can sit in a different row for each event (Featured in Vancouver,
+    // AI in Toronto). An event without its own row uses matrixGroup.
+    events: refs,                             // which events it shows on (empty = every event)
+    eventRows,
     // Sponsors = partners in the "featured" row (paid partners). The apps show this on
     // their Sponsors cards; the website as a tooltip on the logo.
     description: str(SPONSOR_DESCRIPTION_MAX),
@@ -69,7 +76,9 @@ export const CMS_FIELDS = {
   sponsor: LOGO_TYPE,
   sponsorMarquee: LOGO_TYPE,
   homeSponsor: LOGO_TYPE,
-  siteSettings: { attendeesCarouselEnabled: bool, speakersEnabled: bool },
+  // partnersShowCurrentYear (Nov 18 2026): the Partners page opens on the most recently completed
+  // year's partners; on = it opens on the current year's instead.
+  siteSettings: { attendeesCarouselEnabled: bool, speakersEnabled: bool, partnersShowCurrentYear: bool },
   // The About page (website src/components/AboutUs.tsx): only its numbers are edited here; other fields are left as they are.
   aboutContent: { stats },
   // One agenda slot. Mirrors the website's src/data/agenda.js shape.
@@ -358,6 +367,21 @@ export function toSanityPatch(type, body, { creating, draft = false }) {
         if (ids.some((x) => !/^[A-Za-z0-9._-]{1,128}$/.test(x) || x.startsWith("drafts."))) return { set, unset, error: `${key}: unknown event` };
         if (!ids.length) { unset.push(key); break; }
         set[key] = ids.slice(0, 20).map((x, i) => ({ _key: `e${i}${x.replace(/[^A-Za-z0-9]/g, "").slice(-10)}`, _type: "reference", _ref: x }));
+        break;
+      }
+      case "eventRows": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        const seen = new Map();
+        for (const item of v) {
+          const ev = String(item?.event?._ref || item?.event || "").trim();
+          const row = String(item?.row || "").trim();
+          if (!ev && !row) continue;
+          if (!/^[A-Za-z0-9._-]{1,128}$/.test(ev) || ev.startsWith("drafts.")) return { set, unset, error: `${key}: unknown event` };
+          if (!PARTNER_ROWS.includes(row)) return { set, unset, error: `${key}: unknown row` };
+          seen.set(ev, row);
+        }
+        if (!seen.size) { unset.push(key); break; }
+        set[key] = [...seen].slice(0, 20).map(([ev, row], i) => ({ _key: `r${i}${ev.replace(/[^A-Za-z0-9]/g, "").slice(-10)}`, event: { _type: "reference", _ref: ev }, row }));
         break;
       }
       case "facts":
