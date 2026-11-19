@@ -95,3 +95,15 @@ test("drafts may leave required fields empty; staging names what's missing", () 
   assert.deepEqual(missingRequired("speaker", { name: "Ada", title: "CTO", company: "X", order: 1, image: { asset: { _ref: "image-a-1x1-png" } } }), []);
   assert.deepEqual(missingRequired("speaker", { name: "  " , title: "CTO", company: "X", order: 0, image: { asset: { _ref: "image-a-1x1-png" } } }), ["full name"]);
 });
+
+test("partners: a row for each event (last one per event wins); unknown rows and events are refused", async () => {
+  const { toSanityPatch } = await import("../services/cmsSchema.js");
+  const out = toSanityPatch("partner", { eventRows: [{ event: "event-van", row: "ai" }, { event: { _ref: "event-van" }, row: "featured" }, { event: "event-tor", row: "cyber" }] }, {});
+  assert.equal(out.error, null);
+  assert.deepEqual(out.set.eventRows.map((r) => [r.event._ref, r.row]), [["event-van", "featured"], ["event-tor", "cyber"]]);
+  assert.ok(out.set.eventRows.every((r) => r._key && r.event._type === "reference"));
+  assert.match(toSanityPatch("partner", { eventRows: [{ event: "event-van", row: "gold" }] }, {}).error, /unknown row/);
+  assert.match(toSanityPatch("partner", { eventRows: [{ event: "drafts.event-van", row: "ai" }] }, {}).error, /unknown event/);
+  assert.deepEqual(toSanityPatch("partner", { eventRows: [] }, {}).unset, ["eventRows"]);
+  assert.deepEqual(toSanityPatch("partner", { events: ["event-van"] }, {}).set.events.map((r) => r._ref), ["event-van"]);
+});
