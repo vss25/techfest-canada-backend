@@ -115,7 +115,7 @@ before(async () => {
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}/api/cms`;
   // Live content: one speaker and the Vancouver event.
-  docs.set("speaker-ada", { _id: "speaker-ada", _type: "speaker", name: "Ada Example", title: "CTO", company: "Example Co", order: 1, bio: "Live bio" });
+  docs.set("speaker-ada", { _id: "speaker-ada", _type: "speaker", name: "Ada Example", title: "CTO", company: "Example Co", order: 1, bio: "Live bio", image: { _type: "image", asset: { _type: "reference", _ref: "image-ada-10x10-png" } } });
   docs.set("event-ttfc-2027-vancouver-briefing", { _id: "event-ttfc-2027-vancouver-briefing", _type: "event", name: "Vancouver Briefing", city: "Vancouver", type: "briefing", year: 2027, eventKey: { _type: "slug", current: "ttfc-2027-vancouver-briefing" } });
 });
 
@@ -315,4 +315,22 @@ test("publishing paused (the default until launch): nothing reaches the live sit
   const off = await call("mia", "PUT", "/publishing", { paused: false });
   assert.equal(off.body.paused, false);
   assert.equal((await call("sam", "GET", "/changes")).body.canPublish, true);
+});
+
+test("autosave: an incomplete draft saves; staging waits until it's complete", { skip }, async () => {
+  const made = await call("sam", "POST", "/speaker?draft=1", { name: "Half Done" });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const id = made.body._id;
+  const one = await call("sam", "POST", `/speaker/${id}/stage`);
+  assert.equal(one.status, 409);
+  assert.equal(one.body.error, "Speaker “Half Done”: add job title, company, photo and order number first.");
+  const list = await call("sam", "GET", "/changes");
+  assert.deepEqual(list.body.items.find((i) => i.id === id).missing, ["job title", "company", "photo", "order number"]);
+  const cleared = await call("sam", "PATCH", `/speaker/${id}?draft=1`, { name: "" });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  const all = await call("sam", "POST", "/changes/stage", { ids: [id] });
+  assert.equal(all.status, 409);
+  assert.deepEqual(all.body.skipped.map((s) => s.id), [id]);
+  assert.equal(docs.has(`drafts.${id}`), false);
+  await call("sam", "DELETE", `/speaker/${id}/draft?which=all`);
 });
