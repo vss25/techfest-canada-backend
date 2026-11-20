@@ -54,6 +54,7 @@ const contractSchema = new mongoose.Schema({
   paymentTerms: { type: String, default: "" },
   terms: { type: String, default: "" },              // this contract's special terms (the standard clauses come from settings)
   frozen: { type: mongoose.Schema.Types.Mixed, default: null }, // TTFC's details, signatories, document text, clauses as sent / signed
+  signatoryId: { type: String, default: "" },        // who signs for TTFC (Contract settings' signing authorities)
   notes: { type: String, default: "" },              // internal, never printed
   status: { type: String, enum: ["draft", "sent", "signed", "cancelled"], default: "draft", index: true },
   approval: {                                        // a price further below the catalogue than the limit

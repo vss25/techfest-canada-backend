@@ -273,10 +273,15 @@ export function cleanSettings(body = {}) {
   };
   if (!company.legalName) return { error: "Enter TTFC's legal name." };
   const signatories = [];
-  for (const sg of (Array.isArray(body.signatories) ? body.signatories : []).slice(0, 2)) {
+  // Nov 20 2026: a list of signing authorities (up to 8); each contract picks the one who signs it.
+  const seen = new Set();
+  for (const sg of (Array.isArray(body.signatories) ? body.signatories : []).slice(0, 8)) {
     const name = str(sg?.name, 120), title = str(sg?.title, 120), signature = String(sg?.signature || "");
     if (signature && (!SIGNATURE.test(signature) || signature.length > 300_000)) return { error: "A signature must be a PNG or JPG under 200 KB." };
-    if (name || title || signature) signatories.push({ name, title, signature });
+    let id = /^[a-z0-9]{2,16}$/.test(String(sg?.id || "")) ? String(sg.id) : "";
+    while (!id || seen.has(id)) id = "s" + Math.random().toString(36).slice(2, 10);
+    seen.add(id);
+    if (name || title || signature) signatories.push({ id, name, title, signature });
   }
   const n = body.numbering || {};
   const prefix = str(n.prefix, 12).toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -299,7 +304,17 @@ export function cleanSettings(body = {}) {
   } };
 }
 
-/** What a contract freezes when it's sent or signed: TTFC's details, signatories, document text and clauses. */
-export const frozenFrom = (settings) => ({
-  company: settings.company, signatories: settings.signatories, document: settings.document, clauses: settings.clauses,
+/** Signing authorities with an id each (ones saved before ids existed get a steady one from their place). */
+export const withIds = (list) => (list || []).map((s, i) => ({ ...s, id: s.id || "s" + (i + 1) }));
+
+/** Who signs a contract for TTFC: the authority chosen on it, or (older contracts with none chosen) the first two. */
+export function signatoriesFor(settings, signatoryId = "") {
+  const all = withIds(settings.signatories);
+  const chosen = signatoryId ? all.find((s) => s.id === signatoryId) : null;
+  return chosen ? [chosen] : all.slice(0, 2);
+}
+
+/** What a contract freezes when it's sent or signed: TTFC's details, its signatory, document text and clauses. */
+export const frozenFrom = (settings, signatoryId = "") => ({
+  company: settings.company, signatories: signatoriesFor(settings, signatoryId), document: settings.document, clauses: settings.clauses,
 });
