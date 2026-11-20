@@ -321,3 +321,21 @@ test("RSVP rules for staff: the main pass's CxO switch, the speaker type without
   assert.deepEqual(rsvpRulesFor(by(people, "Kai Speaker")), { cxo: true, extras: { cxo: true, lunch: true, gala: true, awards: true }, extra: [], speaker: true });
   assert.deepEqual(rsvpRulesFor(by(people, "Gus Nopass")), { cxo: undefined, extras: undefined, extra: [], speaker: false });
 });
+
+test("people by event: a pass for that event; people with no pass count for 2026 only", async () => {
+  const { filterPeople, inEvent, LEGACY_EVENT_KEY } = await import("../services/people.js");
+  const mk = (id, passes) => ({ id, search: id, types: [], passList: passes, rsvp: null, rsvpEmail: { sent: false }, attending: { status: "none" } });
+  const toronto = mk("toronto", [{ eventKey: "ttfc-2026-main" }]);
+  const old = mk("old", [{}]);                                           // a pass from before events existed
+  const van = mk("van", [{ eventKey: "ttfc-2027-vancouver-briefing" }]);
+  const both = mk("both", [{ eventKey: "ttfc-2026-main" }, { eventKey: "ttfc-2027-vancouver-briefing" }]);
+  const hiddenVan = mk("hiddenVan", [{ eventKey: "ttfc-2027-vancouver-briefing", hidden: true }, { eventKey: "ttfc-2026-main" }]);
+  const noPass = mk("noPass", []);
+  const all = [toronto, old, van, both, hiddenVan, noPass];
+  const ids = (ev) => all.filter((p) => inEvent(p, ev)).map((p) => p.id);
+  assert.deepEqual(ids("ttfc-2027-vancouver-briefing"), ["van", "both"]);
+  assert.deepEqual(ids(LEGACY_EVENT_KEY), ["toronto", "old", "both", "hiddenVan", "noPass"]);
+  assert.deepEqual(filterPeople(all, { event: "ttfc-2027-vancouver-briefing" }).map((p) => p.id), ["van", "both"]);
+  assert.equal(filterPeople(all, {}).length, 6);
+  assert.equal(filterPeople(all, { event: "not a key!" }).length, 6);     // a malformed value is ignored
+});

@@ -188,6 +188,8 @@ function ticketRecord({ user = null, t = null, a = null }) {
   return {
     ticketId,
     norm: normalizeTicketId(ticketId),
+    // Which event the pass is for; passes from before events existed are the 2026 main event.
+    eventKey: String(t?.eventKey || a?.eventKey || LEGACY_EVENT_KEY),
     type,
     tier: tierFromTicketType(type),
     label: passLabel(type),
@@ -753,6 +755,15 @@ const bandPass = (t) => ({ ticketId: t.ticketId, type: t.type, promoCode: t.prom
     ?rsvpEmail= opened (an email with their RSVP link) | unopened (one went with the pixel, no open seen);
     ?rsvp= form (opened the RSVP form with their ticket, no RSVP of their own).
     ?appHidden= yes | no (hidden from the app, services/appHide.js). */
+export const LEGACY_EVENT_KEY = "ttfc-2026-main";
+/** Whether someone belongs to an event: they hold a pass for it (not hidden). People with no pass at all
+    (speakers on the website list, staff, RSVPs) are from before events existed, so they count for 2026 only. */
+export function inEvent(p, eventKey) {
+  const passes = (p.passList || []).filter((t) => !t.hidden);
+  if (!passes.length) return eventKey === LEGACY_EVENT_KEY;
+  return passes.some((t) => (t.eventKey || LEGACY_EVENT_KEY) === eventKey);
+}
+
 export function filterPeople(people, query = {}) {
   const q = fold(String(query.q || "").trim()).slice(0, 100);
   const type = String(query.type || "").toLowerCase();
@@ -765,7 +776,10 @@ export function filterPeople(people, query = {}) {
     media: String(query.media || "").toLowerCase(), attending: String(query.attending || "").toLowerCase(), appHidden: String(query.appHidden || "").toLowerCase(),
   };
   const words = q ? q.split(/\s+/).filter(Boolean) : [];
+  // ?event=<eventKey> (Nov 20 2026): only that event's people, so Vancouver doesn't list Toronto 2026's.
+  const event = /^[a-z0-9-]{1,80}$/.test(String(query.event || "")) ? String(query.event) : "";
   return people.filter((p) => {
+    if (event && !inEvent(p, event)) return false;
     if (words.length && !words.every((w) => p.search.includes(w))) return false;
     if (type === "none" ? p.types.length : PERSON_TYPES.includes(type) && !p.types.includes(type)) return false;
     if (TIERS.includes(pass) && p.primary?.tier !== pass) return false;
