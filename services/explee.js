@@ -66,7 +66,7 @@ export function leadDTO(l) {
     website: l.website || "", linkedin: l.linkedin || "", country: l.country || "", phone: l.phone || "",
     reply: l.hotReply || "", becameHotAt: iso(l.becameHotAt), repliedAt: iso(l.repliedAt),
     status: cleanStatus(l.status) || "new", ownerId: l.assignedTo || "", ownerName: l.assignedToName || "",
-    notes: l.notes || "", replies: (l.contactLog || []).filter((c) => c.method === "Explee reply").length,
+    notes: l.notes || "", hidden: !!l.hiddenFromStaff, replies: (l.contactLog || []).filter((c) => c.method === "Explee reply").length,
   };
 }
 

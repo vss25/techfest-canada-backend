@@ -55,6 +55,7 @@ const leadSchema = new mongoose.Schema({
   hotReply: { type: String, default: "" },               // the reply that made them a hot lead, word for word
   becameHotAt: { type: Date, default: null },
   repliedAt: { type: Date, default: null },
+  hiddenFromStaff: { type: Boolean, default: false },    // management hid this lead from staff (Sales › Hot leads)
 }, {
   timestamps: true
 });

@@ -16,7 +16,9 @@ import { LEAD_STATUSES, cleanStatus, fromExplee, hotLeadsEmail, hotLeadsUrl, isN
    Mounted at /api/console/explee before the console router; any staff.
 
      GET  /           → { configured, sync: { lastRunAt, lastCount, lastError, total }, leads, statuses, people, me }
-     PATCH /leads/:id { status?, ownerId?, notes? } → { lead }
+     PATCH /leads/:id { status?, ownerId?, notes?, hidden? } → { lead }
+          hidden (management only): hide this lead from staff, or show it again. Staff never see a
+          hidden lead (list, edits: 404); management sees all, marked hidden.
      POST /sync       → { added, updated, removed }  (management: check now instead of waiting)
 
    The sync (every 10 minutes, one server: JobLock "explee-sync"; off until EXPLEE_API_KEY is
@@ -147,7 +149,7 @@ router.use(requireAdmin);
 
 router.get("/", wrap(async (req, res) => {
   const [rows, state, people] = await Promise.all([
-    Lead.find({ source: "explee", leadName: { $ne: "Removed at their request" } }).sort({ becameHotAt: -1 }).limit(500).lean(),
+    Lead.find({ source: "explee", leadName: { $ne: "Removed at their request" }, ...(isManagement(req.user) ? {} : { hiddenFromStaff: { $ne: true } }) }).sort({ becameHotAt: -1 }).limit(500).lean(),
     readState(),
     User.find({ role: "admin", banned: { $ne: true } }).select("name email").lean(),
   ]);
@@ -161,7 +163,8 @@ router.get("/", wrap(async (req, res) => {
 
 router.patch("/leads/:id", wrap(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: "Not found" });
-  const lead = await Lead.findOne({ _id: req.params.id, source: "explee" });
+  const manager = isManagement(req.user);
+  const lead = await Lead.findOne({ _id: req.params.id, source: "explee", ...(manager ? {} : { hiddenFromStaff: { $ne: true } }) });
   if (!lead) return res.status(404).json({ error: "Not found" });
   const b = req.body || {};
   const changed = [];
@@ -182,6 +185,10 @@ router.patch("/leads/:id", wrap(async (req, res) => {
         { $set: { ownerId: u._id, ownerName: u.name || u.email } }).catch(() => {});
     }
     changed.push("owner");
+  }
+  if ("hidden" in b) {
+    if (!manager) return res.status(403).json({ error: "Only a manager can hide or show a lead.", code: "management_only" });
+    lead.hiddenFromStaff = b.hidden === true; changed.push(lead.hiddenFromStaff ? "hidden from staff" : "shown to staff");
   }
   if ("notes" in b) { lead.notes = String(b.notes ?? "").slice(0, 4000); changed.push("notes"); }
   await lead.save();
