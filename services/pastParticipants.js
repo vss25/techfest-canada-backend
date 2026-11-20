@@ -29,6 +29,7 @@ export function roleOf(p) {
 /** People with a pass for another event and none for this one (staff and volunteers are not sales contacts). */
 export function pastPeople(people, eventKey) {
   const out = [];
+  if (eventKey === LEGACY_EVENT_KEY) return out;   // the first event: nobody took part in an earlier one
   for (const p of people || []) {
     const passes = (p.passList || []).filter((t) => !t.hidden);
     if (!passes.length || inEvent(p, eventKey)) continue;
@@ -44,6 +45,7 @@ export function pastPeople(people, eventKey) {
 /** Website partners linked to other events and not to this one: Sponsor = the paid (featured) row. */
 export function pastOrgs(partners, eventDocId) {
   const out = [];
+  if (eventDocId === `event-${LEGACY_EVENT_KEY}`) return out;
   for (const p of partners || []) {
     const events = (p.events || []).filter(Boolean);
     if (!p?.name || !events.length || events.includes(eventDocId)) continue;

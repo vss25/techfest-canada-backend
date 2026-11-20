@@ -15,7 +15,8 @@ test("past people: had a pass for another event, none for this one; never staff;
   assert.deepEqual(rows.map((r) => [r.key, r.role]), [["exhibitor", "Exhibitor"], ["speaker", "Speaker"], ["delegate", "Delegate"], ["old-pass", "Delegate"]]);
   assert.deepEqual(rows[0].events, ["ttfc-2026-main"]);
   assert.equal(roleOf({ types: ["media"] }), "Media");
-  assert.equal(pastPeople(people, "ttfc-2026-main").length, 0);   // for 2026 itself nobody is "past"
+  // For the first event nobody is "past", not even someone who only has a later event's pass.
+  assert.equal(pastPeople([...people, person("van-only", { passList: [{ eventKey: VAN }] })], "ttfc-2026-main").length, 0);
 });
 
 test("past organisations: partners of other events only; the featured row are sponsors", () => {
