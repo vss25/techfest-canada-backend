@@ -46,6 +46,9 @@ const FIRST_LOOKBACK_DAYS = 30;
 const link = (path) => `${String(process.env.FRONTEND_URL || "https://www.thetechfestival.com").replace(/\/$/, "")}/admin/${path}`;
 const salesInbox = () => String(process.env.BROCHURE_SALES_INBOX || "sales@thetechfestival.com").split(",").map((s) => s.trim()).filter(Boolean);
 
+/** A lead's own "Reply to hot lead" tasks (made by the sync), found by their name in the title. */
+const taskFilter = (leadName) => ({ source: "explee", title: new RegExp(`^Reply to hot lead: ${String(leadName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( \\(|$)`) });
+
 async function readState() { return (await AdminSetting.findOne({ key: SYNC_KEY }).lean())?.value || {}; }
 const writeState = (value) => AdminSetting.findOneAndUpdate({ key: SYNC_KEY },
   { key: SYNC_KEY, module: "explee", value, valueType: "json", updatedBy: "Explee sync" }, { upsert: true });
@@ -74,6 +77,7 @@ export async function syncHotLeads({ now = new Date() } = {}) {
     if (l.erased) {
       // They asked Explee to remove them: keep the row (so it isn't re-added) with nothing personal on it.
       if (existing && existing.leadName !== "Removed at their request") {
+        await Commitment.deleteMany(taskFilter(existing.leadName)).catch(() => {});   // their name is in the task
         Object.assign(existing, { leadName: "Removed at their request", email: "", phone: "", linkedin: "", jobTitle: "", companyName: "", company_domain: "",
           website: "", country: "", notes: "", hotReply: "", contactLog: [], status: "lost" });
         await existing.save(); out.removed++;
@@ -174,7 +178,7 @@ router.patch("/leads/:id", wrap(async (req, res) => {
       if (!u) return res.status(400).json({ error: "Pick a staff member from the list." });
       Object.assign(lead, { assignedTo: String(u._id), assignedToName: u.name || u.email, assignedAt: new Date() });
       // Their "Reply to hot lead" task follows the lead's owner.
-      await Commitment.updateMany({ source: "explee", status: "open", ownerId: null, about: lead.companyName || lead.leadName, title: new RegExp(`^Reply to hot lead: ${lead.leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) },
+      await Commitment.updateMany({ ...taskFilter(lead.leadName), status: "open", ownerId: null },
         { $set: { ownerId: u._id, ownerName: u.name || u.email } }).catch(() => {});
     }
     changed.push("owner");
