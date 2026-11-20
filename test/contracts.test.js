@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   toCents, money, cleanOffering, lineFrom, totals, overDiscount, pricingKey, deliverablesFor, unitsTaken,
-  overLimits, contractNumber, cleanParty, cleanSettings, offeredFor,
+  overLimits, contractNumber, cleanParty, cleanSettings, offeredFor, signatoriesFor, frozenFrom,
 } from "../services/contracts.js";
 
 const booth = { _id: "b1", kind: "offering", name: "10×10 booth", category: "booth", unit: "each", price: 500000, track: "once", limit: 20 };
@@ -92,6 +92,15 @@ test("numbers, parties and settings", () => {
   assert.equal(cleanSettings(base).value.numbering.prefix, "TTFC");
   assert.match(cleanSettings({ ...base, company: {} }).error, /legal name/);
   assert.match(cleanSettings({ ...base, signatories: [{ name: "A", signature: "data:text/html;base64,AAAA" }] }).error, /signature/);
-  assert.equal(cleanSettings({ ...base, signatories: [{ name: "A" }, { name: "B" }, { name: "C" }] }).value.signatories.length, 2);
+  assert.equal(cleanSettings({ ...base, signatories: [{ name: "A" }, { name: "B" }, { name: "C" }] }).value.signatories.length, 3);
+  const many = cleanSettings({ ...base, signatories: Array.from({ length: 12 }, (_, i) => ({ name: "P" + i, id: "same" })) }).value.signatories;
+  assert.equal(many.length, 8);
+  assert.equal(new Set(many.map((x) => x.id)).size, 8);
+  // A contract prints the authority chosen on it; with none chosen, the first two as before.
+  const st = { signatories: [{ id: "a1", name: "A" }, { name: "B" }, { id: "c3", name: "C" }] };
+  assert.deepEqual(signatoriesFor(st, "c3").map((x) => x.name), ["C"]);
+  assert.deepEqual(signatoriesFor(st, "s2").map((x) => x.name), ["B"]);
+  assert.deepEqual(signatoriesFor(st, "").map((x) => x.name), ["A", "B"]);
+  assert.deepEqual(frozenFrom({ ...st, company: {} }, "a1").signatories.map((x) => x.name), ["A"]);
   assert.equal(contractNumber(2027, 42, { prefix: "TF", digits: 5 }), "TF-27-00042");
 });

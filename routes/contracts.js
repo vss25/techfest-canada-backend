@@ -5,7 +5,7 @@ import { AdminAudit } from "../models/Admin.js";
 import AdminSetting from "../models/AdminSetting.js";
 import { Offering, Contract, ContractFile } from "../models/Contract.js";
 import {
-  CATEGORIES, TRACK, STATUSES, TAX_RATES, SETTING_DEFAULTS, frozenFrom, cleanOffering, cleanParty, cleanSettings, lineFrom,
+  CATEGORIES, TRACK, STATUSES, TAX_RATES, SETTING_DEFAULTS, frozenFrom, withIds, cleanOffering, cleanParty, cleanSettings, lineFrom,
   offeredFor, totals, overDiscount, pricingKey, deliverablesFor, unitsTaken, overLimits, contractNumber,
 } from "../services/contracts.js";
 import { contractPdf } from "../services/contractPdf.js";
@@ -43,7 +43,7 @@ async function loadSettings() {
   const v = row?.value || {};
   const D = SETTING_DEFAULTS;
   return { ...D, ...v, company: { ...D.company, ...(v.company || {}) }, numbering: { ...D.numbering, ...(v.numbering || {}) },
-           document: { ...D.document, ...(v.document || {}) }, signatories: v.signatories || D.signatories, clauses: v.clauses || D.clauses };
+           document: { ...D.document, ...(v.document || {}) }, signatories: withIds(v.signatories || D.signatories), clauses: v.clauses || D.clauses };
 }
 
 async function catalogue() {
@@ -222,6 +222,8 @@ async function fieldsFrom(body, { eventKey, settings }) {
     paymentTerms: str(body.paymentTerms, 1000) || settings.paymentTerms,
     terms: str(body.terms, 6000),   // this contract's special terms, on top of the standard clauses
     notes: str(body.notes, 2000),
+    // Who signs for TTFC: one of the signing authorities in Contract settings ("" = not chosen yet).
+    signatoryId: (settings.signatories || []).some((sg) => sg.id === body.signatoryId && sg.name) ? String(body.signatoryId) : "",
   } };
 }
 
@@ -282,7 +284,7 @@ contractsRouter.post("/:id/status", wrap(async (req, res) => {
   const set = { updatedBy: who(req) };
   if (to === "sent") {
     if (!v.can.send) return res.status(409).json({ error: !v.approvedPrices ? "A manager needs to approve the prices first." : v.overLimits.length ? "Some items are over what's left to sell." : "Only a draft with items can be sent.", code: "cant_send" });
-    Object.assign(set, { status: "sent", sentAt: new Date(), sentBy: who(req), frozen: c.frozen || frozenFrom(await loadSettings()) });
+    Object.assign(set, { status: "sent", sentAt: new Date(), sentBy: who(req), frozen: c.frozen || frozenFrom(await loadSettings(), c.signatoryId) });
   } else if (to === "draft") {
     if (c.status !== "sent") return res.status(409).json({ error: "Only a sent contract can go back to draft.", code: "cant_draft" });
     Object.assign(set, { status: "draft", frozen: null });
@@ -292,7 +294,7 @@ contractsRouter.post("/:id/status", wrap(async (req, res) => {
     const kept = new Map((c.deliverables || []).map((d) => [d.key, d]));
     const deliverables = deliverablesFor(c.lines).map((d) => ({ ...d, ...(kept.get(d.key) || {}), label: d.label }));
     Object.assign(set, { status: "signed", signedAt: new Date(), signedBy: who(req), signerName, deliverables,
-                         frozen: c.frozen || frozenFrom(await loadSettings()) });
+                         frozen: c.frozen || frozenFrom(await loadSettings(), c.signatoryId) });
   } else if (to === "cancelled") {
     if (!isManagement(req.user)) return res.status(403).json({ error: "Management only", code: "management_only" });
     if (c.status === "cancelled") return res.status(409).json({ error: "Already cancelled." });
@@ -329,7 +331,7 @@ contractsRouter.patch("/:id/deliverables/:key", wrap(async (req, res) => {
 contractsRouter.get("/:id/pdf", wrap(async (req, res) => {
   const c = await load(req, res); if (!c) return;
   const v = await view(c, req);
-  const pdf = await contractPdf(c, { approvedPrices: v.approvedPrices, issuer: c.frozen || frozenFrom(await loadSettings()) });
+  const pdf = await contractPdf(c, { approvedPrices: v.approvedPrices, issuer: c.frozen || frozenFrom(await loadSettings(), c.signatoryId) });
   const name = `${c.number || "contract"}-${String(c.company?.name || "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "")}.pdf`;
   res.set({ "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "private, no-store" });
   res.send(pdf);
