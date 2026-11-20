@@ -75,6 +75,7 @@ import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhib
 import consoleRouter from "./routes/console.js";       // admin console API
 import { offeringsRouter, contractsRouter } from "./routes/contracts.js"; // sales contracts + offerings catalogue
 import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
+import salesEventRouter from "./routes/salesEvent.js"; // Sales for one event: past participants to reconnect with, reach-outs, this event's sales
 import contentCalendarRouter from "./routes/contentCalendar.js"; // Marketing › Social media calendar: planned items, spreadsheet upload, mark done
 import expleeRouter, { startExpleeSync } from "./routes/explee.js"; // Sales › Hot leads: Explee's hot leads, synced every 10 minutes
 import commitmentsRouter, { startCommitmentReminders } from "./routes/commitments.js"; // Home › My work: tasks, flags, morning reminders
@@ -225,6 +226,7 @@ app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and mo
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
 app.use("/api/console/waitlist", waitlistAdminRouter); // 2027 waitlist: the list, counts, CSV (before the console router)
+app.use("/api/console/sales-event", salesEventRouter); // past participants + this event's sales (before the console router)
 app.use("/api/console/content-calendar", contentCalendarRouter); // content calendar items (before the console router)
 app.use("/api/console/explee", expleeRouter); // Sales › Hot leads (before the console router)
 app.use("/api/console/commitments", commitmentsRouter); // Home › My work: tasks and flags (before the console router)

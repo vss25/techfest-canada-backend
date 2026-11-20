@@ -291,7 +291,11 @@ export function issuedPassRouter(kindName = "issued") {
   });
 
   router.get("/", async (req, res) => {
-    const docs = await Attendee.find(SCOPE).select(PASS_FIELDS).sort({ createdAt: -1 }).lean();
+    // ?event=<eventKey> (Nov 20 2026): only that event's passes, so a 2027 event doesn't list TTFC 2026's.
+    // Passes from before events existed have no eventKey and are the 2026 main event.
+    const ev = /^[a-z0-9-]{1,80}$/.test(String(req.query.event || "")) ? String(req.query.event) : "";
+    const byEvent = !ev ? {} : ev === "ttfc-2026-main" ? { eventKey: { $in: [ev, null, ""] } } : { eventKey: ev };
+    const docs = await Attendee.find({ $and: [SCOPE, byEvent] }).select(PASS_FIELDS).sort({ createdAt: -1 }).lean();
     const [rsvps, media] = await Promise.all([rsvpsFor(docs.map((d) => d.ticketId)), mediaOfPasses(docs.map((d) => d._id))]);
     const rows = docs.map((d) => ({
       ...issuedPassRow(d),
