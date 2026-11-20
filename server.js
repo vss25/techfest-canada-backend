@@ -75,6 +75,7 @@ import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhib
 import consoleRouter from "./routes/console.js";       // admin console API
 import { offeringsRouter, contractsRouter } from "./routes/contracts.js"; // sales contracts + offerings catalogue
 import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
+import expleeRouter, { startExpleeSync } from "./routes/explee.js"; // Sales › Hot leads: Explee's hot leads, synced every 10 minutes
 import commitmentsRouter, { startCommitmentReminders } from "./routes/commitments.js"; // Home › My work: tasks, flags, morning reminders
 import cmsRouter, { siteFileBody, uploadSiteFile } from "./routes/cms.js"; // edit Sanity speakers/partners from the admin panel
 import { requireManagementAdmin } from "./middleware/adminAuth.js";
@@ -223,6 +224,7 @@ app.use("/api/console/sos", sosStaffRouter);   // Help & SOS inbox: staff and mo
 app.use("/api/console/digest", digestAdminRouter); // "What you missed" emails: switch, test, counts (before the console router)
 app.use("/api/console/unsubscribes", unsubscribesRouter); // Unsubscribed emails: the list, add, resubscribe (before the console router)
 app.use("/api/console/waitlist", waitlistAdminRouter); // 2027 waitlist: the list, counts, CSV (before the console router)
+app.use("/api/console/explee", expleeRouter); // Sales › Hot leads (before the console router)
 app.use("/api/console/commitments", commitmentsRouter); // Home › My work: tasks and flags (before the console router)
 app.use("/api/console/social", socialPostsRouter); // Marketing › Social posts, Claude writing, calendar (before the console router)
 app.use("/api/console/offerings", offeringsRouter); // Sales contracts: the offerings catalogue (super admin edits; before the console router)
@@ -274,6 +276,8 @@ if (!IMPORT_ONLY) mongoose
     startScheduledBroadcasts();
     // Every 10 minutes, one server, once a morning from 8 AM Toronto: each owner's task reminders (routes/commitments.js).
     startCommitmentReminders();
+    // Every 10 minutes, one server, only once EXPLEE_API_KEY is set: new hot leads from Explee (routes/explee.js).
+    startExpleeSync();
     // Once: people who hid themselves from the attendee list are shown again (staff hides kept).
     migrateDirectorySelfHideOnce({ User: UserModel, AdminAudit, AppContent });
     // Once: the VIP person type becomes the VIP yes / no switch, and leaves the app rights matrix.

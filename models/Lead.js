@@ -48,10 +48,19 @@ const leadSchema = new mongoose.Schema({
   company_phone: { type: String, default: "" },
   company_full_address: { type: String, default: "" },
   company_description: { type: String, default: "" },
+  // Nov 20 2026: hot leads synced from Explee (services/explee.js). expleePersonId is Explee's person_id.
+  source: { type: String, default: "" },                 // "" (added by hand / older imports) | "explee"
+  expleePersonId: { type: String, default: undefined },
+  expleeCampaignId: { type: Number, default: null },
+  hotReply: { type: String, default: "" },               // the reply that made them a hot lead, word for word
+  becameHotAt: { type: Date, default: null },
+  repliedAt: { type: Date, default: null },
 }, {
   timestamps: true
 });
 
-const Lead = mongoose.model("Lead", leadSchema);
+leadSchema.index({ expleePersonId: 1 }, { unique: true, partialFilterExpression: { expleePersonId: { $type: "string" } } });
+
+const Lead = mongoose.models.Lead || mongoose.model("Lead", leadSchema);
 
 export default Lead;
