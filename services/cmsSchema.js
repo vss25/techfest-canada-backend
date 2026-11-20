@@ -46,6 +46,8 @@ export const CMS_FIELDS = {
     company: { ...str(160), required: true },
     bio: str(2000),
     image: { ...img, required: true },
+    // Nov 19 2026: the photo as uploaded, kept so the admin's photo studio can redo the speaker photo.
+    imageOriginal: img,
     order: { ...num, required: true },
     rowPosition: num,
     featured: bool,
