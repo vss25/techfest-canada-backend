@@ -51,7 +51,7 @@ export function assetDims(ref) {
   return { width, height, aspectRatio: height ? width / height : 1 };
 }
 
-const IMAGE_FIELDS = { image: "imageUrl", logo: "logoUrl", heroImage: "heroImageUrl", citySkyline: "citySkylineUrl" };
+const IMAGE_FIELDS = { image: "imageUrl", imageOriginal: "imageOriginalUrl", logo: "logoUrl", heroImage: "heroImageUrl", citySkyline: "citySkylineUrl" };
 
 /** A work-in-progress document with the list query's computed fields filled in. */
 export function withAssetUrls(doc, project, dataset) {

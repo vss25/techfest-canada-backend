@@ -107,3 +107,12 @@ test("partners: a row for each event (last one per event wins); unknown rows and
   assert.deepEqual(toSanityPatch("partner", { eventRows: [] }, {}).unset, ["eventRows"]);
   assert.deepEqual(toSanityPatch("partner", { events: ["event-van"] }, {}).set.events.map((r) => r._ref), ["event-van"]);
 });
+
+test("speakers keep the original photo next to the studio's finished one", async () => {
+  const { toSanityPatch } = await import("../services/cmsSchema.js");
+  const out = toSanityPatch("speaker", { imageOriginal: IMG }, {});
+  assert.equal(out.error, null);
+  assert.equal(out.set.imageOriginal.asset._ref, IMG);
+  assert.equal(withAssetUrls({ imageOriginal: { asset: { _ref: IMG } } }, "p1", "production").imageOriginalUrl,
+    "https://cdn.sanity.io/images/p1/production/0123456789abcdef0123456789abcdef01234567-800x1000.jpg");
+});
