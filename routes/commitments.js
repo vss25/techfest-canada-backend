@@ -16,8 +16,12 @@ import {
    Mounted at /api/console/commitments before the console router. Any staff
    account (requireAdmin: volunteers and app sign-ins get 403).
 
-     GET  /?scope=mine|all&status=open|done|all&eventKey=&area=
-          → { items, counts: { mine, overdue, flags }, today, areas, severities, people: [{ id, name }], me }
+     GET  /?scope=mine|given|all&status=open|done|all&eventKey=&area=
+          → { items, counts: { mine, overdue, flags }, today, areas, severities, people: [{ id, name }], me, canSeeAll }
+     Private (Nov 20 2026, the owner: "others shouldn't be able to see an individual's dashboard"): staff see
+     only tasks they own, tasks they gave to someone (scope=given) and flags they raised; they can change only
+     those (404 otherwise). Management sees and changes everyone's (scope=all) and every flag. A task with no
+     owner yet is management's until someone is given it.
      POST / { title, ownerId?, dueDate?, notes?, area?, eventKey?, about? } → 201 { item }
           (no owner = yours; giving it to someone else emails them)
      PATCH /:id  the same fields → { item }   (any staff; a new owner is emailed)
@@ -60,6 +64,10 @@ const email = (to, mail) => {
   Promise.resolve().then(() => commitmentDeps.send({ to: list, ...mail })).catch((err) => console.error("COMMITMENT EMAIL ERROR:", err?.message || err));
 };
 
+/** What this person may see: everything for management; else what they own, made or flagged. */
+const mineOnly = (req) => (isManagement(req.user) ? {} : { $or: [{ ownerId: req.user._id }, { createdById: req.user._id }, { "flag.raisedById": req.user._id }] });
+const findVisible = (req, id) => (validId(id) ? Commitment.findOne({ _id: id, ...mineOnly(req) }) : Promise.resolve(null));
+
 const staff = () => User.find({ role: "admin", banned: { $ne: true } }).select("name email staffRole role").lean();
 async function ownerFor(id) {
   if (!id) return { ownerId: null, ownerName: "" };
@@ -76,7 +84,10 @@ router.get("/", wrap(async (req, res) => {
   const q = {};
   const status = ["open", "done", "all"].includes(req.query.status) ? req.query.status : "open";
   if (status !== "all") q.status = status;
-  if (req.query.scope !== "all") q.ownerId = req.user._id;
+  const manager = isManagement(req.user);
+  if (req.query.scope === "given") Object.assign(q, { createdById: req.user._id, ownerId: { $ne: req.user._id } });
+  else if (req.query.scope === "all") Object.assign(q, mineOnly(req));
+  else q.ownerId = req.user._id;
   if (req.query.eventKey) q.eventKey = String(req.query.eventKey).toLowerCase().slice(0, 80);
   if (AREAS.some((a) => a.key === req.query.area)) q.area = req.query.area;
   const [rows, people, mine, overdue, flags] = await Promise.all([
@@ -84,11 +95,11 @@ router.get("/", wrap(async (req, res) => {
     staff(),
     Commitment.countDocuments({ status: "open", ownerId: req.user._id }),
     Commitment.countDocuments({ status: "open", ownerId: req.user._id, dueDate: { $ne: "", $lt: today } }),
-    Commitment.countDocuments({ status: "open", "flag.open": true }),
+    Commitment.countDocuments({ status: "open", "flag.open": true, ...mineOnly(req) }),
   ]);
   res.json({
     items: sortForList(rows, today).map((c) => commitmentDTO(c, today)),
-    counts: { mine, overdue, flags }, today, areas: AREAS, severities: SEVERITIES, me,
+    counts: { mine, overdue, flags }, today, areas: AREAS, severities: SEVERITIES, me, canSeeAll: manager,
     people: people.map((u) => ({ id: String(u._id), name: u.name || u.email })).sort((a, b) => a.name.localeCompare(b.name)),
   });
 }));
@@ -128,7 +139,7 @@ async function notifyFlag(c) {
 
 router.patch("/:id", wrap(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ error: "Not found" });
-  const c = await Commitment.findById(req.params.id);
+  const c = await findVisible(req, req.params.id);
   if (!c) return res.status(404).json({ error: "Not found" });
   const { set, error } = cleanCommitment(req.body || {});
   if (error) return res.status(400).json({ error });
@@ -150,7 +161,7 @@ router.post("/:id/done", wrap(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const done = req.body?.done !== false;
   const set = done ? { status: "done", doneAt: new Date(), doneByName: who(req) } : { status: "open", doneAt: null, doneByName: "" };
-  const c = await Commitment.findById(req.params.id);
+  const c = await findVisible(req, req.params.id);
   if (!c) return res.status(404).json({ error: "Not found" });
   Object.assign(c, set);
   // Finishing the task settles its flag.
@@ -164,7 +175,7 @@ router.post("/:id/flag", wrap(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const { flag, error } = cleanFlag(req.body || {});
   if (error) return res.status(400).json({ error });
-  const c = await Commitment.findById(req.params.id);
+  const c = await findVisible(req, req.params.id);
   if (!c) return res.status(404).json({ error: "Not found" });
   c.flag = { ...flag, open: true, raisedById: req.user._id, raisedByName: who(req), raisedAt: new Date(), resolvedByName: "", resolvedAt: null, resolution: "" };
   if (c.status === "done") Object.assign(c, { status: "open", doneAt: null, doneByName: "" });
@@ -178,7 +189,7 @@ router.post("/:id/flag/resolve", wrap(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ error: "Not found" });
   const resolution = String(req.body?.resolution ?? "").trim().slice(0, 1000);
   if (!resolution) return res.status(400).json({ error: "Say how it was sorted out, in a sentence." });
-  const c = await Commitment.findById(req.params.id);
+  const c = await findVisible(req, req.params.id);
   if (!c) return res.status(404).json({ error: "Not found" });
   if (!c.flag?.open) return res.status(409).json({ error: "This flag is already resolved." });
   Object.assign(c.flag, { open: false, resolvedByName: who(req), resolvedAt: new Date(), resolution });
@@ -189,7 +200,7 @@ router.post("/:id/flag/resolve", wrap(async (req, res) => {
 
 router.delete("/:id", wrap(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ error: "Not found" });
-  const c = await Commitment.findById(req.params.id).lean();
+  const c = await findVisible(req, req.params.id);
   if (!c) return res.status(404).json({ error: "Not found" });
   if (String(c.createdById || "") !== String(req.user._id) && !isManagement(req.user)) {
     return res.status(403).json({ error: "Only the person who added it, or a manager, can delete it. You can mark it done instead." });
