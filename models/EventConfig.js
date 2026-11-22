@@ -76,6 +76,13 @@ const eventConfigSchema = new mongoose.Schema(
         enabled: { type: Boolean, default: false },
         minQuantity: { type: Number, min: 2, max: 100, default: 5 },
         percent: { type: Number, min: 0, max: 100, default: 0 }
+      },
+      // What we're aiming for at this event (Nov 22 2026, the owner; management sets them in
+      // Operations › Event settings). Private sales goals: the admin shows sold vs target, never the
+      // website. null = no target.
+      targets: {
+        delegates: { type: Number, min: 0, max: 100000, default: null },
+        exhibitors: { type: Number, min: 0, max: 10000, default: null }
       }
     }
   },

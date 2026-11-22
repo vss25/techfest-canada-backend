@@ -154,6 +154,23 @@ function applyQuantityDiscount(event, settings) {
   return null;
 }
 
+// Returns an error message, or null. Sets the event's targets (models/EventConfig.js
+// settings.targets): whole numbers, "" / null = no target.
+export function applyTargets(event, settings) {
+  const t = settings?.targets;
+  if (t === undefined) return null;
+  if (t === null || typeof t !== "object" || Array.isArray(t)) return "settings.targets must be an object";
+  const limits = { delegates: 100000, exhibitors: 10000 };
+  for (const [key, max] of Object.entries(limits)) {
+    if (t[key] === undefined) continue;
+    if (t[key] === null || t[key] === "") { event.set(`settings.targets.${key}`, null); continue; }
+    const n = Number(t[key]);
+    if (!Number.isInteger(n) || n < 0 || n > max) return `settings.targets.${key} must be a whole number from 0 to ${max}`;
+    event.set(`settings.targets.${key}`, n);
+  }
+  return null;
+}
+
 // ================= CREATE EVENT =================
 router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -191,6 +208,8 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
     if (pErr) return res.status(400).json({ error: pErr });
     const qErr = applyQuantityDiscount(event, body.settings);
     if (qErr) return res.status(400).json({ error: qErr });
+    const tErr = applyTargets(event, body.settings);
+    if (tErr) return res.status(400).json({ error: tErr });
 
     await event.save();
     recordAudit(req, "create", "event", event.eventKey,
@@ -234,6 +253,8 @@ router.patch("/:eventKey", authMiddleware, adminMiddleware, async (req, res) => 
     if (pErr) return res.status(400).json({ error: pErr });
     const qErr = applyQuantityDiscount(event, body.settings);
     if (qErr) return res.status(400).json({ error: qErr });
+    const tErr = applyTargets(event, body.settings);
+    if (tErr) return res.status(400).json({ error: tErr });
 
     await event.save();
     recordAudit(req, "update", "event", event.eventKey,
