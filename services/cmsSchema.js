@@ -17,6 +17,7 @@ const stats = { kind: "stats" };                        // About page numbers: [
 const date = { kind: "date" };                          // "YYYY-MM-DD"
 const images = { kind: "images" };                      // photo gallery: [image] (asset ids), at most 24
 const refs = { kind: "refs" };                          // event ids → [{ _type: "reference", _ref }]
+const ref = { kind: "ref" };                            // one document id → { _type: "reference", _ref }
 const eventRows = { kind: "eventRows" };                // a partner's Partners page row for each event: [{ event, row }]
 const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
@@ -132,6 +133,16 @@ export const CMS_FIELDS = {
     notifyHeading: str(120),
     showReport: { ...bool, default: true },   // the Toronto 2026 post-show report card
     gallery: images,                          // photo strip on the event page (redesign step 2)
+    // Until this event has its own speakers / partners, the page shows another event's (Nov 22 2026, the owner):
+    // which event, which people or logos (empty = featured first), and the note above them. Empty = Toronto 2026.
+    standInSpeakersFrom: ref,
+    standInSpeakers: refs,
+    standInSpeakersHeading: str(120),
+    standInSpeakersText: str(500),
+    standInPartnersFrom: ref,
+    standInPartners: refs,
+    standInPartnersHeading: str(120),
+    standInPartnersText: str(500),
   },
   // A YouTube or Vimeo video shown on the website (Nov 18 2026). Only the link is stored; the
   // provider streams it. Where it shows: the home page, the Media page, chosen events, chosen speakers.
@@ -369,6 +380,12 @@ export function toSanityPatch(type, body, { creating, draft = false }) {
         if (ids.some((x) => !/^[A-Za-z0-9._-]{1,128}$/.test(x) || x.startsWith("drafts."))) return { set, unset, error: `${key}: unknown event` };
         if (!ids.length) { unset.push(key); break; }
         set[key] = ids.slice(0, 20).map((x, i) => ({ _key: `e${i}${x.replace(/[^A-Za-z0-9]/g, "").slice(-10)}`, _type: "reference", _ref: x }));
+        break;
+      }
+      case "ref": {
+        const id = String((typeof v === "object" ? v?._ref : v) || "").trim();
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(id) || id.startsWith("drafts.")) return { set, unset, error: `${key}: unknown item` };
+        set[key] = { _type: "reference", _ref: id };
         break;
       }
       case "eventRows": {

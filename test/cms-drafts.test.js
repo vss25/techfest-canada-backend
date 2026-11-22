@@ -104,3 +104,21 @@ test("the home page has its hero, highlights and partner fields", () => {
   assert.equal(set.primaryCtaUrl, "/vancouver/2027/briefing");
   assert.equal(set.stats.length, 1);
 });
+
+test("an event's stand-in speakers and partners: source event, picks and wording", () => {
+  const { set, unset, error } = toSanityPatch("event", {
+    standInSpeakersFrom: "event-ttfc-2026-main",
+    standInSpeakers: ["speaker-a", "speaker-b", "speaker-a"],
+    standInSpeakersHeading: "  Who spoke last time ",
+    standInSpeakersText: "Meanwhile, Toronto 2026.",
+    standInPartnersFrom: "",
+    standInPartners: [],
+  }, { creating: false, draft: true });
+  assert.ok(!error);
+  assert.deepEqual(set.standInSpeakersFrom, { _type: "reference", _ref: "event-ttfc-2026-main" });
+  assert.deepEqual(set.standInSpeakers.map((r) => r._ref), ["speaker-a", "speaker-b"]);
+  assert.equal(set.standInSpeakersHeading, "Who spoke last time");
+  assert.ok(unset.includes("standInPartnersFrom"));
+  assert.ok(unset.includes("standInPartners"));
+  assert.match(toSanityPatch("event", { standInSpeakersFrom: "drafts.event-x" }, { creating: false }).error, /unknown/);
+});
