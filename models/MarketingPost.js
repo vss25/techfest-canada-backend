@@ -17,6 +17,10 @@ const marketingPostSchema = new mongoose.Schema({
   channels: { linkedin: { type: Boolean, default: true }, instagram: { type: Boolean, default: true }, x: { type: Boolean, default: true } },
   versions: { x: { type: channelVersions, default: () => ({}) }, instagram: { type: channelVersions, default: () => ({}) } },
   image: { url: String, alt: String },
+  // Nov 23 2026: a templated post's own designed image per channel (Sanity image URLs); a channel without one
+  // posts `image` cropped for it.
+  images: { linkedin: { url: String, alt: String }, instagram: { url: String, alt: String }, x: { url: String, alt: String } },
+  template: { type: String, default: "" },   // services/socialPosts.js POST_TEMPLATES key, "" = written by hand
   scheduledAt: { type: Date, default: null, index: true },
   timezone: { type: String, default: "America/Toronto" },
   eventKey: { type: String, default: "" }, eventName: { type: String, default: "" },
