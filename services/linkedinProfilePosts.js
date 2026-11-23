@@ -91,6 +91,7 @@ export function costUsd(usage = {}) {
 
 export const DAILY_ROUNDS = 6;          // writing rounds per person per Toronto day
 export const RUN_STALE_MS = 15 * 60 * 1000;
+export const MUSE_RUN_STALE_MS = 24 * 60 * 60 * 1000;   // Muse bridge rounds (routes/museLinkedinBridge.js): Muse checks a few times a day, so a queued round stays "working" for about a day
 export const POST_MAX = 3000;           // LinkedIn's limit
 
 const str = (v, max) => String(v ?? "").replace(/\r\n?/g, "\n").replace(/[^\P{Cc}\n\t]/gu, "").slice(0, max);

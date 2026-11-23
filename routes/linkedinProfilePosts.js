@@ -14,7 +14,7 @@ import { frontendUrl } from "../services/profileRequest.js";
 import { LI_POST_SCOPE, linkedinAuthUrl, linkedinConfigured, readCookie } from "../services/attendingCampaign.js";
 import { postTextToLinkedin } from "../services/linkedinPost.js";
 import {
-  DAILY_ROUNDS, GO_TTL_MS, INVITE_EVENT, INVITE_WHO, LENGTHS, LIP_COOKIE, PILLARS, POST_MAX, RUN_STALE_MS, SECTORS,
+  DAILY_ROUNDS, GO_TTL_MS, INVITE_EVENT, INVITE_WHO, LENGTHS, LIP_COOKIE, MUSE_RUN_STALE_MS, PILLARS, POST_MAX, RUN_STALE_MS, SECTORS,
   SETTINGS_DEFAULTS, STATE_TTL_MS, TOPICS, VOICES, answerJson, applyChecks, checkerPrompt, checkerSchema, checkerSystem,
   cleanReturnTo, cleanSettings, composePost, costUsd, hasDash, isGoKey, isLipState, keepDifferent, keepSourced, newGoKey,
   newLipState, noDashes, pickEvents, returnUrl, seenSources, shareBoxUrl, torontoDay, writerPrompt, writerSchema, writerSystem,
@@ -34,6 +34,9 @@ import {
         the sources' links and hashtags, and saves them.
    Spend (both calls + $10 per 1,000 searches) counts toward Marketing › Social posts' monthly writing limit
    (AdminSetting social.usage.YYYY-MM vs social.settings.monthlyBudgetUsd). DAILY_ROUNDS rounds per person a day.
+   With no Anthropic key and the free Muse bridge on (MUSE_BRIDGE_ENABLED + MUSE_BRIDGE_KEY), /write instead
+   queues the round (run.via "muse", same daily limit, no budget check, no spend) and Muse writes it later:
+   routes/museLinkedinBridge.js. A queued Muse round stays "working" for about a day (MUSE_RUN_STALE_MS).
 
    Post to LinkedIn, as the person: POST /drafts/:id/linkedin → { url } (a one-time link on this API, 5 min) →
    GET /api/linkedin-posts/go?k= sets a state cookie and sends them to LinkedIn's sign-in (openid profile
@@ -47,6 +50,11 @@ export const publicRouter = express.Router();
 
 const MODEL = "claude-opus-5-5";
 const COOKIE_PATH = "/api/auth/linkedin";
+
+/* The free Muse bridge (routes/museLinkedinBridge.js): on only when both env vars are set on the server.
+   With no Anthropic key and the bridge on, POST /write queues the round and Muse (Orion) writes it for free. */
+export const museBridgeEnabled = () => String(process.env.MUSE_BRIDGE_ENABLED || "").trim().toLowerCase() === "true" && !!String(process.env.MUSE_BRIDGE_KEY || "").trim();
+export const writingVia = () => (lipDeps.claude() ? "anthropic" : museBridgeEnabled() ? "muse" : null);
 
 /* Swappable in tests. */
 export const lipDeps = {
@@ -82,7 +90,7 @@ const addUsage = (cost) => AdminSetting.updateOne({ key: monthKey(lipDeps.now())
   { $inc: { "value.costUsd": cost, "value.calls": 1 }, $setOnInsert: { module: "social", valueType: "json" } }, { upsert: true });
 
 /* ---------- reads ---------- */
-const settingsOf = (p) => ({ ...SETTINGS_DEFAULTS, ...(p?.settings ? Object.fromEntries(Object.entries(p.settings).filter(([, v]) => v !== undefined && v !== null)) : {}) });
+export const settingsOf = (p) => ({ ...SETTINGS_DEFAULTS, ...(p?.settings ? Object.fromEntries(Object.entries(p.settings).filter(([, v]) => v !== undefined && v !== null)) : {}) });
 const topicLabel = (k) => TOPICS.find((t) => t.key === k)?.label || "";
 
 function draftView(d) {
@@ -99,14 +107,17 @@ function draftView(d) {
 
 function runView(run, now) {
   if (!run?.state) return { state: "" };
-  const stale = run.state === "working" && run.startedAt && now - new Date(run.startedAt) > RUN_STALE_MS;
+  // A queued Muse round is not stuck after 15 minutes: Muse checks a few times a day, so it gets about a day.
+  const staleMs = run.via === "muse" ? MUSE_RUN_STALE_MS : RUN_STALE_MS;
+  const stale = run.state === "working" && run.startedAt && now - new Date(run.startedAt) > staleMs;
   return {
     state: stale ? "failed" : run.state, startedAt: run.startedAt || null, finishedAt: run.finishedAt || null,
     made: run.made || 0, dropped: run.dropped || [], error: stale ? "That round took too long and stopped. Try again." : run.error || "",
+    via: run.via || "",
   };
 }
 
-async function eventsNow() {
+export async function eventsNow() {
   const rows = await EventConfig.find({}, { eventKey: 1, name: 1, city: 1, type: 1, startDate: 1, endDate: 1 }).lean();
   return pickEvents(rows, lipDeps.now());
 }
@@ -127,7 +138,8 @@ consoleRouter.get("/me", wrap(async (req, res) => {
     saved: !!profile?.savedAt,
     run: runView(profile?.run, now),
     rounds: { used, max: DAILY_ROUNDS, left: Math.max(0, DAILY_ROUNDS - used) },
-    writing: !!lipDeps.claude(),
+    writing: !!writingVia(),
+    writingVia: writingVia(),
     linkedin: linkedinConfigured(),
     budget: { left: money.left, used: money.used, limit: money.limit },
     events,
@@ -257,29 +269,34 @@ async function runRound(userId, person) {
 }
 
 consoleRouter.post("/write", wrap(async (req, res) => {
-  if (!lipDeps.claude()) return res.status(503).json({ error: "Writing with Claude isn't set up yet: the server needs an Anthropic API key (ANTHROPIC_API_KEY).", code: "no_key" });
-  const money = await budget();
-  if (money.limit <= 0 || money.left <= 0) return res.status(429).json({ error: `This month's writing limit ($${money.limit}) is used up. It can be raised in Marketing › Social posts › Settings.`, code: "budget" });
+  const via = writingVia();
+  if (!via) return res.status(503).json({ error: "Writing with Claude isn't set up yet: the server needs an Anthropic API key (ANTHROPIC_API_KEY).", code: "no_key" });
+  if (via === "anthropic") {
+    const money = await budget();
+    if (money.limit <= 0 || money.left <= 0) return res.status(429).json({ error: `This month's writing limit ($${money.limit}) is used up. It can be raised in Marketing › Social posts › Settings.`, code: "budget" });
+  }
   const now = lipDeps.now();
   const day = torontoDay(now);
   const existing = await LinkedinProfile.findOne({ userId: req.user._id }).lean();
   const used = existing?.rounds?.day === day ? existing.rounds.count || 0 : 0;
   if (used >= DAILY_ROUNDS) return res.status(429).json({ error: `That's ${DAILY_ROUNDS} rounds today. Try again tomorrow.`, code: "daily" });
-  // One round at a time per person (a round stuck for 15 minutes counts as finished).
-  const stale = new Date(now.getTime() - RUN_STALE_MS);
+  // One round at a time per person. A working Anthropic round stuck for 15 minutes counts as finished; a
+  // queued Muse round gets about a day, because Muse only checks a few times a day (MUSE_RUN_STALE_MS).
+  const staleMs = existing?.run?.state === "working" && existing?.run?.via === "muse" ? MUSE_RUN_STALE_MS : RUN_STALE_MS;
+  const stale = new Date(now.getTime() - staleMs);
   let claimed;
   try {
     claimed = await LinkedinProfile.findOneAndUpdate(
       { userId: req.user._id, $or: [{ "run.state": { $ne: "working" } }, { "run.startedAt": { $lt: stale } }] },
-      { $set: { run: { state: "working", startedAt: now, made: 0, dropped: [], error: "", costUsd: 0 }, rounds: { day, count: used + 1 } } },
+      { $set: { run: { state: "working", startedAt: now, made: 0, dropped: [], error: "", costUsd: 0, via }, rounds: { day, count: used + 1 } } },
       { upsert: true, new: true },
     ).lean();
   } catch (err) {
     if (err?.code === 11000) claimed = null; else throw err;   // the upsert lost to a round already working
   }
-  if (!claimed) return res.status(409).json({ error: "Claude is already writing your drafts. They'll appear here in a minute or two.", code: "working" });
-  audit(req, "linkedin_profile_write", req.user._id, "writing round started");
-  lipDeps.background(() => runRound(req.user._id, { name: req.user.name || "", title: req.user.jobTitle || "" }));
+  if (!claimed) return res.status(409).json({ error: via === "muse" ? "Muse is already writing your drafts. They'll appear here once they're ready." : "Claude is already writing your drafts. They'll appear here in a minute or two.", code: "working" });
+  audit(req, "linkedin_profile_write", req.user._id, via === "muse" ? "writing round queued for Muse (free bridge)" : "writing round started");
+  if (via === "anthropic") lipDeps.background(() => runRound(req.user._id, { name: req.user.name || "", title: req.user.jobTitle || "" }));
   res.status(202).json({ run: runView(claimed.run, now), rounds: { used: used + 1, max: DAILY_ROUNDS, left: Math.max(0, DAILY_ROUNDS - used - 1) } });
 }));
 
