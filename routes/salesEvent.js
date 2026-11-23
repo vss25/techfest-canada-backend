@@ -5,6 +5,7 @@ import Outreach from "../models/Outreach.js";
 import Commitment from "../models/Commitment.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, isManagement } from "../middleware/adminAuth.js";
+import { soldForEvent } from "../services/ticketSales.js";
 import { directory } from "./people.js";
 import { SANITY_PROJECT } from "../services/rsvp.js";
 import { addDays, torontoDay } from "../services/commitments.js";
@@ -19,8 +20,9 @@ import { OUTREACH, ROLES, cleanOutreach, pastOrgs, pastPeople, withOutreach } fr
      POST /reach { event, kind: person|org, key, name, role, eventName? } → 201 { outreach, task }
           Records "we reached out" and adds a task for the person who clicked (due in 3 days).
      PATCH /reach/:id { status?, note? } → { outreach }
-     GET  /summary?event=<eventKey> (management) → { event, orders, tickets, subtotalCents, totalCents }
-          What this event has actually sold (paid orders for it); nothing from other events.
+     GET  /summary?event=<eventKey> (management) → { event, orders, tickets, ownTickets, passTickets, passes,
+          subtotalCents, totalCents }: what this event has actually sold (paid orders for it). tickets = its own
+          tickets + multi-event passes covering it (Nov 22 2026); revenue is only orders placed on this event.
    Private: MongoDB only. Audited (outreach_*; names only).
 ========================================================= */
 
@@ -106,6 +108,9 @@ router.get("/summary", wrap(async (req, res) => {
   if (!event) return res.status(400).json({ error: "Choose an event first." });
   const orders = await Order.find({ eventKey: event, status: { $in: ["paid", "fulfilled"] } }).select("amounts items").lean();
   const sum = (f) => orders.reduce((n, o) => n + (Number(o.amounts?.[f]) || 0), 0);
-  res.json({ event, orders: orders.length, tickets: orders.reduce((n, o) => n + (o.items || []).reduce((m, i) => m + (Number(i.quantity) || 0), 0), 0),
-    subtotalCents: sum("subtotalCents"), totalCents: sum("totalCents") });
+  // Tickets = this event's own tickets + multi-event passes covering it (Nov 22 2026: pass holders count
+  // towards every event's delegate target). Revenue stays with the event the order was placed on.
+  const sold = await soldForEvent(event);
+  res.json({ event, orders: orders.length, tickets: sold.ownTickets + sold.passTickets, ownTickets: sold.ownTickets, passTickets: sold.passTickets,
+    passes: sold.passes, subtotalCents: sum("subtotalCents"), totalCents: sum("totalCents") });
 }));

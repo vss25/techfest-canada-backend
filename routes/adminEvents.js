@@ -1,6 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import EventConfig from "../models/EventConfig.js";
+import { ensureOwnCopy } from "../services/ticketTypeDefaults.js";
 import { requireAdmin, isManagement } from "../middleware/adminAuth.js";
 import { recordAudit } from "../services/auditLog.js";
 
@@ -212,6 +213,8 @@ router.post("/", authMiddleware, adminMiddleware, async (req, res) => {
     if (tErr) return res.status(400).json({ error: tErr });
 
     await event.save();
+    // A new Briefing starts with its own copy of the default tickets (Nov 22 2026).
+    await ensureOwnCopy(event.eventKey).catch((e) => console.error("Copying default tickets failed:", e.message));
     recordAudit(req, "create", "event", event.eventKey,
       `Created event ${event.eventKey} (${event.name || "unnamed"})`);
     res.status(201).json(event);

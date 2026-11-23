@@ -1,11 +1,11 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
-import Attendee from "../models/Attendee.js";
 import EventConfig from "../models/EventConfig.js";
 import Order from "../models/Order.js";
 import TicketType from "../models/TicketType.js";
 import { ticketTypeKey } from "../services/ticketTypeDefaults.js";
+import { isPass, sellsAt, soldOrReserved } from "../services/ticketSales.js";
 import User from "../models/User.js";
 import { priceBasket } from "../services/pricingEngine.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -89,32 +89,6 @@ function normalizeItems(body) {
   return [];
 }
 
-/** Passes already issued for this type + tickets held by live orders
-    (paid/fulfilled, plus pending orders from the last 24 h — a Stripe
-    session lives at most that long, so older pendings are abandoned). */
-async function soldOrReserved(eventKey, ticketType) {
-  const issued = await Attendee.countDocuments({
-    eventKey,
-    ticketType: ticketType.slug
-  });
-  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const rows = await Order.aggregate([
-    {
-      $match: {
-        eventKey,
-        $or: [
-          { status: { $in: ["paid", "fulfilled"] } },
-          { status: "pending", createdAt: { $gte: dayAgo } }
-        ]
-      }
-    },
-    { $unwind: "$items" },
-    { $match: { "items.ticketTypeId": ticketType._id } },
-    { $group: { _id: null, n: { $sum: "$items.quantity" } } }
-  ]);
-  return issued + (rows[0]?.n || 0);
-}
-
 router.post("/multi-checkout", async (req, res) => {
   let releasePromo = () => {}; // see the usage-limit check below
   try {
@@ -162,10 +136,11 @@ router.post("/multi-checkout", async (req, res) => {
     const typeIds = [...new Set(items.map((i) => i.ticketTypeId))];
     // A Briefing without its own ticket types sells the default Briefing set; the order and its
     // passes keep the event's own eventKey, so capacity and sales count per event.
+    // Multi-event passes covering this event sell here too (services/ticketSales.js).
     const types = await TicketType.find({
       _id: { $in: typeIds },
-      eventKey: await ticketTypeKey(eventKey),
-      active: true
+      active: true,
+      ...sellsAt(eventKey, await ticketTypeKey(eventKey))
     });
     if (types.length !== typeIds.length) {
       return res.status(404).json({ error: "Ticket type not found" });
@@ -261,6 +236,7 @@ router.post("/multi-checkout", async (req, res) => {
         slug: type.slug,
         unitPriceCents: type.priceCents,
         quantity: item.quantity,
+        ...(isPass(type) ? { passCovers: [...type.covers] } : {}),
         totalCents: basket.lines[i].totalCents // this line's share after every discount (not stored; Stripe line amount)
       };
     });

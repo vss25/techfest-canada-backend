@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import EventConfig from "../models/EventConfig.js";
 import TicketType from "../models/TicketType.js";
 import { ticketTypeKey } from "../services/ticketTypeDefaults.js";
+import { MULTI_EVENT_KEY, sellsAt } from "../services/ticketSales.js";
 import { priceBasket, cleanEventDiscount } from "../services/pricingEngine.js";
 import { resolveOrderPromo } from "../services/orderPromo.js";
 
@@ -44,8 +45,8 @@ router.post("/quote", async (req, res) => {
     // A Briefing without its own ticket types sells the default Briefing set (services/ticketTypeDefaults.js).
     const ticketType = await TicketType.findOne({
       _id: ticketTypeId,
-      eventKey: await ticketTypeKey(eventKey),
-      active: true
+      active: true,
+      ...sellsAt(eventKey, await ticketTypeKey(eventKey)) // + multi-event passes covering it
     });
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });
 
@@ -116,13 +117,21 @@ router.get("/types", async (req, res) => {
     const types = await TicketType.find({ eventKey: typesKey, active: true })
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
+    // Multi-event passes covering this event (Nov 22 2026), after the event's own tickets, with the
+    // names of the events each one covers (only events in Admin › Events).
+    const passes = await TicketType.find({ eventKey: MULTI_EVENT_KEY, covers: eventKey, active: true })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .lean();
+    const coverKeys = [...new Set(passes.flatMap((p) => p.covers || []))];
+    const names = new Map((coverKeys.length ? await EventConfig.find({ eventKey: { $in: coverKeys } }, { eventKey: 1, name: 1 }).lean() : [])
+      .map((e) => [e.eventKey, e.name || e.eventKey]));
 
     res.json({
       announced: true,
       eventKey,
       defaults: typesKey !== eventKey,   // the default Briefing tickets
       quantityDiscount: cleanEventDiscount(event.settings?.quantityDiscount),
-      types: types.map((t) => ({
+      types: [...types, ...passes].map((t) => ({
         id: String(t._id),
         name: t.name,
         slug: t.slug,
@@ -133,7 +142,10 @@ router.get("/types", async (req, res) => {
         currency: t.currency || "CAD",
         capacity: t.capacity ?? null,
         salesStart: t.salesStart ? new Date(t.salesStart).toISOString() : null,
-        salesEnd: t.salesEnd ? new Date(t.salesEnd).toISOString() : null
+        salesEnd: t.salesEnd ? new Date(t.salesEnd).toISOString() : null,
+        ...(t.eventKey === MULTI_EVENT_KEY
+          ? { pass: true, covers: (t.covers || []).filter((k) => names.has(k)).map((k) => ({ eventKey: k, name: names.get(k) })) }
+          : {})
       }))
     });
   } catch (err) {

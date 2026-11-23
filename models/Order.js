@@ -26,7 +26,9 @@ const orderItemSchema = new mongoose.Schema(
     name: { type: String, required: true },
     slug: { type: String },
     unitPriceCents: { type: Number, required: true, min: 0 },
-    quantity: { type: Number, required: true, min: 1 }
+    quantity: { type: Number, required: true, min: 1 },
+    // A multi-event pass (Nov 22 2026): the events it covered when sold. Unset = this event's own ticket.
+    passCovers: { type: [String], default: undefined }
   },
   { _id: false }
 );
@@ -45,7 +47,9 @@ const orderAttendeeSchema = new mongoose.Schema(
     },
     // Filled at fulfilment: the pass this person was issued.
     attendeeId: { type: mongoose.Schema.Types.ObjectId, ref: "Attendee" },
-    ticketId: { type: String }
+    ticketId: { type: String },
+    // A multi-event pass: the pass issued for each covered event (attendeeId / ticketId = the first).
+    passes: { type: [{ eventKey: String, attendeeId: { type: mongoose.Schema.Types.ObjectId, ref: "Attendee" }, ticketId: String, _id: false }], default: undefined }
   },
   { _id: false }
 );
