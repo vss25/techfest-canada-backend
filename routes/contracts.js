@@ -38,7 +38,7 @@ const SETTINGS_KEY = "contracts.settings";
 const SEQ_KEY = "contract-seq"; // one running number across years; the year in a number comes from the event
 const counters = () => mongoose.connection.collection("counters");
 async function lastNumber() { return (await counters().findOne({ _id: SEQ_KEY }))?.seq || 0; }
-async function loadSettings() {
+export async function loadSettings() {
   const row = await AdminSetting.findOne({ key: SETTINGS_KEY }).lean();
   const v = row?.value || {};
   const D = SETTING_DEFAULTS;
