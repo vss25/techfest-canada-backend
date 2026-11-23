@@ -76,6 +76,7 @@ import appAwardsRouter from "./routes/appAwards.js";   // Catalyst Awards number
 import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhibitor list (website /programme)
 import consoleRouter from "./routes/console.js";       // admin console API
 import { offeringsRouter, contractsRouter } from "./routes/contracts.js"; // sales contracts + offerings catalogue
+import { mouItemsRouter, mousRouter } from "./routes/mous.js"; // MOU drafts + the MOU catalogue
 import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
 import { consoleRouter as linkedinPostsRouter, publicRouter as linkedinPostsGoRouter, linkedinProfilePostCallback } from "./routes/linkedinProfilePosts.js"; // Marketing › LinkedIn posts for my profile
 import salesEventRouter from "./routes/salesEvent.js"; // Sales for one event: past participants to reconnect with, reach-outs, this event's sales
@@ -240,6 +241,8 @@ app.use("/api/console/linkedin-posts", linkedinPostsRouter); // Marketing › Li
 app.use("/api/console/social", socialPostsRouter); // Marketing › Social posts, Claude writing, calendar (before the console router)
 app.use("/api/console/offerings", offeringsRouter); // Sales contracts: the offerings catalogue (super admin edits; before the console router)
 app.use("/api/console/contracts", contractsRouter); // Sales contracts: build, approve, send, sign, tasks, PDF (before the console router)
+app.use("/api/console/mou-items", mouItemsRouter); // MOU catalogue: what TTFC offers, what partners deliver (super admin edits; before the console router)
+app.use("/api/console/mous", mousRouter); // MOU drafts: build, review, export PDF / Word (before the console router)
 app.use("/api/console/people", peopleRouter); // People directory, profiles, staff RSVPs (before the console router)
 app.use("/api/console/summary", eventSummaryRouter); // Event summary: passes, RSVPs, meals, check-in (read only, before the console router)
 app.use("/api/console/organisations", consoleOrganisationsRouter); // Attending organisations: hide, merge, logos (before the console router)
