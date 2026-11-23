@@ -11,6 +11,8 @@
    time; missed = its time passed two hours ago with a channel not posted.
 ========================================================= */
 
+import { noDashes } from "./linkedinProfilePosts.js";
+
 export const CHANNELS = [
   { key: "linkedin", label: "LinkedIn", limit: 3000, size: [1200, 627] },
   { key: "instagram", label: "Instagram", limit: 2200, size: [1080, 1350] },
@@ -18,6 +20,28 @@ export const CHANNELS = [
 ];
 export const CHANNEL_KEYS = CHANNELS.map((c) => c.key);
 const LIMIT = Object.fromEntries(CHANNELS.map((c) => [c.key, c.limit]));
+
+/* ---------- post templates (Nov 23 2026) ----------
+   The owner: "standardize the post templates for speaker announcement, speaker panel announcement, call for action,
+   partnership announcement, etc. ... for each platform", one click, built from the agenda and speaker profiles, ready
+   to publish ("I will not be making edits, I will just upload a speaker photo"). Each template says what the post
+   must carry and how it reads per channel; the admin draws the matching image per channel (src/admin/marketing/
+   postArt.js). `source` = the website record it's built from. */
+export const POST_TEMPLATES = [
+  { key: "speaker", label: "Speaker announcement", source: "speaker",
+    brief: "Announce one confirmed speaker. Open with who they are (name, title, organisation) and why their view matters, then what they'll speak about (their session title, day and time when given), then the event (name, city, date) and how to get a ticket." },
+  { key: "panel", label: "Panel announcement", source: "session",
+    brief: "Announce a panel or session and every speaker on it. Open with the question or theme the session tackles, list each speaker as name, title and organisation (the moderator last, marked as moderator), then the day, time and stage, then the event and how to get a ticket." },
+  { key: "partner", label: "Partnership announcement", source: "partner",
+    brief: "Welcome a partner. Say who they are in one line, what the partnership means for attendees, and thank them warmly. Never invent the partnership's terms or level; use only what the source says." },
+  { key: "callSpeakers", label: "Call for speakers", source: "event",
+    brief: "Invite people to apply to speak at the event. Say what kind of speakers and topics the event wants (from its theme and description), why speaking there matters, and where to apply." },
+  { key: "callSponsors", label: "Call for sponsors and exhibitors", source: "event",
+    brief: "Invite companies to sponsor or exhibit. Say who will be in the room (from the event's audience line), what a sponsor or exhibitor gets in plain words, and where to enquire. Confident, never pushy." },
+  { key: "tickets", label: "Tickets on sale", source: "event",
+    brief: "Say tickets are on sale for the event. Give the name, city and date, one line on what attendees get, and where to buy. Never state prices or deadlines unless the source gives them." },
+];
+export const TEMPLATE_KEYS = POST_TEMPLATES.map((t) => t.key);
 
 export const SETTING_DEFAULTS = {
   brandTags: ["#TTFC2027", "#TheTechFestivalCanada"],
@@ -99,10 +123,18 @@ export function cleanPost(body = {}) {
   const image = body.image?.url && /^https:\/\/cdn\.sanity\.io\/images\//.test(body.image.url)
     ? { url: str(body.image.url, 500), alt: str(body.image.alt, 200) } : null;
   if (body.image?.url && !image) return { error: "Photos come from the website's image library (upload one here)." };
+  const images = {};
+  for (const c of CHANNEL_KEYS) {
+    const u = body.images?.[c]?.url;
+    if (!u) continue;
+    if (!/^https:\/\/cdn\.sanity\.io\/images\//.test(u)) return { error: "Images come from the website's image library." };
+    images[c] = { url: str(u, 500), alt: str(body.images[c].alt, 200) };
+  }
+  const template = TEMPLATE_KEYS.includes(body.template) ? body.template : "";
   return { value: {
     title: str(body.title, 120).trim(),
     text: str(body.text, 3000),
-    channels, versions, scheduledAt, image,
+    channels, versions, scheduledAt, image, images, template,
     timezone: ["America/Toronto", "America/Vancouver", "America/Edmonton"].includes(body.timezone) ? body.timezone : "America/Toronto",
     eventKey: str(body.eventKey, 80), eventName: str(body.eventName, 160),
     source: body.source?.kind ? { kind: str(body.source.kind, 20), id: str(body.source.id, 80), label: str(body.source.label, 160) } : null,
@@ -129,6 +161,16 @@ export function cropUrl(url, channel) {
   return `${base}?w=${w}&h=${h}&fit=crop&crop=entropy&auto=format&q=85`;
 }
 
+/** The image a channel posts: its own designed image when the post has one, else the photo cropped for it. */
+export function imageFor(post, channel) {
+  const own = post?.images?.[channel]?.url;
+  if (own) return String(own).split("?")[0];
+  return post?.image?.url ? cropUrl(post.image.url, channel) : "";
+}
+
+/** Generated copy as it's kept: no em-dashes, whatever came back. */
+export const cleanWritten = (t) => noDashes(String(t || "")).trim();
+
 /** Settings from the panel → { value } or { error }. */
 export function cleanSettings(body = {}) {
   const tags = (v) => [...new Set((Array.isArray(v) ? v : String(v || "").split(/[\s,]+/))
@@ -153,6 +195,7 @@ export function writerSystem(settings = SETTING_DEFAULTS) {
     `Voice: ${settings.tone || SETTING_DEFAULTS.tone}`,
     settings.avoid ? `Never use these words: ${settings.avoid}.` : "",
     `Spelling: ${settings.spelling || "Canadian"} English.`,
+    "Never use em-dashes or en-dashes: use commas, full stops or colons.",
     "Only state facts given in the source. Never invent names, numbers, dates, prices, quotes or links. Keep every link the source gives exactly as written.",
     "Per channel:",
     "- linkedin: up to 1,300 characters. A clear first line, short paragraphs, the link, then 3 to 5 hashtags on the last line.",
@@ -164,9 +207,12 @@ export function writerSystem(settings = SETTING_DEFAULTS) {
 }
 
 /** The request (user message) for one writing job. */
-export function writerPrompt({ source = "", main = "", channels = [], instruction = "", previous = {}, eventName = "" }) {
+export function writerPrompt({ source = "", main = "", channels = [], instruction = "", previous = {}, eventName = "", template = "", link = "" }) {
   const parts = [];
+  const t = POST_TEMPLATES.find((x) => x.key === template);
+  if (t) parts.push(`Template: ${t.label}. ${t.brief} Write a finished, publish-ready post for each channel; nobody will edit it.`);
   if (eventName) parts.push(`Event: ${eventName}`);
+  if (link) parts.push(`Link to use: ${link}`);
   if (source) parts.push(`Source material:\n<source>\n${source}\n</source>`);
   if (main) parts.push(`The main (LinkedIn) post:\n<main>\n${main}\n</main>`);
   for (const c of channels) {

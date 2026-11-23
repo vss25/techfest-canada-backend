@@ -7,8 +7,8 @@ import AdminSetting from "../models/AdminSetting.js";
 import MarketingPost from "../models/MarketingPost.js";
 import { Contract } from "../models/Contract.js";
 import {
-  CHANNELS, CHANNEL_KEYS, SETTING_DEFAULTS, STATUS_LABELS, cleanPost, cleanSettings, costUsd, cropUrl, lengthFor,
-  postProblems, statusOf, textFor, writerPrompt, writerSchema, writerSystem,
+  CHANNELS, CHANNEL_KEYS, POST_TEMPLATES, SETTING_DEFAULTS, STATUS_LABELS, TEMPLATE_KEYS, cleanPost, cleanSettings, cleanWritten,
+  costUsd, imageFor, lengthFor, postProblems, statusOf, textFor, writerPrompt, writerSchema, writerSystem,
 } from "../services/socialPosts.js";
 
 /* =========================================================
@@ -63,7 +63,8 @@ function view(p, now = Date.now()) {
     ...p, id: String(p._id), status, statusLabel: STATUS_LABELS[status],
     texts: Object.fromEntries(CHANNEL_KEYS.map((c) => [c, textFor(p, c)])),
     lengths: Object.fromEntries(CHANNEL_KEYS.map((c) => [c, lengthFor(c, textFor(p, c))])),
-    crops: p.image?.url ? Object.fromEntries(CHANNEL_KEYS.map((c) => [c, cropUrl(p.image.url, c)])) : null,
+    crops: p.image?.url || Object.keys(p.images || {}).some((c) => p.images[c]?.url)
+      ? Object.fromEntries(CHANNEL_KEYS.map((c) => [c, imageFor(p, c)])) : null,
     problems: postProblems(p),
   };
 }
@@ -78,7 +79,7 @@ const load = async (req, res) => {
 /* ---------- settings ---------- */
 router.get("/settings", wrap(async (req, res) => {
   res.json({ settings: await loadSettings(), usage: await usageNow(), writing: !!socialDeps.claude(), model: MODEL,
-             channels: CHANNELS, canEdit: isManagement(req.user) });
+             channels: CHANNELS, templates: POST_TEMPLATES.map(({ key, label, source }) => ({ key, label, source })), canEdit: isManagement(req.user) });
 }));
 
 router.put("/settings", managementOnly, wrap(async (req, res) => {
@@ -103,6 +104,8 @@ router.post("/write", wrap(async (req, res) => {
   }
   const channels = [...new Set((req.body?.channels || []).filter((c) => CHANNEL_KEYS.includes(c)))];
   if (!channels.length) return res.status(400).json({ error: "Pick a channel to write for." });
+  const template = TEMPLATE_KEYS.includes(req.body?.template) ? req.body.template : "";
+  const link = /^https:\/\/\S+$/.test(String(req.body?.link || "")) ? String(req.body.link).slice(0, 300) : "";
   const main = String(req.body?.main || "").slice(0, 3000);
   const source = String(req.body?.source || "").slice(0, 8000);
   if (!main.trim() && !source.trim()) return res.status(400).json({ error: "Write the main post or pick something to write about first." });
@@ -118,7 +121,7 @@ router.post("/write", wrap(async (req, res) => {
       fallbacks: "default",
       output_config: { effort: "low", format: { type: "json_schema", schema: writerSchema(channels) } },
       system: [{ type: "text", text: writerSystem(settings), cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: writerPrompt({ source, main, channels, previous,
+      messages: [{ role: "user", content: writerPrompt({ source, main, channels, previous, template, link,
         instruction: String(req.body?.instruction || "").slice(0, 500), eventName: String(req.body?.eventName || "").slice(0, 160) }) }],
     });
   } catch (err) {
@@ -132,7 +135,7 @@ router.post("/write", wrap(async (req, res) => {
   const text = (response.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
   let out;
   try { out = JSON.parse(text); } catch { return res.status(502).json({ error: "Claude's answer couldn't be read. Try again." }); }
-  const texts = Object.fromEntries(channels.map((c) => [c, String(out?.[c] || "").trim()]));
+  const texts = Object.fromEntries(channels.map((c) => [c, cleanWritten(out?.[c])]));
   res.json({ texts, lengths: Object.fromEntries(channels.map((c) => [c, lengthFor(c, texts[c])])), usage: await usageNow() });
 }));
 
@@ -158,7 +161,7 @@ router.post("/posts", wrap(async (req, res) => {
   res.status(201).json({ post: view(p.toObject()) });
 }));
 
-const CONTENT_FIELDS = ["text", "channels", "versions", "image"];
+const CONTENT_FIELDS = ["text", "channels", "versions", "image", "images"];
 router.patch("/posts/:id", wrap(async (req, res) => {
   const p = await load(req, res); if (!p) return;
   const { value, error } = cleanPost({ ...p, ...req.body });
