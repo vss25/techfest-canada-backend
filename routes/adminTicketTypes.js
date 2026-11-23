@@ -5,7 +5,9 @@ import TicketType from "../models/TicketType.js";
 import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
 import { recordAudit } from "../services/auditLog.js";
 import Order from "../models/Order.js";
-import { DEFAULT_BRIEFING_KEY, copyOf, ticketTypeKey, usesBriefingDefaults } from "../services/ticketTypeDefaults.js";
+import EventConfig from "../models/EventConfig.js";
+import { DEFAULT_BRIEFING_KEY, copyOf, ensureOwnCopy, ticketTypeKey, usesBriefingDefaults } from "../services/ticketTypeDefaults.js";
+import { MULTI_EVENT_KEY, cleanCovers, soldForEvent, soldPerPass } from "../services/ticketSales.js";
 
 const router = express.Router();
 
@@ -36,6 +38,19 @@ const EDITABLE = [
   "name", "slug", "description", "inclusions", "exclusions", "priceCents",
   "currency", "capacity", "active", "salesStart", "salesEnd", "sortOrder"
 ];
+
+/** A pass's events (eventKey MULTI_EVENT_KEY): checked against Admin › Events. → error or null; sets body.covers. */
+async function coversError(body, eventKey, { creating = false } = {}) {
+  if (eventKey !== MULTI_EVENT_KEY) {
+    return body.covers !== undefined ? "Only a multi-event pass covers other events" : null;
+  }
+  if (body.covers === undefined && !creating) return null;
+  const known = new Set((await EventConfig.find({}, { eventKey: 1 }).lean()).map((e) => e.eventKey));
+  const out = cleanCovers(body.covers, known);
+  if (out.error) return out.error;
+  body.covers = out.covers;
+  return null;
+}
 
 // Returns an error message, or null when the value is a valid string list.
 function stringListError(v, field) {
@@ -125,11 +140,20 @@ router.get("/for-event", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const eventKey = String(req.query.eventKey || "").trim();
     if (!eventKey) return res.status(400).json({ error: "eventKey is required" });
+    // Own copy per event (Nov 22 2026): a Briefing still on the shared set gets its own copy now.
+    await ensureOwnCopy(eventKey);
     const key = await ticketTypeKey(eventKey);
-    const ticketTypes = await TicketType.find({ eventKey: key }).sort({ sortOrder: 1, name: 1 });
+    const ticketTypes = await TicketType.find({ eventKey: key }).sort({ sortOrder: 1, name: 1 }).lean();
+    // Sold counts from paid orders (0 until a sale), and the multi-event passes this event shows.
+    const sold = await soldForEvent(eventKey);
+    const passes = await TicketType.find({ eventKey: MULTI_EVENT_KEY, covers: eventKey }).sort({ sortOrder: 1, name: 1 }).lean();
+    const passSold = new Map(sold.passes.map((p) => [p.id, p.sold]));
     res.json({
       eventKey, usesDefaults: usesBriefingDefaults(eventKey), defaultKey: DEFAULT_BRIEFING_KEY,
-      source: key === eventKey ? "event" : "default", ticketTypes,
+      source: key === eventKey ? "event" : "default",
+      ticketTypes: ticketTypes.map((t) => ({ ...t, sold: key === eventKey ? sold.bySlug[t.slug] || 0 : null })),
+      passes: passes.map((t) => ({ ...t, sold: passSold.get(String(t._id)) || 0 })),
+      soldTotals: { own: sold.ownTickets, passes: sold.passTickets },
     });
   } catch (err) {
     console.error("GET admin ticket types for event error:", err);
@@ -172,6 +196,19 @@ router.post("/use-defaults", authMiddleware, adminMiddleware, requireManagement,
   }
 });
 
+// ================= MULTI-EVENT PASSES =================
+// → { passes: [... + sold (paid, across all its events)] }
+router.get("/passes", authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const passes = await TicketType.find({ eventKey: MULTI_EVENT_KEY }).sort({ sortOrder: 1, name: 1 }).lean();
+    const sold = await soldPerPass(passes.map((p) => p._id));
+    res.json({ passes: passes.map((p) => ({ ...p, sold: sold.get(String(p._id)) || 0 })) });
+  } catch (err) {
+    console.error("GET admin passes error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ================= CREATE TICKET TYPE =================
 router.post("/", authMiddleware, adminMiddleware, requireManagement, async (req, res) => {
   try {
@@ -179,8 +216,12 @@ router.post("/", authMiddleware, adminMiddleware, requireManagement, async (req,
     const err = ticketTypeError(body, { creating: true });
     if (err) return res.status(400).json({ error: err });
 
+    const cErr = await coversError(body, String(body.eventKey).trim(), { creating: true });
+    if (cErr) return res.status(400).json({ error: cErr });
+
     const ticketType = new TicketType({ eventKey: String(body.eventKey).trim() });
     applyEditable(ticketType, body);
+    if (body.covers) ticketType.covers = body.covers;
     await ticketType.save();
     recordAudit(req, "create", "ticket-type", String(ticketType._id),
       `Created ticket type "${ticketType.name}" for ${ticketType.eventKey}`);
@@ -207,7 +248,10 @@ router.patch("/:id", authMiddleware, adminMiddleware, requireManagement, async (
     const ticketType = await TicketType.findById(req.params.id);
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });
 
+    const cErr = await coversError(body, ticketType.eventKey);
+    if (cErr) return res.status(400).json({ error: cErr });
     applyEditable(ticketType, body);
+    if (body.covers) ticketType.covers = body.covers;
     await ticketType.save();
     recordAudit(req, "update", "ticket-type", String(ticketType._id),
       `Updated ticket type "${ticketType.name}" for ${ticketType.eventKey}`,
@@ -230,6 +274,10 @@ router.delete("/:id", authMiddleware, adminMiddleware, requireManagement, async 
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(404).json({ error: "Ticket type not found" });
+    }
+    // Sold tickets keep pointing at their type: switch it off instead (Nov 22 2026).
+    if (await Order.exists({ "items.ticketTypeId": new mongoose.Types.ObjectId(req.params.id), status: { $in: ["paid", "fulfilled"] } })) {
+      return res.status(409).json({ error: "People have bought this ticket, so it can't be deleted. Switch it off instead." });
     }
     const ticketType = await TicketType.findByIdAndDelete(req.params.id);
     if (!ticketType) return res.status(404).json({ error: "Ticket type not found" });

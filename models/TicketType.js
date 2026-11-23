@@ -63,7 +63,10 @@ const ticketTypeSchema = new mongoose.Schema(
     sortOrder: {
       type: Number,
       default: 0
-    }
+    },
+    // A multi-event pass (Nov 22 2026; eventKey "multi-event", services/ticketSales.js): the
+    // events it gets you into, always including the Main Event. Empty on an event's own tickets.
+    covers: { type: [String], default: undefined, index: true }
   },
   {
     timestamps: true
@@ -80,6 +83,8 @@ ticketTypeSchema.pre("validate", function () {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
   }
+  // A pass's slug never matches an event's own ticket slug (counts are matched on slugs).
+  if (this.eventKey === "multi-event" && this.slug && !this.slug.startsWith("pass-")) this.slug = `pass-${this.slug}`;
 });
 
 export default mongoose.models.TicketType || mongoose.model("TicketType", ticketTypeSchema);

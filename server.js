@@ -22,6 +22,8 @@ import { migrateDirectorySelfHideOnce } from "./services/directoryHide.js";
 import { migrateVipTypeOnce } from "./services/vipFlag.js";
 import { migratePassNamesOnce } from "./services/passNames.js";
 import AttendeeModel from "./models/Attendee.js";
+import EventConfigModel from "./models/EventConfig.js";
+import { copyDefaultsToBriefingsOnce } from "./services/ticketTypeDefaults.js";
 import EmailTemplateModel from "./models/EmailTemplate.js";
 import { clearRightsCache } from "./services/rightsStore.js";
 import { clearExhibitorCache } from "./services/exhibitorCache.js";
@@ -288,6 +290,8 @@ if (!IMPORT_ONLY) mongoose
     migrateVipTypeOnce({ User: UserModel, AppContent, AdminAudit, onDone: () => { clearRightsCache(); clearExhibitorCache(); } });
     // Once: exhibitor passes named "Connect Pass", "All Access Pass" gone (it's the Power Pass), issued Speaker Passes "Speaker Pass".
     migratePassNamesOnce({ Attendee: AttendeeModel, EmailTemplate: EmailTemplateModel, AppContent, AdminAudit });
+    // Every Briefing without its own tickets gets a copy of the defaults (Nov 22 2026: own prices per event).
+    copyDefaultsToBriefingsOnce({ EventConfig: EventConfigModel });
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 

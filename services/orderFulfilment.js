@@ -63,49 +63,64 @@ export async function fulfilOrder(order, session = null) {
   const types = await TicketType.find({ _id: { $in: typeIds } }).lean();
   const slugOf = new Map(types.map((t) => [String(t._id), t.slug || ""]));
 
+  // A multi-event pass (Nov 22 2026, services/ticketSales.js) issues one pass per covered event,
+  // each with its own ticket ID, so the holder counts at every event and is checked in at each.
+  const coversOf = new Map(types.filter((t) => t.eventKey === "multi-event").map((t) => [String(t._id), t.covers || []]));
+
+  const issueOne = async (person, slug, eventKey) => {
+    // Resume-safe: reuse a pass this order already issued to this person for this event.
+    const existing = await Attendee.findOne({ "details.orderId": String(doc._id), email: person.email, ticketType: slug, eventKey });
+    if (existing) return existing;
+    const ticketId = crypto.randomBytes(6).toString("hex");
+    const attendee = new Attendee({
+      name: `${person.firstName} ${person.lastName}`.trim(),
+      email: person.email,
+      ticketId,
+      ticketType: slug,
+      eventKey,
+      stripeSessionId: doc.stripeSessionId || session?.id || undefined,
+      promoCode: doc.promoCode || "",
+      details: {
+        firstName: person.firstName,
+        lastName: person.lastName,
+        ...(person.title ? { jobTitle: person.title } : {}),
+        ...(person.company ? { organisation: person.company } : {}),
+        orderId: String(doc._id),
+        source: "multi-checkout",
+        ...(coversOf.has(String(person.ticketTypeId)) ? { passId: String(person.ticketTypeId) } : {})
+      },
+      // The booker's own pass is theirs: link it to their account
+      // (the claim other passes get when their owner signs up).
+      ...(doc.booker?.userId && person.email === doc.booker.email
+        ? { claimedBy: doc.booker.userId }
+        : {}),
+      purchaseDate: new Date()
+    });
+    await attendee.save();
+    console.log("🎟 Order pass issued:", ticketId);
+    return attendee;
+  };
+
   const issued = [];
   for (const person of doc.attendees) {
     const slug = slugOf.get(String(person.ticketTypeId)) || "";
-    if (!person.attendeeId) {
-      // Resume-safe: reuse a pass this order already issued to this person.
-      const existing = await Attendee.findOne({
-        "details.orderId": String(doc._id),
-        email: person.email,
-        ticketType: slug
-      });
-      if (existing) {
-        person.attendeeId = existing._id;
-        person.ticketId = existing.ticketId;
-      } else {
-        const ticketId = crypto.randomBytes(6).toString("hex");
-        const attendee = new Attendee({
-          name: `${person.firstName} ${person.lastName}`.trim(),
-          email: person.email,
-          ticketId,
-          ticketType: slug,
-          eventKey: doc.eventKey,
-          stripeSessionId: doc.stripeSessionId || session?.id || undefined,
-          promoCode: doc.promoCode || "",
-          details: {
-            firstName: person.firstName,
-            lastName: person.lastName,
-            ...(person.title ? { jobTitle: person.title } : {}),
-            ...(person.company ? { organisation: person.company } : {}),
-            orderId: String(doc._id),
-            source: "multi-checkout"
-          },
-          // The booker's own pass is theirs: link it to their account
-          // (the claim other passes get when their owner signs up).
-          ...(doc.booker?.userId && person.email === doc.booker.email
-            ? { claimedBy: doc.booker.userId }
-            : {}),
-          purchaseDate: new Date()
-        });
-        await attendee.save();
-        person.attendeeId = attendee._id;
-        person.ticketId = ticketId;
-        console.log("🎟 Order pass issued:", person.email, ticketId);
+    const covers = coversOf.get(String(person.ticketTypeId));
+    if (covers?.length) {
+      const passes = [];
+      for (const eventKey of covers) {
+        const a = await issueOne(person, slug, eventKey);
+        passes.push({ eventKey, attendeeId: a._id, ticketId: a.ticketId });
+        issued.push({ person: { ...(person.toObject ? person.toObject() : person), ticketId: a.ticketId }, slug });
       }
+      person.passes = passes;
+      person.attendeeId = passes[0].attendeeId;
+      person.ticketId = passes[0].ticketId;
+      continue;
+    }
+    if (!person.attendeeId) {
+      const a = await issueOne(person, slug, doc.eventKey);
+      person.attendeeId = a._id;
+      person.ticketId = a.ticketId;
     }
     issued.push({ person, slug });
   }
