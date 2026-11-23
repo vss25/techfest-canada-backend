@@ -77,6 +77,7 @@ import appExhibitorsRouter from "./routes/appExhibitors.js"; // the public exhib
 import consoleRouter from "./routes/console.js";       // admin console API
 import { offeringsRouter, contractsRouter } from "./routes/contracts.js"; // sales contracts + offerings catalogue
 import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
+import { consoleRouter as linkedinPostsRouter, publicRouter as linkedinPostsGoRouter, linkedinProfilePostCallback } from "./routes/linkedinProfilePosts.js"; // Marketing › LinkedIn posts for my profile
 import salesEventRouter from "./routes/salesEvent.js"; // Sales for one event: past participants to reconnect with, reach-outs, this event's sales
 import contentCalendarRouter from "./routes/contentCalendar.js"; // Marketing › Social media calendar: planned items, spreadsheet upload, mark done
 import expleeRouter, { startExpleeSync } from "./routes/explee.js"; // Sales › Hot leads: Explee's hot leads, synced every 10 minutes
@@ -170,6 +171,9 @@ app.get("/api/auth/linkedin/callback", awardLinkedinCallback);
 app.get("/api/auth/linkedin/callback", attendingLinkedinCallback);
 // "Share on LinkedIn" from the apps (state "ttfc-shr.…", routes/linkedinShare.js): the same registered redirect URI.
 app.get("/api/auth/linkedin/callback", linkedinShareCallback);
+// "LinkedIn posts for my profile" (state "ttfc-lip.…", routes/linkedinProfilePosts.js): the same registered redirect URI.
+app.get("/api/auth/linkedin/callback", linkedinProfilePostCallback);
+app.use("/api/linkedin-posts", linkedinPostsGoRouter); // the one-time hop to LinkedIn's sign-in
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", ticketAuthRouter); // POST /ticket-login, /claim-ticket, /refresh
 app.use("/api/auth", emailLinkRouter);  // POST /email-link, /email-link/verify
@@ -232,6 +236,7 @@ app.use("/api/console/sales-event", salesEventRouter); // past participants + th
 app.use("/api/console/content-calendar", contentCalendarRouter); // content calendar items (before the console router)
 app.use("/api/console/explee", expleeRouter); // Sales › Hot leads (before the console router)
 app.use("/api/console/commitments", commitmentsRouter); // Home › My work: tasks and flags (before the console router)
+app.use("/api/console/linkedin-posts", linkedinPostsRouter); // Marketing › LinkedIn posts for my profile (management; before the console router)
 app.use("/api/console/social", socialPostsRouter); // Marketing › Social posts, Claude writing, calendar (before the console router)
 app.use("/api/console/offerings", offeringsRouter); // Sales contracts: the offerings catalogue (super admin edits; before the console router)
 app.use("/api/console/contracts", contractsRouter); // Sales contracts: build, approve, send, sign, tasks, PDF (before the console router)

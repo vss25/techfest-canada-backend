@@ -163,3 +163,49 @@ export async function postArticleToLinkedin({ accessToken, personId, text, link,
   }
   throw lastErr;
 }
+
+/**
+ * A plain text post on the member's own profile (Nov 22 2026, Marketing › LinkedIn posts for my profile). Links in
+ * the text stay as written (LinkedIn previews the first). The TTFC page is tagged only where the text already names
+ * it (a personal post: nothing is added). A refused tag doesn't stop the post. Returns { urn, url }; throws
+ * LinkedIn's error otherwise.
+ */
+export async function postTextToLinkedin({ accessToken, personId, text, mention = TTFC_PAGE, http = axios, versions = apiVersions() }) {
+  if (!accessToken || !personId || !String(text || "").trim()) throw new Error("Missing token, member or text");
+  const author = `urn:li:person:${personId}`;
+  const plain = littleText(text);
+  const name = mention?.name ? mention.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+  const commentary = name && new RegExp(`(?:\\\\@)?${name}`, "i").test(plain) ? withPageMention(plain, mention) : plain;
+  let lastErr;
+  for (const version of versions) {
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      "LinkedIn-Version": version,
+      "X-Restli-Protocol-Version": "2.0.0",
+      "Content-Type": "application/json",
+    };
+    const body = {
+      author,
+      commentary,
+      visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+    };
+    try {
+      let post;
+      try {
+        post = await http.post(`${API}/posts`, body, { headers, timeout: 15000 });
+      } catch (err) {
+        const s = err?.response?.status;
+        if (commentary === plain || (s !== 400 && s !== 422)) throw err;
+        post = await http.post(`${API}/posts`, { ...body, commentary: plain }, { headers, timeout: 15000 });
+      }
+      return postUrlOf(post);
+    } catch (err) {
+      lastErr = err;
+      if (!isRetiredVersion(err)) throw err;
+    }
+  }
+  throw lastErr;
+}
