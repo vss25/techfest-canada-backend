@@ -16,6 +16,7 @@
    and routes/console.js wire them to the database.
 ========================================================= */
 
+import { eventClause } from "./attendeeVisibility.js";
 import { createHash, randomBytes } from "node:crypto";
 import { cleanText, cleanPage, csvCell } from "./brochureDownloads.js";
 import { normalizeTicketId } from "./ticketAccess.js";
@@ -587,8 +588,8 @@ const escRx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 export const LIVE_RSVPS = Object.freeze({ spam: { $ne: true }, mergedInto: { $in: ["", null] } });
 
 /** ?q= name, email or ticket ID; ?tier=; ?option= (a day or an experience); ?verified=0|1; ?review=1 possible duplicates */
-export function rsvpsFilter({ q, tier, option, verified, review } = {}) {
-  const filter = { ...LIVE_RSVPS };
+export function rsvpsFilter({ q, tier, option, verified, review, eventKey } = {}) {
+  const filter = { ...LIVE_RSVPS, ...eventClause(eventKey) };
   const t = cleanText(tier).toLowerCase();
   if (TIERS.includes(t)) filter.tier = t;
   const o = cleanText(option);

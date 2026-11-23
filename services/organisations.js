@@ -75,6 +75,7 @@ import { CMS_FIELDS } from "./cmsSchema.js";
 import { findLogoCandidates, safeFetch } from "./logoFetch.js";
 import { prepareLogo, storeLogo } from "./logoStore.js";
 import { appLogoUrl } from "./logoRaster.js";
+import { ticketEventKey } from "./attendeeVisibility.js";
 
 /* ================= the rules (pure) ================= */
 
@@ -456,16 +457,17 @@ export function buildOrganisations({ partners = [], logos = [], speakers = [], p
 /* ================= reading the sources ================= */
 
 const GROQ = `{
-  "partners": *[_type=="partner" && !(_id in path("drafts.**"))]{_id,name,displayName,category,order,"website":coalesce(url, website),logoScale,"logo":logo.asset->url,matrixGroup,description,active,showInApp},
+  "partners": *[_type=="partner" && !(_id in path("drafts.**"))]{_id,name,displayName,category,order,"website":coalesce(url, website),logoScale,"logo":logo.asset->url,matrixGroup,description,active,showInApp,"eventRefs":events[]._ref},
   "logos": *[_type in ["sponsor","sponsorMarquee","homeSponsor"] && defined(logo) && active != false && !(_id in path("drafts.**"))]{name,url,"logo":logo.asset->url},
-  "speakers": *[_type=="speaker" && !(_id in path("drafts.**"))]{_id,name,company}
+  "speakers": *[_type=="speaker" && !(_id in path("drafts.**"))]{_id,name,company,"eventRefs":events[]._ref},
+  "events": *[_type=="event" && !(_id in path("drafts.**")) && defined(eventKey.current)]{_id,"key":eventKey.current}
 }`;
 const CMS_URL = `https://${SANITY_PROJECT}.apicdn.sanity.io/v2021-10-21/data/query/production?query=${encodeURIComponent(GROQ)}`;
 const parseCms = (json) => {
   const r = json?.result;
   if (!r || typeof r !== "object") return null;
   const list = (v) => (Array.isArray(v) ? v : []);
-  const out = { partners: list(r.partners), logos: list(r.logos), speakers: list(r.speakers) };
+  const out = { partners: list(r.partners), logos: list(r.logos), speakers: list(r.speakers), events: list(r.events) };
   return out.partners.length || out.speakers.length ? out : null;
 };
 const newCmsCache = () => makeAgendaCache({ url: CMS_URL, parse: parseCms, label: "ORGANISATIONS CMS", ttlMs: 60_000, fetchImpl: (...a) => globalThis.fetch(...a) });
@@ -484,7 +486,9 @@ export function personDomain(email) {
 const isBooth = (t) => /^BOOTH-/i.test(String(t?.ticketId || "")) || /^booth/i.test(String(t?.type ?? t?.ticketType ?? ""));
 
 /** Everyone attending, one per person: { id, name, org, domain }. */
-export function attendingPeople({ users = [], guests = [], hidden = null } = {}) {
+export function attendingPeople({ users = [], guests = [], hidden = null, eventKey = "" } = {}) {
+  // One event only (Nov 23 2026): its passes; a pass from before the event spine is the 2026 main event's.
+  const onEvent = (t) => !eventKey || ticketEventKey(t) === eventKey;
   const shadow = hidden ? shadowFor(hidden, {}) : null;
   const out = [];
   const seen = new Set();   // accounts' emails: their unclaimed passes are the same person (or someone left out)
@@ -493,14 +497,14 @@ export function attendingPeople({ users = [], guests = [], hidden = null } = {})
     const email = String(u.email || "").trim().toLowerCase();
     if (email) seen.add(email);
     if (u.banned || u.directoryHidden || shadow?.ids.has(String(u._id))) continue;
-    const passes = (u.tickets || []).filter((t) => t && !isBooth(t) && !t.hiddenByStaff);
+    const passes = (u.tickets || []).filter((t) => t && !isBooth(t) && !t.hiddenByStaff && onEvent(t));
     if (!passes.length) continue;
     const fromPass = passes.map((t) => guestWork(t.details).organization).find(Boolean) || "";
     out.push({ id: `u:${u._id}`, name: line(u.name), org: line(u.organization) || fromPass, domain: personDomain(email) });
   }
   const guestSeen = new Set();
   for (const g of guests || []) {
-    if (!g || g.directoryHidden || g.hiddenByStaff || g.syncDuplicate || g.claimedBy || isBooth(g)) continue;
+    if (!g || g.directoryHidden || g.hiddenByStaff || g.syncDuplicate || g.claimedBy || isBooth(g) || !onEvent(g)) continue;
     if (/^guest$/i.test(line(g.name))) continue;
     if (shadow && isHiddenGuest(g, shadow)) continue;
     const email = String(g.email || "").trim().toLowerCase();
@@ -515,10 +519,16 @@ export function attendingPeople({ users = [], guests = [], hidden = null } = {})
   return out;
 }
 
-const GUEST_SELECT = "name email ticketId ticketType directoryHidden hiddenByStaff syncDuplicate claimedBy details.organisation details.organization details.company details.firstName details.lastName";
-const USER_SELECT = "name email organization banned directoryHidden tickets.ticketId tickets.type tickets.hiddenByStaff tickets.details.organisation tickets.details.organization tickets.details.company";
+const GUEST_SELECT = "name email eventKey ticketId ticketType directoryHidden hiddenByStaff syncDuplicate claimedBy details.organisation details.organization details.company details.firstName details.lastName";
+const USER_SELECT = "name email organization banned directoryHidden tickets.ticketId tickets.type tickets.eventKey tickets.hiddenByStaff tickets.details.organisation tickets.details.organization tickets.details.company";
 
-async function loadInputs() {
+/** CMS items on one event: tagged with it, or tagged with none (the CMS's "none ticked = every event"). */
+export function onCmsEvent(items = [], eventId = "") {
+  if (!eventId) return items;
+  return (items || []).filter((x) => !x?.eventRefs?.length || x.eventRefs.includes(eventId));
+}
+
+async function loadInputs(eventKey = "") {
   const [source, users, guests, companies, settings, hidden] = await Promise.all([
     cms.get(),
     // Suspended and directory-hidden accounts are read too, so their unclaimed passes (same email) stay out.
@@ -529,30 +539,39 @@ async function loadInputs() {
     OrgSetting.find({}).lean(),
     hiddenState(),
   ]);
+  // One event (Nov 23 2026): its partners and speakers in the CMS. An event the CMS doesn't know has none.
+  const eventId = eventKey ? ((source?.events || []).find((e) => e.key === eventKey)?._id || "-none-") : "";
   return {
-    partners: source?.partners || [], logos: source?.logos || [], speakers: source?.speakers || [], cmsOk: !!source,
-    people: attendingPeople({ users, guests, hidden }), companies, settings,
+    partners: onCmsEvent(source?.partners || [], eventId), logos: source?.logos || [], speakers: onCmsEvent(source?.speakers || [], eventId), cmsOk: !!source,
+    people: attendingPeople({ users, guests, hidden, eventKey }), companies, settings,
   };
 }
 
 /* ================= the memo (≤ 60 s) ================= */
 
 const TTL_MS = 60_000;
-let memo = { at: 0, value: null, pending: null, gen: 0 };
+// One memo per event ("" = every event, what the shipped apps and panel read).
+let memos = new Map();
+let gen = 0;
+const memoFor = (k) => { if (!memos.has(k)) memos.set(k, { at: 0, value: null, pending: null }); return memos.get(k); };
 
-/** The built list → { updatedAt, featured, attending, rows, needsLogo, aliases, cmsOk }. */
-export async function organisations({ fresh = false } = {}) {
+/** The built list → { updatedAt, featured, attending, rows, needsLogo, aliases, cmsOk }. With `eventKey` (Nov 23
+    2026): only that event's passes, partners and speakers. */
+export async function organisations({ fresh = false, eventKey = "" } = {}) {
+  const k = typeof eventKey === "string" ? eventKey.trim() : "";
+  const memo = memoFor(k);
   if (!fresh && memo.value && Date.now() - memo.at < TTL_MS) return memo.value;
   if (memo.pending) return memo.pending;
-  const gen = memo.gen;
-  const pending = loadInputs().then((inputs) => {
-    const value = { updatedAt: new Date().toISOString(), cmsOk: inputs.cmsOk, ...buildOrganisations(inputs) };
-    if (memo.gen === gen) memo = { at: Date.now(), value, pending: null, gen };
+  const g = gen;
+  const pending = loadInputs(k).then((inputs) => {
+    const value = { updatedAt: new Date().toISOString(), cmsOk: inputs.cmsOk, eventKey: k, ...buildOrganisations(inputs) };
+    if (gen === g) Object.assign(memoFor(k), { at: Date.now(), value, pending: null });
     queueLogoLookups(value.needsLogo, inputs.settings);
     return value;
   }).catch((err) => {
-    if (memo.pending === pending) memo.pending = null;
-    if (memo.value) { console.error("ORGANISATIONS ERROR (kept the last list):", err?.message || err); return memo.value; }
+    const m = memoFor(k);
+    if (m.pending === pending) m.pending = null;
+    if (m.value) { console.error("ORGANISATIONS ERROR (kept the last list):", err?.message || err); return m.value; }
     throw err;
   });
   memo.pending = pending;
@@ -575,8 +594,8 @@ export function appOrg(o) {
 const payloadOf = new WeakMap();   // the built list → its payload (built once per list, not once per request)
 
 /** The public payload. */
-export async function organisationsPayload() {
-  const v = await organisations();
+export async function organisationsPayload({ eventKey = "" } = {}) {
+  const v = await organisations({ eventKey });
   let body = payloadOf.get(v);
   if (!body) {
     body = { updatedAt: v.updatedAt, featured: v.featured.map(appOrg), attending: v.attending.map(appOrg) };
@@ -587,7 +606,8 @@ export async function organisationsPayload() {
 
 /** A staff change here: the next read rebuilds (other servers within a minute). */
 export function forgetOrganisations({ cmsToo = false } = {}) {
-  memo = { at: 0, value: null, pending: null, gen: memo.gen + 1 };
+  memos = new Map();
+  gen += 1;
   if (cmsToo) cms = newCmsCache();
 }
 

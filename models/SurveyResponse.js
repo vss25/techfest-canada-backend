@@ -19,6 +19,8 @@ const surveyResponseSchema = new mongoose.Schema({
   title:        { type: String, default: "" },
   company:      { type: String, default: "" },
   answers:      { type: mongoose.Schema.Types.Mixed, default: {} },
+  // The event the answers are about (Nov 23 2026; rows from before are the 2026 main event's, services/surveyRules.js).
+  eventKey:     { type: String, default: "ttfc-2026-main", index: true },
   submittedAt:  { type: Date, default: null },
   count:        { type: Number, default: 0 },
   userAgent:    { type: String, default: "" },

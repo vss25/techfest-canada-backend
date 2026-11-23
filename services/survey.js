@@ -6,6 +6,7 @@ import Attendee from "../models/Attendee.js";
 import JobLock from "../models/JobLock.js";
 import AppNotification from "../models/AppNotification.js";
 import SurveyResponse from "../models/SurveyResponse.js";
+import { ticketEventKey } from "./attendeeVisibility.js";
 import CampaignSend from "../models/CampaignSend.js";
 import Subscription from "../models/Subscription.js";
 import CheckinMark from "../models/CheckinMark.js";
@@ -19,7 +20,7 @@ import { normalizeTicketId } from "./ticketAccess.js";
 import { ENQUIRE_EMAIL } from "./appInviteEmail.js";
 import { surveyMessage, sendSurveyBatch, BATCH_SIZE, buildSurveyEmail, surveyLogoUrl, ROLE_COPY } from "./surveyEmail.js";
 import {
-  SURVEY_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, EVENT_DAYS, DOOR_POINTS, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
+  SURVEY_KEY, SURVEY_EVENT_KEY, NOTIFY_BATCH, EMAIL_CAMPAIGN, AUDIENCES, EVENT_DAYS, DOOR_POINTS, INVITE_ONLY_MESSAGE, NOT_ATTENDED_MESSAGE,
   surveyConfig, surveyOpen, cleanSurveySave, cleanAnswers, respondentFields, signSurveyToken, verifySurveyToken, surveyUrl,
   checkedInAudience, checkedInPersons, checkedInKeys, personsMatching, personSubjects, personEmails, linkTarget, scoreGroup,
   averagesOf, naCountsOf, cleanEmail, waveDue, notifyWindow, trackingRows, trackingIndex, personKeys, filterTracking,
@@ -113,7 +114,7 @@ export async function saveSurvey(body, { by = "", now = new Date() } = {}) {
 
 /* ---------- who's answering ---------- */
 
-const USER_FIELDS = "name email jobTitle organization role banned appOnboarded lastActiveAt tickets.ticketId";
+const USER_FIELDS = "name email jobTitle organization role banned appOnboarded lastActiveAt tickets.ticketId tickets.eventKey";
 const passTitle = (d = {}) => str(d.jobTitle || d.title).trim();
 const passCompany = (d = {}) => str(d.organization || d.organisation || d.company).trim();
 const passName = (a) => str(a?.name).trim() || [a?.details?.firstName, a?.details?.lastName].filter(Boolean).join(" ").trim();
@@ -123,6 +124,7 @@ export const asRespondent = (u, via = "auth") => fromUser(u, via);
 const fromUser = (u, via) => ({
   kind: "user", via, user: u, key: `u:${u._id}`, userId: String(u._id), attendeeId: null,
   tickets: (u.tickets || []).map((t) => t?.ticketId).filter(Boolean),
+  eventKeys: (u.tickets || []).filter(Boolean).map(ticketEventKey),
   known: { name: str(u.name).trim(), email: cleanEmail(u.email), title: str(u.jobTitle).trim(), company: str(u.organization).trim() },
 });
 
@@ -152,7 +154,7 @@ export async function identify({ authorization = "", token = "" } = {}) {
     const user = await User.findById(t.id).select(USER_FIELDS).lean();
     return user ? fromUser(user, "token") : null;
   }
-  const a = await Attendee.findById(t.id).select("name email details claimedBy ticketId").lean();
+  const a = await Attendee.findById(t.id).select("name email details claimedBy ticketId eventKey").lean();
   if (!a) return null;
   // A pass someone has claimed since: answered as that account.
   if (a.claimedBy) {
@@ -163,6 +165,7 @@ export async function identify({ authorization = "", token = "" } = {}) {
   return {
     kind: "pass", via: "pass", key: email ? `e:${email}` : `p:${a._id}`, userId: null, attendeeId: String(a._id),
     tickets: a.ticketId ? [a.ticketId] : [],
+    eventKeys: [ticketEventKey(a)],
     known: { name: passName(a), email, title: passTitle(a.details || {}), company: passCompany(a.details || {}) },
   };
 }
@@ -189,10 +192,15 @@ export async function isCheckedIn(who, { directory = peopleDirectory } = {}) {
   return !!(await CheckinMark.exists({ subject: { $in: [...subjects] }, ...doorFilter() }));
 }
 
+/** Nov 23 2026: someone with passes, none of them for the survey's event (a Vancouver 2027 buyer), isn't asked about
+    it. No passes at all (an app account) stays as before. */
+export const forSurveyEvent = (who) => !who?.eventKeys?.length || who.eventKeys.includes(SURVEY_EVENT_KEY);
+
 /** May this person (identify()'s answer) see and answer the survey? Anyone invited, unless the config keeps it to
     people who checked in (checkedInOnly). */
 export async function canAnswer(who, cfg, { checkedIn = () => isCheckedIn(who) } = {}) {
   if (!who) return false;
+  if (!forSurveyEvent(who)) return false;
   return cfg?.checkedInOnly ? !!(await checkedIn()) : true;
 }
 
@@ -238,7 +246,7 @@ export async function submitResponse({ who = null, body = {}, now = new Date(), 
     ...fields, submittedAt: now, updatedAt: now, userAgent: shortUserAgent(userAgent), ipHash: ipHash(ip),
   };
   for (const [id, v] of Object.entries(c.answers)) set[`answers.${id}`] = v;
-  const update = { $set: set, $inc: { count: 1 }, $setOnInsert: { createdAt: now } };
+  const update = { $set: set, $inc: { count: 1 }, $setOnInsert: { createdAt: now, eventKey: SURVEY_EVENT_KEY } };
   if (c.unanswered.length) update.$unset = Object.fromEntries(c.unanswered.map((id) => [`answers.${id}`, ""]));
   // The raw driver: answers.<id> paths on a Mixed field, no Mongoose insert defaults in the way.
   const run = () => SurveyResponse.collection.updateOne({ key }, update, { upsert: true });

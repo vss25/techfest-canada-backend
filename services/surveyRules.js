@@ -84,6 +84,9 @@ import { personAliasIds, personSubject } from "./checkinDesk.js";
 ========================================================= */
 
 export const SURVEY_KEY = "survey.config";
+/** The event this survey is about (Nov 23 2026): the 2026 main event. Its answers carry this key, and someone whose
+    passes are all for other events isn't asked (a Vancouver 2027 buyer isn't asked how Toronto 2026 went). */
+export const SURVEY_EVENT_KEY = "ttfc-2026-main";
 export const SURVEY_PAGE = "https://www.thetechfestival.com/survey";
 /** The app prompt's AppNotification batch (one per person, ever). */
 export const NOTIFY_BATCH = "survey-2026";

@@ -279,3 +279,28 @@ test("formats: logos are absolute https URLs or nothing; scale is the CMS percen
   assert.deepEqual([by("huge").scale, by("huge").logo, by("huge").logoSource], [250, "", ""]);
   assert.deepEqual([by("plain").logo, by("plain").logoSource], ["", ""]);
 });
+
+/* ---------------- one event's organisations (Nov 23 2026) ---------------- */
+import { attendingPeople as _ap, onCmsEvent as _oce } from "../services/organisations.js";
+
+test("attendingPeople with an eventKey keeps only that event's passes (no key = the 2026 main event)", () => {
+  const users = [
+    { _id: "u1", name: "Tor Onto", email: "a@shopify.com", organization: "Shopify", tickets: [{ ticketId: "T1" }] },
+    { _id: "u2", name: "Van Couver", email: "b@telus.com", organization: "Telus", tickets: [{ ticketId: "T2", eventKey: "ttfc-2027-vancouver-briefing" }] },
+  ];
+  const guests = [
+    { _id: "g1", name: "Gee One", email: "c@rbc.com", ticketId: "T3", eventKey: "ttfc-2027-vancouver-briefing", details: { organization: "RBC" } },
+    { _id: "g2", name: "Gee Two", email: "d@td.com", ticketId: "T4", details: { organization: "TD" } },
+  ];
+  const orgs = (k) => _ap({ users, guests, eventKey: k }).map((p) => p.org).sort();
+  assert.deepEqual(orgs(""), ["RBC", "Shopify", "TD", "Telus"]);
+  assert.deepEqual(orgs("ttfc-2027-vancouver-briefing"), ["RBC", "Telus"]);
+  assert.deepEqual(orgs("ttfc-2026-main"), ["Shopify", "TD"]);
+});
+
+test("onCmsEvent keeps items tagged with the event or with none", () => {
+  const items = [{ name: "a", eventRefs: ["ev-tor"] }, { name: "b", eventRefs: ["ev-van"] }, { name: "c", eventRefs: null }, { name: "d", eventRefs: [] }];
+  assert.deepEqual(_oce(items, "ev-van").map((x) => x.name), ["b", "c", "d"]);
+  assert.deepEqual(_oce(items, "").map((x) => x.name), ["a", "b", "c", "d"]);
+  assert.deepEqual(_oce(items, "-none-").map((x) => x.name), ["c", "d"]);
+});
