@@ -1,4 +1,5 @@
 import express from "express";
+import { eventClause, ticketEventKey } from "../services/attendeeVisibility.js";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
@@ -793,7 +794,7 @@ router.all("/kill-switch", killSwitchGone);
 async function allTicketRows() {
   const [users, guests, promos] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode stripeSessionId details").lean(),
+    Attendee.find({}).select("name email eventKey ticketId ticketType purchaseDate checkedIn hiddenByStaff promoCode stripeSessionId details").lean(),
     Promo.find({}).select("code discount").lean(),
   ]);
   // `code` on each row: the coupon code it was bought with, or "No code" / what a staff-made pass is (services/promoCodes.js).
@@ -803,6 +804,9 @@ async function allTicketRows() {
 router.get("/tickets", async (req, res) => {
   const show = String(req.query.show || "visible");
   let rows = await allTicketRows();
+  // ?eventKey= (Nov 23 2026): that event's tickets only (the panel's chosen event).
+  const ek = String(req.query.eventKey || "").trim();
+  if (ek) rows = rows.filter((r) => r.eventKey === ek);
   const dupes = new Set(duplicateKeys(rows));
   rows = rows.map((r) => ({ ...r, duplicate: dupes.has(r.key) }));
   if (show === "visible") rows = rows.filter((r) => !r.hidden);
@@ -1067,7 +1071,7 @@ router.get("/rsvps", async (req, res) => {
   const [rows, total, everyone] = await Promise.all([
     Rsvp.find(filter).sort({ updatedAt: -1 }).skip(page * size).limit(size).lean(),
     Rsvp.countDocuments(filter),
-    Rsvp.find(LIVE_RSVPS, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1, duplicateOf: 1 }).lean(),
+    Rsvp.find({ ...LIVE_RSVPS, ...eventClause(req.query.eventKey) }, { tier: 1, tierVerified: 1, days: 1, options: 1, dietary: 1, dietaryOther: 1, name: 1, firstName: 1, lastName: 1, duplicateOf: 1 }).lean(),
   ]);
   // Each row's ticket code (the coupon it was bought with, or what a staff-made pass is): services/promoCodes.js.
   const codes = await rsvpCodes(rows);
@@ -1438,7 +1442,8 @@ router.post("/speaker-passes/send-selected", requireManagement, async (req, res)
 // the website any more, or never was: a manual pass) and media (Oct 23 2026: the speaker is Media = Yes,
 // People's answer for whoever holds the pass, else the pass's own mark).
 router.get("/speaker-passes", async (req, res) => {
-  const docs = await Attendee.find(SPEAKER_SCOPE).select(SPEAKER_PASS_FIELDS).lean();
+  // ?eventKey= (Nov 23 2026): the chosen event's speaker passes only.
+  const docs = await Attendee.find({ ...SPEAKER_SCOPE, ...eventClause(req.query.eventKey) }).select(SPEAKER_PASS_FIELDS).lean();
   const [rsvps, site, media] = await Promise.all([speakerRsvps(docs.map((d) => d.ticketId)), loadWebsite(), mediaOfPasses(docs.map((d) => d._id))]);
   const live = await Promise.all(docs.map((d) => livePass(d, site)));
   const rows = live.map(({ doc, source, onWebsite }) => ({

@@ -5,6 +5,7 @@ import { requireAdmin, requireManagement, isManagement } from "../middleware/adm
 import { makeLimiter, SHARED_ADDRESS } from "../services/ticketAccess.js";
 import { buildSurveyEmail, surveyLogoPng } from "../services/surveyEmail.js";
 import { previewUnsubscribeUrl } from "../services/unsubscribe.js";
+import { SURVEY_EVENT_KEY } from "../services/surveyRules.js";
 import {
   SURVEY_PAGE, AUDIENCES, INVITE_ONLY_MESSAGE, publicSurvey, appSurveyCard, responseRow, responsesCsv, signSurveyToken, surveyOpen,
   filterTracking, trackingCsv, TRACKING_STATUSES,
@@ -197,7 +198,7 @@ adminRouter.get("/", wrap(async (req, res) => {
   const cfg = await loadSurvey({ fresh: true });
   const [stats, progress] = await Promise.all([surveyStats(cfg), notifyProgress(cfg)]);
   res.json({
-    config: cfg, ...stats, open: surveyOpen(cfg), invitationOnly: true, canEdit: isManagement(req.user), audiences: Object.keys(AUDIENCES),
+    config: cfg, eventKey: SURVEY_EVENT_KEY, ...stats, open: surveyOpen(cfg), invitationOnly: true, canEdit: isManagement(req.user), audiences: Object.keys(AUDIENCES),
     notifyProgress: progress,
   });
 }));

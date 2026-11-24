@@ -42,7 +42,8 @@ export const appOrganisationsRouter = express.Router();
 
 appOrganisationsRouter.get("/organisations", async (req, res) => {
   try {
-    const body = await organisationsPayload();
+    // ?eventKey= (Nov 23 2026): only that event's organisations. Without it, every event's (the shipped apps).
+    const body = await organisationsPayload({ eventKey: String(req.query.eventKey || "").slice(0, 80) });
     res.set("Cache-Control", "public, max-age=120");
     res.json(body);
   } catch (err) {
@@ -67,7 +68,7 @@ async function audit(req, action, key, detail) {
 const keyOf = (v) => companyKey(cleanCompanyName(v));
 
 consoleOrganisationsRouter.get("/", wrap(async (req, res) => {
-  const [v, settings] = await Promise.all([organisations({ fresh: req.query.fresh === "1" }), OrgSetting.find({}).lean()]);
+  const [v, settings] = await Promise.all([organisations({ fresh: req.query.fresh === "1", eventKey: String(req.query.eventKey || "").slice(0, 80) }), OrgSetting.find({}).lean()]);
   const mine = new Map(settings.map((s) => [s.key, s]));
   const aliases = [];
   for (const [from, into] of Object.entries(BUILTIN_ALIASES)) {

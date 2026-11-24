@@ -52,6 +52,23 @@ export const eventKeyOf = (value) => {
   return key || DEFAULT_EVENT_KEY;
 };
 
+/** A Mongo clause for one event's rows (Nov 23 2026): `field` is `key`, or, for the 2026 main event, missing too
+    (rows from before the event spine). No key → {} (every event, as before). */
+export const eventClause = (key, field = "eventKey") => {
+  const k = typeof key === "string" ? key.trim().slice(0, 80) : "";
+  if (!k) return {};
+  return { [field]: k === DEFAULT_EVENT_KEY ? { $in: [k, null] } : k };
+};
+
+/** Accounts and passes cut down to one event's passes (Nov 23 2026): each account keeps only that event's tickets
+    (none left: dropped), passes for other events are dropped. For a campaign about one event. */
+export function onlyEventPasses({ users = [], guests = [] } = {}, key = DEFAULT_EVENT_KEY) {
+  return {
+    users: (users || []).map((u) => ({ ...u, tickets: (u?.tickets || []).filter((t) => ticketEventKey(t) === key) })).filter((u) => u.tickets.length),
+    guests: (guests || []).filter((g) => ticketEventKey(g) === key),
+  };
+}
+
 /** Staff = an admin account (the check every staff gate in this codebase uses). */
 export const isStaffViewer = (user) => !!user && user.role === "admin";
 

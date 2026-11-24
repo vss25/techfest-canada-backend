@@ -2,6 +2,7 @@ import express from "express";
 import { requireAdmin } from "../middleware/adminAuth.js";
 import { directory } from "./people.js";
 import { eventSummary } from "../services/eventSummary.js";
+import { inEvent, LEGACY_EVENT_KEY } from "../services/people.js";
 import { loadAttendance } from "../services/checkinAttendance.js";
 
 /* =========================================================
@@ -29,19 +30,27 @@ const router = express.Router();
 router.use(requireAdmin);
 
 // One summary per directory copy: the directory is rebuilt at most every 20 s, so is this.
+// Nov 23 2026: ?event=<eventKey> counts that event's people only (services/people.js inEvent); without it, everyone.
 const made = new WeakMap();
-function summaryOf(d) {
-  if (!made.has(d)) made.set(d, eventSummary(d.people, { builtAt: d.builtAt, stripe: d.stripe, speakersLoaded: d.speakersLoaded }));
-  return made.get(d);
+function summaryOf(d, event = "") {
+  if (!made.has(d)) made.set(d, new Map());
+  const byEvent = made.get(d);
+  if (!byEvent.has(event)) {
+    const people = event ? d.people.filter((p) => inEvent(p, event)) : d.people;
+    byEvent.set(event, eventSummary(people, { builtAt: d.builtAt, stripe: d.stripe, speakersLoaded: d.speakersLoaded }));
+  }
+  return byEvent.get(event);
 }
 
 router.get("/", async (req, res) => {
   try {
     const d = await directory({ fresh: req.query.refresh === "1" });
     // Attendance is live (the desk's marks, read now); the headcounts are the directory copy's.
-    const attendance = await loadAttendance(d).catch((err) => { console.error("EVENT SUMMARY ATTENDANCE ERROR:", err?.message || err); return null; });
+    const event = /^[a-z0-9-]{1,80}$/.test(String(req.query.event || "")) ? String(req.query.event) : "";
+    // The desk's attendance is the 2026 main event's (its door days); another event has none yet.
+    const attendance = event && event !== LEGACY_EVENT_KEY ? null : await loadAttendance(d).catch((err) => { console.error("EVENT SUMMARY ATTENDANCE ERROR:", err?.message || err); return null; });
     res.set("Cache-Control", "private, no-store");
-    res.json({ ...summaryOf(d), attendance });
+    res.json({ ...summaryOf(d, event), attendance, event: event || null });
   } catch (err) {
     console.error("EVENT SUMMARY ERROR:", err?.message || err);
     res.status(500).json({ error: "Couldn't build the event summary. Try again." });

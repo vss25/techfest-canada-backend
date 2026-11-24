@@ -1,4 +1,5 @@
 import express from "express";
+import { onlyEventPasses } from "../services/attendeeVisibility.js";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
 import Subscription from "../models/Subscription.js";
@@ -50,12 +51,12 @@ async function audit(req, action, detail = "") {
 async function currentRows() {
   const [users, guests, optedOut, rsvps, sends] = await Promise.all([
     User.find({ "tickets.0": { $exists: true } }).select("name email jobTitle organization banned tickets").lean(),
-    Attendee.find({}).select("name email ticketId ticketType details hiddenByStaff purchaseDate").lean(),
+    Attendee.find({}).select("name email eventKey ticketId ticketType details hiddenByStaff purchaseDate").lean(),
     Subscription.find({ subscribed: false }).select("email").lean(),
     Rsvp.find({ spam: { $ne: true } }).select("ticketId firstName lastName spam").lean(),
     CampaignSend.find({ campaign: REMINDER_CAMPAIGN }).select("email status sentAt error sends").lean(),
   ]);
-  const { recipients } = planRecipients({ users, guests, optedOut: optedOut.map((s) => s.email) });
+  const { recipients } = planRecipients({ ...onlyEventPasses({ users, guests }), optedOut: optedOut.map((s) => s.email) });
   const { rows, rsvpd } = planReminders(recipients, rsvps);
   const withStatus = withReminderStatus(rows, sends);
   return { rows: withStatus, counts: reminderCounts(withStatus, rsvpd) };
