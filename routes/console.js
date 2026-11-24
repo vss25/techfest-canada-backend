@@ -1,5 +1,5 @@
 import express from "express";
-import { eventClause, ticketEventKey } from "../services/attendeeVisibility.js";
+import { eventClause, ticketEventKey, DEFAULT_EVENT_KEY } from "../services/attendeeVisibility.js";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
@@ -155,31 +155,42 @@ async function audit(req, action, targetType = "", targetId = "", detail = "") {
 }
 
 /* ---------- Overview ---------- */
+/* ?eventKey= (Nov 23 2026): accounts, passes and app activity for that event only (passes carrying it; rows from
+   before the event spine count as the 2026 main event). The app's social counts (posts, chats, groups, discussions)
+   aren't tied to an event; with another event chosen they're answered as null with `socialScoped: false`. Open
+   reports are moderation work, so always the whole app's. Without it, everything as before. */
 router.get("/stats", async (req, res) => {
   const day = new Date(Date.now() - 864e5);
   const week = new Date(Date.now() - 7 * 864e5);
+  const evKey = typeof req.query.eventKey === "string" ? req.query.eventKey.trim().slice(0, 80) : "";
+  const ev = eventClause(evKey);
+  const ticketEv = !evKey ? {} : evKey === DEFAULT_EVENT_KEY
+    ? { tickets: { $elemMatch: { $or: [{ eventKey: evKey }, { eventKey: null }] } } }
+    : { tickets: { $elemMatch: { eventKey: evKey } } };
+  const social = (p) => (evKey && evKey !== DEFAULT_EVENT_KEY ? Promise.resolve(null) : p);
   const [users, ticketHolders, guests, posts, messages, groups, discussions, openReports,
          activeToday, activeWeek, eventsToday, topScreens, topTaps] = await Promise.all([
-    User.countDocuments({}),
-    User.countDocuments({ "tickets.0": { $exists: true } }),
+    // With an event: accounts holding a pass for it (the "users" figure is then the same as ticket holders).
+    User.countDocuments(evKey ? ticketEv : {}),
+    User.countDocuments(evKey ? ticketEv : { "tickets.0": { $exists: true } }),
     // Guest tickets not on the app: real ones only. Passes staff hid (duplicates, tests, replaced passes)
     // and Stripe re-sync copies don't count.
-    Attendee.countDocuments({ claimedBy: { $exists: false }, hiddenByStaff: { $ne: true }, syncDuplicate: { $ne: true } }),
-    SocialPost.countDocuments({}),
-    SocialMessage.countDocuments({}),
-    CommunityGroup.countDocuments({}),
-    Discussion.countDocuments({}),
-    Report.countDocuments({ status: "open" }),
-    AppEvent.distinct("userId", { at: { $gte: day }, userId: { $ne: null } }).then((a) => a.length),
-    AppEvent.distinct("userId", { at: { $gte: week }, userId: { $ne: null } }).then((a) => a.length),
-    AppEvent.countDocuments({ at: { $gte: day } }),
-    AppEvent.aggregate([{ $match: { name: "screen_view", at: { $gte: week } } },
+    Attendee.countDocuments({ claimedBy: { $exists: false }, hiddenByStaff: { $ne: true }, syncDuplicate: { $ne: true }, ...ev }),
+    social(SocialPost.countDocuments({})),
+    social(SocialMessage.countDocuments({})),
+    social(CommunityGroup.countDocuments({})),
+    social(Discussion.countDocuments({})),
+    Report.countDocuments({ status: "open" }),   // moderation work: always the whole app's
+    AppEvent.distinct("userId", { at: { $gte: day }, userId: { $ne: null }, ...ev }).then((a) => a.length),
+    AppEvent.distinct("userId", { at: { $gte: week }, userId: { $ne: null }, ...ev }).then((a) => a.length),
+    AppEvent.countDocuments({ at: { $gte: day }, ...ev }),
+    AppEvent.aggregate([{ $match: { name: "screen_view", at: { $gte: week }, ...ev } },
       { $group: { _id: "$screen", n: { $sum: 1 } } }, { $sort: { n: -1 } }, { $limit: 10 }]),
-    AppEvent.aggregate([{ $match: { name: "tap", at: { $gte: week } } },
+    AppEvent.aggregate([{ $match: { name: "tap", at: { $gte: week }, ...ev } },
       { $group: { _id: { s: "$screen", t: "$target" }, n: { $sum: 1 } } }, { $sort: { n: -1 } }, { $limit: 10 }]),
   ]);
   res.json({ users, ticketHolders, guests, posts, messages, groups, discussions, openReports,
-             activeToday, activeWeek, eventsToday,
+             activeToday, activeWeek, eventsToday, eventKey: evKey || null, socialScoped: posts !== null,
              topScreens: topScreens.map((x) => ({ key: x._id || "(none)", count: x.n })),
              topTaps: topTaps.map((x) => ({ key: `${x._id.s} › ${x._id.t}`, count: x.n })) });
 });
@@ -385,7 +396,8 @@ router.get("/threads/:key", async (req, res) => {
 
 /* ---------- Activity stream ---------- */
 router.get("/events", async (req, res) => {
-  const filter = {};
+  // ?eventKey= (Nov 23 2026): that event's activity (rows without one are the 2026 main event's); none = all, as before.
+  const filter = { ...eventClause(req.query.eventKey) };
   if (req.query.name) filter.name = String(req.query.name);
   if (req.query.screen) filter.screen = String(req.query.screen);
   const before = req.query.before ? new Date(String(req.query.before)) : new Date();

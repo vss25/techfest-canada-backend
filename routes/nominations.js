@@ -1,6 +1,7 @@
 import express from "express";
 import { Resend } from "resend";
 import Nomination from "../models/Nomination.js";
+import { cleanEventKey } from "../services/attendeeVisibility.js";
 import { nominationFromForm } from "../services/nominations.js";
 import { switchOn } from "../services/liveSwitches.js";
 import { appStoreBlockHtml } from "../services/appStoreBlock.js";
@@ -208,7 +209,9 @@ router.post("/nominations", async (req, res) => {
     // nomination: the email to staff below still goes out.
     let saved = null;
     try {
-      saved = await Nomination.create(nominationFromForm(n));
+      // Optional `eventKey` from the form (Nov 23 2026: next year's awards); left off = the 2026 main event's.
+      const eventKey = cleanEventKey(n?.eventKey);
+      saved = await Nomination.create({ ...nominationFromForm(n), ...(eventKey ? { eventKey } : {}) });
     } catch (saveErr) {
       console.error("Nomination save failed (still emailing staff):", saveErr?.message || saveErr);
     }

@@ -1,5 +1,6 @@
 import express from "express";
 import Nomination from "../models/Nomination.js";
+import { eventClause } from "../services/attendeeVisibility.js";
 import JuryAssignment from "../models/JuryAssignment.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement } from "../middleware/adminAuth.js";
@@ -59,15 +60,16 @@ async function audit(req, action, targetId = "", detail = "") {
   }).catch(() => {});
 }
 
+// ?eventKey= on the list, the CSV and the winners (Nov 23 2026): that awards event only; none = every year, as before.
 router.get("/", async (req, res) => {
-  const docs = await Nomination.find({}).sort({ submittedAt: -1, createdAt: -1 }).lean();
+  const docs = await Nomination.find(eventClause(req.query.eventKey)).sort({ submittedAt: -1, createdAt: -1 }).lean();
   const rows = docs.map(nominationRow);
   const counts = { all: rows.length, ...Object.fromEntries(NOMINATION_STATUSES.map((s) => [s, rows.filter((r) => r.status === s).length])) };
   res.json({ rows, counts, recovered: rows.filter((r) => r.source === "email").length });
 });
 
 router.get("/export", requireManagement, async (req, res) => {
-  const docs = await Nomination.find({}).sort({ submittedAt: -1, createdAt: -1 }).lean();
+  const docs = await Nomination.find(eventClause(req.query.eventKey)).sort({ submittedAt: -1, createdAt: -1 }).lean();
   await audit(req, "nominations_export", "", `${docs.length} rows`);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-catalyst-nominations-${new Date().toISOString().slice(0, 10)}.csv"`);
@@ -140,7 +142,7 @@ router.post("/recover", requireManagement, async (req, res) => {
 const WINNER_FIELDS = "status categoryType pillar sector specialAward nomineeType nomineeName nomineeOrganisation nomineeWebsite award";
 
 router.get("/winners", async (req, res) => {
-  const noms = await Nomination.find({ status: "winner" }).select(WINNER_FIELDS).lean();
+  const noms = await Nomination.find({ status: "winner", ...eventClause(req.query.eventKey) }).select(WINNER_FIELDS).lean();
   const rows = sortWinners(noms.map(winnerAdminRow));
   res.json({ live: await switchOn(WINNERS_KEY), rows });
 });

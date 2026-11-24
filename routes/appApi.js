@@ -1,6 +1,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { cleanEventKey } from "../services/attendeeVisibility.js";
 import Attendee from "../models/Attendee.js";
 import { forgetDirectory } from "../services/directoryCache.js";
 import { AppEvent, AppContent, Report, Block } from "../models/Admin.js";
@@ -80,8 +81,10 @@ router.post("/events", async (req, res) => {
   const user = await optionalUser(req);
   const appVersion = String(req.body?.appVersion || "").slice(0, 20);
   const platform = eventPlatform(req.body);
+  // Optional `eventKey` on the batch (Nov 23 2026): the event the app is showing. Left off = the 2026 main event.
+  const eventKey = cleanEventKey(req.body?.eventKey) || undefined;
   const docs = list.map((e) => cleanEvent(e)).filter(Boolean)
-    .map((e) => ({ ...e, userId: user?._id, deviceId, appVersion, platform }));
+    .map((e) => ({ ...e, userId: user?._id, deviceId, appVersion, platform, ...(eventKey ? { eventKey } : {}) }));
   if (docs.length) await AppEvent.insertMany(docs, { ordered: false }).catch(() => {});
   if (user) User.updateOne({ _id: user._id }, { $set: { lastActiveAt: new Date() } }).catch(() => {});
   res.json({ accepted: docs.length });

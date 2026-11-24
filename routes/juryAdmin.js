@@ -3,6 +3,7 @@ import Juror from "../models/Juror.js";
 import JuryAssignment from "../models/JuryAssignment.js";
 import JurySignInRequest from "../models/JurySignInRequest.js";
 import Nomination from "../models/Nomination.js";
+import { eventClause, cleanEventKey } from "../services/attendeeVisibility.js";
 import { AdminAudit } from "../models/Admin.js";
 import { requireAdmin, requireManagement, isManagement } from "../middleware/adminAuth.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -81,13 +82,15 @@ const NOMINATION_FIELDS = {
   selfNomination: 1,
 };
 
-/** Everything the pages need, read once: jurors on the jury, all allocations, the nominations they point at. */
-async function snapshot() {
+/** Everything the pages need, read once: jurors on the jury, all allocations, the nominations they point at.
+    `eventKey` (Nov 23 2026, the pages' ?eventKey=): that awards event's jurors and nominations only; "" = all. */
+async function snapshot(eventKey = "") {
+  const ev = eventClause(eventKey);
   const [jurors, assignments] = await Promise.all([
-    Juror.find({ removedAt: null }).sort({ name: 1 }).lean(),
+    Juror.find({ removedAt: null, ...ev }).sort({ name: 1 }).lean(),
     JuryAssignment.find({}).lean(),
   ]);
-  const noms = await Nomination.find({}, NOMINATION_FIELDS).lean();
+  const noms = await Nomination.find(ev, NOMINATION_FIELDS).lean();
   const nomById = new Map(noms.map((n) => [String(n._id), n]));
   const jurorById = new Map(jurors.map((j) => [String(j._id), j]));
   // Allocations that count: active, to a juror on the jury, for a nomination the jury can see.
@@ -121,7 +124,7 @@ async function settingsPayload() {
 /* ---------- overview & jurors ---------- */
 
 router.get("/overview", wrap(async (req, res) => {
-  const [snap, sp, rubric] = await Promise.all([snapshot(), settingsPayload(), currentRubric()]);
+  const [snap, sp, rubric] = await Promise.all([snapshot(req.query.eventKey), settingsPayload(), currentRubric()]);
   const rows = snap.jurors.map((j) => jurorRow(j, snap.live));
   res.json({
     jurors: rows,
@@ -159,7 +162,8 @@ router.post("/jurors", requireManagement, wrap(async (req, res) => {
     await audit(req, "jury_juror_restore", juror._id, `${juror.name} <${juror.email}>`);
   } else {
     try {
-      juror = (await Juror.create({ ...c.set, createdBy: by(req), updatedBy: by(req) })).toObject();
+      const eventKey = cleanEventKey(req.body?.eventKey) || undefined;   // optional; left off = the 2026 main event
+      juror = (await Juror.create({ ...c.set, eventKey, createdBy: by(req), updatedBy: by(req) })).toObject();
     } catch (err) {
       if (err?.code === 11000) return res.status(409).json({ error: "A juror with this email is already on the jury." });
       throw err;
@@ -237,7 +241,7 @@ router.delete("/jurors/:id", requireManagement, wrap(async (req, res) => {
 /* ---------- allocation ---------- */
 
 router.get("/nominations", wrap(async (req, res) => {
-  const [snap, sp] = await Promise.all([snapshot(), settingsPayload()]);
+  const [snap, sp] = await Promise.all([snapshot(req.query.eventKey), settingsPayload()]);
   const pool = new Set(sp.pool.statuses);
   const byNom = new Map();
   for (const a of snap.assignments) {
@@ -461,8 +465,8 @@ router.put("/settings", requireManagement, wrap(async (req, res) => {
 
 /* ---------- results (management) ---------- */
 
-async function results() {
-  const [snap, rubric] = await Promise.all([snapshot(), currentRubric()]);
+async function results(eventKey = "") {
+  const [snap, rubric] = await Promise.all([snapshot(eventKey), currentRubric()]);
   const criteria = rubric.criteria;
   const byNom = new Map();
   for (const x of snap.live) {
@@ -506,14 +510,15 @@ async function results() {
   return { rows, criteria: criteria.map((x) => ({ ...x, share: shares[x.key] })), rubricVersion: rubric.version, jurors: snap.jurors.map((j) => jurorRow(j, snap.live)) };
 }
 
+// ?eventKey= on the results and the CSV (Nov 23 2026): that awards event only; none = all, as before.
 router.get("/results", requireManagement, wrap(async (req, res) => {
-  const r = await results();
+  const r = await results(req.query.eventKey);
   await audit(req, "jury_results_view", "", `${r.rows.length} nominations`);
   res.json(r);
 }));
 
 router.get("/results.csv", requireManagement, wrap(async (req, res) => {
-  const r = await results();
+  const r = await results(req.query.eventKey);
   await audit(req, "jury_results_export", "", `${r.rows.length} rows`);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="ttfc-catalyst-jury-results-${new Date().toISOString().slice(0, 10)}.csv"`);

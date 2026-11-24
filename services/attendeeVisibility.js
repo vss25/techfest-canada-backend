@@ -52,6 +52,12 @@ export const eventKeyOf = (value) => {
   return key || DEFAULT_EVENT_KEY;
 };
 
+/** A client-sent event key, checked (Nov 23 2026): lowercase letters, digits and dashes, 2–80 characters, else "". */
+export const cleanEventKey = (value) => {
+  const k = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[a-z0-9][a-z0-9-]{1,79}$/.test(k) ? k : "";
+};
+
 /** A Mongo clause for one event's rows (Nov 23 2026): `field` is `key`, or, for the 2026 main event, missing too
     (rows from before the event spine). No key → {} (every event, as before). */
 export const eventClause = (key, field = "eventKey") => {

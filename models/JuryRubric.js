@@ -24,6 +24,8 @@ const juryRubricSchema = new mongoose.Schema(
     version: { type: Number, required: true, unique: true },
     criteria: { type: [criterionSchema], default: [] },
     createdBy: { type: String, default: "" },
+    // The awards' event (Nov 23 2026). Missing = the 2026 main event.
+    eventKey: { type: String, default: undefined },
   },
   { timestamps: true }
 );

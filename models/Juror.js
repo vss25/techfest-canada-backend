@@ -12,6 +12,8 @@ import mongoose from "mongoose";
    removed: every older session stops working. */
 const jurorSchema = new mongoose.Schema(
   {
+    // The awards' event this juror is on (Nov 23 2026). Missing = the 2026 main event.
+    eventKey: { type: String, default: undefined, index: true },
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     organisation: { type: String, default: "", trim: true },
