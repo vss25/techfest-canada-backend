@@ -224,7 +224,7 @@ router.post("/preview", async (req, res) => {
 });
 
 
-const LIST_FIELDS = `..., "imageUrl": image.asset->url, "imageOriginalUrl": imageOriginal.asset->url, "logoUrl": logo.asset->url, "heroImageUrl": heroImage.asset->url, "citySkylineUrl": citySkyline.asset->url,
+const LIST_FIELDS = `..., "imageUrl": image.asset->url, "imageOriginalUrl": imageOriginal.asset->url, "logoUrl": logo.asset->url, "heroImageUrl": heroImage.asset->url, "citySkylineUrl": citySkyline.asset->url, "whyImageUrl": whyImage.asset->url, "whyPosterUrl": whyPoster.asset->url,
       "imageDims": image.asset->metadata.dimensions, "logoDims": logo.asset->metadata.dimensions`;
 
 /* =========================================================
