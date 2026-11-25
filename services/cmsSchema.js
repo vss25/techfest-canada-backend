@@ -330,7 +330,8 @@ export function cleanCopyMedia(v) {
 
 /** [{label, value}] for "What we know so far": both required, at most 8. Pure. */
 /** The home page's sections under the top of the page, in the website's order unless staff reorder them. */
-export const HOME_SECTIONS = ["season", "agenda", "highlights", "form"];
+// Nov 25 2026 (the website's new look): Next up, Who's on stage and Partners added. Same list as the website's src/lib/homeLayout.js.
+export const HOME_SECTIONS = ["season", "next", "speakers", "agenda", "highlights", "partners", "form"];
 
 /** [{ key, on }] → every known section once, in the given order, then any missing ones (shown). Pure. */
 export function cleanHomeSections(v) {
