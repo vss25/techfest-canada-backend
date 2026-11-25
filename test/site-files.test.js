@@ -54,7 +54,11 @@ test("upload check: declared type must be MP4 or PDF and match the bytes; 40 MB 
   assert.deepEqual(ok, { type: "video/mp4", ext: "mp4", filename: "hero-bg.mp4", bytes: 64 });
   assert.equal(checkSiteFile({ body: pdf(), contentType: "application/pdf; charset=binary", filename: "Brochure.pdf" }).type, "application/pdf");
 
-  assert.deepEqual(checkSiteFile({ body: pdf(), contentType: "image/png" }), { status: 415, error: "Upload an MP4 video or a PDF." });
+  assert.deepEqual(checkSiteFile({ body: pdf(), contentType: "image/png" }), { status: 415, error: "Upload an MP4 video, a GIF or a PDF." });
+  // An animated GIF for an agenda card (Nov 25 2026): accepted when the bytes really are a GIF.
+  const gif = Buffer.concat([Buffer.from("GIF89a", "latin1"), Buffer.alloc(32)]);
+  assert.equal(checkSiteFile({ body: gif, contentType: "image/gif", filename: "loop.GIF" }).filename, "loop.gif");
+  assert.deepEqual(checkSiteFile({ body: pdf(), contentType: "image/gif" }), { status: 415, error: "That file isn't a GIF." });
   assert.equal(checkSiteFile({ body: pdf(), contentType: "" }).status, 415);
   assert.deepEqual(checkSiteFile({ body: pdf(), contentType: "video/mp4" }), { status: 415, error: "That file isn't an MP4 video." });
   assert.deepEqual(checkSiteFile({ body: mp4(), contentType: "application/pdf" }), { status: 415, error: "That file isn't a PDF." });

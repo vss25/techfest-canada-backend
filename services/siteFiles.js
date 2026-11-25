@@ -22,7 +22,8 @@ export const SITE_FILE_MAX_BYTES = 40 * 1024 * 1024;
 export const SITE_FILE_TOO_BIG = "Files must be 40 MB or smaller.";
 
 /** What may be uploaded: Content-Type → file extension. */
-export const SITE_FILE_TYPES = Object.freeze({ "video/mp4": "mp4", "application/pdf": "pdf" });
+// image/gif (Nov 25 2026): an animated GIF for an agenda session's card, stored unchanged so it keeps moving.
+export const SITE_FILE_TYPES = Object.freeze({ "video/mp4": "mp4", "application/pdf": "pdf", "image/gif": "gif" });
 
 /** The app content keys that hold the uploaded files' URLs → the extension each one takes. */
 export const SITE_FILE_KEYS = Object.freeze({ "site.hero_video_url": "mp4", "site.brochure_url": "pdf" });
@@ -36,6 +37,7 @@ const MP4_BRANDS = /^(isom|iso[2-9]|mp41|mp42|avc1|M4V |M4VP|MSNV|dash|mmp4|3gp[
 export function sniffSiteFile(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 12) return "";
   if (buf.subarray(0, 5).toString("latin1") === "%PDF-") return "application/pdf";
+  if (/^GIF8[79]a$/.test(buf.subarray(0, 6).toString("latin1"))) return "image/gif";
   if (buf.subarray(4, 8).toString("latin1") === "ftyp" && MP4_BRANDS.test(buf.subarray(8, 12).toString("latin1"))) return "video/mp4";
   return "";
 }
@@ -56,11 +58,11 @@ const mb = (n) => `${(n / 1e6).toFixed(1)} MB`;   // like Finder shows it
 export function checkSiteFile({ body, contentType, filename } = {}) {
   const declared = String(contentType || "").split(";")[0].trim().toLowerCase();
   const ext = SITE_FILE_TYPES[declared];
-  if (!ext) return { status: 415, error: "Upload an MP4 video or a PDF." };
+  if (!ext) return { status: 415, error: "Upload an MP4 video, a GIF or a PDF." };
   if (!Buffer.isBuffer(body) || !body.length) return { status: 400, error: "The file is empty." };
   if (body.length > SITE_FILE_MAX_BYTES) return { status: 413, error: SITE_FILE_TOO_BIG };
   if (sniffSiteFile(body) !== declared) {
-    return { status: 415, error: ext === "mp4" ? "That file isn't an MP4 video." : "That file isn't a PDF." };
+    return { status: 415, error: ext === "mp4" ? "That file isn't an MP4 video." : ext === "gif" ? "That file isn't a GIF." : "That file isn't a PDF." };
   }
   return { type: declared, ext, filename: siteFileName(filename, ext), bytes: body.length };
 }

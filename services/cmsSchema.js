@@ -107,6 +107,9 @@ export const CMS_FIELDS = {
     moderator: person,                        // { name, org? }
     stage: str(80),
     description: str(1500),
+    // Nov 25 2026 (the owner): a picture, GIF or short video on the session's card (the website's agenda cards).
+    image: img,                               // a photo
+    mediaUrl: url,                            // a GIF or MP4 uploaded with /cms/upload-file (the website plays only our own uploads)
     // "auto" (on when there's a moderator, never keynotes or breaks) | "on" | "off"; missing = "auto"
     polls: liveMode,
     qa: liveMode,
