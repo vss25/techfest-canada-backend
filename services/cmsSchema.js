@@ -202,6 +202,9 @@ export const CMS_FIELDS = {
        and pictures are changed in Website text & media (siteCopy). */
     heroEvent: ref,                           // the event the top of the page promotes; empty = the next event
     sections: homeSections,                   // the sections under the top of the page, in order, each on or off (HOME_SECTIONS)
+    // Nov 25 2026: the speakers Who's on stage highlights, in order (the website shows the first six). Empty = automatic.
+    // The top of the page's own words and media are heroEyebrow / heroHeadline / heroText / heroImage / heroVideoUrl above.
+    featuredSpeakers: refs,
   },
   /* Website text & media (Nov 25 2026): one document, id "siteCopy". Each row replaces one piece of the website's
      built-in wording (`match`, the text as built in) or one built-in picture / video (`match`, its address) with the
@@ -334,7 +337,7 @@ export function cleanCopyMedia(v) {
 /** [{label, value}] for "What we know so far": both required, at most 8. Pure. */
 /** The home page's sections under the top of the page, in the website's order unless staff reorder them. */
 // Nov 25 2026 (the website's new look): Next up, Who's on stage and Partners added. Same list as the website's src/lib/homeLayout.js.
-export const HOME_SECTIONS = ["season", "next", "speakers", "agenda", "highlights", "partners", "form"];
+export const HOME_SECTIONS = ["season", "partners", "next", "speakers", "agenda", "highlights", "form"];   // partners moved up under the timeline
 
 /** [{ key, on }] → every known section once, in the given order, then any missing ones (shown). Pure. */
 export function cleanHomeSections(v) {
