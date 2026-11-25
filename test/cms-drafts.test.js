@@ -142,3 +142,11 @@ test("event hero media: photo or video, nothing else; unset stays unset (Nov 25 
   assert.equal(made.error, null);
   assert.equal("heroMedia" in made.set, false);
 });
+
+test("event hero framing and height (Nov 25 2026)", () => {
+  assert.equal(toSanityPatch("event", { heroFocus: 30 }, { creating: false }).set.heroFocus, 30);
+  assert.ok(toSanityPatch("event", { heroFocus: 130 }, { creating: false }).error);
+  assert.ok(toSanityPatch("event", { heroFocus: -1 }, { creating: false }).error);
+  for (const h of ["standard", "tall", "full"]) assert.equal(toSanityPatch("event", { heroHeight: h }, { creating: false }).set.heroHeight, h);
+  assert.ok(toSanityPatch("event", { heroHeight: "huge" }, { creating: false }).error);
+});
