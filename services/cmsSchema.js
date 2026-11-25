@@ -127,6 +127,8 @@ export const CMS_FIELDS = {
     heroVideoUrl: url,
     heroShade: { ...oneOf(...HERO_SHADES), default: "default" },   // the shade over the hero photo / video (Nov 25 2026)
     heroMedia: oneOf("photo", "video"),       // what the top of the page shows, on phones and computers (unset: the video when there is one)
+    heroFocus: { kind: "number", min: 0, max: 100 },  // framing: 0 = show the top, 100 = the bottom (unset: the design's own)
+    heroHeight: oneOf("standard", "tall", "full"),   // how tall the top of the page is (unset: standard)
     photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
     theme: str(120),                          // "Energy & Critical Infrastructure"
     tagline: str(240),                        // one line under the event name
