@@ -21,7 +21,9 @@ const ref = { kind: "ref" };                            // one document id → {
 const eventRows = { kind: "eventRows" };                // a partner's Partners page row for each event: [{ event, row }]
 const facts = { kind: "facts" };                        // [{ label, value }] — "What we know so far"
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
-const video = { kind: "video" };                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
+const video = { kind: "video" };
+const copyTexts = { kind: "copyTexts" };                // website wording changes: [{ match, page?, text }]
+const copyMedia = { kind: "copyMedia" };                // website picture / video swaps: [{ match, page?, url, alt? }]                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
@@ -193,6 +195,11 @@ export const CMS_FIELDS = {
     partnerCtaHeading: str(120),
     partnerCtaText: str(300),
   },
+  /* Website text & media (Nov 25 2026): one document, id "siteCopy". Each row replaces one piece of the website's
+     built-in wording (`match`, the text as built in) or one built-in picture / video (`match`, its address) with the
+     staff's own, on every page or only on `page`. The website applies them (frontend src/lib/siteCopy.js); with no
+     rows it shows its built-in content. Draft → staging → publish like every other type. */
+  siteCopy: { texts: copyTexts, media: copyMedia },
 };
 
 export const CMS_TYPES = Object.keys(CMS_FIELDS);
@@ -268,6 +275,53 @@ export function sessionDoc(s) {
 }
 
 const keyFor2 = (s, i) => `k${i}${String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12)}`;
+
+const squash = (x) => String(x ?? "").replace(/\s+/g, " ").trim();
+/** "" (every page) or a website address like "/vancouver/2027/briefing"; null when it isn't one. */
+function copyPage(x) {
+  const p = String(x ?? "").trim().split(/[?#]/)[0].replace(/\/+$/, "");
+  if (!p) return "";
+  return /^\/[A-Za-z0-9/_.~%-]{0,199}$/.test(p) ? p : null;
+}
+export const COPY_TEXT_MAX = 1500;
+export const COPY_MEDIA_MAX = 300;
+
+/** Website wording changes → [{ _key, match, page?, text }]. A row with no `match` or no `text` is dropped (empty =
+    the built-in wording); a later row for the same page and text replaces an earlier one. Pure. */
+export function cleanCopyTexts(v) {
+  if (!Array.isArray(v)) return { error: "must be a list" };
+  const seen = new Map();
+  for (const r of v) {
+    const match = squash(r?.match).slice(0, 2000);
+    const text = String(r?.text ?? "").replace(/[ \t]+/g, " ").trim().slice(0, 4000);
+    const page = copyPage(r?.page);
+    if (page === null) return { error: "a row's page must be a website address like /venue" };
+    if (!match || !text || text === match) continue;
+    seen.set(`${page}\n${match}`, { match, ...(page ? { page } : {}), text });
+  }
+  if (seen.size > COPY_TEXT_MAX) return { error: `at most ${COPY_TEXT_MAX} changes` };
+  return { rows: [...seen.values()].map((r, i) => ({ _key: keyFor2(r.match, i), ...r })) };
+}
+
+/** Website picture / video swaps → [{ _key, match, page?, url, alt? }]. `url` must be an https address. Pure. */
+export function cleanCopyMedia(v) {
+  if (!Array.isArray(v)) return { error: "must be a list" };
+  const seen = new Map();
+  for (const r of v) {
+    const match = String(r?.match ?? "").trim().slice(0, 1000);
+    const url = String(r?.url ?? "").trim();
+    const page = copyPage(r?.page);
+    if (page === null) return { error: "a row's page must be a website address like /venue" };
+    if (!match || !url) continue;
+    let ok = false;
+    try { ok = new URL(url).protocol === "https:" && url.length <= 1000 && !/[\s"'<>()\\]/.test(url); } catch { ok = false; }
+    if (!ok) return { error: "each picture or video needs a full https:// address" };
+    const alt = squash(r?.alt).slice(0, 300);
+    seen.set(`${page}\n${match}`, { match, ...(page ? { page } : {}), url, ...(alt ? { alt } : {}) });
+  }
+  if (seen.size > COPY_MEDIA_MAX) return { error: `at most ${COPY_MEDIA_MAX} pictures and videos` };
+  return { rows: [...seen.values()].map((r, i) => ({ _key: keyFor2(r.match, i), ...r })) };
+}
 
 /** [{label, value}] for "What we know so far": both required, at most 8. Pure. */
 export function cleanFacts(v) {
@@ -409,6 +463,13 @@ export function toSanityPatch(type, body, { creating, draft = false }) {
         if (!seen.size) { unset.push(key); break; }
         set[key] = [...seen].slice(0, 20).map(([ev, row], i) => ({ _key: `r${i}${ev.replace(/[^A-Za-z0-9]/g, "").slice(-10)}`, event: { _type: "reference", _ref: ev }, row }));
         break;
+      }
+      case "copyTexts":
+      case "copyMedia": {
+        const out = rule.kind === "copyTexts" ? cleanCopyTexts(v) : cleanCopyMedia(v);
+        if (out.error) return { set, unset, error: `${key}: ${out.error}` };
+        if (!out.rows.length) { unset.push(key); break; }
+        set[key] = out.rows; break;
       }
       case "facts":
       case "steps": {
