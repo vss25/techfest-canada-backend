@@ -134,3 +134,11 @@ test("event hero shade: the five choices, anything else refused, standard when n
   assert.equal(made.error, null);
   assert.equal(made.set.heroShade, "default");
 });
+
+test("event hero media: photo or video, nothing else; unset stays unset (Nov 25 2026)", () => {
+  for (const v of ["photo", "video"]) assert.equal(toSanityPatch("event", { heroMedia: v }, { creating: false }).set.heroMedia, v);
+  assert.ok(toSanityPatch("event", { heroMedia: "both" }, { creating: false }).error);
+  const made = toSanityPatch("event", { name: "Ottawa Briefing 2027", city: "Ottawa", type: "briefing", year: 2027 }, { creating: true });
+  assert.equal(made.error, null);
+  assert.equal("heroMedia" in made.set, false);
+});
