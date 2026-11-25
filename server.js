@@ -80,6 +80,7 @@ import { mouItemsRouter, mousRouter } from "./routes/mous.js"; // MOU drafts + t
 import socialPostsRouter from "./routes/socialPosts.js"; // Marketing › Social posts + calendar
 import postTemplatesRouter from "./routes/postTemplates.js"; // Marketing › Post templates (uploaded blank designs)
 import { consoleRouter as linkedinPostsRouter, publicRouter as linkedinPostsGoRouter, linkedinProfilePostCallback } from "./routes/linkedinProfilePosts.js"; // Marketing › LinkedIn posts for my profile
+import museLinkedinBridgeRouter from "./routes/museLinkedinBridge.js"; // the free Muse bridge for LinkedIn profile posts (off unless MUSE_BRIDGE_ENABLED + MUSE_BRIDGE_KEY are set)
 import salesEventRouter from "./routes/salesEvent.js"; // Sales for one event: past participants to reconnect with, reach-outs, this event's sales
 import contentCalendarRouter from "./routes/contentCalendar.js"; // Marketing › Social media calendar: planned items, spreadsheet upload, mark done
 import expleeRouter, { startExpleeSync } from "./routes/explee.js"; // Sales › Hot leads: Explee's hot leads, synced every 10 minutes
@@ -239,6 +240,7 @@ app.use("/api/console/content-calendar", contentCalendarRouter); // content cale
 app.use("/api/console/explee", expleeRouter); // Sales › Hot leads (before the console router)
 app.use("/api/console/commitments", commitmentsRouter); // Home › My work: tasks and flags (before the console router)
 app.use("/api/console/linkedin-posts", linkedinPostsRouter); // Marketing › LinkedIn posts for my profile (management; before the console router)
+app.use("/api/muse/linkedin-posts", museLinkedinBridgeRouter); // the free Muse bridge: queued rounds in, finished drafts back (key-gated, inert while its env vars are unset)
 app.use("/api/console/post-templates", postTemplatesRouter); // Marketing › Post templates (before the console router)
 app.use("/api/console/social", socialPostsRouter); // Marketing › Social posts, Claude writing, calendar (before the console router)
 app.use("/api/console/offerings", offeringsRouter); // Sales contracts: the offerings catalogue (super admin edits; before the console router)
