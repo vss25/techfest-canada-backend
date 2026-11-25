@@ -18,6 +18,7 @@ import { avatarFor } from "../services/socialHelpers.js";
 import { tokenClaims, VIA_GOOGLE, VIA_LINKEDIN } from "../services/signInMethod.js";
 import { autoLinkPasses } from "../services/passAutoLink.js";
 import { RESET_MS, RESET_SENT, newResetToken, hashResetToken, isResetToken, isStaffAccount, mayResetFrom, resetLinkFor, passwordProblem } from "../services/passwordReset.js";
+import { recordActivitySafe } from "../services/staffActivity.js"; // Settings › Staff activity: panel sign-ins
 
 // Request bodies are untrusted: only plain strings reach a query (no {"$ne": …}).
 const cleanEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase().slice(0, 200) : "");
@@ -118,6 +119,9 @@ router.post("/login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
+
+    // Staff activity: the admin panel's sign-in (body.panel "admin") starts a new session. Never fails the sign-in.
+    if (req.body?.panel === "admin" && user.role === "admin") recordActivitySafe(user._id, "signin");
 
     res.json({ token });
 
