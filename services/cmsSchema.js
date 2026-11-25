@@ -100,7 +100,7 @@ export const CMS_FIELDS = {
     format: oneOf(...SESSION_FORMATS),        // drives the colour/style
     featured: bool,
     isBreak: bool,
-    pillar: oneOf("ai", "quantum", "cybersecurity", "robotics", "climate"),
+    pillar: oneOf("ai", "quantum", "cybersecurity", "robotics", "climate"),   // "climate" is the stored key for Clean Tech (renamed Nov 25 2026; key kept so saved sessions still match)
     sector: oneOf("fintech", "healthcare", "energy", "manufacturing", "public", "startups"),
     speakers: people,                         // [{ name, org?, tentative? }]
     moderator: person,                        // { name, org? }
