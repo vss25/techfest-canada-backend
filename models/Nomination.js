@@ -28,6 +28,9 @@ const awardSchema = new mongoose.Schema({
 }, { _id: false });
 
 const nominationSchema = new mongoose.Schema({
+  // The event (awards year) it was sent for (Nov 23 2026). Missing = the 2026 main event's Catalyst Awards.
+  eventKey: { type: String, default: undefined, index: true },
+
   // ═════ SECTION 1 — Award Category ═════
   categoryType: { type: String, enum: ["matrix", "special"], required: true },
   pillar: { type: String, default: "" },

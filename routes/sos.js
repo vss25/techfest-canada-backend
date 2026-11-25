@@ -2,6 +2,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import User from "../models/User.js";
+import { cleanEventKey, eventClause, accountEventKeys } from "../services/attendeeVisibility.js";
 import SosRequest from "../models/SosRequest.js";
 import { AdminAudit } from "../models/Admin.js";
 import { makeLimiter } from "../services/ticketAccess.js";
@@ -78,8 +79,17 @@ const profilePhone = (user) => {
 
 attendeeRouter.get("/options", (req, res) => res.json({ categories: CATEGORIES, locations: LOCATIONS, statusLabels: STATUS_LABELS, note: EMERGENCY_NOTE }));
 
+/** The event a new request is about (Nov 23 2026): the app's `eventKey` when it sends one, else the one event the
+    account holds passes for; otherwise unset (= the 2026 main event, where every request so far came from). */
+function sosEventKey(body, user) {
+  const sent = cleanEventKey(body?.eventKey);
+  if (sent) return sent;
+  const held = [...accountEventKeys(user)];
+  return held.length === 1 ? held[0] : undefined;
+}
+
 attendeeRouter.post("/", wrap(async (req, res) => {
-  const user = await signedIn(req, res);
+  const user = await signedIn(req, res, "name email role contactItems tickets.eventKey");
   if (!user) return;
   const r = cleanSosRequest(req.body);
   if (r.error) return res.status(400).json({ error: r.error });
@@ -88,7 +98,7 @@ attendeeRouter.post("/", wrap(async (req, res) => {
   if (lastHour >= NEW_PER_HOUR) return res.status(429).json({ error: RATE_LIMITED, code: "rate_limited" });
   const doc = await SosRequest.create({
     userId: user._id, name: user.name || "", email: user.email || "", phone: r.phone || profilePhone(user),
-    category: r.category, location: r.location, message: r.message, lastMessageAt: new Date(),
+    category: r.category, location: r.location, message: r.message, lastMessageAt: new Date(), eventKey: sosEventKey(req.body, user),
   });
   // Every responder hears now; staff also get the email. Neither waits for the other or slows the answer.
   alertResponders(staffNote(doc));
@@ -156,9 +166,11 @@ const STATUS_FILTER = {
 
 staffRouter.get("/", wrap(async (req, res) => {
   const key = Object.hasOwn(STATUS_FILTER, String(req.query.status || "")) ? String(req.query.status) : "active";
+  // ?eventKey= (Nov 23 2026): that event's requests only; without it, every event's, as before.
+  const ev = eventClause(req.query.eventKey);
   const [rows, counts] = await Promise.all([
-    SosRequest.find(STATUS_FILTER[key]).sort({ createdAt: -1 }).limit(300).lean(),
-    SosRequest.aggregate([{ $group: { _id: "$status", n: { $sum: 1 } } }]),
+    SosRequest.find({ ...STATUS_FILTER[key], ...ev }).sort({ createdAt: -1 }).limit(300).lean(),
+    SosRequest.aggregate([{ $match: ev }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
   ]);
   const c = { open: 0, acknowledged: 0, resolved: 0 };
   for (const x of counts) if (x._id in c) c[x._id] = x.n;

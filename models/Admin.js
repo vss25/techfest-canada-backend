@@ -15,8 +15,10 @@ const appEventSchema = new Schema({
   appVersion: { type: String, default: "" },
   platform:   { type: String, default: "ios" },
   at:         { type: Date, default: Date.now },
+  eventKey:   { type: String, default: undefined },             // Nov 23 2026: sent by the client; missing = the 2026 main event
 });
 appEventSchema.index({ userId: 1, at: -1 });
+appEventSchema.index({ eventKey: 1, at: -1 });   // Admin › Live activity and Overview for one event
 appEventSchema.index({ platform: 1, name: 1, at: -1 });   // GET /api/console/pwa (web app installs + launches)
 appEventSchema.index({ at: 1 }, { expireAfterSeconds: 400 * 24 * 3600 });
 

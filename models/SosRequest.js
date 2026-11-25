@@ -31,6 +31,8 @@ const sosRequestSchema = new Schema({
   resolvedByName: { type: String, default: "" },
   resolvedAt: { type: Date },
   lastMessageAt: { type: Date },
+  // The event this row belongs to (Nov 23 2026). Missing = the 2026 main event (rows from before; eventClause).
+  eventKey: { type: String, default: undefined, index: true },
 }, { timestamps: true });
 sosRequestSchema.index({ status: 1, createdAt: -1 });
 

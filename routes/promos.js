@@ -1,5 +1,6 @@
 import express from "express";
 import Promo from "../models/Promo.js";
+import { eventClause, cleanEventKey } from "../services/attendeeVisibility.js";
 import { requireAdmin, isManagement } from "../middleware/adminAuth.js";   // staff add codes; past the safeguard they wait for a manager (services/promoApproval.js)
 import { AdminAudit } from "../models/Admin.js";
 import { managerReasons, forStaff } from "../services/promoApproval.js";
@@ -101,7 +102,8 @@ router.post("/promos/validate", async (req, res) => {
 ============================================================ */
 router.get("/admin/promos", requireAdmin, async (req, res) => {
   try {
-    const promos = await Promo.find().sort({ createdAt: -1 }).lean();
+    // ?eventKey= (Nov 23 2026): that event's codes only (codes without one are the 2026 main event's); none = all.
+    const promos = await Promo.find(eventClause(req.query.eventKey)).sort({ createdAt: -1 }).lean();
     // Paid uses come from Stripe (a checkout that was never paid isn't a use).
     let usage = null, usageError = "";
     try {
@@ -145,7 +147,8 @@ router.post("/admin/promos", requireAdmin, async (req, res) => {
 
     // Staff: past the safeguard, the code is saved switched off until a manager approves it.
     const reasons = isManagement(req.user) ? [] : managerReasons({ discount, maxUses: limit.value });
-    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, expiresAt: ends.value, active: !reasons.length,
+    const eventKey = cleanEventKey(req.body.eventKey) || undefined;   // optional; left off = the 2026 main event
+    const promo = await Promo.create({ code, discount, tiers, maxUses: limit.value, expiresAt: ends.value, active: !reasons.length, eventKey,
       createdBy: who(req), approval: reasons.length ? { needed: true, reasons, requestedBy: who(req), requestedAt: new Date() } : undefined });
     audit(req, "promo_create", promo, `${discount}% off${limit.value ? `, ${limit.value} uses` : ", unlimited"}${reasons.length ? ` (waits for a manager: ${reasons.join(", ")})` : ""}`);
     res.json({ ...plain(promo), waiting: reasons.length > 0,

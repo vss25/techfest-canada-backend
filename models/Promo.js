@@ -72,6 +72,9 @@ const promoSchema = new mongoose.Schema({
   },
 
   createdAt: { type: Date, default: Date.now },
+
+  // The event the code is for (Nov 23 2026). Missing = the 2026 main event. Listing only: checkout doesn't check it yet.
+  eventKey: { type: String, default: undefined, index: true },
 });
 
 export default mongoose.model("Promo", promoSchema);
