@@ -426,11 +426,15 @@ router.get("/:type", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// Types with one document whose id is the type's name, and the types that are never created straight to live.
+const ONE_DOC = { homePage: "The home page", siteCopy: "The website text & media list" };
+const ALWAYS_DRAFT = ["event", ...Object.keys(ONE_DOC)];
+
 /* Create. ?draft=1 (the panel), and always for events and the home page: saved as unsent work,
    on no website until it's sent to staging and published. Without it the document goes
    straight to the live site, management only. */
 router.post("/:type", async (req, res, next) => {
-  const live = req.query.draft !== "1" && req.params.type !== "event" && req.params.type !== "homePage";
+  const live = req.query.draft !== "1" && !ALWAYS_DRAFT.includes(req.params.type);
   return live ? requireManagement(req, res, next) : next();
 }, async (req, res) => {
   const { type } = req.params;
@@ -439,8 +443,8 @@ router.post("/:type", async (req, res, next) => {
   const { set, error } = toSanityPatch(type, req.body || {}, { creating: true, draft: req.query.draft === "1" });
   if (error) return res.status(400).json({ error });
   try {
-    if (!(req.query.draft === "1" || type === "event" || type === "homePage") && await refuseWhilePaused(res)) return;
-    if (req.query.draft === "1" || type === "event" || type === "homePage") {
+    if (!(req.query.draft === "1" || ALWAYS_DRAFT.includes(type)) && await refuseWhilePaused(res)) return;
+    if (req.query.draft === "1" || ALWAYS_DRAFT.includes(type)) {
       let id, extra = {};
       if (type === "event") {
         const key = eventKeyFor(set);
@@ -449,10 +453,10 @@ router.post("/:type", async (req, res, next) => {
         extra = { eventKey: { _type: "slug", current: key } };
         const taken = await query(`count(*[_id in [$id, $d] || eventKey.current == $key])`, { id, d: draftId(id), key });
         if (taken?.result || await CmsChange.exists({ docId: id })) return res.status(409).json({ error: "There is already an event for that city, year and type." });
-      } else if (type === "homePage") {
-        id = "homePage";
+      } else if (ONE_DOC[type]) {
+        id = type;
         const taken = await query(`count(*[_id in [$id, $d]])`, { id, d: draftId(id) });
-        if (taken?.result || await CmsChange.exists({ docId: id })) return res.status(409).json({ error: "The home page already exists. Edit it instead." });
+        if (taken?.result || await CmsChange.exists({ docId: id })) return res.status(409).json({ error: `${ONE_DOC[type]} already exists. Edit it instead.` });
       } else {
         id = newDocId(type);
       }

@@ -150,3 +150,27 @@ test("event hero framing and height (Nov 25 2026)", () => {
   for (const h of ["standard", "tall", "full"]) assert.equal(toSanityPatch("event", { heroHeight: h }, { creating: false }).set.heroHeight, h);
   assert.ok(toSanityPatch("event", { heroHeight: "huge" }, { creating: false }).error);
 });
+
+test("website text & media: wording changes and picture swaps are cleaned, deduplicated and bounded", () => {
+  const { set, error } = toSanityPatch("siteCopy", {
+    texts: [
+      { match: "  Why   come ", text: "Why attend" },
+      { match: "Why come", page: "/venue/", text: "Why visit" },
+      { match: "Why come", text: "Why join us" },            // same page + text: the later row wins
+      { match: "Same", text: "Same" },                       // no change: dropped
+      { match: "Empty", text: "  " },                        // empty = the built-in wording: dropped
+    ],
+    media: [{ match: "/ft-audience.webp", url: "https://cdn.sanity.io/images/x/production/a-1x1.jpg", alt: " The  room " }],
+  }, { creating: true, draft: true });
+  assert.equal(error, null);
+  assert.deepEqual(set.texts.map(({ match, page, text }) => [match, page, text]), [["Why come", undefined, "Why join us"], ["Why come", "/venue", "Why visit"]]);
+  assert.equal(new Set(set.texts.map((r) => r._key)).size, 2);
+  assert.deepEqual(set.media.map(({ match, url, alt }) => [match, url, alt]), [["/ft-audience.webp", "https://cdn.sanity.io/images/x/production/a-1x1.jpg", "The room"]]);
+  assert.deepEqual(toSanityPatch("siteCopy", { texts: [], media: [] }, { creating: false }).unset, ["texts", "media"]);
+  assert.match(toSanityPatch("siteCopy", { media: [{ match: "/a.png", url: "javascript:alert(1)" }] }, { creating: false }).error, /https/);
+  assert.match(toSanityPatch("siteCopy", { media: [{ match: "/a.png", url: "https://x.test/a.png);x:url(" }] }, { creating: false }).error, /https/);
+  assert.match(toSanityPatch("siteCopy", { texts: [{ match: "a", text: "b", page: "venue" }] }, { creating: false }).error, /website address/);
+  assert.match(toSanityPatch("siteCopy", { texts: "x" }, { creating: false }).error, /must be a list/);
+  const many = Array.from({ length: 1501 }, (_, i) => ({ match: `t${i}`, text: `u${i}` }));
+  assert.match(toSanityPatch("siteCopy", { texts: many }, { creating: false }).error, /at most 1500/);
+});

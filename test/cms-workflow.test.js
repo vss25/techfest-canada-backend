@@ -78,6 +78,7 @@ test("events and the home page publish first; titles and changed fields for the 
   assert.equal(changeTitle("speaker", { name: "Ada" }), "Ada");
   assert.equal(changeTitle("session", { title: "Opening" }), "Opening");
   assert.equal(changeTitle("homePage", {}), "Home page");
+  assert.equal(changeTitle("siteCopy", {}), "Website text & media");
   assert.deepEqual(changedFields({ _id: "drafts.a", _rev: "1", name: "A", bio: "new", image: { x: 1 } }, { _id: "a", _rev: "2", name: "A", bio: "old", linkedin: "l" }),
     ["bio", "image", "linkedin"]);
   assert.deepEqual(changedFields({ name: "A" }, null), ["name"]);

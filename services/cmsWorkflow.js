@@ -93,6 +93,7 @@ export function strongRefs(value, exists) {
 /** What a change is called in the Changes list. */
 export function changeTitle(type, doc = {}) {
   if (type === "homePage") return "Home page";
+  if (type === "siteCopy") return "Website text & media";
   if (type === "siteSettings") return "Site settings";
   if (type === "aboutContent") return "About page numbers";
   return String(doc.name || doc.title || doc.heroHeadline || doc.city || doc._id || "Untitled").slice(0, 160);
@@ -101,7 +102,7 @@ export function changeTitle(type, doc = {}) {
 export const TYPE_LABELS = {
   speaker: "Speaker", partner: "Partner", sponsor: "Alumni logo", sponsorMarquee: "Marquee logo", homeSponsor: "Home page logo",
   siteSettings: "Site settings", aboutContent: "About page", session: "Agenda session", event: "Event page", homePage: "Home page",
-  faq: "FAQ", exhibitor: "Exhibitor", video: "Video",
+  faq: "FAQ", exhibitor: "Exhibitor", video: "Video", siteCopy: "Website wording",
 };
 
 /**
