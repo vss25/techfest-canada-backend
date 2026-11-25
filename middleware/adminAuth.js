@@ -38,6 +38,7 @@ export async function requireAdmin(req, res, next) {
     }
 
     req.user = user;
+    req.staffPanel = true; // services/staffActivity.js trackPanelEdits: a write here is a staff-panel edit
     next();
   } catch (err) {
     console.error("ADMIN AUTH ERROR:", err);

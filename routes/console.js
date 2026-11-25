@@ -3,7 +3,7 @@ import { eventClause, ticketEventKey, DEFAULT_EVENT_KEY } from "../services/atte
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Attendee from "../models/Attendee.js";
-import { requireAdmin, requireManagement, requirePanel, isManagement, isVolunteerPanel } from "../middleware/adminAuth.js";
+import { requireAdmin, requireManagement, requirePanel, isManagement, isSuperAdmin, isVolunteerPanel } from "../middleware/adminAuth.js";
 import { staffDirectoryHide } from "../services/directoryHide.js";
 import {
   SocialPost, SocialComment, SocialConnection, SocialMessage, SessionRegistration, SessionQuestion,
@@ -109,7 +109,8 @@ router.get("/me", requirePanel, (req, res) => {
                       staffRole: "volunteer", isManagement: false, panelRole: "volunteer" });
   }
   res.json({ id: String(req.user._id), name: req.user.name, email: req.user.email,
-             staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user) });
+             staffRole: isManagement(req.user) ? "management" : "staff", isManagement: isManagement(req.user),
+             isSuperAdmin: isSuperAdmin(req.user) });
 });
 
 /* ---------- Global search (the panel's top bar and ⌘K / Ctrl-K) ----------
