@@ -24,6 +24,7 @@ const linkedinProfileSchema = new mongoose.Schema({
     dropped: { type: [{ headline: String, why: String, _id: false }], default: [] },
     error: { type: String, default: "" },
     costUsd: { type: Number, default: 0 },
+    via: { type: String, default: "" },            // "" | "anthropic" | "muse" (the free Muse bridge, routes/museLinkedinBridge.js)
   },
   rounds: { day: { type: String, default: "" }, count: { type: Number, default: 0 } },  // rounds today (Toronto day)
 }, { timestamps: true });
