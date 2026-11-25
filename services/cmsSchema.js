@@ -23,7 +23,8 @@ const facts = { kind: "facts" };                        // [{ label, value }] �
 const steps = { kind: "steps" };                        // [{ label, when?, done? }] — "Coming next"
 const video = { kind: "video" };
 const copyTexts = { kind: "copyTexts" };                // website wording changes: [{ match, page?, text }]
-const copyMedia = { kind: "copyMedia" };                // website picture / video swaps: [{ match, page?, url, alt? }]                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
+const copyMedia = { kind: "copyMedia" };
+const homeSections = { kind: "homeSections" };       // the home page's sections in order, each shown or hidden: [{ key, on }]                // website picture / video swaps: [{ match, page?, url, alt? }]                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
 
@@ -194,6 +195,10 @@ export const CMS_FIELDS = {
     partnersHeading: str(120),
     partnerCtaHeading: str(120),
     partnerCtaText: str(300),
+    /* Admin › Content › Home page (Nov 25 2026). Empty = the automatic home page (it follows the next event). Its wording
+       and pictures are changed in Website text & media (siteCopy). */
+    heroEvent: ref,                           // the event the top of the page promotes; empty = the next event
+    sections: homeSections,                   // the sections under the top of the page, in order, each on or off (HOME_SECTIONS)
   },
   /* Website text & media (Nov 25 2026): one document, id "siteCopy". Each row replaces one piece of the website's
      built-in wording (`match`, the text as built in) or one built-in picture / video (`match`, its address) with the
@@ -324,6 +329,25 @@ export function cleanCopyMedia(v) {
 }
 
 /** [{label, value}] for "What we know so far": both required, at most 8. Pure. */
+/** The home page's sections under the top of the page, in the website's order unless staff reorder them. */
+export const HOME_SECTIONS = ["season", "agenda", "highlights", "form"];
+
+/** [{ key, on }] → every known section once, in the given order, then any missing ones (shown). Pure. */
+export function cleanHomeSections(v) {
+  if (!Array.isArray(v)) return { error: "must be a list" };
+  const seen = new Set();
+  const rows = [];
+  for (const item of v) {
+    const key = String(item?.key || "").trim();
+    if (!HOME_SECTIONS.includes(key)) return { error: `unknown section "${key}"` };
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ _key: key, key, on: item?.on !== false && item?.on !== "false" });
+  }
+  for (const key of HOME_SECTIONS) if (!seen.has(key)) rows.push({ _key: key, key, on: true });
+  return { rows };
+}
+
 export function cleanFacts(v) {
   if (!Array.isArray(v)) return { error: "must be a list" };
   if (v.length > 8) return { error: "at most 8 rows" };
@@ -469,6 +493,11 @@ export function toSanityPatch(type, body, { creating, draft = false }) {
         const out = rule.kind === "copyTexts" ? cleanCopyTexts(v) : cleanCopyMedia(v);
         if (out.error) return { set, unset, error: `${key}: ${out.error}` };
         if (!out.rows.length) { unset.push(key); break; }
+        set[key] = out.rows; break;
+      }
+      case "homeSections": {
+        const out = cleanHomeSections(v);
+        if (out.error) return { set, unset, error: `${key}: ${out.error}` };
         set[key] = out.rows; break;
       }
       case "facts":
