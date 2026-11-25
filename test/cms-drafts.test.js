@@ -105,6 +105,22 @@ test("the home page has its hero, highlights and partner fields", () => {
   assert.equal(set.stats.length, 1);
 });
 
+test("the home page editor: the promoted event and the sections in order, on or off", () => {
+  const { set, unset, error } = toSanityPatch("homePage", {
+    heroEvent: "event-vancouver-2027-briefing",
+    sections: [{ key: "highlights", on: false }, { key: "season" }, { key: "highlights" }],
+  }, { creating: false, draft: true });
+  assert.equal(error, null);
+  assert.deepEqual(set.heroEvent, { _type: "reference", _ref: "event-vancouver-2027-briefing" });
+  assert.deepEqual(set.sections.map((x) => [x.key, x.on]), [["highlights", false], ["season", true], ["agenda", true], ["form", true]]);
+  assert.equal(set.sections[0]._key, "highlights");
+  assert.deepEqual(unset, []);
+  assert.match(toSanityPatch("homePage", { sections: [{ key: "partners" }] }, { creating: false }).error, /unknown section/);
+  assert.match(toSanityPatch("homePage", { sections: "season" }, { creating: false }).error, /must be a list/);
+  assert.match(toSanityPatch("homePage", { heroEvent: "drafts.event-x" }, { creating: false }).error, /unknown item/);
+  assert.equal(toSanityPatch("homePage", { heroEvent: null }, { creating: false }).unset[0], "heroEvent");
+});
+
 test("an event's stand-in speakers and partners: source event, picks and wording", () => {
   const { set, unset, error } = toSanityPatch("event", {
     standInSpeakersFrom: "event-ttfc-2026-main",
