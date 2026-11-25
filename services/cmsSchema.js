@@ -126,6 +126,7 @@ export const CMS_FIELDS = {
     citySkyline: img,                         // "City photo" on the approved design (redesign step 2)
     heroVideoUrl: url,
     heroShade: { ...oneOf(...HERO_SHADES), default: "default" },   // the shade over the hero photo / video (Nov 25 2026)
+    heroMedia: oneOf("photo", "video"),       // what the top of the page shows, on phones and computers (unset: the video when there is one)
     photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
     theme: str(120),                          // "Energy & Critical Infrastructure"
     tagline: str(240),                        // one line under the event name
