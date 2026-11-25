@@ -122,3 +122,15 @@ test("an event's stand-in speakers and partners: source event, picks and wording
   assert.ok(unset.includes("standInPartners"));
   assert.match(toSanityPatch("event", { standInSpeakersFrom: "drafts.event-x" }, { creating: false }).error, /unknown/);
 });
+
+test("event hero shade: the five choices, anything else refused, standard when not given (Nov 25 2026)", () => {
+  for (const v of ["default", "light", "strong", "brand", "none"]) {
+    const { set, error } = toSanityPatch("event", { heroShade: v }, { creating: false });
+    assert.equal(error, null, v);
+    assert.equal(set.heroShade, v);
+  }
+  assert.ok(toSanityPatch("event", { heroShade: "neon" }, { creating: false }).error);
+  const made = toSanityPatch("event", { name: "Ottawa Briefing 2027", city: "Ottawa", type: "briefing", year: 2027 }, { creating: true });
+  assert.equal(made.error, null);
+  assert.equal(made.set.heroShade, "default");
+});

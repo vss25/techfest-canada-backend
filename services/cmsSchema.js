@@ -31,6 +31,9 @@ const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, requi
 const shown = { ...bool, default: true };
 export const SPONSOR_DESCRIPTION_MAX = 600;
 
+/** The shade over an event's hero photo or video (website src/lib/heroShade.js; "default" = the usual fade). */
+export const HERO_SHADES = ["default", "light", "strong", "brand", "none"];
+
 /** Per-session live polls / audience Q&A switch (services/sessionLive.js has the rule). */
 export const LIVE_MODES = ["auto", "on", "off"];
 const liveMode = { ...oneOf(...LIVE_MODES), default: "auto" };
@@ -122,6 +125,7 @@ export const CMS_FIELDS = {
     heroImage: img,                           // the previous design's top photo (still read by the old pages)
     citySkyline: img,                         // "City photo" on the approved design (redesign step 2)
     heroVideoUrl: url,
+    heroShade: { ...oneOf(...HERO_SHADES), default: "default" },   // the shade over the hero photo / video (Nov 25 2026)
     photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
     theme: str(120),                          // "Energy & Critical Infrastructure"
     tagline: str(240),                        // one line under the event name
