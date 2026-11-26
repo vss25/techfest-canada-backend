@@ -212,6 +212,9 @@ export const CMS_FIELDS = {
     highlightsText: str(600),
     stats,                                    // [{ value, suffix?, label }], at most 8
     highlightPhotos: images,
+    // Nov 26 2026 (the owner): how many of those pictures the home page shows before "See the gallery"
+    // (the gallery shows them all). Unset = 5.
+    highlightCount: { kind: "number", min: 0, max: 24 },
     recapVideoUrl: url,
     reportTitle: str(120),
     reportText: str(300),
