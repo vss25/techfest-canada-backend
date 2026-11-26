@@ -136,6 +136,20 @@ export const CMS_FIELDS = {
     heroFocus: { kind: "number", min: 0, max: 100 },  // framing: 0 = show the top, 100 = the bottom (unset: the design's own)
     heroHeight: oneOf("standard", "tall", "full"),   // how tall the top of the page is (unset: standard)
     photoCredit: str(200),                    // shown on the photo, e.g. "Photo: Kyle Pearce, CC BY-SA 2.0"
+    // "Why come" on the event page (Nov 25 2026, the owner): its words, and a photo, GIF or video in the box beside
+    // them (website src/lib/whyCome.js). Unset = the design's words (the Vancouver text only on Vancouver) and photo.
+    whyEyebrow: str(40),
+    whyHeading: str(160),
+    whyBody: str(1500),
+    whyMedia: oneOf("default", "image", "video"),   // what the box shows (unset: video, else image, else the design's photo)
+    whyImage: img,                            // a photo or an animated GIF (GIFs are served as uploaded)
+    whyVideoUrl: url,                         // a silent loop uploaded like the hero video (Sanity file CDN)
+    whyPoster: img,                           // the video's first frame, picked in the admin
+    whyHeight: oneOf("s", "m", "l"),          // box height: 260 / 340 / 440 px on computers (unset: m, the design's)
+    whyFit: oneOf("cover", "contain"),        // fill the box (cropped) or show it whole (unset: cover)
+    whyFocusX: { kind: "number", min: 0, max: 100 },  // framing when cropped, % from the left (unset: centre)
+    whyFocusY: { kind: "number", min: 0, max: 100 },  // % from the top (unset: centre)
+    whyLoop: { ...bool, default: true },      // the video loops (off: plays once and stays on its last frame)
     theme: str(120),                          // "Energy & Critical Infrastructure"
     tagline: str(240),                        // one line under the event name
     formatLine: str(120),                     // "One day · 8 sessions"

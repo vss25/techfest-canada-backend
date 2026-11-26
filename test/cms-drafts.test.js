@@ -165,6 +165,18 @@ test("event hero framing and height (Nov 25 2026)", () => {
   assert.ok(toSanityPatch("event", { heroFocus: -1 }, { creating: false }).error);
   for (const h of ["standard", "tall", "full"]) assert.equal(toSanityPatch("event", { heroHeight: h }, { creating: false }).set.heroHeight, h);
   assert.ok(toSanityPatch("event", { heroHeight: "huge" }, { creating: false }).error);
+  // "Why come" (Nov 25 2026): words, media kind, box size, fit, framing, loop.
+  const why = toSanityPatch("event", { whyEyebrow: "Why come", whyHeading: "Where Calgary meets.", whyBody: "Text", whyMedia: "video", whyVideoUrl: "https://cdn.sanity.io/files/p/d/a.mp4", whyHeight: "l", whyFit: "contain", whyFocusX: 20, whyFocusY: 80, whyLoop: false }, { creating: false });
+  assert.ok(!why.error, why.error);
+  assert.equal(why.set.whyHeight, "l");
+  assert.equal(why.set.whyFit, "contain");
+  assert.equal(why.set.whyFocusY, 80);
+  assert.equal(why.set.whyLoop, false);
+  assert.ok(toSanityPatch("event", { whyMedia: "audio" }, { creating: false }).error);
+  assert.ok(toSanityPatch("event", { whyHeight: "xl" }, { creating: false }).error);
+  assert.ok(toSanityPatch("event", { whyFocusX: 101 }, { creating: false }).error);
+  const longEyebrow = toSanityPatch("event", { whyEyebrow: "x".repeat(41) }, { creating: false });
+  assert.ok(longEyebrow.error || longEyebrow.set.whyEyebrow.length <= 40);
 });
 
 test("website text & media: wording changes and picture swaps are cleaned, deduplicated and bounded", () => {
