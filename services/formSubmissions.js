@@ -305,6 +305,46 @@ export function buildFormEmail(s, { adminUrl = "" } = {}) {
 
 const escRx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 
+/* =========================================================
+   The confirmation the visitor gets (Nov 26 2026, the owner: "the user doesn't get a confirmation
+   email"). Short and fixed: it says we received their enquiry and when to expect a reply. It never
+   repeats what they typed, so a form filled in with someone else's address can't be used to send
+   that person a message of the sender's choosing. Reply-to is the team's inbox.
+========================================================= */
+export const CONFIRM_REPLY_TO = "enquire@thetechfestival.com";
+export function buildFormConfirmation(s) {
+  const email = cleanText(s?.email);
+  if (!email || !EMAIL_RE.test(email)) return null;
+  const cfg = FORMS[s.form] || { label: "Enquiry" };
+  const first = cleanText(s.firstName || String(s.name || "").split(/\s+/)[0] || "").slice(0, 60);
+  const hello = first ? `Hi ${first},` : "Hello,";
+  const what = cfg.label.toLowerCase();
+  const subject = "We received your message · The Tech Festival Canada";
+  const lines = [
+    hello,
+    `Thanks for getting in touch with The Tech Festival Canada. Your ${what} has reached the team, and we reply within two working days.`,
+    `If it's urgent, or you didn't send this, reply to this email or write to ${CONFIRM_REPLY_TO}.`,
+    "The Tech Festival Canada",
+  ];
+  const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f1fa;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f1fa;"><tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;">
+  <tr><td style="background:#0c091f;padding:22px 26px;">
+    <div style="font:800 12px/1.2 Arial,Helvetica,sans-serif;letter-spacing:2px;color:#f5a623;text-transform:uppercase;">The Tech Festival Canada</div>
+    <div style="font:700 20px/1.3 Arial,Helvetica,sans-serif;color:#ffffff;margin-top:6px;">We received your message</div>
+  </td></tr>
+  <tr><td style="padding:24px 26px;font:15px/1.6 Arial,Helvetica,sans-serif;color:#1a1033;">
+    <p style="margin:0 0 14px;">${esc(lines[0])}</p>
+    <p style="margin:0 0 14px;">${esc(lines[1])}</p>
+    <p style="margin:0 0 14px;color:#5b4b7a;">${esc(lines[2])}</p>
+    <p style="margin:0;font-weight:700;">${esc(lines[3])}</p>
+  </td></tr>
+</table></td></tr></table></body></html>`;
+  return { to: [email], subject, html, text: lines.join("\n\n"), replyTo: CONFIRM_REPLY_TO };
+}
+
 /** Mongo filter for the admin list: ?form= &status= &q= (name, email, phone, company, job title, message). */
 export function submissionsFilter({ form, status, q } = {}) {
   const filter = {};
