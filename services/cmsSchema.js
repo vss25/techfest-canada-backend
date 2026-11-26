@@ -24,6 +24,7 @@ const steps = { kind: "steps" };                        // [{ label, when?, done
 const video = { kind: "video" };
 const copyTexts = { kind: "copyTexts" };                // website wording changes: [{ match, page?, text }]
 const copyMedia = { kind: "copyMedia" };
+const tags = { kind: "tags" };                          // a short list of names or keys: ["ai", "Space Tech"], at most 8, each up to 40 characters
 const homeSections = { kind: "homeSections" };       // the home page's sections in order, each shown or hidden: [{ key, on }]                // website picture / video swaps: [{ match, page?, url, alt? }]                        // a YouTube / Vimeo link (services/videoLinks.js); sets provider + videoId too
 
 const LOGO_TYPE = { name: { ...str(100), required: true }, logo: { ...img, required: true }, url, order: num, active: bool, logoScale: scale };
@@ -101,8 +102,14 @@ export const CMS_FIELDS = {
     format: oneOf(...SESSION_FORMATS),        // drives the colour/style
     featured: bool,
     isBreak: bool,
-    pillar: oneOf("ai", "quantum", "cybersecurity", "robotics", "climate"),   // "climate" is the stored key for Clean Tech (renamed Nov 25 2026; key kept so saved sessions still match)
-    sector: oneOf("fintech", "healthcare", "energy", "manufacturing", "public", "startups"),
+    // Nov 26 2026 (the owner: "select multiple tech pillars, or multiple sectors … add a custom sector or a
+    // pillar"). `pillars` / `sectors` hold every one chosen: a built-in key ("ai", "climate" = Clean Tech,
+    // "fintech"…) or the name of one staff added ("Space Tech"). `pillar` / `sector` stay as the first of each,
+    // so everything that reads a single value keeps working.
+    pillar: str(40),
+    sector: str(40),
+    pillars: tags,
+    sectors: tags,
     speakers: people,                         // [{ name, org?, tentative? }]
     moderator: person,                        // { name, org? }
     stage: str(80),
@@ -479,6 +486,22 @@ export function toSanityPatch(type, body, { creating, draft = false }) {
           && new Date(`${d}T12:00:00Z`).toISOString().slice(0, 10) === d;
         if (!real) return { set, unset, error: `${key} must be a date like 2027-02-18` };
         set[key] = d; break;
+      }
+      case "tags": {
+        if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
+        const out = [];
+        const seen = new Set();
+        for (const item of v) {
+          const t = String(item ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+          if (!t) continue;
+          if (t.length > 40) return { set, unset, error: `${key}: "${t.slice(0, 20)}…" is too long (up to 40 characters)` };
+          if (seen.has(t.toLowerCase())) continue;
+          seen.add(t.toLowerCase());
+          out.push(t);
+        }
+        if (out.length > 8) return { set, unset, error: `${key}: choose up to 8` };
+        if (!out.length) { unset.push(key); break; }
+        set[key] = out; break;
       }
       case "refs": {
         if (!Array.isArray(v)) return { set, unset, error: `${key} must be a list` };
