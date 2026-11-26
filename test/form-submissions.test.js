@@ -474,3 +474,42 @@ test("rate limits per IP and per email", async () => {
   for (let i = 0; i < 3; i++) await u.run("inquiry", { ...body, email: `p${i}@x.io` }, "7.7.7.7");
   assert.equal((await u.run("inquiry", { ...body, email: "p9@x.io" }, "7.7.7.7")).statusCode, 429);
 });
+
+// Nov 26 2026: the visitor's confirmation.
+test("the visitor gets a short confirmation that never repeats what they typed", async () => {
+  const { buildFormConfirmation, CONFIRM_REPLY_TO } = await import("../services/formSubmissions.js");
+  const mail = buildFormConfirmation({ form: "inquiry", name: "Jane Doe", email: "jane@example.com", message: "SECRET <b>pitch</b> http://spam.example" });
+  assert.deepEqual(mail.to, ["jane@example.com"]);
+  assert.equal(mail.replyTo, CONFIRM_REPLY_TO);
+  assert.match(mail.subject, /We received your message/);
+  assert.match(mail.text, /^Hi Jane,/);
+  assert.match(mail.text, /general enquiry/);
+  for (const body of [mail.html, mail.text]) { assert.doesNotMatch(body, /SECRET|spam\.example|pitch/); }
+  assert.equal(buildFormConfirmation({ form: "sponsor", name: "No Email" }), null);
+  assert.equal(buildFormConfirmation({ form: "inquiry", email: "not-an-email" }), null);
+  // A name can't inject markup.
+  assert.doesNotMatch(buildFormConfirmation({ form: "inquiry", name: "<img src=x>", email: "a@b.co" }).html, /<img/);
+});
+
+test("the handler sends the confirmation in the background, not to bots, and survives its failure", async () => {
+  const { makeFormSubmitHandler } = await import("../services/formSubmitHandler.js");
+  const mk = (fail) => {
+    const confirms = [], jobs = [];
+    const handler = makeFormSubmitHandler({
+      save: async (doc) => ({ ...doc, _id: "x1", createdAt: new Date() }), update: async () => {}, send: async () => ({ id: "re_1" }),
+      sendConfirmation: async (m) => { if (fail) throw new Error("resend down"); confirms.push(m); },
+      background: (p) => jobs.push(p), log: { error() {} },
+    });
+    const run = async (body) => { const res = fakeRes(); await handler({ params: { form: "volunteer" }, body, ip: "9.9.9.9", headers: {} }, res); await Promise.all(jobs); return res; };
+    return { run, confirms };
+  };
+  const ok = mk(false);
+  assert.equal((await ok.run(VOLUNTEER)).statusCode, 201);
+  assert.equal(ok.confirms.length, 1);
+  assert.deepEqual(ok.confirms[0].to, ["jane@example.com"]);
+  const bot = mk(false);
+  assert.equal((await bot.run({ ...VOLUNTEER, _hp: "i am a bot" })).statusCode, 201);
+  assert.equal(bot.confirms.length, 0);
+  const down = mk(true);
+  assert.equal((await down.run(VOLUNTEER)).statusCode, 201);
+});

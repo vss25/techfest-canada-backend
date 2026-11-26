@@ -8,14 +8,15 @@
      1. Validate. Unknown form → 404, bad input → 400.
      2. Save (FormSubmission). Bots are saved as spam and never emailed.
      3. Answer 201 straight away.
-     4. Then, in the background, email FORMS_INBOX and record the outcome.
+     4. Then, in the background, email FORMS_INBOX and record the outcome, and send the visitor a short
+        confirmation (deps.sendConfirmation; never for bots; its failure is logged and changes nothing).
    If the save fails the email is sent before answering; only when both
    fail does the visitor get a 500.
 ========================================================= */
 
 import { makeLimiter } from "./ticketAccess.js";
 import { cleanText } from "./brochureDownloads.js";
-import { validateFormSubmission, formBotReason, isHoneypotFilled, formsInbox, buildFormEmail } from "./formSubmissions.js";
+import { validateFormSubmission, formBotReason, isHoneypotFilled, formsInbox, buildFormEmail, buildFormConfirmation } from "./formSubmissions.js";
 
 export const FALLBACK_EMAIL = "baldeep@thetechfestival.com";
 export const TOO_MANY = `Too many requests. Please try again later or email ${FALLBACK_EMAIL}.`;
@@ -27,12 +28,13 @@ const OK = { success: true, message: "Thanks! We received your submission." };
  * @param {(doc: object) => Promise<object>} deps.save            create a FormSubmission, resolves to the saved doc (with _id)
  * @param {(id: any, set: object) => Promise<any>} deps.update    record the email outcome
  * @param {(msg: object) => Promise<{id?: string}>} deps.send     send { to, subject, html, text, replyTo }; throws on failure
+ * @param {(msg: object) => Promise<any>} [deps.sendConfirmation] send the visitor's confirmation; omitted = none is sent
  * @param {object} [deps.env]                                     for FORMS_INBOX
  * @param {object} [deps.ipLimiter] / [deps.emailLimiter]         makeLimiter() instances
  * @param {(p: Promise) => void} [deps.background]                tests await this to see the background email
  */
 export function makeFormSubmitHandler({
-  save, update, send, env = process.env,
+  save, update, send, sendConfirmation = null, env = process.env,
   ipLimiter = makeLimiter({ max: 10, windowMs: 15 * 60 * 1000 }),
   emailLimiter = makeLimiter({ max: 5, windowMs: 60 * 60 * 1000 }),
   adminUrl = "",
@@ -50,6 +52,14 @@ export function makeFormSubmitHandler({
       log.error?.("FORM EMAIL ERROR:", emailError);
       return { ok: false, set: { emailStatus: "failed", emailTo: to, emailError } };
     }
+  }
+
+  // The visitor's "we received your message". Its own try: a failure here never touches the submission.
+  async function confirm(doc) {
+    if (!sendConfirmation || String(env.FORMS_CONFIRM || "") === "0") return;
+    const mail = buildFormConfirmation(doc);
+    if (!mail) return;
+    try { await sendConfirmation(mail); } catch (err) { log.error?.("FORM CONFIRMATION ERROR:", String(err?.message || err).slice(0, 300)); }
   }
 
   return async function submitForm(req, res) {
@@ -95,12 +105,13 @@ export function makeFormSubmitHandler({
         const job = deliver(doc).then(({ set }) => update(doc._id, set))
           .catch((err) => log.error?.("FORM EMAIL STATUS SAVE ERROR:", err?.message || err));
         background(job);
+        background(confirm(doc));
         return undefined;
       }
 
       // Not saved: the email is the only copy, so wait for it.
       const sent = await deliver({ ...v, createdAt: new Date() });
-      if (sent.ok) return res.status(201).json(OK);
+      if (sent.ok) { background(confirm(v)); return res.status(201).json(OK); }
       return res.status(500).json({ success: false, message: FAILED });
     } catch (err) {
       log.error?.("FORM SUBMIT ERROR:", err);

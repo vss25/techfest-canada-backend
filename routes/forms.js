@@ -12,6 +12,8 @@ import { makeFormSubmitHandler } from "../services/formSubmitHandler.js";
    Saved first (FormSubmission), answered 201 straight away, then
    emailed in the background to FORMS_INBOX (default
    baldeep@thetechfestival.com) with reply-to set to the visitor.
+   The visitor also gets a short confirmation (never a copy of what
+   they typed).
    Replaces EmailJS. Staff list: Admin → Leads → Form submissions
    (routes/console.js). Logic: services/formSubmitHandler.js and
    services/formSubmissions.js.
@@ -25,6 +27,8 @@ router.post("/:form", makeFormSubmitHandler({
   save: (doc) => FormSubmission.create(doc),
   update: (id, set) => FormSubmission.updateOne({ _id: id }, { $set: set }),
   send: (msg) => sendFormSubmissionEmail(msg),
+  // The visitor's short "we received your message" (Nov 26 2026). FORMS_CONFIRM=0 turns it off.
+  sendConfirmation: (msg) => sendFormSubmissionEmail(msg),
   adminUrl: `${site}/admin/form-submissions`,
 }));
 
